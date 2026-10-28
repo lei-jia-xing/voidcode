@@ -110,9 +110,9 @@ def test_bundle_is_public_and_api_keeps_its_token(tmp_path: Path) -> None:
         assert b"core client" in body
 
         # The page load cannot present a token; the API still demands one.
-        status, _body = _request(base, "/api/commands")
+        status, _body = _request(base, "/api/health")
         assert status == 401
-        status, body = _request(base, "/api/commands", token=_TOKEN)
+        status, body = _request(base, "/api/health", token=_TOKEN)
         assert status == 200
         assert json.loads(body)["revision_id"]
 

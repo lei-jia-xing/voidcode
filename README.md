@@ -14,7 +14,7 @@ VoidCode is an open-source, local-first coding agent built as a small trusted co
 - **Plugin architecture**: every product mechanism — tools, commands, providers, hooks, views, and session state — is a plugin using the same public SDK a third-party plugin gets, and the core imports no concrete plugin. The core keeps only its own reserved control surface (`run`, `resume`, `show`, `status`, `help`, `core.reload`, and the `core_reload` tool), which a plugin can neither declare nor shadow.
 - **Trusted plugins, no ceremony**: a plugin is a Python package whose `create_plugin` returns its registration — tools, commands, hooks, views, and state schema in one place. Plugins are trusted code equal to the application; revisions identify configuration and composition, never code bytes.
 - **Append-only durability**: one immutable event stream per session. Views, transcripts, usage, and UI are projections; clients commit each fact exactly once and never rewind.
-- **Three client surfaces, one contract**: the product CLI executes commands directly, and the inline terminal UI and React web client speak the same HTTP/SSE contract — one command catalog, one set of declarative views, one event stream.
+- **Three client surfaces, one contract**: the product CLI executes commands directly, and the inline terminal UI and React web client speak the same WebSocket RPC contract — one command catalog, one set of declarative views, one event stream.
 - **Agent-facing delegation**: the primary agent delegates focused work through the `task`/`task_batch` tools; there is no separate human task console.
 
 ## Quickstart
@@ -61,7 +61,7 @@ voidcode run "Summarize this repository"
 # Interactive TUI with inline scrollback (in-process local server)
 voidcode
 
-# HTTP/SSE server plus the built web client at http://127.0.0.1:8000/
+# WebSocket RPC server plus the built web client at http://127.0.0.1:8000/
 voidcode serve --port 8000
 
 # Every command documents itself
@@ -89,7 +89,7 @@ In a source checkout without the console script installed, use `uv run python -m
 | `voidcode drain <session_id>` | Execute pending durable continuations. |
 | `voidcode usage <session_id>` | Report session token usage. |
 | `voidcode` | Start the inline TUI (in-process local server, or `--server`/`--token` for a remote one). |
-| `voidcode serve` | Start the HTTP/SSE server and serve the web client (`--open` launches a browser). |
+| `voidcode serve` | Start the WebSocket RPC server and serve the web client (`--open` launches a browser). |
 
 ### In-session commands
 
@@ -122,7 +122,7 @@ The TUI opens on a quiet composer: no plugin views load until requested. Goal, p
 ```mermaid
 graph TD
     CLI["Product CLI (cli.py)"] --> Product["Product layer (config, bootstrap)"]
-    TUI["Inline TUI (in-process server, or --server)"] --> Transport["Transport (HTTP/SSE, /api)"]
+    TUI["Inline TUI (in-process server, or --server)"] --> Transport["Transport (WebSocket RPC, /api)"]
     Web["Web client (served bundle)"] --> Transport
     Product --> Core["Core (governance, storage, activation, artifacts)"]
     Transport --> Core

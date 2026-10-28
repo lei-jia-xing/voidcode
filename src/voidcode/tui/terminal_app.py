@@ -289,7 +289,7 @@ def _notice_row(text: object, tone: str, styles: Styles) -> str:
 
 
 class CoreTuiApp:
-    """HTTP-backed inline TUI using Terminal and TuiFrame."""
+    """RPC-backed inline TUI using Terminal and TuiFrame."""
 
     def __init__(
         self,
@@ -355,9 +355,9 @@ class CoreTuiApp:
         #: echoes it verbatim. Rendered overlays carry their own captured revision.
         self.catalog_revision: str = ""
         self.status_line = "Connecting to server..."
-        self._sse_thread: threading.Thread | None = None
+        self._stream_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        #: Owns the current generation's SSE connection so quit can wake a blocked idle read
+        #: Owns the current generation's event subscription so quit can wake a blocked idle read
         #: before joining. A replacement stream closes this handle and installs its own; workers
         #: capture their handle locally so a late detach from an old generation cannot clear it.
         self._stream_cancel: StreamCancellation | None = None
@@ -367,7 +367,7 @@ class CoreTuiApp:
         try:
             self._init_session()
             self._load_catalog()
-            self._start_sse_stream()
+            self._start_event_stream()
             return self._main_loop()
         finally:
             self.running = False
@@ -378,8 +378,8 @@ class CoreTuiApp:
                 if self._stream_cancel is not None:
                     self._stream_cancel.close()
             finally:
-                if self._sse_thread and self._sse_thread.is_alive():
-                    self._sse_thread.join(timeout=1.0)
+                if self._stream_thread and self._stream_thread.is_alive():
+                    self._stream_thread.join(timeout=1.0)
                 if self.owns_terminal:
                     self.terminal.close()
 
@@ -419,7 +419,7 @@ class CoreTuiApp:
             self.status_line = f"Catalog load failed: {_safe(exc)}"
             raise RuntimeError(f"Failed to fetch command catalog from server: {exc}") from exc
 
-    def _start_sse_stream(self) -> None:
+    def _start_event_stream(self) -> None:
         generation = self._generation
         session_id = self.session_id
         previous, self._stream_cancel = self._stream_cancel, StreamCancellation()
@@ -463,14 +463,17 @@ class CoreTuiApp:
                 except Exception as exc:
                     if self._stop_event.is_set() or generation != self._generation:
                         return
-                    logger.debug("SSE stream reconnecting after: %s", exc)
+                    if isinstance(exc, CoreClientError) and exc.status_code in {400, 401, 403, 404}:
+                        self.event_queue.put({"kind": "error", "error": str(exc), "session_id": session_id, "generation": generation})
+                        return
+                    logger.debug("session event stream reconnecting after: %s", exc)
                     await asyncio.sleep(1.0)
 
         def run_worker() -> None:
             asyncio.run(stream_worker())
 
-        self._sse_thread = threading.Thread(target=run_worker, daemon=True, name=f"CoreTuiSSE{generation}")
-        self._sse_thread.start()
+        self._stream_thread = threading.Thread(target=run_worker, daemon=True, name=f"CoreTuiStream{generation}")
+        self._stream_thread.start()
 
     def _main_loop(self) -> int:
         while self.running:
@@ -1468,7 +1471,7 @@ class CoreTuiApp:
         # A new stream is about to start: its first frame reconciles.
         self._stream_ready = False
         self.status_line = ""
-        self._start_sse_stream()
+        self._start_event_stream()
 
     def _create_session(self) -> None:
         try:

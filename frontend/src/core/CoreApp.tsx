@@ -14,7 +14,7 @@ import type {
   Icon,
   PluginViewDescriptor,
   SessionRow,
-  SseFrame,
+  SessionFrame,
   StreamEvent,
   ToolExecution,
   ToolOutput,
@@ -111,6 +111,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({
     () => new CoreClient(effectiveBaseUrl, effectiveToken),
     [effectiveBaseUrl, effectiveToken],
   );
+  useEffect(() => () => client.close(), [client]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
   // The catalog travels with the revision it was captured under: every command
@@ -805,7 +806,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({
     const cleanup = client.streamEvents(
       boundSession,
       0,
-      (frame: SseFrame) => {
+      (frame: SessionFrame) => {
         if (!isCurrent(boundSession, boundEpoch, boundClientKey)) {
           return; // a follower from a superseded session/epoch: never render it
         }

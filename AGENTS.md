@@ -28,7 +28,7 @@ graph LR
 - **Core (`src/voidcode/core/`)**:
   The minimal engine: `engine.py` runs governed turns over append-only SQLite events with native tool batches, approvals, and confirmation gates; `activation.py` defines neutral execution configurations and state copies; `plugins.py` is the in-process plugin runtime that loads plugins and dispatches invocations synchronously; `services.py` binds scoped services to invocation leases; `processes.py` owns child processes and background jobs; `storage/` owns the append-only SQLite store and v6 schema; `coverage.py` projects tool results for the model and resolves resource paths; `history_renderer.py` renders the readable event projection the history services share. Core has zero product configuration or provider credential concepts and imports no outer adapters, no capabilities, and no concrete plugin.
 - **Outer product layer (`src/voidcode/`)**:
-  Product wiring: `cli.py` (CLI entry point for `voidcode` and `python -m voidcode`), `config.py` (product `voidcode.json` schema and flat provider resolution), `bootstrap.py` (admission assembly, `open_core`, generation adoption, and bundled sources), `transport/` (HTTP/SSE server and web client bundle delivery), and `tui/` (terminal interface).
+  Product wiring: `cli.py` (CLI entry point for `voidcode` and `python -m voidcode`), `config.py` (product `voidcode.json` schema and flat provider resolution), `bootstrap.py` (admission assembly, `open_core`, generation adoption, and bundled sources), `transport/` (WebSocket RPC server and web client bundle delivery), and `tui/` (terminal interface).
 - **Bundled plugins (`src/voidcode/plugins/`)**:
   The official plugins ship with the product. All tools (files, exec, providers, etc.) exist only through admitted plugins: there are no fallback builtins in the core.
 ### Layer Rules
@@ -55,7 +55,7 @@ scope. See `docs/contracts/optional-queries.md`.
 | Product config & voidcode.json parser | `src/voidcode/` | `config.py` (`Config`, `parse_config`) |
 | Product wiring, admission, adoption | `src/voidcode/` | `bootstrap.py` (`open_core`, `adopt_generation`) |
 | CLI entry point and subcommands | `src/voidcode/` | `cli.py` (`main`) |
-| HTTP/SSE transport and web client bundle | `src/voidcode/transport/` | `http.py`, `server.py`, `static.py` |
+| WebSocket RPC transport and web client bundle | `src/voidcode/transport/` | `http.py`, `server.py`, `static.py` |
 | Inline TUI client | `src/voidcode/tui/` | `terminal_app.py`, `client.py` |
 | SDK contracts (contracts only) | `src/voidcode/sdk/` | `plugin.py`, `tools.py`, `commands.py`, `services.py` |
 | Capabilities (files, exec, providers, queries) | `src/voidcode/capabilities/` | `files/`, `exec/`, `providers/`, `workspace_queries.py` |
@@ -69,7 +69,7 @@ One CLI serves every operation: `voidcode [OPTIONS] [COMMAND]` (or `python -m vo
 - **Agent runs**: `run "<prompt>" [--session-id] [--max-steps]`, `resume <session_id> [--approval-request-id --decision allow|deny] [--max-steps]`.
 - **Session truth**: `create-session`, `sessions [--limit]`, `show <session_id> [--events]` (a rescue read directly from SQLite without starting a core).
 - **Capability surface**: `catalog`, `invoke <session_id> <name> --arguments JSON --expected-revision <id>`, `confirm <session_id> <request_id> --decision allow|deny --expected-revision <id>`, `views <session_id>`, `drain <session_id> [--limit]`, `usage <session_id> [--since-sequence] [--until-sequence]`.
-- **Clients**: bare `[--server URL --token TOKEN --session-id ID]`, `serve [--host] [--port] [--bearer-token] [--open]` (loopback only, binds dynamically on port 0 with IPv6 bracketed, serves HTTP/SSE API plus built web bundle at `/`).
+- **Clients**: bare `[--server URL --token TOKEN --session-id ID]`, `serve [--host] [--port] [--bearer-token] [--open]` (loopback only, binds dynamically on port 0 with IPv6 bracketed, serves WebSocket RPC API plus built web bundle at `/`).
 - **Root options**: `--workspace PATH` (default: current directory), `--state-dir PATH`.
 
 In-session commands come from the core command catalog: the reserved core commands (`run`, `resume`, `show`, `status`, `help`, `core.reload`) plus every plugin-declared command. They reach every client the same way — `/<name>` in the TUI and web client, `voidcode invoke` from the CLI — and there is no client-side command table.

@@ -294,6 +294,15 @@ def test_interrupted_mutation_is_not_replayed(tmp_path: Path, stop: str) -> None
             if stop == "signal":
                 assert json.loads(stdout)["status"] == "interrupted"
             _await_lease_release(workspace)
+            if stop == "signal":
+                with SqliteStore(state / "voidcode.db") as store:
+                    events = store.events("crash-session")
+                    interrupted = [event for event in events if event.event_type == "core.tool_interrupted"]
+                    assert [event.payload["call"]["tool_call_id"] for event in interrupted] == ["effect", "tail"]
+                    assert "external effects are unknown" in interrupted[0].payload["result"]["error"]
+                    assert "not executed" in interrupted[1].payload["result"]["error"]
+                    assert all(not event.payload["fact_metadata"]["changes"] for event in interrupted)
+                    assert store.checkpoint("crash-session").payload["batch_sequence"] is None
             (workspace / "input.txt").write_text("changed after crash\n", encoding="utf-8")
             if stop == "signal":
                 # A deliberate user stop is terminal for that run: the session admits a NEW

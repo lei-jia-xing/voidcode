@@ -56,6 +56,14 @@ jobs:
             - name: Verify packaged web bundle
               run: uv run python scripts/verify_packaged_web_bundle.py dist/*.whl
 
+            - name: Install Chromium for RPC browser acceptance
+              working-directory: frontend
+              run: bunx playwright install --with-deps chromium
+
+            - name: Verify browser RPC and reconnect against a real core
+              working-directory: frontend
+              run: bun run test:e2e
+
     frontend:
         runs-on: ubuntu-latest
 

@@ -3,7 +3,7 @@
 The HTTP transport and the in-process TUI client must render one identical
 surface: the same session payloads, event frames, health body, and error
 envelope. This module owns those shapes so neither client can drift from the
-other; the wire framing (JSON bytes, SSE bytes) stays in ``http.py``.
+other; JSON-RPC framing stays in ``rpc.py``.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def session_payload(record: SessionRecord) -> dict[str, object]:
 
 
 def event_payload(session_id: str, event: StoredEvent) -> dict[str, object]:
-    """One stored event as SSE frames carry it; malformed conversation records fail visibly."""
+    """One stored event as session frames carry it; malformed conversation records fail visibly."""
     entry = transcript_entry(event)
     return {
         "session_id": session_id,

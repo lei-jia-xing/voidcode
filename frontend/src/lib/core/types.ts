@@ -37,9 +37,9 @@ export type FormViewData = Schemas["FormViewData"];
 export type FormField = Schemas["FormField"];
 export type DiffViewData = Schemas["DiffViewData"];
 export type StatusViewData = Schemas["StatusViewData"];
-// SSE frames: the generated union is the contract. The head carries no kind,
+// Session frames: the generated union is the contract. The head carries no kind,
 // so TS narrows it via `'events' in frame`; the other three narrow on `kind`.
-export type SseFrame = Schemas["SseFrameWire"];
+export type SessionFrame = Schemas["SessionFrameWire"];
 export type StreamEvent = Schemas["StreamEventWire"];
 export type HeadFrame = Schemas["HeadFrameWire"];
 export type EventFrame = Schemas["EventFrameWire"];

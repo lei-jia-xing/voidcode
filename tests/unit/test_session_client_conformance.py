@@ -26,7 +26,7 @@ from voidcode.core.storage.store import SqliteStore
 from voidcode.sdk import SessionClient
 from voidcode.sdk.client import CoreClientError, RunSpec
 from voidcode.transport.http import create_core_app
-from voidcode.tui.client import CoreHttpClient
+from voidcode.tui.client import CoreRpcClient
 from voidcode.tui.local_client import CoreLocalClient
 
 _EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "tally-counter"
@@ -120,7 +120,7 @@ def _client(arm: str, workspace: Path, state: Path) -> Iterator[SessionClient]:
     while not server.started and time.monotonic() < deadline:
         time.sleep(0.02)
     assert server.started
-    client = CoreHttpClient(f"http://127.0.0.1:{port}", token="conformance-token")
+    client = CoreRpcClient(f"http://127.0.0.1:{port}", token="conformance-token")
     try:
         yield client
     finally:
@@ -267,7 +267,7 @@ def test_invalid_inputs_refused_identically(arm_client: tuple[str, SessionClient
 
 
 def test_sse_preserves_business_tool_body() -> None:
-    """Consumer regression: an opaque tool body survives the SSE wire unwrapped."""
+    """Consumer regression: an opaque tool body survives the RPC wire unwrapped."""
     from voidcode.core.storage.store import StoredEvent
     from voidcode.sdk.client import StreamEvent
     from voidcode.sdk.codec import encode_tool_call, encode_tool_result
@@ -298,7 +298,7 @@ def test_sse_preserves_business_tool_body() -> None:
 @pytest.mark.parametrize("stopped_args", [{"confirmed": True}, {"confirmed": False}])
 @pytest.mark.parametrize("event_type", ["core.tool_completed", "core.tool_interrupted"])
 def test_cancelled_tool_records_decode_through_sse_and_keep_execution_flags(event_type: str, stopped_args: dict[str, bool]) -> None:
-    """Cancelled tools keep their confirmed/unconfirmed stop across the SSE wire."""
+    """Cancelled tools keep their confirmed/unconfirmed stop across the RPC wire."""
     from voidcode.core.storage.store import StoredEvent
     from voidcode.sdk.client import StreamEvent
     from voidcode.sdk.codec import encode_tool_call, encode_tool_result

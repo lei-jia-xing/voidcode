@@ -173,6 +173,18 @@ class ToolInvocationOutcome:
     staged_observations: tuple[ObservedChange, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class CommandInvocationOutcome:
+    result: CommandResult
+    staged_state: tuple[StagedStateUpdate, ...] = ()
+    staged_events: tuple[EventDraft, ...] = ()
+    staged_continuations: tuple[StagedContinuationDraft, ...] = ()
+    staged_cancellations: tuple[StagedCancellation, ...] = ()
+    staged_budget: PluginBudget | None | Literal["clear"] = None
+    staged_observations: tuple[ObservedChange, ...] = ()
+    cancelled: bool = False
+
+
 #: One invocation's staged side effects: state, events, continuations, cancellations, budget.
 type _Staged = tuple[
     tuple[StagedStateUpdate, ...],
@@ -1025,14 +1037,7 @@ class PluginRuntime:
         *,
         context: ToolContext,
         readonly: bool = False,
-    ) -> tuple[
-        CommandResult,
-        tuple[StagedStateUpdate, ...],
-        tuple[EventDraft, ...],
-        tuple[StagedContinuationDraft, ...],
-        tuple[StagedCancellation, ...],
-        PluginBudget | None | Literal["clear"],
-    ]:
+    ) -> CommandInvocationOutcome:
         """Invoke a registered command by direct call."""
         cmd_entry = self._commands.get(name)
         if cmd_entry is None:
@@ -1046,7 +1051,7 @@ class PluginRuntime:
             try:
                 cmd_validator.validate(json_wire_object(args))
             except jsonschema.ValidationError as val_err:
-                return (CommandResult(status="error", error=f"Input validation error: {val_err.message}"), (), (), (), (), None)
+                return CommandInvocationOutcome(CommandResult(status="error", error=f"Input validation error: {val_err.message}"))
 
         lease = self._open_lease(
             owner=cmd_owner,
@@ -1080,13 +1085,14 @@ class PluginRuntime:
         cancelled = cancel_event.is_set() or bool(context.abort_signal and context.abort_signal.cancelled)
         if cancelled:
             self._cancel_claimed_services(lease)
+            result = CommandResult(status="error", error="command invocation was cancelled; external effects may be incomplete", output=result.output)
             staged: _Staged = ((), (), (), (), None)
         elif cmd_threw:
             staged = ((), (), (), (), None)
         else:
             staged = self._staged_changes(lease)
         self._revoke_lease(lease)
-        return (result, *staged)
+        return CommandInvocationOutcome(result, *staged, staged_observations=tuple(lease.staged_observations), cancelled=cancelled)
 
     def render_view(
         self,

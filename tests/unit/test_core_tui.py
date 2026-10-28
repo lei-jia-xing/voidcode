@@ -18,8 +18,8 @@ from voidcode.sdk.client import (
     ResumeSpec,
     RunResult,
     RunSpec,
+    SessionFrame,
     SessionRow,
-    SseFrame,
     StreamCancellation,
     StreamEvent,
 )
@@ -483,7 +483,7 @@ class _StubClient:
         *,
         follow: bool = True,
         cancel: StreamCancellation | None = None,
-    ) -> AsyncIterator[SseFrame]:
+    ) -> AsyncIterator[SessionFrame]:
         self._connections += 1
         if self._connections == 1:
             # Pre-restart connection: only the settled prefix exists yet.
@@ -615,8 +615,8 @@ def test_reconnect_replays_unseen_rows_despite_ahead_restart_watermark() -> None
     # No reconcile thread in this cursor-specific test: stub the async refresh
     # so the join below covers only the owned stream worker.
     app._reconcile_connection_async = lambda: None  # type: ignore[method-assign]
-    app._start_sse_stream()
-    assert app._sse_thread is not None
+    app._start_event_stream()
+    assert app._stream_thread is not None
     try:
         # Rows 1-2 settle from the first connection; the restart frame breaks
         # the worker's iterator and it reconnects from the applied cursor.
@@ -628,8 +628,8 @@ def test_reconnect_replays_unseen_rows_despite_ahead_restart_watermark() -> None
             assert sum(marker in row for row in terminal.committed) == 1, (marker, terminal.committed)
     finally:
         app._stop_event.set()
-        app._sse_thread.join(timeout=5.0)
-        assert not app._sse_thread.is_alive()
+        app._stream_thread.join(timeout=5.0)
+        assert not app._stream_thread.is_alive()
 
 
 def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() -> None:
@@ -1369,7 +1369,7 @@ def test_head_transcript_arrives_canonical_and_terminal_error_stops_the_worker()
             *,
             follow: bool = True,
             cancel: StreamCancellation | None = None,
-        ) -> AsyncIterator[SseFrame]:
+        ) -> AsyncIterator[SessionFrame]:
             self._connections += 1
             yield head
             yield ErrorFrame(session_id=session_id, error="projection failed: sequence=3 type=core.tool_completed error=ValidationError")
@@ -1378,13 +1378,13 @@ def test_head_transcript_arrives_canonical_and_terminal_error_stops_the_worker()
     terminal = _StubTerminal()
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)
     app._reconcile_connection_async = lambda: None  # type: ignore[method-assign]
-    app._start_sse_stream()
-    assert app._sse_thread is not None
+    app._start_event_stream()
+    assert app._stream_thread is not None
     try:
         _drain_until(app, terminal, "hello")
         _drain_until(app, terminal, "Core stream error")
-        app._sse_thread.join(timeout=5.0)
-        assert not app._sse_thread.is_alive()
+        app._stream_thread.join(timeout=5.0)
+        assert not app._stream_thread.is_alive()
         app._drain_events()
         assert client._connections == 1
         assert sum("hello" in row for row in terminal.committed) == 1
@@ -1392,5 +1392,5 @@ def test_head_transcript_arrives_canonical_and_terminal_error_stops_the_worker()
         assert app._session_cursors["s1"] == 2
     finally:
         app._stop_event.set()
-        app._sse_thread.join(timeout=5.0)
-        assert not app._sse_thread.is_alive()
+        app._stream_thread.join(timeout=5.0)
+        assert not app._stream_thread.is_alive()

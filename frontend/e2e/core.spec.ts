@@ -7,7 +7,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 
 /**
- * Core client smoke, offline: the real `voidcode.core serve` process owns the
+ * Core client smoke, offline: the real `voidcode serve` process owns the
  * workspace/state/revision, serves the built SPA (`frontend/dist`) at "/", and the
  * browser drives one session plus one plugin command. No provider is configured, so
  * nothing here reaches a model.
@@ -57,7 +57,7 @@ async function waitForCore(url: string): Promise<void> {
       throw new Error(`core server exited with ${proc.exitCode}\n${bootLog}`);
     }
     try {
-      const resp = await fetch(`${url}/api/commands`, {
+      const resp = await fetch(`${url}/api/health`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (resp.ok) return;
@@ -91,14 +91,16 @@ test.beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${port}`;
 
   proc = spawn(
-    "uv",
+    path.join(
+      rootDir,
+      ".venv",
+      process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
+    ),
     [
-      "run",
-      "python",
       "-X",
       "utf8",
       "-m",
-      "voidcode.core",
+      "voidcode",
       "--workspace",
       workspace,
       "--state-dir",
@@ -150,8 +152,6 @@ test("the core client creates a session and renders a command result", async ({
   await page.getByTestId("prompt-input").fill("/usage");
   await page.getByTestId("send-btn").click();
   await expect(
-    page
-      .locator('[data-testid^="event-"]')
-      .filter({ hasText: "/usage [ok]" }),
+    page.locator('[data-testid^="event-"]').filter({ hasText: "/usage [ok]" }),
   ).toBeVisible();
 });

@@ -33,7 +33,7 @@ graph TD
         CLIImpl["cli.py — entry point, subcommands"]
         Config["config.py — voidcode.json schema"]
         Bootstrap["bootstrap.py — admission, adoption, bundled sources"]
-        Transport["transport/ — HTTP + SSE, served web bundle"]
+        Transport["transport/ — WebSocket RPC, health + served web bundle"]
         TUIImpl["tui/ — terminal client"]
     end
 
@@ -179,9 +179,9 @@ declares `read`+`execute` and flows through the existing approval/read-only gate
 
 ## Client Surfaces
 
-- **Product CLI** (`python -m voidcode`, also the `voidcode` console script): `run`, `resume`, `show`, `create-session`, `sessions`, `catalog`, `invoke`, `confirm`, `views`, `drain`, `usage`, `serve`, and the bare command. The operational commands execute directly; `show` is a config-free SQLite rescue reader; `serve` serves loopback HTTP/SSE plus the built web bundle; the bare command opens the TUI against an in-process local server (or a remote one with `--server`/`--token`).
+- **Product CLI** (`python -m voidcode`, also the `voidcode` console script): `run`, `resume`, `show`, `create-session`, `sessions`, `catalog`, `invoke`, `confirm`, `views`, `drain`, `usage`, `serve`, and the bare command. The operational commands execute directly; `show` is a config-free SQLite rescue reader; `serve` serves loopback WebSocket RPC plus the built web bundle; the bare command opens the TUI against an in-process local server (or a remote one with `--server`/`--token`).
 - **TUI**: inline scrollback with a commit-once ledger; local controls (`/tui help|sessions|session|new|views|cancel|quit`) that never shadow an admitted command.
-- **HTTP/SSE**: the generic `/api` contract — see [`contracts/client-transport.md`](./contracts/client-transport.md).
+- **WebSocket RPC**: the generic `/api` contract — see [`contracts/client-transport.md`](./contracts/client-transport.md).
 - **Web client** (`frontend/src/core/`): the React core app, served at `/` when a bundle is built, rendering the same catalog, views, and event stream.
 
 ## State Directory

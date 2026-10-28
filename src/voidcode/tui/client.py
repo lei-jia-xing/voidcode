@@ -1,15 +1,20 @@
-"""HTTP client for the VoidCode core transport."""
+"""Multiplexed WebSocket JSON-RPC client implementing SessionClient."""
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
-import logging
+import queue
+import threading
 import urllib.parse
 from collections.abc import AsyncGenerator, Mapping
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal
+from uuid import uuid4
 
 import httpx
+from websockets.sync.client import ClientConnection, connect
+from websockets.typing import Origin, Subprotocol
 
 from voidcode.sdk.client import (
     CancelReceipt,
@@ -18,303 +23,345 @@ from voidcode.sdk.client import (
     ContinuationResult,
     CoreClientError,
     ErrorFrame,
+    EventFrame,
+    HeadFrame,
     HealthStatus,
     ResumeSpec,
     RunResult,
     RunSpec,
+    SessionFrame,
     SessionRow,
     SessionUsageReport,
-    SseFrame,
     StreamCancellation,
     ViewsSnapshot,
-    parse_sse_frame,
+    parse_session_frame,
 )
+from voidcode.sdk.rpc import RPC_MAX_MESSAGE_BYTES, RPC_QUEUE_MESSAGES, RPC_SUBPROTOCOL, RpcFailure, RpcNotification, RpcSuccess
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage, decode_context_history, decode_transcript_page
-from voidcode.transport.projection import validated_session_id
 
-logger = logging.getLogger(__name__)
-
-
-def _checked_session_id(session_id: str) -> str:
-    try:
-        return validated_session_id(session_id)
-    except ValueError as exc:
-        raise CoreClientError(str(exc), status_code=400, code="invalid_params") from None
+_END = object()
 
 
-class CoreHttpClient:
-    """HTTP client for a running core transport."""
+class CoreRpcClient:
+    """One reconnectable connection; lost operations are never transparently retried."""
 
     def __init__(self, base_url: str, *, token: str | None = None) -> None:
-        self.base_url = base_url.rstrip("/")
+        parsed = urllib.parse.urlsplit(base_url.rstrip("/"))
+        if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.netloc:
+            raise ValueError("server URL must use http(s) or ws(s)")
+        http_scheme = "https" if parsed.scheme in {"https", "wss"} else "http"
+        self.base_url = urllib.parse.urlunsplit((http_scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+        self.origin = f"{http_scheme}://{parsed.netloc}"
         self.token = token
-        parsed = urllib.parse.urlparse(self.base_url)
-        self.origin = f"{parsed.scheme}://{parsed.netloc}"
-        headers = {
-            "Accept": "application/json",
-            "Origin": self.origin,
-        }
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        self._client = httpx.Client(
-            base_url=self.base_url,
-            headers=headers,
-            timeout=30.0,
-        )
+        ws_scheme = "wss" if http_scheme == "https" else "ws"
+        self._url = urllib.parse.urlunsplit((ws_scheme, parsed.netloc, parsed.path.rstrip("/") + "/api/rpc", "", ""))
+        self._lock = threading.RLock()
+        self._socket: ClientConnection | None = None
+        self._reader_thread: threading.Thread | None = None
+        self._pending: dict[str, concurrent.futures.Future[Any]] = {}
+        self._streams: dict[str, queue.Queue[Any]] = {}
+        self._closed = False
 
-    def close(self) -> None:
-        self._client.close()
-
-    def __enter__(self) -> CoreHttpClient:
+    def __enter__(self) -> CoreRpcClient:
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def _handle_status_error(self, exc: httpx.HTTPStatusError) -> NoReturn:
-        try:
-            body = exc.response.json()
-        except Exception:
-            body = None
-        if isinstance(body, Mapping):
-            raise CoreClientError.from_refusal(body, status_code=exc.response.status_code) from exc
-        raise CoreClientError(f"HTTP {exc.response.status_code}", status_code=exc.response.status_code) from exc
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            socket = self._socket
+            worker = self._reader_thread
+        if socket is not None:
+            socket.close()
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=5)
 
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        body: dict[str, Any] | None = None,
-        query: dict[str, Any] | None = None,
-        timeout: float = 30.0,
-    ) -> dict[str, Any]:
-        params = {k: v for k, v in query.items() if v is not None} if query else None
+    def _connect(self) -> ClientConnection:
+        # Caller owns _lock, including registration of the first pending call.
+        if self._closed:
+            raise CoreClientError("RPC client is closed")
+        if self._socket is not None:
+            return self._socket
+        socket: ClientConnection | None = None
         try:
-            resp = self._client.request(
-                method,
-                path,
-                json=body,
-                params=params,
-                timeout=timeout,
+            socket = connect(
+                self._url,
+                origin=Origin(self.origin),
+                subprotocols=[Subprotocol(RPC_SUBPROTOCOL)],
+                proxy=None,
+                max_size=RPC_MAX_MESSAGE_BYTES,
+                max_queue=RPC_QUEUE_MESSAGES,
+                close_timeout=2,
             )
-            resp.raise_for_status()
-            if not resp.content:
-                return {}
-            return resp.json()
-        except httpx.HTTPStatusError as exc:
-            self._handle_status_error(exc)
-        except httpx.RequestError as exc:
-            raise CoreClientError(f"connection error: {exc}") from exc
+            identity = uuid4().hex
+            socket.send(json.dumps({"jsonrpc": "2.0", "id": identity, "method": "connection.authenticate", "params": {"token": self.token}}))
+            raw = json.loads(socket.recv(timeout=10))
+            if "error" in raw:
+                error = RpcFailure.model_validate(raw).error
+                socket.close()
+                raise CoreClientError(error.message, status_code=int((error.data or {}).get("status", 0)), code=(error.data or {}).get("code"))
+            response = RpcSuccess.model_validate(raw)
+            if response.id != identity or response.result != {"protocol_version": 1}:
+                socket.close()
+                raise CoreClientError("malformed RPC authentication response")
+        except CoreClientError:
+            raise
+        except Exception as exc:
+            if socket is not None:
+                socket.close()
+            raise CoreClientError(f"RPC connection failed: {type(exc).__name__}") from exc
+        self._socket = socket
+        self._reader_thread = threading.Thread(target=self._reader, args=(socket,), name="voidcode-rpc-reader", daemon=True)
+        self._reader_thread.start()
+        return socket
+
+    def _reader(self, socket: ClientConnection) -> None:
+        error = CoreClientError(
+            "RPC connection lost; operation outcome may be unknown; inspect session history before retrying", code="outcome_unknown"
+        )
+        try:
+            for text in socket:
+                if not isinstance(text, str):
+                    raise ValueError("JSON-RPC requires text messages")
+                raw = json.loads(text)
+                if isinstance(raw, dict) and "method" in raw:
+                    notice = RpcNotification.model_validate(raw)
+                    identity = notice.params.get("subscription_id")
+                    with self._lock:
+                        sink = self._streams.get(identity)
+                    if sink is not None:
+                        if notice.method == "session.frame":
+                            frame = parse_session_frame(notice.params["frame"])
+                            sink.put_nowait(frame)
+                        elif notice.method == "subscription.closed":
+                            sink.put_nowait(_END)
+                        else:
+                            raise ValueError("unknown RPC notification")
+                else:
+                    response = RpcFailure.model_validate(raw) if isinstance(raw, dict) and "error" in raw else RpcSuccess.model_validate(raw)
+                    with self._lock:
+                        future = self._pending.pop(str(response.id), None)
+                    if future is not None:
+                        if isinstance(response, RpcFailure):
+                            data = response.error.data or {}
+                            future.set_exception(
+                                CoreClientError(response.error.message, status_code=int(data.get("status", 0)), code=data.get("code"))
+                            )
+                        else:
+                            future.set_result(response.result)
+        except ValueError as exc:
+            error = CoreClientError(f"malformed RPC message: {type(exc).__name__}", status_code=400, code="protocol_error")
+        except queue.Full:
+            error = CoreClientError("RPC event queue overflow; reconnect from applied cursor", code="stream_overflow")
+        except Exception as exc:
+            if not self._closed:
+                error = CoreClientError(f"RPC connection lost ({type(exc).__name__}); operation outcome may be unknown", code="outcome_unknown")
+        finally:
+            socket.close()
+            with self._lock:
+                if self._socket is socket:
+                    self._socket = None
+                    for future in self._pending.values():
+                        if not future.done():
+                            future.set_exception(error)
+                    self._pending.clear()
+                    for sink in self._streams.values():
+                        while not sink.empty():
+                            try:
+                                sink.get_nowait()
+                            except queue.Empty:
+                                break
+                        sink.put_nowait(error)
+
+    def _call(self, method: str, params: Mapping[str, Any] | None = None, *, timeout: float = 300) -> dict[str, Any]:
+        identity = uuid4().hex
+        future: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        with self._lock:
+            socket = self._connect()
+            self._pending[identity] = future
+            try:
+                socket.send(json.dumps({"jsonrpc": "2.0", "id": identity, "method": method, "params": dict(params or {})}, allow_nan=False))
+            except Exception as exc:
+                self._pending.pop(identity, None)
+                raise CoreClientError("RPC send failed; operation outcome may be unknown", code="outcome_unknown") from exc
+        try:
+            result = future.result(timeout=timeout)
+        except TimeoutError as exc:
+            with self._lock:
+                self._pending.pop(identity, None)
+            raise CoreClientError("RPC response timed out; operation outcome may be unknown", code="outcome_unknown") from exc
+        if not isinstance(result, dict):
+            raise CoreClientError("RPC result must be an object")
+        return result
 
     def health(self) -> HealthStatus:
-        return HealthStatus.from_payload(self._request("GET", "/api/health"))
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        try:
+            response = httpx.get(self.base_url + "/api/health", headers=headers, timeout=10, trust_env=False)
+            if response.is_error:
+                raise CoreClientError.from_refusal(response.json(), status_code=response.status_code)
+            return HealthStatus.from_payload(response.json())
+        except httpx.RequestError as exc:
+            raise CoreClientError(f"health connection failed: {type(exc).__name__}") from exc
 
     def command_catalog(self) -> CommandCatalog:
-        return CommandCatalog.from_payload(self._request("GET", "/api/commands"))
+        return CommandCatalog.from_payload(self._call("command.catalog"))
 
     def list_sessions(self, limit: int = 100) -> list[SessionRow]:
-        res = self._request("GET", "/api/sessions", query={"limit": limit})
-        rows = res.get("sessions", [])
-        if not isinstance(rows, list):
-            raise CoreClientError("malformed sessions response")
-        return [SessionRow.from_payload(item) for item in rows]
+        return [SessionRow.from_payload(row) for row in self._call("session.list", {"limit": limit})["sessions"]]
 
     def create_session(self, session_id: str | None = None) -> SessionRow:
-        if session_id is not None and not session_id:
-            raise CoreClientError("session_id must be a non-empty string", status_code=400, code="invalid_params")
-        payload: dict[str, Any] = {}
-        if session_id:
-            payload["session_id"] = session_id
-        return SessionRow.from_payload(self._request("POST", "/api/sessions", body=payload))
+        return SessionRow.from_payload(self._call("session.create", {"session_id": session_id}))
 
     def get_session(self, session_id: str) -> SessionRow:
-        _checked_session_id(session_id)
-        return SessionRow.from_payload(self._request("GET", f"/api/sessions/{urllib.parse.quote(session_id)}"))
+        return SessionRow.from_payload(self._call("session.get", {"session_id": session_id}))
 
     def show(self, session_id: str, events: bool = False) -> Mapping[str, Any]:
-        _checked_session_id(session_id)
-        return self._request(
-            "GET",
-            f"/api/sessions/{urllib.parse.quote(session_id)}/show",
-            query={"events": "true" if events else "false"},
-        )
+        return self._call("session.show", {"session_id": session_id, "events": events})
 
     def run(self, session_id: str, spec: RunSpec) -> RunResult:
-        _checked_session_id(session_id)
-        return RunResult.from_payload(
-            self._request(
-                "POST",
-                f"/api/sessions/{urllib.parse.quote(session_id)}/run",
-                body={"prompt": spec.prompt, "session_id": session_id, "max_steps": spec.max_steps},
-                timeout=300.0,
-            )
-        )
+        return RunResult.from_payload(self._call("session.run", {"session_id": session_id, "prompt": spec.prompt, "max_steps": spec.max_steps}))
 
-    def resume(
-        self,
-        session_id: str,
-        spec: ResumeSpec | None = None,
-    ) -> RunResult:
-        _checked_session_id(session_id)
+    def resume(self, session_id: str, spec: ResumeSpec | None = None) -> RunResult:
         active = spec or ResumeSpec()
-        body: dict[str, Any] = {"max_steps": active.max_steps}
-        if active.approval_request_id is not None:
-            body["approval_request_id"] = active.approval_request_id
-        if active.decision is not None:
-            body["decision"] = active.decision
         return RunResult.from_payload(
-            self._request(
-                "POST",
-                f"/api/sessions/{urllib.parse.quote(session_id)}/resume",
-                body=body,
-                timeout=300.0,
+            self._call(
+                "session.resume",
+                {
+                    "session_id": session_id,
+                    "approval_request_id": active.approval_request_id,
+                    "decision": active.decision,
+                    "max_steps": active.max_steps,
+                },
             )
         )
 
-    def invoke_command(
-        self,
-        session_id: str,
-        name: str,
-        arguments: Mapping[str, object] | None = None,
-        expected_revision: str = "",
-    ) -> CommandResult:
-        _checked_session_id(session_id)
-        body: dict[str, Any] = {
-            "arguments": dict(arguments or {}),
-            "expected_revision": expected_revision,
-        }
+    def invoke_command(self, session_id: str, name: str, arguments: Mapping[str, object] | None = None, expected_revision: str = "") -> CommandResult:
         return CommandResult.from_payload(
-            self._request(
-                "POST",
-                f"/api/sessions/{urllib.parse.quote(session_id)}/invoke/{urllib.parse.quote(name)}",
-                body=body,
-                timeout=120.0,
+            self._call(
+                "command.invoke",
+                {
+                    "session_id": session_id,
+                    "name": name,
+                    "arguments": dict(arguments or {}),
+                    "expected_revision": expected_revision,
+                },
             )
         )
 
-    def confirm(
-        self,
-        session_id: str,
-        request_id: str,
-        decision: Literal["allow", "deny"],
-        expected_revision: str = "",
-    ) -> CommandResult:
-        _checked_session_id(session_id)
-        body: dict[str, Any] = {
-            "request_id": request_id,
-            "decision": decision,
-            "expected_revision": expected_revision,
-        }
+    def confirm(self, session_id: str, request_id: str, decision: Literal["allow", "deny"], expected_revision: str = "") -> CommandResult:
         return CommandResult.from_payload(
-            self._request(
-                "POST",
-                f"/api/sessions/{urllib.parse.quote(session_id)}/confirm",
-                body=body,
-                timeout=60.0,
+            self._call(
+                "action.confirm",
+                {
+                    "session_id": session_id,
+                    "request_id": request_id,
+                    "decision": decision,
+                    "expected_revision": expected_revision,
+                },
             )
         )
 
     def views(self, session_id: str) -> ViewsSnapshot:
-        _checked_session_id(session_id)
-        return ViewsSnapshot.from_payload(self._request("GET", f"/api/sessions/{urllib.parse.quote(session_id)}/views"))
+        return ViewsSnapshot.from_payload(self._call("session.views", {"session_id": session_id}))
 
     def drain(self, session_id: str, *, limit: int = 10) -> list[ContinuationResult]:
-        _checked_session_id(session_id)
-        res = self._request(
-            "POST",
-            f"/api/sessions/{urllib.parse.quote(session_id)}/continuations",
-            body={"limit": limit},
-            timeout=120.0,
-        )
-        items = res.get("continuations", [])
-        if not isinstance(items, list):
-            raise CoreClientError("malformed continuations response")
-        return [ContinuationResult.from_payload(item) for item in items]
+        return [
+            ContinuationResult.from_payload(row) for row in self._call("session.drain", {"session_id": session_id, "limit": limit})["continuations"]
+        ]
 
     def usage(self, session_id: str, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
-        _checked_session_id(session_id)
         return SessionUsageReport.from_payload(
-            self._request(
-                "GET",
-                f"/api/sessions/{urllib.parse.quote(session_id)}/usage",
-                query={"since_sequence": since_sequence, "until_sequence": until_sequence},
+            self._call(
+                "session.usage",
+                {
+                    "session_id": session_id,
+                    "since_sequence": since_sequence,
+                    "until_sequence": until_sequence,
+                },
             )
         )
 
     def cancel(self, session_id: str) -> CancelReceipt:
-        _checked_session_id(session_id)
-        return CancelReceipt.from_payload(self._request("POST", f"/api/sessions/{urllib.parse.quote(session_id)}/cancel"))
+        return CancelReceipt.from_payload(self._call("session.cancel", {"session_id": session_id}))
 
     def transcript(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
-        _checked_session_id(session_id)
-        return decode_transcript_page(
-            self._request(
-                "GET",
-                f"/api/sessions/{urllib.parse.quote(session_id)}/transcript",
-                query={"after_sequence": after_sequence, "limit": limit},
-            )
-        )
+        return decode_transcript_page(self._call("session.transcript", {"session_id": session_id, "after_sequence": after_sequence, "limit": limit}))
 
     def context_history(self, session_id: str, *, limit: int = 100) -> ContextHistory:
-        _checked_session_id(session_id)
-        return decode_context_history(self._request("GET", f"/api/sessions/{urllib.parse.quote(session_id)}/context", query={"limit": limit}))
+        return decode_context_history(self._call("session.context", {"session_id": session_id, "limit": limit}))
 
     async def events_stream(
-        self,
-        session_id: str,
-        after_sequence: int = 0,
-        *,
-        follow: bool = True,
-        cancel: StreamCancellation | None = None,
-    ) -> AsyncGenerator[SseFrame]:
-        _checked_session_id(session_id)
-        params = {
-            "after_sequence": str(after_sequence),
-            "follow": "true" if follow else "false",
-        }
-        headers = {
-            "Accept": "text/event-stream",
-            "Origin": self.origin,
-        }
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        url = f"{self.base_url}/api/sessions/{urllib.parse.quote(session_id)}/events"
-
+        self, session_id: str, after_sequence: int = 0, *, follow: bool = True, cancel: StreamCancellation | None = None
+    ) -> AsyncGenerator[SessionFrame]:
+        identity = uuid4().hex
+        sink: queue.Queue[Any] = queue.Queue(maxsize=RPC_QUEUE_MESSAGES)
         if cancel is not None:
             task = asyncio.current_task()
             if task is not None:
                 cancel.attach(asyncio.get_running_loop(), task)
+        subscribed = False
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("GET", url, params=params, headers=headers) as response:
-                    if response.is_error:
-                        await response.aread()
-                        try:
-                            response.raise_for_status()
-                        except httpx.HTTPStatusError as exc:
-                            self._handle_status_error(exc)
-                    async for line in response.aiter_lines():
-                        if line.startswith("data:"):
-                            data_str = line[5:].strip()
-                            if data_str:
-                                try:
-                                    raw = json.loads(data_str)
-                                except json.JSONDecodeError as exc:
-                                    raise CoreClientError(f"malformed SSE frame: {exc}") from exc
-                                try:
-                                    frame = parse_sse_frame(raw)
-                                except ValueError as exc:
-                                    raise CoreClientError(f"malformed SSE frame: {exc}") from exc
-                                yield frame
-                                if isinstance(frame, ErrorFrame):
-                                    return
-        except asyncio.CancelledError:
-            return
-        except (httpx.StreamClosed, httpx.RequestError) as exc:
             if cancel is not None and cancel.is_closed:
                 return
-            raise CoreClientError(f"connection error: {exc}") from exc
+            with self._lock:
+                self._streams[identity] = sink
+            subscribed = True
+            await asyncio.to_thread(
+                self._call,
+                "session.subscribe",
+                {
+                    "subscription_id": identity,
+                    "session_id": session_id,
+                    "after_sequence": after_sequence,
+                    "follow": follow,
+                },
+            )
+            while True:
+                try:
+                    frame = await asyncio.to_thread(sink.get, True, 0.2)
+                except queue.Empty:
+                    continue
+                if frame is _END:
+                    return
+                if isinstance(frame, Exception):
+                    raise frame
+                yield frame
+                cursor = (
+                    max((event.sequence for event in frame.events), default=after_sequence)
+                    if isinstance(frame, HeadFrame)
+                    else (frame.event.sequence if isinstance(frame, EventFrame) else None)
+                )
+                if cursor is not None:
+                    with self._lock:
+                        socket = self._socket
+                        if socket is not None:
+                            socket.send(
+                                json.dumps(
+                                    {
+                                        "jsonrpc": "2.0",
+                                        "method": "session.ack",
+                                        "params": {
+                                            "subscription_id": identity,
+                                            "through_sequence": cursor,
+                                        },
+                                    }
+                                )
+                            )
+                if isinstance(frame, ErrorFrame):
+                    return
+        except asyncio.CancelledError:
+            return
         finally:
+            with self._lock:
+                self._streams.pop(identity, None)
+                connected = self._socket is not None
+            if subscribed and connected and not self._closed:
+                try:
+                    await asyncio.to_thread(self._call, "session.unsubscribe", {"subscription_id": identity}, timeout=5)
+                except CoreClientError, asyncio.CancelledError:
+                    pass
             if cancel is not None:
                 cancel.detach()

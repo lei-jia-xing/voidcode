@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from voidcode.bootstrap import open_core
-from voidcode.sdk.client import CoreClientError, EventFrame, HeadFrame, RunSpec, SseFrame
+from voidcode.sdk.client import CoreClientError, EventFrame, HeadFrame, RunSpec, SessionFrame
 from voidcode.tui.local_client import CoreLocalClient
 
 
@@ -72,8 +72,8 @@ def test_local_client_event_stream_replays_durable_frames(tmp_path: Path) -> Non
         session_id = client.create_session().session_id
         client.run(session_id, RunSpec("hello"))
 
-        async def collect() -> list[SseFrame]:
-            frames: list[SseFrame] = []
+        async def collect() -> list[SessionFrame]:
+            frames: list[SessionFrame] = []
             async for frame in client.events_stream(session_id, follow=False):
                 frames.append(frame)
             return frames
@@ -92,8 +92,8 @@ def test_local_client_event_stream_follows_new_events(tmp_path: Path) -> None:
         client = CoreLocalClient(core, workspace=workspace)
         session_id = client.create_session().session_id
 
-        async def collect() -> list[SseFrame]:
-            frames: list[SseFrame] = []
+        async def collect() -> list[SessionFrame]:
+            frames: list[SessionFrame] = []
             async for frame in client.events_stream(session_id, follow=True):
                 frames.append(frame)
                 if isinstance(frame, HeadFrame):

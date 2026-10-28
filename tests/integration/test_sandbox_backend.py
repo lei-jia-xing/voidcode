@@ -116,6 +116,19 @@ def test_confined_exec_changes_land_in_facts_with_zero_tool_edits(tmp_path: Path
 
 
 @needs_helper
+def test_confined_shell_command_preserves_observed_changes(tmp_path: Path) -> None:
+    core = _core(tmp_path, sandbox={"mode": "workspace-write"})
+    core.create_session("shell")
+    result = core.invoke_command("shell", "shell", {"command": "echo changed > command.txt"}, expected_revision=core.revision_id)
+    assert result.status == "ok"
+    assert (core.workspace / "command.txt").read_text() == "changed\n"
+    completed = [e for e in core.store.events("shell") if e.event_type == "core.command_completed"]
+    assert len(completed) == 1
+    changes = json_wire_object(completed[0].payload)["observed_changes"]
+    assert any(change["path"] == str(core.workspace / "command.txt") and change["operation"] == "create" for change in changes)
+
+
+@needs_helper
 def test_outside_root_write_never_touches_host(tmp_path: Path) -> None:
     core = _core(tmp_path, sandbox={"mode": "workspace-write"})
     services = _services(core)

@@ -1,47 +1,26 @@
-"""A TUI quit cancels its owned idle follow stream, and the server observes the disconnect.
-
-Both cases use real HTTP responses: the server sends one SSE head frame and then stays silent (no
-events, no heartbeats), which is the real idle-follow shape where the client's read blocks with no
-timeout. The assertions are observable: app quit/switch ends the worker and the HTTP handler's
-blocked read sees the connection close — no logger or traceback is inspected.
-"""
+"""TUI stream ownership over a real RPC connection: quit, switch, and late attach."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
-from voidcode.tui.client import CoreHttpClient
+import pytest
+import uvicorn
+
+from voidcode.bootstrap import bundled_sources, open_core
+from voidcode.core.storage.store import EventDraft
+from voidcode.sdk.client import StreamCancellation
+from voidcode.transport.http import create_core_app_with_factory
+from voidcode.transport.rpc import RpcConnection
+from voidcode.tui.client import CoreRpcClient
 from voidcode.tui.terminal_app import CoreTuiApp
-
-
-def _session_payload(session_id: str) -> dict[str, object]:
-    return {
-        "session_id": session_id,
-        "workspace": "/tmp/ws",
-        "status": "idle",
-        "active_revision_id": "rev-1",
-        "run_id": None,
-        "turn": 0,
-        "last_event_sequence": 0,
-    }
-
-
-_SYSTEM_EVENT = {
-    "session_id": "s1",
-    "sequence": 1,
-    "type": "core.observer_error",
-    "run_id": "run-1",
-    "revision_id": "rev-1",
-    "source": "kernel",
-    "actor": "system",
-    "payload": {"error": "after-switch"},
-    "transcript": None,
-}
 
 
 class _Terminal:
@@ -70,230 +49,127 @@ class _Terminal:
         pass
 
 
-def test_quit_cancels_an_idle_follow_stream_before_joining() -> None:
-    head_sent = threading.Event()
-    disconnected = threading.Event()
+@pytest.fixture
+def remote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[str, object, dict[str, threading.Event], dict[str, threading.Event]]]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    plugins = {name: {"enabled": False} for name in bundled_sources()}
+    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": plugins}), encoding="utf-8")
+    core = open_core(workspace, state_dir=tmp_path / "state")
+    core.create_session("s1")
+    core.create_session("s2")
+    heads = {name: threading.Event() for name in ("s1", "s2")}
+    closed = {name: threading.Event() for name in ("s1", "s2")}
+    original = RpcConnection._events
 
-    class Handler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.0"
+    async def watch(self, params, session, ready):
+        try:
+            heads[params.session_id].set()
+            await original(self, params, session, ready)
+        finally:
+            closed[params.session_id].set()
 
-        def log_message(self, format: str, *args: object) -> None:
-            pass
+    monkeypatch.setattr(RpcConnection, "_events", watch)
+    app = create_core_app_with_factory(core_factory=lambda: core)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    worker = threading.Thread(target=server.run, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + 10
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert server.started
+    try:
+        yield f"http://127.0.0.1:{port}", core, heads, closed
+    finally:
+        server.should_exit = True
+        worker.join(timeout=10)
+        assert not worker.is_alive()
 
-        def _json(self, payload: dict[str, object]) -> None:
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
 
-        def do_GET(self) -> None:
-            if self.path.startswith("/api/sessions/s1/events"):
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-                self.wfile.write(b"data: " + json.dumps({"session": _session_payload("s1"), "events": []}).encode("utf-8") + b"\n\n")
-                self.wfile.flush()
-                head_sent.set()
-                # Idle follow: nothing else is written. The client's only wakeup is a connection
-                # shutdown, so this read returning is direct proof the server saw the disconnect.
-                self.rfile.read(1)
-                disconnected.set()
-            elif self.path.startswith("/api/sessions/s1"):
-                self._json(_session_payload("s1"))
-            elif self.path.startswith("/api/commands"):
-                self._json({"revision_id": "rev-1", "commands": []})
-            else:
-                self.send_error(404)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    server.daemon_threads = True
-    server_worker = threading.Thread(target=server.serve_forever, daemon=True)
-    server_worker.start()
-    client = CoreHttpClient(f"http://127.0.0.1:{server.server_address[1]}")
+def test_quit_cancels_an_idle_follow_stream_before_joining(remote) -> None:
+    base, _core, heads, closed = remote
+    client = CoreRpcClient(base)
     app = CoreTuiApp(client, session_id="s1", terminal=_Terminal())  # type: ignore[arg-type]
     results: list[int] = []
-    failures: list[BaseException] = []
-
-    def run_app() -> None:
-        try:
-            results.append(app.run())
-        except BaseException as exc:
-            failures.append(exc)
-
-    app_worker = threading.Thread(target=run_app, daemon=True)
+    worker = threading.Thread(target=lambda: results.append(app.run()), daemon=True)
+    worker.start()
     try:
-        app_worker.start()
-        assert head_sent.wait(5.0), "the TUI never opened its follow stream"
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and (app._sse_thread is None or not app._sse_thread.is_alive()):
-            time.sleep(0.01)
-        assert app._sse_thread is not None and app._sse_thread.is_alive()
-        time.sleep(0.2)  # let the worker enter the blocked idle read
-
+        assert heads["s1"].wait(5)
         app.running = False
-        app_worker.join(timeout=5.0)
-        assert not app_worker.is_alive(), "the TUI did not quit after the stream cancel"
-        assert not failures, failures
+        worker.join(timeout=5)
+        assert not worker.is_alive()
         assert results == [0]
-        assert not app._sse_thread.is_alive(), "the SSE worker survived quit"
-        assert disconnected.wait(5.0), "the server never observed the client disconnect"
-        closed_cancel = app._stream_cancel
-        assert closed_cancel is not None
-        closed_cancel.close()  # idempotent: quit already closed it
+        assert app._stream_thread is not None and not app._stream_thread.is_alive()
+        assert closed["s1"].wait(5), "server subscription survived quit"
+        cancelled = app._stream_cancel
+        assert cancelled is not None
+        cancelled.close()
 
-        # Open/close race: a stream attached after close must terminate immediately instead of
-        # blocking forever on a fresh idle connection.
-        async def consume() -> None:
-            async for _frame in client.events_stream("s1", cancel=closed_cancel):
-                pass
+        async def consume():
+            async for _frame in client.events_stream("s1", cancel=cancelled):
+                raise AssertionError("a pre-cancelled stream must not attach")
 
-        def run_consume() -> None:
-            asyncio.run(consume())
-
-        consumer = threading.Thread(target=run_consume, daemon=True)
-        consumer.start()
-        consumer.join(timeout=5.0)
-        assert not consumer.is_alive(), "a stream opened after cancellation blocked"
+        asyncio.run(consume())
     finally:
         app.running = False
-        app_worker.join(timeout=5.0)
-        if app._stream_cancel is not None:
-            app._stream_cancel.close()
-        server.shutdown()
-        server.server_close()
-        server_worker.join(timeout=5.0)
+        worker.join(timeout=5)
+        client.close()
 
 
-def test_session_switch_survives_a_late_old_stream_attach() -> None:
-    """A replaced generation's late attach/detach cannot cancel the live replacement stream.
+def test_session_switch_survives_a_late_old_stream_attach(remote) -> None:
+    base, core, heads, closed = remote
+    requested = threading.Event()
+    release = threading.Event()
 
-    The old session's response headers are withheld until after the real app flow switches
-    sessions (``_switch_session`` advances the generation and starts a new stream). The new stream
-    receives its head and a later notice, the old response is released and its worker joins, and
-    the replacement stays live until quit closes it. The notice commit is consumer-visible proof
-    that old attach/detach touched only its own generation.
-    """
-    old_requested = threading.Event()
-    release_old = threading.Event()
-    old_closed = threading.Event()
-    new_head_sent = threading.Event()
-    new_event_ready = threading.Event()
-    new_event_sent = threading.Event()
-    new_closed = threading.Event()
+    class DelayedClient(CoreRpcClient):
+        async def events_stream(self, session_id: str, after_sequence: int = 0, *, follow: bool = True, cancel: StreamCancellation | None = None):
+            if session_id == "s1":
+                requested.set()
+                await asyncio.to_thread(release.wait, 10)
+            async for frame in super().events_stream(session_id, after_sequence, follow=follow, cancel=cancel):
+                yield frame
 
-    class Handler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.0"
-
-        def log_message(self, format: str, *args: object) -> None:
-            pass
-
-        def _json(self, payload: dict[str, object]) -> None:
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _open_sse(self) -> None:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-
-        def do_GET(self) -> None:
-            if self.path.startswith("/api/sessions/s1/events"):
-                old_requested.set()
-                release_old.wait(10.0)
-                try:
-                    self._open_sse()
-                    self.wfile.write(b"data: " + json.dumps({"session": _session_payload("s1"), "events": []}).encode("utf-8") + b"\n\n")
-                    self.wfile.flush()
-                    self.rfile.read(1)
-                except OSError:
-                    pass
-                finally:
-                    old_closed.set()
-            elif self.path.startswith("/api/sessions/s2/events"):
-                try:
-                    self._open_sse()
-                    self.wfile.write(b"data: " + json.dumps({"session": _session_payload("s2"), "events": []}).encode("utf-8") + b"\n\n")
-                    self.wfile.flush()
-                    new_head_sent.set()
-                    new_event_ready.wait(10.0)
-                    notice = dict(_SYSTEM_EVENT, session_id="s2")
-                    self.wfile.write(b"data: " + json.dumps({"kind": "event", "session_id": "s2", "event": notice}).encode("utf-8") + b"\n\n")
-                    self.wfile.flush()
-                    new_event_sent.set()
-                    self.rfile.read(1)
-                except OSError:
-                    pass
-                finally:
-                    new_closed.set()
-            elif self.path.startswith("/api/sessions/s1"):
-                self._json(_session_payload("s1"))
-            elif self.path.startswith("/api/commands"):
-                self._json({"revision_id": "rev-1", "commands": []})
-            else:
-                self.send_error(404)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    server.daemon_threads = True
-    server_worker = threading.Thread(target=server.serve_forever, daemon=True)
-    server_worker.start()
+    client = DelayedClient(base)
     terminal = _Terminal()
-    app = CoreTuiApp(
-        CoreHttpClient(f"http://127.0.0.1:{server.server_address[1]}"),
-        session_id="s1",
-        terminal=terminal,  # type: ignore[arg-type]
-    )
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
     results: list[int] = []
-    failures: list[BaseException] = []
-
-    def run_app() -> None:
-        try:
-            results.append(app.run())
-        except BaseException as exc:
-            failures.append(exc)
-
-    app_worker = threading.Thread(target=run_app, daemon=True)
+    worker = threading.Thread(target=lambda: results.append(app.run()), daemon=True)
+    worker.start()
     try:
-        app_worker.start()
-        assert old_requested.wait(5.0), "the old stream request never reached the server"
-        old_worker = app._sse_thread
+        assert requested.wait(5)
+        old_worker = app._stream_thread
         assert old_worker is not None
-
         app._switch_session("s2")
-        assert new_head_sent.wait(5.0), "the replacement stream never received its head"
-        release_old.set()
-        assert old_closed.wait(5.0), "the late old connection was not disconnected"
-        old_worker.join(timeout=5.0)
-        assert not old_worker.is_alive(), "the old stream worker survived the generation switch"
-
-        new_event_ready.set()
-        assert new_event_sent.wait(5.0)
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and not any("after-switch" in row for row in terminal.committed):
+        assert heads["s2"].wait(5)
+        release.set()
+        old_worker.join(timeout=5)
+        assert not old_worker.is_alive()
+        session = core.session("s2")
+        core.store.commit_staged(
+            "s2",
+            expected_sequence=session.last_event_sequence,
+            expected_run_id=session.run_id,
+            run_id=session.run_id or "notice",
+            revision_id=core.revision_id,
+            events=(EventDraft("core.observer_error", "kernel", "system", {"error": "after-switch"}),),
+            status=session.status,
+            checkpoint_kind=None,
+            checkpoint_payload=None,
+        )
+        deadline = time.monotonic() + 5
+        while not any("after-switch" in row for row in terminal.committed) and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert any("after-switch" in row for row in terminal.committed), "the replacement stream stopped receiving frames"
-        assert not new_closed.is_set(), "the old worker cancelled the replacement connection"
-
+        assert any("after-switch" in row for row in terminal.committed)
+        assert not closed["s2"].is_set()
         app.running = False
-        app_worker.join(timeout=5.0)
-        assert not app_worker.is_alive(), "the TUI did not quit"
-        assert not failures, failures
-        assert results == [0]
-        assert new_closed.wait(5.0), "quit did not close the replacement stream"
+        worker.join(timeout=5)
+        assert not worker.is_alive() and results == [0]
+        assert closed["s2"].wait(5)
     finally:
-        release_old.set()
-        new_event_ready.set()
+        release.set()
         app.running = False
-        app_worker.join(timeout=5.0)
-        if app._stream_cancel is not None:
-            app._stream_cancel.close()
-        server.shutdown()
-        server.server_close()
-        server_worker.join(timeout=5.0)
+        worker.join(timeout=5)
+        client.close()

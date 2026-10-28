@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.reload_plugin import BLOCK_TOOL, write_reload_plugin
+from tests.fixtures.reload_plugin import BLOCK_TOOL, OVERLAY_COMMAND, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 
@@ -54,7 +54,7 @@ def _close_cores() -> Iterator[None]:
 
 def test_a_blocked_session_does_not_serialize_another_session(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
-    write_reload_plugin(source, tool_output="v1", blocking=True)
+    write_reload_plugin(source, tool_output="v1", blocking=True, overlay_command=True)
     replies = [
         _turn(_call("block-1", BLOCK_TOOL)),
         _turn(output="session B ran while A was blocked"),
@@ -97,6 +97,11 @@ def test_a_blocked_session_does_not_serialize_another_session(tmp_path: Path) ->
         assert other.status == "completed"
         assert other.output == "session B ran while A was blocked"
         assert blocked.is_alive(), "session A should still be blocked inside its tool"
+
+        # A concurrent control command must neither block on nor replace the run's signal.
+        control = core.invoke_command(blocked_session.session_id, OVERLAY_COMMAND, {"action": "off"}, expected_revision=core.revision_id)
+        assert control.status == "ok"
+        assert blocked.is_alive()
 
         # And the blocked session still owns its own cancellation.
         assert core.cancel_session(blocked_session.session_id, "concurrency test done") is True

@@ -1,6 +1,6 @@
 """In-process client for a locally owned core.
 
-Same typed surface as :class:`CoreHttpClient`, but every call is a direct
+Same typed surface as :class:`CoreRpcClient`, but every call is a direct
 ``Core`` invocation in this process: no socket, no HTTP framing, no JSON
 round-trip. Errors arrive as ``CoreClientError`` with the transport's
 ``(status, code)`` refusal, so the TUI cannot tell the two clients apart.
@@ -22,9 +22,9 @@ from voidcode.sdk.client import (
     ResumeSpec,
     RunResult,
     RunSpec,
+    SessionFrame,
     SessionRow,
     SessionUsageReport,
-    SseFrame,
     StreamCancellation,
     ViewsSnapshot,
 )
@@ -238,7 +238,7 @@ class CoreLocalClient:
         *,
         follow: bool = True,
         cancel: StreamCancellation | None = None,
-    ) -> AsyncGenerator[SseFrame]:
+    ) -> AsyncGenerator[SessionFrame]:
         from voidcode.sdk.client import ErrorFrame, EventFrame, HeadFrame, StreamEvent
 
         self._validated(session_id)

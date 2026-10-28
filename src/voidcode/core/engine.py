@@ -84,7 +84,7 @@ from .delegation import (
 from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
 from .facts import FACT_EVENT_TYPES as _FACT_EVENT_TYPES
 from .facts import fact_for_event
-from .plugins import LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome
+from .plugins import CommandInvocationOutcome, LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome
 from .sandbox import SandboxBackend
 from .storage.store import (
     Checkpoint,
@@ -605,6 +605,7 @@ class Core:
         self._session_locks: dict[str, Lock] = {}
         self._session_locks_guard = Lock()
         self._session_aborts: dict[str, Cancellation] = {}
+        self._command_aborts: dict[str, dict[str, Cancellation]] = {}
         self._aborts_lock = Lock()
         # Background action drivers: claimed-but-unsettled action ids this process drives.
         # Cross-process double-driving is impossible: construction holds an exclusive
@@ -865,17 +866,22 @@ class Core:
         self.close()
 
     def cancel_session(self, session_id: str, reason: str = "user cancellation", *, cause: StopCause = "user_stop") -> bool:
-        """Signal cancellation only to the currently executing run of a specific session."""
+        """Signal the currently executing run and command invocations of one session."""
         self._ensure_open()
         # Ownership first: a session id from another workspace sharing this
         # database may never be signalled or settled.
         self.session(session_id)
         with self._aborts_lock:
             abort = self._session_aborts.get(session_id)
-        if abort is not None and not abort.cancelled:
-            abort.set_cancelled(True, reason=reason, stop_cause=cause)
-            return True
-        return self._settle_parked_cancel(session_id, reason, cause)
+            signals = list(self._command_aborts.get(session_id, {}).values())
+            if abort is not None:
+                signals.append(abort)
+            for signal in signals:
+                signal.set_cancelled(True, reason=reason, stop_cause=cause)
+        # A command may be running beside a parked turn. With no active run
+        # owning its cursor, that turn must also settle on this explicit stop.
+        settled = self._settle_parked_cancel(session_id, reason, cause) if abort is None else False
+        return bool(signals) or settled
 
     def _settle_parked_cancel(self, session_id: str, reason: str, cause: StopCause) -> bool:
         """Settle parked work at its already-safe boundary.
@@ -969,6 +975,9 @@ class Core:
         with self._aborts_lock:
             for ab in self._session_aborts.values():
                 ab.set_cancelled(True, reason=reason, stop_cause=cause)
+            for commands in self._command_aborts.values():
+                for ab in commands.values():
+                    ab.set_cancelled(True, reason=reason, stop_cause=cause)
 
     def close(self) -> None:
         self.cancel("core shutdown", cause="shutdown")
@@ -1520,6 +1529,44 @@ class Core:
     def _get_owner_budget(self, session_id: str, owner: str) -> PluginBudget | None:
         return self.store.owner_budget(session_id, owner)
 
+    @contextmanager
+    def _command_abort(self, context: ToolContext) -> Iterator[ToolContext]:
+        # Commands may run alongside a turn and other commands: each owns its signal.
+        abort = Cancellation()
+        with self._aborts_lock:
+            self._ensure_open()
+            self._command_aborts.setdefault(context.session_id, {})[context.invocation_id] = abort
+        try:
+            yield replace(context, abort_signal=abort)
+        finally:
+            with self._aborts_lock:
+                commands = self._command_aborts[context.session_id]
+                commands.pop(context.invocation_id)
+                if not commands:
+                    self._command_aborts.pop(context.session_id)
+
+    def _command_completion(self, name: str, owner: str, context: ToolContext, outcome: CommandInvocationOutcome) -> EventDraft:
+        # Keep supervisor observations even when a command throws or is cancelled. They
+        # describe observed changes, without claiming a complete account of its effects.
+        changes: list[dict[str, object]] = []
+        seen: set[tuple[str, str, str | None]] = set()
+        for observed in outcome.staged_observations:
+            path = canonical_path(self.workspace, observed.path)
+            old_path = canonical_path(self.workspace, observed.old_path) if observed.old_path is not None else None
+            key = (path, observed.operation, old_path)
+            if key in seen:
+                continue
+            seen.add(key)
+            changes.append({**observed.as_payload(), "path": path, **({"old_path": old_path} if old_path is not None else {})})
+            if len(changes) >= MAX_MERGED_OBSERVATIONS:
+                break
+        return EventDraft(
+            EventType.COMMAND_COMPLETED,
+            f"plugin.{owner}",
+            context.actor,
+            {"name": name, "result": outcome.result.as_payload(), "observed_changes": changes, "cancelled": outcome.cancelled},
+        )
+
     def invoke_command(
         self,
         session_id: str,
@@ -1632,14 +1679,21 @@ class Core:
             actor="client",
             logical_turn=uuid4().hex,
         )
-        with self._dispatch(f"command:{name}"):
-            cmd_result, staged_state, staged_events, staged_continuations, staged_cancellations, staged_budget = self.plugin_runtime.invoke_command(
+        with self._dispatch(f"command:{name}"), self._command_abort(context) as context:
+            outcome = self.plugin_runtime.invoke_command(
                 session_id,
                 name,
                 arguments,
                 context=context,
                 readonly=self._session_read_only(session_id),
             )
+
+            cmd_result = outcome.result
+            staged_state = outcome.staged_state
+            staged_events = outcome.staged_events
+            staged_continuations = outcome.staged_continuations
+            staged_cancellations = outcome.staged_cancellations
+            staged_budget = outcome.staged_budget
 
             if cmd_result.status == "pending_confirmation" and cmd_result.confirmation is not None:
                 req = cmd_result.confirmation
@@ -1685,12 +1739,7 @@ class Core:
             # Commit staged state/events if ok OR intentional error (e.g. goal blocked)
             if cmd_result.status in ("ok", "error"):
                 latest_session = self.store.session(session_id)
-                completion_event = EventDraft(
-                    event_type=EventType.COMMAND_COMPLETED,
-                    source=f"plugin.{cmd_desc.owner}",
-                    actor=context.actor,
-                    payload={"name": name, "result": cmd_result.as_payload()},
-                )
+                completion_event = self._command_completion(name, cmd_desc.owner, context, outcome)
                 all_events = tuple(staged_events) + (completion_event,)
                 self.store.commit_staged(
                     session_id,
@@ -1781,14 +1830,21 @@ class Core:
             logical_turn=uuid4().hex,
         )
 
-        with self._dispatch(f"command:{rec.command_name}"):
-            cmd_result, staged_state, staged_events, staged_continuations, staged_cancellations, staged_budget = self.plugin_runtime.invoke_command(
+        with self._dispatch(f"command:{rec.command_name}"), self._command_abort(context) as context:
+            outcome = self.plugin_runtime.invoke_command(
                 session_id,
                 rec.command_name,
                 rec.arguments,
                 context=context,
                 readonly=self._session_read_only(session_id),
             )
+
+            cmd_result = outcome.result
+            staged_state = outcome.staged_state
+            staged_events = outcome.staged_events
+            staged_continuations = outcome.staged_continuations
+            staged_cancellations = outcome.staged_cancellations
+            staged_budget = outcome.staged_budget
 
             staged_budget_updates = []
             if staged_budget == "clear":
@@ -1798,12 +1854,7 @@ class Core:
 
             if cmd_result.status in ("ok", "error"):
                 latest_session = self.store.session(session_id)
-                completion_event = EventDraft(
-                    event_type=EventType.COMMAND_COMPLETED,
-                    source=f"plugin.{cmd_desc.owner}",
-                    actor="user",
-                    payload={"name": rec.command_name, "result": cmd_result.as_payload()},
-                )
+                completion_event = self._command_completion(rec.command_name, cmd_desc.owner, context, outcome)
                 all_events = tuple(staged_events) + (
                     EventDraft(
                         EventType.CONFIRMATION_DECIDED,
@@ -4347,8 +4398,8 @@ class Core:
                 return self._stop(execution, "tool result identity differs from the dispatched native call", stop_cause="error")
 
             if effective_abort.cancelled:
-                # A cancelled call's self-report is unverifiable: it may have been killed
-                # mid-write, so the batch stays parked and recovery reports unknown effects.
+                # A cancelled call's self-report is unverifiable. A deliberate stop
+                # settles the batch with unknown effects before its terminal checkpoint.
                 return self._stop(execution, "tool invocation was cancelled", stop_cause=effective_abort.stop_cause or "user_stop")
 
             result = self._post_tool_hooks(execution, snapshot, call, result)
@@ -4798,6 +4849,8 @@ class Core:
         abandoned native batch); crashes and shutdown keep their recoverable checkpoint."""
         execution.cursor.stop_cause = stop_cause
         deliberate = stop_cause in ("user_stop", "owner_cancel")
+        if deliberate and (execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None):
+            self._interrupt_batch(execution)
         checkpoint_kind = "terminal" if deliberate else "interrupted"
         stop_event = EventDraft(
             EventType.RUN_INTERRUPTED,

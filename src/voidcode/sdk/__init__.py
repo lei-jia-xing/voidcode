@@ -23,11 +23,11 @@ from .client import (
     RunResult,
     RunSpec,
     SessionClient,
+    SessionFrame,
     SessionRow,
-    SseFrame,
     StreamCancellation,
     StreamEvent,
-    parse_sse_frame,
+    parse_session_frame,
 )
 from .codec import (
     decode_message,
@@ -347,7 +347,7 @@ __all__ = [
     "SessionInfo",
     "SessionRow",
     "SessionUsageReport",
-    "SseFrame",
+    "SessionFrame",
     "StateSchema",
     "StatusViewData",
     "StopCause",
@@ -414,7 +414,7 @@ __all__ = [
     "own_json_object",
     "own_json_value",
     "pending_gates",
-    "parse_sse_frame",
+    "parse_session_frame",
     "reduce_gates",
     "validate_view_data",
 ]

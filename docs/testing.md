@@ -81,5 +81,13 @@ uv run python -X utf8 -m pytest tests/unit/plugins/test_files.py
 ## Manual & Acceptance Verification
 
 - **CLI acceptance**: with a workspace that has a valid `voidcode.json` and a reachable provider, run `uv run python -m voidcode run "read README.md"`; then inspect with `... sessions` and `... show <session_id> --events`.
-- **TUI acceptance**: `uv run python -m voidcode` (bare) in a real terminal exercises the inline composer, overlays, and commit-once scrollback; the same binary with `--server http://127.0.0.1:<port> --token <token>` exercises the remote client path. The automated form is a stdlib PTY smoke (real TUI binary, genuine providers loopback, external smoke plugin): it drives explicit views, form submit with exact-read prefill, choices dispatch, command confirmation allow, native approval allow with file effects, a second turn, quit/relaunch with no duplicate replay — locally (embedded client) and remotely (serve + HTTP/SSE). Both modes must show all markers plus `smoke_out.txt == "pty-hello"`, `smoke_confirmed.txt == "confirmed"`, and matching durable approval/confirmation decided pairs in SQLite.
-- **Transport acceptance**: `uv run python -m voidcode serve --port 8000`, then `curl -H "Authorization: Bearer <token>" http://127.0.0.1:8000/api/commands` and open `http://127.0.0.1:8000/` for the served web client (when a frontend bundle is built).
+- **TUI acceptance**: `uv run python -m voidcode` (bare) in a real terminal exercises the inline composer, overlays, and commit-once scrollback; the same binary with `--server http://127.0.0.1:<port> --token <token>` exercises the remote client path. The automated form is a stdlib PTY smoke (real TUI binary, genuine providers loopback, external smoke plugin): it drives explicit views, form submit with exact-read prefill, choices dispatch, command confirmation allow, native approval allow with file effects, a second turn, quit/relaunch with no duplicate replay — locally (embedded client) and remotely (serve + WebSocket RPC). Both modes must show all markers plus `smoke_out.txt == "pty-hello"`, `smoke_confirmed.txt == "confirmed"`, and matching durable approval/confirmation decided pairs in SQLite.
+- **Transport acceptance**: `uv run python -m voidcode serve --port 8000`, then `curl -H "Authorization: Bearer <token>" http://127.0.0.1:8000/api/health` and open `http://127.0.0.1:8000/` for the served web client (when a frontend bundle is built).
+
+RPC migration acceptance lives in `tests/integration/test_core_rpc.py`: real
+WebSocket authentication and schema, retired HTTP route refusal, strict errors
+and batches, concurrent cancellation, disconnect without mutation replay, and
+bounded subscriptions with acknowledged cursors. `test_session_client_conformance.py`
+drives the same SDK behavior locally and remotely. Browser reconnect acceptance
+is `frontend/e2e/rpc-reconnect.spec.ts`; `frontend/src/lib/core/client.test.ts`
+covers lost replies and malformed messages through a JSON-RPC peer.

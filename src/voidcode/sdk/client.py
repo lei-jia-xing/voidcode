@@ -1,4 +1,4 @@
-"""Typed client contracts: envelopes, run results, and SSE frames.
+"""Typed client contracts: envelopes, run results, and session event frames.
 
 Contracts only: frozen dataclasses with strict ``from_payload`` ingress,
 plus the ``SessionClient`` Protocol both TUI clients satisfy. No sockets,
@@ -224,7 +224,7 @@ _CANCEL_ADAPTER: TypeAdapter[CancelReceipt] = TypeAdapter(CancelReceipt)
 
 @dataclass(frozen=True, slots=True)
 class StreamEvent:
-    """One stored session event as SSE frames carry it.
+    """One stored session event as session event frames carry it.
 
     ``transcript`` preserves the server's conversation projection as a typed
     ``TranscriptEntry`` (``None`` for bookkeeping events); the wire shape is
@@ -341,13 +341,13 @@ class RestartFrame:
 _RESTART_ADAPTER: TypeAdapter[RestartFrame] = TypeAdapter(RestartFrame)
 
 
-type SseFrame = HeadFrame | EventFrame | ErrorFrame | RestartFrame
+type SessionFrame = HeadFrame | EventFrame | ErrorFrame | RestartFrame
 
 
-def parse_sse_frame(payload: Mapping[str, object]) -> SseFrame:
-    """Decode one raw SSE frame into its typed variant, failing visibly."""
+def parse_session_frame(payload: Mapping[str, object]) -> SessionFrame:
+    """Decode one raw session event frame into its typed variant, failing visibly."""
     if not isinstance(payload, Mapping):
-        raise ValueError("SSE frame must be an object")
+        raise ValueError("session event frame must be an object")
     if "events" in payload or "session" in payload:
         return HeadFrame.from_payload(payload)
     kind = payload.get("kind")
@@ -358,17 +358,17 @@ def parse_sse_frame(payload: Mapping[str, object]) -> SseFrame:
         return ErrorFrame.from_payload(body)
     if kind == "server_restart":
         return RestartFrame.from_payload(body)
-    raise ValueError(f"unknown SSE frame kind: {kind!r}")
+    raise ValueError(f"unknown session event frame kind: {kind!r}")
 
 
 class ClientWireModel(BaseModel):
-    """Strict wire-model base for the client-visible SSE/OpenAPI schemas."""
+    """Strict wire-model base for the client-visible session event/OpenAPI schemas."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class StreamEventWire(ClientWireModel):
-    """One stored session event as SSE frames carry it; payload stays dynamic."""
+    """One stored session event as session event frames carry it; payload stays dynamic."""
 
     session_id: str
     sequence: int
@@ -406,7 +406,7 @@ class RestartFrameWire(ClientWireModel):
     cursor: int
 
 
-SseFrameWire = Annotated[HeadFrameWire | EventFrameWire | ErrorFrameWire | RestartFrameWire, Field(union_mode="left_to_right")]
+SessionFrameWire = Annotated[HeadFrameWire | EventFrameWire | ErrorFrameWire | RestartFrameWire, Field(union_mode="left_to_right")]
 
 
 class StreamCancellation:
@@ -512,7 +512,7 @@ class SessionClient(Protocol):
         *,
         follow: bool = True,
         cancel: StreamCancellation | None = None,
-    ) -> AsyncGenerator[SseFrame]: ...
+    ) -> AsyncGenerator[SessionFrame]: ...
 
 
 __all__ = [
@@ -537,10 +537,10 @@ __all__ = [
     "RunSpec",
     "SessionClient",
     "SessionRow",
-    "SseFrame",
-    "SseFrameWire",
+    "SessionFrame",
+    "SessionFrameWire",
     "StreamCancellation",
     "StreamEvent",
     "StreamEventWire",
-    "parse_sse_frame",
+    "parse_session_frame",
 ]

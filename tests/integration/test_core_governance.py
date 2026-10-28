@@ -36,8 +36,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -828,33 +826,20 @@ def _catalog_revision(base: str, token: str | None) -> str:
     """The revision the client displayed: taken from the command catalog exactly like a real client."""
     cached = _REVISION_CACHE.get(base)
     if cached is None:
-        status, payload = _request(base, "GET", "/api/commands", token=token)
+        status, payload = _request(base, "command.catalog", {}, token=token)
         assert status == 200, payload.decode()
         cached = str(json.loads(payload)["revision_id"])
         _REVISION_CACHE[base] = cached
     return cached
 
 
-def _request(base: str, method: str, path: str, *, token: str | None = None, body: object = None) -> tuple[int, bytes]:
-    # Mutating invokes and confirmations are bound to the displayed catalog revision; the
-    # transport requires it, so this helper does what a real client does instead of omitting it.
-    if method == "POST" and ("/invoke/" in path or path.endswith("/confirm")):
-        revision = _catalog_revision(base, token)
-        if body is None:
-            body = {"expected_revision": revision}
-        elif isinstance(body, dict) and "expected_revision" not in body:
-            body = {**body, "expected_revision": revision}
-    data = None if body is None else json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(base + path, data=data, method=method)
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
-    if token is not None:
-        req.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, resp.read()
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read()
+def _request(base: str, method: str, params: dict | None = None, *, token: str | None = None) -> tuple[int, bytes]:
+    from tests.rpc_client import request
+
+    params = dict(params or {})
+    if method in {"command.invoke", "action.confirm"} and "expected_revision" not in params:
+        params["expected_revision"] = _catalog_revision(base, token)
+    return request(base, method, params, token=token)
 
 
 def _await_marker(path: Path, timeout: float = _STARTUP_DEADLINE_SECONDS) -> None:
@@ -909,14 +894,14 @@ def test_active_run_concurrency_and_cancellation_isolation(tmp_path: Path) -> No
 
         with _listening_http(workspace, state, token) as base:
             # Create session A and session B
-            _request(base, "POST", "/api/sessions", token=token, body={"session_id": "session-a"})
-            _request(base, "POST", "/api/sessions", token=token, body={"session_id": "session-b"})
+            _request(base, "session.create", {"session_id": "session-a"}, token=token)
+            _request(base, "session.create", {"session_id": "session-b"}, token=token)
 
             # Start run A in background thread (blocked in tool)
             run_a_result: dict[str, Any] = {}
 
             def _drive_run_a() -> None:
-                status, body = _request(base, "POST", "/api/sessions/session-a/run", token=token, body={"prompt": "start blocking run"})
+                status, body = _request(base, "session.run", {"session_id": "session-a", "prompt": "start blocking run"}, token=token)
                 run_a_result["status_code"] = status
                 run_a_result["payload"] = json.loads(body.decode())
 
@@ -930,10 +915,9 @@ def test_active_run_concurrency_and_cancellation_isolation(tmp_path: Path) -> No
             # 1. Non-gated command commits state in SAME session while run A is active
             status, body = _request(
                 base,
-                "POST",
-                "/api/sessions/session-a/invoke/gov_write_cmd",
+                "command.invoke",
+                {"session_id": "session-a", "name": "gov_write_cmd", "arguments": {"value": "concurrent_mid_run_state"}},
                 token=token,
-                body={"arguments": {"value": "concurrent_mid_run_state"}},
             )
             assert status == 200, body.decode()
             resp = json.loads(body)
@@ -941,23 +925,17 @@ def test_active_run_concurrency_and_cancellation_isolation(tmp_path: Path) -> No
             assert resp["data"]["value"] == "concurrent_mid_run_state"
 
             # 2. Gated command rejects invocation while run A is active
-            status, body = _request(
-                base,
-                "POST",
-                "/api/sessions/session-a/invoke/gov_gated_cmd",
-                token=token,
-                body={},
-            )
+            status, body = _request(base, "command.invoke", {"session_id": "session-a", "name": "gov_gated_cmd"}, token=token)
             assert status in (400, 409) or (status == 200 and json.loads(body)["status"] == "error")
 
             # 3. Targeted cancellation of idle session B does NOT cancel session A
-            status, body = _request(base, "POST", "/api/sessions/session-b/cancel", token=token)
+            status, body = _request(base, "session.cancel", {"session_id": "session-b"}, token=token)
             assert status == 200
             assert json.loads(body)["cancellation_requested"] is False
             assert t_run.is_alive()  # Run A still executing
 
             # 4. Target cancellation on active session A stops owned work
-            status, body = _request(base, "POST", "/api/sessions/session-a/cancel", token=token)
+            status, body = _request(base, "session.cancel", {"session_id": "session-a"}, token=token)
             assert status == 200
             assert json.loads(body)["cancellation_requested"] is True
 
@@ -998,12 +976,12 @@ def test_active_run_blocked_in_real_provider_survives_midrun_control(tmp_path: P
         token = "provider-block-token"
 
         with _listening_http(workspace, state, token) as base:
-            _request(base, "POST", "/api/sessions", token=token, body={"session_id": "provider-blocked"})
+            _request(base, "session.create", {"session_id": "provider-blocked"}, token=token)
 
             run_result: dict[str, Any] = {}
 
             def _drive_run() -> None:
-                status, body = _request(base, "POST", "/api/sessions/provider-blocked/run", token=token, body={"prompt": "blocked provider turn"})
+                status, body = _request(base, "session.run", {"session_id": "provider-blocked", "prompt": "blocked provider turn"}, token=token)
                 run_result["status_code"] = status
                 run_result["payload"] = json.loads(body.decode())
 
@@ -1018,10 +996,9 @@ def test_active_run_blocked_in_real_provider_survives_midrun_control(tmp_path: P
             # Mid-run control in the same session while the provider call is in flight.
             status, body = _request(
                 base,
-                "POST",
-                "/api/sessions/provider-blocked/invoke/gov_write_cmd",
+                "command.invoke",
+                {"session_id": "provider-blocked", "name": "gov_write_cmd", "arguments": {"value": "committed_during_provider_wait"}},
                 token=token,
-                body={"arguments": {"value": "committed_during_provider_wait"}},
             )
             assert status == 200, body.decode()
             assert json.loads(body)["data"]["value"] == "committed_during_provider_wait"
@@ -1066,12 +1043,12 @@ def test_new_user_turn_after_user_stop_is_admitted(tmp_path: Path) -> None:
         token = "after-stop-token"
 
         with _listening_http(workspace, state, token) as base:
-            _request(base, "POST", "/api/sessions", token=token, body={"session_id": "after-stop"})
+            _request(base, "session.create", {"session_id": "after-stop"}, token=token)
 
             stopped: dict[str, Any] = {}
 
             def _drive() -> None:
-                status, body = _request(base, "POST", "/api/sessions/after-stop/run", token=token, body={"prompt": "stop me"})
+                status, body = _request(base, "session.run", {"session_id": "after-stop", "prompt": "stop me"}, token=token)
                 stopped["status_code"] = status
                 stopped["payload"] = json.loads(body.decode())
 
@@ -1079,7 +1056,7 @@ def test_new_user_turn_after_user_stop_is_admitted(tmp_path: Path) -> None:
             worker.start()
             _await_marker(workspace / "tool.started")
 
-            status, body = _request(base, "POST", "/api/sessions/after-stop/cancel", token=token)
+            status, body = _request(base, "session.cancel", {"session_id": "after-stop"}, token=token)
             assert status == 200
             assert json.loads(body)["cancellation_requested"] is True
             worker.join(timeout=_STARTUP_DEADLINE_SECONDS)
@@ -1088,7 +1065,7 @@ def test_new_user_turn_after_user_stop_is_admitted(tmp_path: Path) -> None:
 
             # A fresh user turn on the same session must be admitted and must run
             # a real provider turn (no stranded terminal checkpoint).
-            status, body = _request(base, "POST", "/api/sessions/after-stop/run", token=token, body={"prompt": "new user turn"})
+            status, body = _request(base, "session.run", {"session_id": "after-stop", "prompt": "new user turn"}, token=token)
             assert status == 200, body.decode()
             fresh = json.loads(body)
             assert fresh["status"] == "completed", fresh
@@ -1114,13 +1091,13 @@ def test_command_committed_during_context_rpc_does_not_shift_dispatch_refs(tmp_p
         _configure(workspace, server, source, approval_mode="yolo")
         token = "context-race-token"
         with _listening_http(workspace, state, token) as base:
-            _request(base, "POST", "/api/sessions", token=token, body={"session_id": "context-race"})
+            _request(base, "session.create", {"session_id": "context-race"}, token=token)
             (workspace / "context.block").touch()
 
             finished: dict[str, Any] = {}
 
             def _drive() -> None:
-                status, body = _request(base, "POST", "/api/sessions/context-race/run", token=token, body={"prompt": "race the context RPC"})
+                status, body = _request(base, "session.run", {"session_id": "context-race", "prompt": "race the context RPC"}, token=token)
                 finished["status_code"] = status
                 finished["payload"] = json.loads(body.decode())
 
@@ -1134,10 +1111,9 @@ def test_command_committed_during_context_rpc_does_not_shift_dispatch_refs(tmp_p
             # The core is inside the context RPC: this command commits events first.
             status, body = _request(
                 base,
-                "POST",
-                "/api/sessions/context-race/invoke/gov_write_cmd",
+                "command.invoke",
+                {"session_id": "context-race", "name": "gov_write_cmd", "arguments": {"value": "committed_during_context_rpc"}},
                 token=token,
-                body={"arguments": {"value": "committed_during_context_rpc"}},
             )
             assert status == 200, body.decode()
 
@@ -1271,26 +1247,18 @@ def test_core_run_command_validates_arguments_before_spending(tmp_path: Path) ->
         _configure(workspace, server, source, approval_mode="ask")
         token = "core-cmd-token"
         with _listening_http(workspace, state, token) as base:
-            _request(base, "POST", "/api/sessions", token=token, body={"session_id": "core-cmd-session"})
+            _request(base, "session.create", {"session_id": "core-cmd-session"}, token=token)
 
             # A non-string prompt must be refused without dispatching the provider.
             status, body = _request(
-                base,
-                "POST",
-                "/api/sessions/core-cmd-session/invoke/run",
-                token=token,
-                body={"arguments": {"prompt": 123}},
+                base, "command.invoke", {"session_id": "core-cmd-session", "name": "run", "arguments": {"prompt": 123}}, token=token
             )
             assert status in (400, 409) or (status == 200 and json.loads(body)["status"] == "error"), body.decode()
             assert len(server.requests) == 0, server.requests
 
             # A real run that parks for approval is reported as a waiting outcome.
             status, body = _request(
-                base,
-                "POST",
-                "/api/sessions/core-cmd-session/invoke/run",
-                token=token,
-                body={"arguments": {"prompt": "write something"}},
+                base, "command.invoke", {"session_id": "core-cmd-session", "name": "run", "arguments": {"prompt": "write something"}}, token=token
             )
             assert status == 200, body.decode()
             result = json.loads(body)
@@ -1689,7 +1657,7 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
             drained: dict[str, Any] = {}
 
             def _drive() -> None:
-                status, body = _request(base, "POST", "/api/sessions/owner-cancel-session/continuations", token=token, body={"limit": 1})
+                status, body = _request(base, "session.drain", {"session_id": "owner-cancel-session", "limit": 1}, token=token)
                 drained["status_code"] = status
                 drained["payload"] = json.loads(body.decode())
 
@@ -1704,10 +1672,9 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
             # stop this run, cancel its row, or re-effect anything.
             foreign = _request(
                 base,
-                "POST",
-                "/api/sessions/owner-cancel-session/invoke/obs2_cancel_cmd",
+                "command.invoke",
+                {"session_id": "owner-cancel-session", "name": "obs2_cancel_cmd", "arguments": {"continuation_id": "owner-claim"}},
                 token=token,
-                body={"arguments": {"continuation_id": "owner-claim"}},
             )
             assert foreign[0] == 200, foreign[1].decode()
             assert json.loads(foreign[1])["status"] == "ok", foreign[1].decode()
@@ -1721,11 +1688,7 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
 
             # The real owner's cancellation still stops the claimed run.
             status, body = _request(
-                base,
-                "POST",
-                "/api/sessions/owner-cancel-session/invoke/gov_owner_cancel_cmd",
-                token=token,
-                body={"arguments": {}},
+                base, "command.invoke", {"session_id": "owner-cancel-session", "name": "gov_owner_cancel_cmd", "arguments": {}}, token=token
             )
             assert status == 200, body.decode()
             assert json.loads(body)["status"] == "ok", body.decode()
@@ -1847,7 +1810,7 @@ def test_user_stop_cancels_claim_without_auto_resume(tmp_path: Path) -> None:
             drain_result: dict[str, Any] = {}
 
             def _drive_drain() -> None:
-                status, body = _request(base, "POST", "/api/sessions/user-stop-session/continuations", token=token, body={"limit": 1})
+                status, body = _request(base, "session.drain", {"session_id": "user-stop-session", "limit": 1}, token=token)
                 drain_result["status"] = status
                 drain_result["payload"] = json.loads(body.decode())
 
@@ -1860,7 +1823,7 @@ def test_user_stop_cancels_claim_without_auto_resume(tmp_path: Path) -> None:
             assert (workspace / "tool.started").is_file(), drain_result
             assert (workspace / "claim_mut.txt").is_file()
 
-            status, body = _request(base, "POST", "/api/sessions/user-stop-session/cancel", token=token)
+            status, body = _request(base, "session.cancel", {"session_id": "user-stop-session"}, token=token)
             assert status == 200, body.decode()
             assert json.loads(body)["cancellation_requested"] is True
 
@@ -1872,7 +1835,7 @@ def test_user_stop_cancels_claim_without_auto_resume(tmp_path: Path) -> None:
             assert claims[0]["run_status"] == "interrupted", claims
 
             # No auto resume: a later drain finds nothing to claim.
-            status, body = _request(base, "POST", "/api/sessions/user-stop-session/continuations", token=token, body={"limit": 1})
+            status, body = _request(base, "session.drain", {"session_id": "user-stop-session", "limit": 1}, token=token)
             assert status == 200, body.decode()
             assert json.loads(body)["continuations"] == []
 
@@ -2052,16 +2015,19 @@ def test_confirmation_durable_intent_and_stale_rejection(tmp_path: Path) -> None
         token = "confirm-token"
 
         with _listening_http(workspace, state, token) as base:
-            _request(base, "POST", "/api/sessions", token=token, body={"session_id": "confirm-session"})
+            _request(base, "session.create", {"session_id": "confirm-session"}, token=token)
 
             # 0. Business args named like decisions are never authority: the
             # command still asks, and nothing is written.
             status, body = _request(
                 base,
-                "POST",
-                "/api/sessions/confirm-session/invoke/gov_confirm_cmd",
+                "command.invoke",
+                {
+                    "session_id": "confirm-session",
+                    "name": "gov_confirm_cmd",
+                    "arguments": {"target_file": "bypass_test.txt", "decision": "allow", "allow": True, "confirmed": True},
+                },
                 token=token,
-                body={"arguments": {"target_file": "bypass_test.txt", "decision": "allow", "allow": True, "confirmed": True}},
             )
             assert status == 200, body.decode()
             assert json.loads(body)["status"] == "pending_confirmation", body.decode()
@@ -2070,10 +2036,9 @@ def test_confirmation_durable_intent_and_stale_rejection(tmp_path: Path) -> None
             # 1. Invoke gov_confirm_cmd -> returns pending_confirmation
             status, body = _request(
                 base,
-                "POST",
-                "/api/sessions/confirm-session/invoke/gov_confirm_cmd",
+                "command.invoke",
+                {"session_id": "confirm-session", "name": "gov_confirm_cmd", "arguments": {"target_file": "final_confirm.txt"}},
                 token=token,
-                body={"arguments": {"target_file": "final_confirm.txt"}},
             )
             assert status == 200, body.decode()
             inv_res = json.loads(body)
@@ -2083,54 +2048,36 @@ def test_confirmation_durable_intent_and_stale_rejection(tmp_path: Path) -> None
             assert not (workspace / "final_confirm.txt").exists()
 
             # 2. Deny decision
-            status, body = _request(
-                base,
-                "POST",
-                "/api/sessions/confirm-session/confirm",
-                token=token,
-                body={"request_id": req_id, "decision": "deny"},
-            )
+            status, body = _request(base, "action.confirm", {"session_id": "confirm-session", "request_id": req_id, "decision": "deny"}, token=token)
             assert status == 200, body.decode()
             deny_res = json.loads(body)
             assert deny_res["status"] == "ok"
             assert not (workspace / "final_confirm.txt").exists()
 
             # Duplicate confirm on already denied request is rejected
-            status, body = _request(
-                base,
-                "POST",
-                "/api/sessions/confirm-session/confirm",
-                token=token,
-                body={"request_id": req_id, "decision": "allow"},
-            )
+            status, body = _request(base, "action.confirm", {"session_id": "confirm-session", "request_id": req_id, "decision": "allow"}, token=token)
             assert status in (400, 409)
 
             # 3. Request a new confirmation, then advance state version before confirming -> stale
             status, body = _request(
                 base,
-                "POST",
-                "/api/sessions/confirm-session/invoke/gov_confirm_cmd",
+                "command.invoke",
+                {"session_id": "confirm-session", "name": "gov_confirm_cmd", "arguments": {"target_file": "stale_test.txt"}},
                 token=token,
-                body={"arguments": {"target_file": "stale_test.txt"}},
             )
             req2_id = json.loads(body)["confirmation"]["request_id"]
 
             # Intervene and advance session state version
             _request(
                 base,
-                "POST",
-                "/api/sessions/confirm-session/invoke/gov_write_cmd",
+                "command.invoke",
+                {"session_id": "confirm-session", "name": "gov_write_cmd", "arguments": {"value": "advance_version"}},
                 token=token,
-                body={"arguments": {"value": "advance_version"}},
             )
 
             # Now confirm req2 -> must be rejected as stale
             status, body = _request(
-                base,
-                "POST",
-                "/api/sessions/confirm-session/confirm",
-                token=token,
-                body={"request_id": req2_id, "decision": "allow"},
+                base, "action.confirm", {"session_id": "confirm-session", "request_id": req2_id, "decision": "allow"}, token=token
             )
             assert status in (400, 409)
             assert not (workspace / "stale_test.txt").exists()
@@ -2138,30 +2085,21 @@ def test_confirmation_durable_intent_and_stale_rejection(tmp_path: Path) -> None
             # 4. Fresh confirmation -> allow -> executes side effect exactly once
             status, body = _request(
                 base,
-                "POST",
-                "/api/sessions/confirm-session/invoke/gov_confirm_cmd",
+                "command.invoke",
+                {"session_id": "confirm-session", "name": "gov_confirm_cmd", "arguments": {"target_file": "executed_action.txt"}},
                 token=token,
-                body={"arguments": {"target_file": "executed_action.txt"}},
             )
             req3_id = json.loads(body)["confirmation"]["request_id"]
 
             status, body = _request(
-                base,
-                "POST",
-                "/api/sessions/confirm-session/confirm",
-                token=token,
-                body={"request_id": req3_id, "decision": "allow"},
+                base, "action.confirm", {"session_id": "confirm-session", "request_id": req3_id, "decision": "allow"}, token=token
             )
             assert status == 200, body.decode()
             assert (workspace / "executed_action.txt").read_text(encoding="utf-8") == "confirmed_effect\n"
 
             # Duplicate confirm on already allowed request is rejected
             status, body = _request(
-                base,
-                "POST",
-                "/api/sessions/confirm-session/confirm",
-                token=token,
-                body={"request_id": req3_id, "decision": "allow"},
+                base, "action.confirm", {"session_id": "confirm-session", "request_id": req3_id, "decision": "allow"}, token=token
             )
             assert status in (400, 409)
 
@@ -2422,7 +2360,7 @@ def test_two_concurrent_keyed_leases_return_one_durable_continuation(tmp_path: P
             run_result: dict[str, Any] = {}
 
             def _drive_run() -> None:
-                status, body = _request(base, "POST", "/api/sessions/keyed-session/run", token=token, body={"prompt": "hold"})
+                status, body = _request(base, "session.run", {"session_id": "keyed-session", "prompt": "hold"}, token=token)
                 run_result["payload"] = json.loads(body.decode())
 
             worker = threading.Thread(target=_drive_run, daemon=True)
@@ -2434,10 +2372,9 @@ def test_two_concurrent_keyed_leases_return_one_durable_continuation(tmp_path: P
             def _invoke_keyed(tag: str) -> None:
                 status, body = _request(
                     base,
-                    "POST",
-                    "/api/sessions/keyed-session/invoke/gov_keyed_queue_cmd",
+                    "command.invoke",
+                    {"session_id": "keyed-session", "name": "gov_keyed_queue_cmd", "arguments": {"key": "shared-key", "tag": tag, "block": True}},
                     token=token,
-                    body={"arguments": {"key": "shared-key", "tag": tag, "block": True}},
                 )
                 assert status == 200, body.decode()
                 responses.append(json.loads(body))
@@ -2525,7 +2462,7 @@ def test_cancelled_finite_root_admits_a_fresh_authorized_root(tmp_path: Path) ->
 
         token = "root-cancel-token"
         with _listening_http(workspace, state, token) as base:
-            status, body = _request(base, "POST", "/api/sessions/root-cancel/cancel", token=token)
+            status, body = _request(base, "session.cancel", {"session_id": "root-cancel"}, token=token)
             assert status == 200, body.decode()
             assert json.loads(body)["cancellation_requested"] is True, body.decode()
 
@@ -2576,16 +2513,15 @@ def test_terminal_interruption_auto_drives_queued_continuation(tmp_path: Path) -
 
         token = "terminal-cancel-token"
         with _listening_http(workspace, state, token) as base:
-            status, body = _request(base, "POST", "/api/sessions/terminal-cancel/cancel", token=token)
+            status, body = _request(base, "session.cancel", {"session_id": "terminal-cancel"}, token=token)
             assert status == 200, body.decode()
             assert json.loads(body)["cancellation_requested"] is True, body.decode()
 
             queued = _request(
                 base,
-                "POST",
-                "/api/sessions/terminal-cancel/invoke/gov_queue_cmd",
+                "command.invoke",
+                {"session_id": "terminal-cancel", "name": "gov_queue_cmd", "arguments": {"note": "after terminal cancel"}},
                 token=token,
-                body={"arguments": {"note": "after terminal cancel"}},
             )
             assert queued[0] == 200, queued[1].decode()
             assert json.loads(queued[1])["status"] == "ok", queued[1].decode()
@@ -2711,7 +2647,7 @@ def test_confirmed_owner_cancel_stops_claimed_run(tmp_path: Path) -> None:
             drained: dict[str, Any] = {}
 
             def _drive() -> None:
-                status, body = _request(base, "POST", "/api/sessions/confirm-cancel-session/continuations", token=token, body={"limit": 1})
+                status, body = _request(base, "session.drain", {"session_id": "confirm-cancel-session", "limit": 1}, token=token)
                 drained["payload"] = json.loads(body.decode())
 
             worker = threading.Thread(target=_drive, daemon=True)
@@ -2719,11 +2655,7 @@ def test_confirmed_owner_cancel_stops_claimed_run(tmp_path: Path) -> None:
             _await_marker(workspace / "confirm_cancel.txt")
 
             asked = _request(
-                base,
-                "POST",
-                "/api/sessions/confirm-cancel-session/invoke/gov_confirm_cancel_cmd",
-                token=token,
-                body={"arguments": {}},
+                base, "command.invoke", {"session_id": "confirm-cancel-session", "name": "gov_confirm_cancel_cmd", "arguments": {}}, token=token
             )
             assert asked[0] == 200, asked[1].decode()
             pending = json.loads(asked[1])
@@ -2734,11 +2666,7 @@ def test_confirmed_owner_cancel_stops_claimed_run(tmp_path: Path) -> None:
             assert worker.is_alive(), "an unconfirmed ask cancelled the owner's run"
 
             confirmed = _request(
-                base,
-                "POST",
-                "/api/sessions/confirm-cancel-session/confirm",
-                token=token,
-                body={"request_id": request_id, "decision": "allow"},
+                base, "action.confirm", {"session_id": "confirm-cancel-session", "request_id": request_id, "decision": "allow"}, token=token
             )
             assert confirmed[0] == 200, confirmed[1].decode()
             assert json.loads(confirmed[1])["status"] == "ok", confirmed[1].decode()
@@ -2876,7 +2804,7 @@ def test_native_tool_cancellation_is_scoped_to_its_owner(tmp_path: Path, case: s
             drained: dict[str, Any] = {}
 
             def _drive() -> None:
-                status, body = _request(base, "POST", f"/api/sessions/{session_id}/continuations", token=token, body={"limit": 1})
+                status, body = _request(base, "session.drain", {"session_id": session_id, "limit": 1}, token=token)
                 drained["payload"] = json.loads(body.decode())
 
             worker = threading.Thread(target=_drive, daemon=True)

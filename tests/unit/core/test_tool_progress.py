@@ -1,4 +1,4 @@
-"""Progress reaches the existing session SSE endpoint before its tool returns."""
+"""Progress reaches the existing session RPC subscription before its tool returns."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL
 from tests.unit.core.test_nested_tools import _call, _configure, _server, _turn
 from voidcode.sdk.client import EventFrame, HeadFrame, RunResult, RunSpec, StreamEvent
 from voidcode.transport.http import create_core_app
-from voidcode.tui.client import CoreHttpClient
+from voidcode.tui.client import CoreRpcClient
 
 
 def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> None:
@@ -37,7 +37,7 @@ def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> 
         while not server.started and time.monotonic() < deadline:
             time.sleep(0.02)
         assert server.started
-        client = CoreHttpClient(f"http://127.0.0.1:{port}", token="progress-token")
+        client = CoreRpcClient(f"http://127.0.0.1:{port}", token="progress-token")
         client.create_session("progress-session")
         reports: list[StreamEvent] = []
         results: list[RunResult] = []
@@ -77,7 +77,7 @@ def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> 
         try:
             stream_worker.start()
             run_worker.start()
-            assert observed.wait(timeout=10), "no progress event reached the live SSE stream"
+            assert observed.wait(timeout=10), "no progress event reached the live RPC subscription"
             assert not failures
             assert run_worker.is_alive(), "the progress report only arrived after tool completion"
             assert not results

@@ -1,26 +1,23 @@
 # TODO
 
-Open work preserved from retired audit/plan reports. Checkboxes are
-unfinished; each cites the file/symbol it concerns. No owners or dates.
+Work preserved from retired audit/plan reports. Unchecked items remain
+unfinished; open items cite the file/symbol they concern. No owners or dates.
 
-## Confirmed gaps
+## Recently closed
 
-- [ ] Sandbox command-path observations are dropped. `Core.invoke_command`
-  (`src/voidcode/core/engine.py:1471-1545`) commits `COMMAND_COMPLETED` without
-  merging `lease.staged_observations`; only the tool path merges them
-  (`engine.py:3904-3916`).
-- [ ] Live-cancelled tool leaves no tool result. `Core._invoke`
-  (`src/voidcode/core/engine.py:3866-3869`) returns `_stop` without `_report`
-  when the abort fires mid-tool; the parked batch settles only on a later
-  resume. (Approval-parked cancel already settles `core.tool_interrupted`.)
-- [ ] Ordinary command invocations carry no abort signal. `Core.invoke_command`
-  and `confirm_action` build `ToolContext` without `abort_signal`
-  (`src/voidcode/core/engine.py:1462-1470,1611-1618`; field defaults None in
-  `src/voidcode/sdk/invocation.py:31`), so the runtime cancel watcher
-  (`src/voidcode/core/plugins.py:1013-1028`) has nothing to mirror and
-  `cancel_session` only reaches runs registered in `_session_aborts`
-  (`engine.py:710-720`). Long-running user-shell commands cannot be cancelled
-  mid-flight. Old audit gap verified still open; no fix promised here.
+- [x] Command invocations and confirmed commands preserve bounded supervisor file
+  observations on their completion events, including commands that fail or cancel.
+- [x] Explicit user/owner cancellation immediately settles abandoned tool batches
+  with unknown effects for the active call and not-executed outcomes for the tail.
+- [x] Commands own independent abort signals; session cancellation reaches both the
+  active run and concurrent commands without replacing either signal.
+
+- [x] Remote business communication uses WebSocket + JSON-RPC 2.0, with a
+  shared method/notification schema, both remote clients migrated, acknowledged
+  bounded replay, concurrent cancellation, and no automatic mutation resend.
+  HTTP serves health/schema/static assets only; local `SessionClient` stays
+  direct. See `docs/contracts/client-transport.md` and
+  `tests/integration/test_core_rpc.py`.
 
 ## Product decisions (explicit, conditional)
 - [ ] `ast_grep` search refused in read-only sessions: whole tool declares
@@ -35,7 +32,7 @@ unfinished; each cites the file/symbol it concerns. No owners or dates.
   registry `acquire`; overlapping calls for the same session/server may
   double-acquire and the loser may overwrite the local lease. Needs a repro
   to confirm, then decide: manager lock or documented single-flight.
-- [ ] SSE stream ownership stays split (`terminal_app` + web client) until a
+- [ ] Event-subscription ownership stays split (`terminal_app` + web client) until a
   second consumer demonstrably reimplements reconnect/cursor bookkeeping.
 - [ ] Derived settled signal (`agent_settled`-equivalent): defer until a client
   demonstrably reimplements it twice; `drain` + run-end is enough today.
@@ -43,9 +40,7 @@ unfinished; each cites the file/symbol it concerns. No owners or dates.
   on its shape before any typing work.
 - [ ] Non-text output rendering: TUI shows `[mime]` placeholders for artifact
   references today; richer rendering only if a client demonstrably requires it.
-- [ ] `_restart_ready` drain branches (`src/voidcode/transport/http.py:184,699,716`)
-  have no production setter: delete the dormant branches, or wire a real drain
-  only if a supervised-restart flow is ever needed.
+
 
 ## Unfinished review coverage (not confirmed bugs)
 

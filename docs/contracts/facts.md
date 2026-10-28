@@ -26,6 +26,19 @@ Read observations are historical facts, not write permissions. File mutations va
 
 A tool can declare paths using `path_argument_keys`, including `edits[].path`. Invocation facts collect those paths and successful read/change paths. Skills uses that surface for touched-file rules; it no longer guesses parameter names or parses patch text. Undeclared shell effects are not inferred from command text. File-tool observations are claims by trusted tools, not filesystem monitoring — but exec changes ARE supervisor-observed: when the sandbox backend is configured, the confined supervisor snapshots writable roots before/after each child and the engine merges those observed changes into the tool's `changes` (success and failure alike, deduped against the tool's self-report). Background jobs contribute their cumulative sidecar when read or cancelled; service processes never stage.
 
+Command completion events separately retain bounded, deduplicated supervisor
+observations in `observed_changes` (canonical host paths, excluding scratch-only
+changes), even when the callback throws or is cancelled. These observations are
+not a complete account of external effects and do not create tool invocation
+facts. A cancelled command records `cancelled: true` and an error outcome; its
+staged plugin state, events, continuations, cancellations, and budget are discarded.
+
+A deliberate user/owner stop settles the abandoned native tool batch before the
+run interruption is recorded. The active invocation reports unknown external
+effects; remaining calls report that they were not executed. Cancelled tool
+self-reports are discarded. A crash or shutdown retains its recoverable
+checkpoint; recovery still governs whether an unfinished invocation may replay.
+
 Hooks which authorize an invocation remain synchronous control contracts (`ToolIntent`, gate decisions). Facts describe committed outcomes and cannot authorize or rewrite them.
 
 ## Reading and observing

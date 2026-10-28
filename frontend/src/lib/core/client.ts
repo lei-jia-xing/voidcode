@@ -1,7 +1,5 @@
-/**
- * Browser HTTP and SSE client for the VoidCode core transport API.
- */
-
+/** Multiplexed JSON-RPC over WebSocket; HTTP serves health only. */
+import type { RpcMethods } from "./generated/api";
 import type {
   CommandDescriptor,
   CommandResult,
@@ -11,407 +9,515 @@ import type {
   SessionRow,
   SessionUsageReport,
   ShowBody,
-  SseFrame,
+  SessionFrame,
 } from "./types";
 
 export class CoreApiError extends Error {
-  statusCode: number;
-  code?: string;
-
-  constructor(message: string, statusCode: number = 0, code?: string) {
+  constructor(
+    message: string,
+    public statusCode = 0,
+    public code?: string,
+  ) {
     super(message);
     this.name = "CoreApiError";
-    this.statusCode = statusCode;
-    this.code = code;
   }
 }
 
-/** The catalog and the capability revision it was captured under. */
 export interface CommandCatalog {
   revisionId: string;
   commands: CommandDescriptor[];
 }
-
-/** The rendered views and the revision of the snapshot that rendered them. */
 export interface ViewsSnapshot {
   revisionId: string;
   views: PluginViewDescriptor[];
 }
 
-export class CoreClient {
-  private baseUrl: string;
-  private token?: string;
+type Pending = {
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+type Subscription = {
+  frame: (frame: SessionFrame) => void;
+  end: (error?: Error) => void;
+};
+const MAX_MESSAGE = 4 * 1024 * 1024;
+const MAX_BUFFER = 8 * 1024 * 1024;
+const object = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
-  constructor(baseUrl: string = "", token?: string) {
+function decodeFrame(value: unknown): SessionFrame {
+  if (!object(value)) throw new Error("Malformed session frame");
+  const event = (item: unknown) =>
+    object(item) &&
+    Number.isSafeInteger(item.sequence) &&
+    (item.sequence as number) > 0 &&
+    typeof item.session_id === "string" &&
+    typeof item.type === "string" &&
+    object(item.payload);
+  if ("events" in value) {
+    if (
+      !object(value.session) ||
+      typeof value.session.session_id !== "string" ||
+      !Array.isArray(value.events) ||
+      !value.events.every(event)
+    ) {
+      throw new Error("Malformed session head");
+    }
+  } else if (
+    typeof value.session_id !== "string" ||
+    !(value.kind === "event"
+      ? event(value.event)
+      : value.kind === "error"
+        ? typeof value.error === "string"
+        : value.kind === "server_restart" && Number.isSafeInteger(value.cursor))
+  ) {
+    throw new Error("Malformed session notification");
+  }
+  return value as unknown as SessionFrame;
+}
+
+export class CoreClient {
+  private socket?: WebSocket;
+  private connecting?: Promise<WebSocket>;
+  private abortOpening?: (error: Error) => void;
+  private pending = new Map<string, Pending>();
+  private subscriptions = new Map<string, Subscription>();
+  private nextId = 0;
+
+  constructor(
+    private baseUrl = "",
+    private token?: string,
+  ) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.token = token;
   }
 
-  private async request<T>(
-    method: string,
-    path: string,
-    options: {
-      body?: unknown;
-      query?: Record<string, string | number | boolean | undefined>;
-    } = {},
-  ): Promise<T> {
-    let url = `${this.baseUrl}${path}`;
-    if (options.query) {
-      const searchParams = new URLSearchParams();
-      for (const [k, v] of Object.entries(options.query)) {
-        if (v !== undefined) {
-          searchParams.set(k, String(v));
+  close(): void {
+    const socket = this.socket;
+    if (socket) {
+      this.lost(
+        socket,
+        new CoreApiError(
+          "RPC connection closed; operation outcome may be unknown",
+          0,
+          "outcome_unknown",
+        ),
+      );
+      socket.close();
+    }
+  }
+
+  private lost(socket: WebSocket, error: Error): void {
+    if (this.socket !== socket) return;
+    this.socket = undefined;
+    this.connecting = undefined;
+    this.abortOpening?.(error);
+    this.abortOpening = undefined;
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
+    for (const subscription of this.subscriptions.values())
+      subscription.end(error);
+  }
+
+  private connect(): Promise<WebSocket> {
+    if (this.socket?.readyState === WebSocket.OPEN && !this.connecting)
+      return Promise.resolve(this.socket);
+    if (this.connecting) return this.connecting;
+    const url = new URL(this.baseUrl || window.location.origin);
+    url.protocol =
+      url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
+    url.pathname = url.pathname.replace(/\/$/, "") + "/api/rpc";
+    url.search = "";
+    url.hash = "";
+    const socket = new WebSocket(url, "voidcode.rpc.v1");
+    this.socket = socket;
+    this.connecting = new Promise<WebSocket>((resolve, reject) => {
+      let authenticated = false;
+      const identity = `auth-${++this.nextId}`;
+      const timer = setTimeout(() => {
+        reject(new Error("RPC authentication timed out"));
+        socket.close();
+      }, 10000);
+      this.abortOpening = (error) => {
+        clearTimeout(timer);
+        reject(error);
+      };
+      const fail = (error: Error) => {
+        clearTimeout(timer);
+        if (!authenticated) reject(error);
+        this.lost(socket, error);
+      };
+      socket.onopen = () =>
+        socket.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: identity,
+            method: "connection.authenticate",
+            params: { token: this.token ?? null },
+          }),
+        );
+      socket.onclose = () =>
+        fail(
+          new CoreApiError(
+            "RPC connection lost; operation outcome may be unknown. Inspect session history before retrying.",
+            0,
+            "outcome_unknown",
+          ),
+        );
+      socket.onerror = () => {
+        fail(new Error("RPC connection failed"));
+        socket.close();
+      };
+      socket.onmessage = (message) => {
+        if (this.socket !== socket) return;
+        try {
+          if (
+            typeof message.data !== "string" ||
+            new TextEncoder().encode(message.data).length > MAX_MESSAGE
+          )
+            throw new Error("Invalid RPC message size or encoding");
+          const raw: unknown = JSON.parse(message.data);
+          if (!object(raw) || raw.jsonrpc !== "2.0")
+            throw new Error("Malformed RPC message");
+          if ("method" in raw) {
+            if (
+              !authenticated ||
+              "id" in raw ||
+              !object(raw.params) ||
+              typeof raw.params.subscription_id !== "string"
+            )
+              throw new Error("Malformed RPC notification");
+            const subscription = this.subscriptions.get(
+              raw.params.subscription_id,
+            );
+            if (raw.method === "session.frame") {
+              const frame = decodeFrame(raw.params.frame);
+              subscription?.frame(frame);
+            } else if (raw.method === "subscription.closed")
+              subscription?.end();
+            else throw new Error("Unknown RPC notification");
+            return;
+          }
+          if (typeof raw.id !== "string" || "result" in raw === "error" in raw)
+            throw new Error("Malformed RPC response");
+          let error: CoreApiError | undefined;
+          if ("error" in raw) {
+            if (
+              !object(raw.error) ||
+              !Number.isInteger(raw.error.code) ||
+              typeof raw.error.message !== "string"
+            )
+              throw new Error("Malformed RPC error");
+            const data = object(raw.error.data) ? raw.error.data : {};
+            error = new CoreApiError(
+              raw.error.message,
+              typeof data.status === "number" ? data.status : 0,
+              typeof data.code === "string" ? data.code : undefined,
+            );
+          }
+          if (!authenticated) {
+            if (raw.id !== identity)
+              throw new Error("Unexpected authentication response");
+            if (error) {
+              fail(error);
+              socket.close();
+              return;
+            }
+            if (!object(raw.result) || raw.result.protocol_version !== 1)
+              throw new Error("Unsupported RPC protocol");
+            authenticated = true;
+            clearTimeout(timer);
+            this.connecting = undefined;
+            this.abortOpening = undefined;
+            resolve(socket);
+            return;
+          }
+          const pending = this.pending.get(raw.id);
+          if (pending) {
+            this.pending.delete(raw.id);
+            clearTimeout(pending.timer);
+            if (error) pending.reject(error);
+            else pending.resolve(raw.result);
+          }
+        } catch (error) {
+          fail(
+            new CoreApiError(
+              `Malformed RPC message: ${String(error)}`,
+              400,
+              "protocol_error",
+            ),
+          );
+          socket.close(1002, "invalid RPC message");
         }
-      }
-      const qs = searchParams.toString();
-      if (qs) {
-        url = `${url}?${qs}`;
-      }
-    }
-
-    const headers: Record<string, string> = {
-      Accept: "application/json",
-    };
-    if (this.token) {
-      headers.Authorization = `Bearer ${this.token}`;
-    }
-
-    let bodyData: string | undefined;
-    if (options.body !== undefined) {
-      headers["Content-Type"] = "application/json";
-      bodyData = JSON.stringify(options.body);
-    }
-
-    const resp = await fetch(url, {
-      method,
-      headers,
-      body: bodyData,
+      };
     });
+    return this.connecting;
+  }
 
-    if (!resp.ok) {
-      let errMsg = `HTTP ${resp.status} ${resp.statusText}`;
-      let errCode: string | undefined;
+  private async call<M extends keyof RpcMethods>(
+    method: M,
+    params: RpcMethods[M]["params"],
+  ): Promise<RpcMethods[M]["result"]> {
+    const socket = await this.connect();
+    if (socket.readyState !== WebSocket.OPEN)
+      throw new CoreApiError(
+        "RPC connection closed before send",
+        0,
+        "outcome_unknown",
+      );
+    const id = `call-${++this.nextId}`;
+    const text = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    if (
+      new TextEncoder().encode(text).length > MAX_MESSAGE ||
+      socket.bufferedAmount + text.length > MAX_BUFFER
+    )
+      throw new Error("RPC outbound buffer limit reached");
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(
+          new CoreApiError(
+            "RPC response timed out; operation outcome may be unknown",
+            0,
+            "outcome_unknown",
+          ),
+        );
+      }, 300000);
+      this.pending.set(id, {
+        resolve: (result) => resolve(result as RpcMethods[M]["result"]),
+        reject,
+        timer,
+      });
       try {
-        const errJson = await resp.json();
-        if (errJson && typeof errJson === "object") {
-          if (typeof errJson.error === "string") {
-            errMsg = errJson.error;
-          }
-          if (typeof errJson.code === "string") {
-            errCode = errJson.code;
-          }
-        }
+        socket.send(text);
       } catch {
-        // use default errMsg
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(
+          new CoreApiError(
+            "RPC send failed; operation outcome may be unknown",
+            0,
+            "outcome_unknown",
+          ),
+        );
       }
-      throw new CoreApiError(errMsg, resp.status, errCode);
-    }
-
-    return (await resp.json()) as T;
+    });
   }
 
   async health(): Promise<HealthStatus> {
-    return await this.request<HealthStatus>("GET", "/api/health");
-  }
-
-  async commandCatalog(): Promise<CommandCatalog> {
-    const res = await this.request<{
-      revision_id: string;
-      commands: CommandDescriptor[];
-    }>("GET", "/api/commands");
-    return { revisionId: res.revision_id, commands: res.commands || [] };
-  }
-
-  async listSessions(limit: number = 100): Promise<SessionRow[]> {
-    const res = await this.request<{ sessions: SessionRow[] }>(
-      "GET",
-      "/api/sessions",
-      {
-        query: { limit },
-      },
-    );
-    return res.sessions || [];
-  }
-
-  async createSession(sessionId?: string): Promise<SessionRow> {
-    return await this.request<SessionRow>("POST", "/api/sessions", {
-      body: sessionId ? { session_id: sessionId } : {},
+    const response = await fetch(`${this.baseUrl}/api/health`, {
+      headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
     });
+    if (!response.ok)
+      throw new CoreApiError(
+        `Health check failed: HTTP ${response.status}`,
+        response.status,
+      );
+    return response.json() as Promise<HealthStatus>;
   }
-
+  async commandCatalog(): Promise<CommandCatalog> {
+    const result = await this.call("command.catalog", {});
+    return { revisionId: result.revision_id, commands: result.commands };
+  }
+  async listSessions(limit = 100): Promise<SessionRow[]> {
+    return (await this.call("session.list", { limit })).sessions;
+  }
+  async createSession(sessionId?: string): Promise<SessionRow> {
+    return this.call("session.create", { session_id: sessionId });
+  }
   async getSession(sessionId: string): Promise<SessionRow> {
-    return await this.request<SessionRow>(
-      "GET",
-      `/api/sessions/${encodeURIComponent(sessionId)}`,
-    );
+    return this.call("session.get", { session_id: sessionId });
   }
-
-  async show(sessionId: string, events: boolean = false): Promise<ShowBody> {
-    return await this.request<ShowBody>(
-      "GET",
-      `/api/sessions/${encodeURIComponent(sessionId)}/show`,
-      { query: { events } },
-    );
+  async show(sessionId: string, events = false): Promise<ShowBody> {
+    return this.call("session.show", { session_id: sessionId, events });
   }
-
   async run(
     sessionId: string,
     prompt: string,
-    maxSteps: number = 32,
+    maxSteps = 32,
   ): Promise<RunResult> {
-    return await this.request<RunResult>(
-      "POST",
-      `/api/sessions/${encodeURIComponent(sessionId)}/run`,
-      {
-        body: { prompt, session_id: sessionId, max_steps: maxSteps },
-      },
-    );
+    return this.call("session.run", {
+      session_id: sessionId,
+      prompt,
+      max_steps: maxSteps,
+    });
   }
-
   async resume(
     sessionId: string,
     approvalRequestId?: string,
     decision?: "allow" | "deny",
-    maxSteps: number = 32,
+    maxSteps = 32,
   ): Promise<RunResult> {
-    const body: Record<string, unknown> = { max_steps: maxSteps };
-    if (approvalRequestId) {
-      body.approval_request_id = approvalRequestId;
-    }
-    if (decision) {
-      body.decision = decision;
-    }
-    return await this.request<RunResult>(
-      "POST",
-      `/api/sessions/${encodeURIComponent(sessionId)}/resume`,
-      { body },
-    );
+    return this.call("session.resume", {
+      session_id: sessionId,
+      approval_request_id: approvalRequestId,
+      decision,
+      max_steps: maxSteps,
+    });
   }
-
   async invoke(
     sessionId: string,
     name: string,
     args: Record<string, unknown>,
     expectedRevision: string,
   ): Promise<CommandResult> {
-    return await this.request<CommandResult>(
-      "POST",
-      `/api/sessions/${encodeURIComponent(sessionId)}/invoke/${encodeURIComponent(name)}`,
-      {
-        body: {
-          arguments: args,
-          // The revision the client displayed; a stale one is refused visibly.
-          expected_revision: expectedRevision,
-        },
-      },
-    );
+    return this.call("command.invoke", {
+      session_id: sessionId,
+      name,
+      arguments: args,
+      expected_revision: expectedRevision,
+    });
   }
-
   async confirm(
     sessionId: string,
     requestId: string,
     decision: "allow" | "deny",
     expectedRevision: string,
   ): Promise<CommandResult> {
-    return await this.request<CommandResult>(
-      "POST",
-      `/api/sessions/${encodeURIComponent(sessionId)}/confirm`,
-      {
-        body: {
-          request_id: requestId,
-          decision,
-          expected_revision: expectedRevision,
-        },
-      },
-    );
+    return this.call("action.confirm", {
+      session_id: sessionId,
+      request_id: requestId,
+      decision,
+      expected_revision: expectedRevision,
+    });
   }
-
   async views(sessionId: string): Promise<ViewsSnapshot> {
-    const res = await this.request<{
-      revision_id: string;
-      views: PluginViewDescriptor[];
-    }>("GET", `/api/sessions/${encodeURIComponent(sessionId)}/views`);
-    return { revisionId: res.revision_id, views: res.views || [] };
+    const result = await this.call("session.views", { session_id: sessionId });
+    return { revisionId: result.revision_id, views: result.views };
   }
-
   async usage(
     sessionId: string,
-    sinceSequence: number = 0,
+    sinceSequence = 0,
     untilSequence?: number,
   ): Promise<SessionUsageReport> {
-    return await this.request<SessionUsageReport>(
-      "GET",
-      `/api/sessions/${encodeURIComponent(sessionId)}/usage`,
-      {
-        query: {
-          since_sequence: sinceSequence,
-          until_sequence: untilSequence,
-        },
-      },
-    );
+    return this.call("session.usage", {
+      session_id: sessionId,
+      since_sequence: sinceSequence,
+      until_sequence: untilSequence,
+    });
   }
-
   async cancel(
     sessionId: string,
   ): Promise<{ cancellation_requested: boolean; session_id: string }> {
-    return await this.request<{
-      cancellation_requested: boolean;
-      session_id: string;
-    }>("POST", `/api/sessions/${encodeURIComponent(sessionId)}/cancel`);
+    return this.call("session.cancel", { session_id: sessionId });
   }
 
-  /**
-   * Connect to the SSE event stream for a session.
-   * Uses monotonic event cursors and automatically reconnects upon stream end/error.
-   * A `server_restart` frame ends the current connection: its cursor is a
-   * watermark of what THAT stream delivered, so the reconnect resumes from the
-   * client's own applied cursor and the frame is also delivered to `onFrame`.
-   * `onReconnect` fires once per (re)connection that yields its first frame,
-   * so the caller reconciles on every established stream — announced restart
-   * or silent drop — not just explicit restart frames.
-   * Returns a cleanup cancellation function.
-   */
+  /** Only subscriptions reconnect automatically; mutations never do. */
   streamEvents(
     sessionId: string,
     afterSequence: number,
-    onFrame: (frame: SseFrame) => void,
-    onError?: (err: Error) => void,
+    onFrame: (frame: SessionFrame) => void,
+    onError?: (error: Error) => void,
     onReconnect?: () => void,
   ): () => void {
     let cursor = afterSequence;
-    const abortController = new AbortController();
-    let isCancelled = false;
-
-    const connect = async () => {
-      while (!isCancelled) {
-        try {
-          const url = `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/events?after_sequence=${cursor}&follow=true`;
-          const headers: Record<string, string> = {
-            Accept: "text/event-stream",
-          };
-          if (this.token) {
-            headers.Authorization = `Bearer ${this.token}`;
+    let cancelled = false;
+    let subscriptionId: string | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = async () => {
+      if (cancelled) return;
+      const identity = `sub-${++this.nextId}`;
+      subscriptionId = identity;
+      let first = true;
+      let end: (error?: Error) => void = () => {};
+      const ended = new Promise<Error | undefined>((resolve) => {
+        end = resolve;
+      });
+      this.subscriptions.set(identity, {
+        end,
+        frame: (frame) => {
+          if (cancelled) return;
+          if (first) {
+            first = false;
+            onReconnect?.();
           }
-          const resp = await fetch(url, {
-            headers,
-            signal: abortController.signal,
-          });
-
-          if (resp.status === 503) {
-            // Fenced child or handoff gap: the supervisor answers once a child
-            // is elected; retry on the same applied cursor, never skip ahead.
-            throw new Error("core is draining for an upgrade; retrying");
+          if (
+            !("events" in frame) &&
+            frame.kind === "event" &&
+            frame.event.sequence <= cursor
+          )
+            return;
+          onFrame(frame);
+          if ("events" in frame)
+            for (const event of frame.events)
+              cursor = Math.max(cursor, event.sequence);
+          else if (frame.kind === "event")
+            cursor = Math.max(cursor, frame.event.sequence);
+          else if (frame.kind === "error") {
+            cancelled = true;
+            end(new Error(frame.error));
+          } else if (frame.kind === "server_restart") end();
+          if (
+            ("events" in frame || frame.kind === "event") &&
+            this.socket?.readyState === WebSocket.OPEN
+          ) {
+            this.socket.send(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                method: "session.ack",
+                params: {
+                  subscription_id: identity,
+                  through_sequence: cursor,
+                },
+              }),
+            );
           }
-          if (!resp.ok) {
-            throw new Error(`SSE stream failed: HTTP ${resp.status}`);
-          }
-
-          const reader = resp.body?.getReader();
-          if (!reader) {
-            throw new Error("No readable stream available on SSE response");
-          }
-
-          try {
-            const decoder = new TextDecoder();
-            let buffer = "";
-            let restartRequested = false;
-            let firstFrameSeen = false;
-            while (!isCancelled && !restartRequested) {
-              const { done, value } = await reader.read();
-              if (done) {
-                break;
-              }
-              buffer += decoder.decode(value, { stream: true });
-              const parts = buffer.split("\n\n");
-              buffer = parts.pop() || "";
-
-              for (const part of parts) {
-                const lines = part.trim().split("\n");
-                for (const line of lines) {
-                  if (!line.startsWith("data:")) continue;
-                  const jsonStr = line.slice(5).trim();
-                  if (!jsonStr) continue;
-                  let frame: SseFrame;
-                  try {
-                    frame = JSON.parse(jsonStr) as SseFrame;
-                  } catch {
-                    // A malformed frame fails the connection visibly: skipping
-                    // fact N and applying N+1 would advance the resume cursor
-                    // past a missed fact. Reconnect from the own applied cursor.
-                    throw new Error("SSE stream carried a malformed frame");
-                  }
-                  if (!firstFrameSeen) {
-                    firstFrameSeen = true;
-                    if (onReconnect) onReconnect();
-                  }
-                  if ("events" in frame) {
-                    onFrame(frame);
-                    // The resume cursor advances only after the frame was
-                    // applied: a callback failure below must not skip facts.
-                    for (const ev of frame.events) {
-                      if (ev.sequence > cursor) {
-                        cursor = ev.sequence;
-                      }
-                    }
-                    continue;
-                  }
-                  if (frame.kind === "error") {
-                    // Terminal server-side failure (e.g. a projection error on
-                    // a committed fact): stop first, then surface once. The
-                    // flag precedes the callback so a throwing callback cannot
-                    // enter the reconnect path. No cursor advance — the bad
-                    // record was not applied.
-                    isCancelled = true;
-                    onFrame(frame);
-                    break;
-                  }
-                  if (frame.kind === "server_restart") {
-                    // Watermark only: the loop below reconnects from the
-                    // client's own applied cursor, which never jumps over
-                    // a row this client did not apply. Flag first so a
-                    // throwing callback cannot fall into event handling.
-                    restartRequested = true;
-                    onFrame(frame);
-                    break;
-                  }
-                  onFrame(frame);
-                  if (frame.event.sequence > cursor) {
-                    cursor = frame.event.sequence;
-                  }
-                }
-                if (restartRequested || isCancelled) break;
-              }
-            }
-          } finally {
-            // Callback/parse/read failures all pass through here: the reader
-            // is always released, and cancel() is awaited so its rejection
-            // (already-closed stream) never escapes as an unhandled rejection.
-            try {
-              await reader.cancel();
-            } catch {
-              // already closed or errored; the reconnect below still runs
-            }
-          }
-        } catch (err: unknown) {
-          if (isCancelled) {
-            break;
-          }
-          if (onError && err instanceof Error) {
-            onError(err);
-          }
-          // Backoff before reconnect
-          const { promise, resolve } = Promise.withResolvers<void>();
-          setTimeout(resolve, 1000);
-          await promise;
+        },
+      });
+      try {
+        await this.call("session.subscribe", {
+          session_id: sessionId,
+          after_sequence: cursor,
+          subscription_id: identity,
+          follow: true,
+        });
+        if (cancelled) {
+          void this.call("session.unsubscribe", {
+            subscription_id: identity,
+          }).catch(() => {});
+          return;
         }
+        const error = await ended;
+        if (error) {
+          onError?.(error);
+          if (
+            error instanceof CoreApiError &&
+            [400, 401, 403, 404].includes(error.statusCode)
+          )
+            cancelled = true;
+        }
+      } catch (error) {
+        const failure =
+          error instanceof Error ? error : new Error(String(error));
+        if (!cancelled) onError?.(failure);
+        if (
+          failure instanceof CoreApiError &&
+          [400, 401, 403, 404].includes(failure.statusCode)
+        )
+          cancelled = true;
+      } finally {
+        this.subscriptions.delete(identity);
+        if (!cancelled)
+          retryTimer = setTimeout(() => {
+            void attempt();
+          }, 1000);
       }
     };
-
-    void connect();
-
+    void attempt();
     return () => {
-      isCancelled = true;
-      abortController.abort();
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      if (subscriptionId) {
+        this.subscriptions.get(subscriptionId)?.end();
+        this.subscriptions.delete(subscriptionId);
+        if (this.socket?.readyState === WebSocket.OPEN)
+          void this.call("session.unsubscribe", {
+            subscription_id: subscriptionId,
+          }).catch(() => {});
+      }
     };
   }
 }

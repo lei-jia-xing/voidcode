@@ -2,7 +2,7 @@
 
 Browser client for the VoidCode core, built with React 19, TypeScript, Tailwind CSS, Vite, and Bun.
 
-The client is `src/core/CoreApp.tsx` (mounted unconditionally by `src/main.tsx`). It speaks only to the core's HTTP/SSE transport under `/api/*`, renders the core's declarative plugin views, and keeps no local model of session state: the core's append-only event log and its per-revision command catalog are the source of truth.
+The client is `src/core/CoreApp.tsx` (mounted unconditionally by `src/main.tsx`). It speaks only to the core's WebSocket RPC transport under `/api/*`, renders the core's declarative plugin views, and keeps no local model of session state: the core's append-only event log and its per-revision command catalog are the source of truth.
 
 ## Quickstart
 
@@ -60,7 +60,15 @@ The core reads one config file, `voidcode.json` in the workspace (`{"schema_vers
 
 ## API surface
 
-The client uses `GET /api/commands` (catalog + revision), `GET|POST /api/sessions`, and per session `GET /show`, `POST /run`, `POST /resume`, `POST /invoke/{name}`, `POST /confirm`, `POST /cancel`, `GET /views`, `GET /usage`, and `GET /events` (SSE). Types come from `GET /api/openapi.json` and are generated into `src/lib/core/generated/api.d.ts`; never edit that file by hand:
+The client uses JSON-RPC 2.0 over `/api/rpc` (`voidcode.rpc.v1`). Calls,
+responses, and cursor-based event subscriptions share one WebSocket. The first
+message authenticates with the token; URLs never carry WebSocket credentials.
+Only health, the schema document, and static assets use HTTP. See the
+[transport contract](../docs/contracts/client-transport.md) for methods,
+acknowledgements, reconnect behavior, and lost-response semantics.
+
+DTOs and the typed method/notification maps come from `GET /api/openapi.json`
+and are generated into `src/lib/core/generated/api.d.ts`; never edit it by hand:
 
 ```bash
 mise run frontend:api:generate   # regenerate after a transport model change
@@ -69,11 +77,13 @@ mise run frontend:api:check      # fail when the committed types are stale
 
 ## End-to-end tests
 
-`e2e/core.spec.ts` is the only end-to-end spec. It spawns the real core server on a throwaway workspace and state dir whose `voidcode.json` is just `{"schema_version": 1}`, opens the bundle the core serves at `/`, and asserts that the client renders, creates a session, and renders the committed result of the `/usage` plugin command. No provider is configured, so nothing in the smoke reaches a model.
+`e2e/core.spec.ts` covers initial connection and command execution.
+`e2e/rpc-reconnect.spec.ts` restarts the real server while the browser stays open
+and proves cursor replay without duplicate rows or command resends. The smoke spawns the real core server on a throwaway workspace and state dir whose `voidcode.json` is just `{"schema_version": 1}`, opens the bundle the core serves at `/`, and asserts that the client renders, creates a session, and renders the committed result of the `/usage` plugin command. No provider is configured, so nothing in the smoke reaches a model.
 
 ```bash
 bun run build       # the served bundle is dist/index.html
-bun run test:e2e    # spawns `uv run python -X utf8 -m voidcode ... serve` itself
+bun run test:e2e    # spawns `.venv/bin/python -m voidcode ... serve` itself
 ```
 
-Requirements: `uv` on `PATH` (the spec starts the core from the repository root) and the Playwright Chromium build (`bunx playwright install chromium`). `mise run frontend:e2e` runs the build and the spec in one step.
+Requirements: the project `.venv` (the specs start the core from the repository root) and the Playwright Chromium build (`bunx playwright install chromium`). `mise run frontend:e2e` runs the build and the spec in one step.

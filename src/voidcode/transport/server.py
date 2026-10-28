@@ -1,4 +1,4 @@
-"""Serve the core HTTP transport on loopback."""
+"""Serve core RPC, health, and the web client on loopback."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def serve_core(
         bearer_token=token,
         frontend_dist=frontend_dist,
     )
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=10)
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=10, ws_max_size=4 * 1024 * 1024)
     server = uvicorn.Server(config)
     with config.bind_socket() as sock:
         actual_port = sock.getsockname()[1]

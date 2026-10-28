@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### WebSocket JSON-RPC transport (BREAKING)
+- Remote business communication now uses JSON-RPC 2.0 on `/api/rpc` with subprotocol `voidcode.rpc.v1`; business HTTP routes and SSE are removed. HTTP remains for static assets, health, and the generated contract document.
+- Remote TUI and web clients multiplex calls and event subscriptions. Per-session replay uses applied sequence cursors, acknowledgements, bounded event credit, and bounded output queues. Local TUI retains direct `SessionClient` calls.
+- Disconnect does not cancel running work. Lost mutation responses are reported as unknown outcomes and never resent automatically; explicit cancellation remains available during long calls. Revision-bound commands and both durable decision gates retain their semantics.
+- The schema generator derives DTOs plus typed method/notification mappings from one backend registry. RPC, cross-client conformance, and browser reconnect tests cover the cutover.
+
 ### Scripted workflows plugin
 - New bundled `workflows` plugin: explicitly configured trusted `.py` scripts (`plugins.workflows.config.workflows: {name: path}`) run `async def run(ctx, task)` over core-owned children via `ctx.agent(...)`. Source is snapshotted at start and the recorded bytes execute once after a digest check; changed sources refuse resume before executing anything.
 - One model tool (`workflow_run`, governed `EXECUTE+SPAWN+SESSION`, never replayed), five commands (`workflow.run/status/pause/resume/cancel` with shared `/workflow.*` client syntax), and two generic views. Terminal runs optionally hand their bounded summary back to the originating session as a durable follow-up turn; failures fail both the run and the background action so `invoke --wait-background` exits nonzero.

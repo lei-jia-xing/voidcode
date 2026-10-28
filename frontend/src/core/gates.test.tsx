@@ -2,12 +2,18 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { CoreApp } from "./CoreApp";
 import "../i18n";
+import {
+  installRpcPeer,
+  frameSource,
+  type FrameController,
+  type MockResponse,
+} from "../test/rpc-peer";
 
 /**
  * Gate preservation across a fenced refusal: a late 503 upgrade_pending must
  * leave the native approval AND the plugin confirmation mounted with their
  * exact request ids (no auto-resend), and the durable decided facts close
- * each gate exactly once. The stream is scripted through fetch: no network.
+ * each gate exactly once. The stream is scripted through a JSON-RPC peer: no network.
  */
 
 const SESSION = "gate-session";
@@ -16,28 +22,6 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json" },
-  });
-}
-
-function sseResponse(
-  frames: string[],
-  controllers: ReadableStreamDefaultController[],
-  close = false,
-): Response {
-  const text = frames.map((f) => `data: ${f}\n\n`).join("");
-  const stream = new ReadableStream({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode(text));
-      // Open by default like a live follow stream; close=true simulates one
-      // clean EOF / restart-terminated connection. Never hot-loop: closing
-      // streams are used only where the test holds the next one open.
-      if (close) controller.close();
-      else controllers.push(controller);
-    },
-  });
-  return new Response(stream, {
-    status: 200,
-    headers: { "Content-Type": "text/event-stream" },
   });
 }
 
@@ -162,7 +146,7 @@ describe("gate preservation across upgrade_pending", () => {
     // facts arrive later as live frames on the open streams — exactly like a
     // real follow stream. No instant EOF anywhere: that would hot-loop the
     // client's reconnect.
-    const liveControllers: ReadableStreamDefaultController[] = [];
+    const liveControllers: FrameController[] = [];
     const requestedHead = () =>
       JSON.stringify({
         session: { session_id: SESSION },
@@ -182,16 +166,18 @@ describe("gate preservation across upgrade_pending", () => {
           }),
         ],
       });
-    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
-      const path = String(url);
-      if (path.includes("/api/commands")) {
+    const rpcMock = vi.fn(async (method: string): Promise<MockResponse> => {
+      if (method === "command.catalog") {
         return jsonResponse({ revision_id: "rev-1", commands: [] });
       }
-      if (path.includes("/api/sessions") && !path.includes("/events")) {
-        if (path.includes("/views")) {
+      if (
+        (method.startsWith("session.") && method !== "session.subscribe") ||
+        method === "action.confirm"
+      ) {
+        if (method === "session.views") {
           return jsonResponse({ revision_id: "rev-1", views: [] });
         }
-        if (path.includes("/resume")) {
+        if (method === "session.resume") {
           return jsonResponse(
             {
               error: "core is draining for an upgrade; retry after it restarts",
@@ -200,7 +186,7 @@ describe("gate preservation across upgrade_pending", () => {
             503,
           );
         }
-        if (path.includes("/confirm")) {
+        if (method === "action.confirm") {
           return jsonResponse(
             {
               error: "core is draining for an upgrade; retry after it restarts",
@@ -209,7 +195,7 @@ describe("gate preservation across upgrade_pending", () => {
             503,
           );
         }
-        if (path.includes("/show")) {
+        if (method === "session.show") {
           return jsonResponse({
             session_id: SESSION,
             status: "waiting",
@@ -235,10 +221,10 @@ describe("gate preservation across upgrade_pending", () => {
           ],
         });
       }
-      if (path.includes("/events")) {
-        return sseResponse([requestedHead()], liveControllers);
+      if (method === "session.subscribe") {
+        return frameSource([requestedHead()], liveControllers);
       }
-      if (path.includes("/api/health")) {
+      if (method === "health.get") {
         return jsonResponse({
           status: "ok",
           fenced: true,
@@ -251,7 +237,7 @@ describe("gate preservation across upgrade_pending", () => {
       }
       return jsonResponse({});
     });
-    vi.stubGlobal("fetch", fetchMock);
+    installRpcPeer(rpcMock);
 
     const { unmount } = render(<CoreApp baseUrl="" />);
 
@@ -266,10 +252,7 @@ describe("gate preservation across upgrade_pending", () => {
     // Decide the approval: the 503 leaves the gate armed with the same id.
     fireEvent.click(screen.getByTestId("approval-allow-btn"));
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining("/resume"),
-        expect.anything(),
-      );
+      expect(rpcMock).toHaveBeenCalledWith("session.resume", expect.anything());
     });
     await waitFor(() => {
       // The gate is still mounted: the banner never left.
@@ -281,20 +264,22 @@ describe("gate preservation across upgrade_pending", () => {
 
     // Now the server commits the decided facts as live frames on the open
     // streams: each gate closes exactly once and never resurrects.
-    const liveFrame = (sequence: number, type: string, payload: object) =>
-      `data: ${JSON.stringify({ kind: "event", session_id: SESSION, event: storedEvent(sequence, type, payload) })}\n\n`;
-    const decidedBytes = new TextEncoder().encode(
-      liveFrame(3, "core.approval_decided", {
-        request_id: "appr-1",
-        decision: "allow",
-      }) +
+    const liveFrame = (sequence: number, type: string, payload: object) => ({
+      kind: "event",
+      session_id: SESSION,
+      event: storedEvent(sequence, type, payload),
+    });
+    for (const controller of liveControllers) {
+      controller.enqueue([
+        liveFrame(3, "core.approval_decided", {
+          request_id: "appr-1",
+          decision: "allow",
+        }),
         liveFrame(4, "core.confirmation_decided", {
           request_id: "conf-9",
           decision: "allow",
         }),
-    );
-    for (const controller of liveControllers) {
-      controller.enqueue(decidedBytes);
+      ]);
     }
     await waitFor(
       () => {
@@ -328,21 +313,23 @@ describe("gate preservation across upgrade_pending", () => {
     // the client must not follow), connection 3 stays open and continues.
     // The UI must show the new server identity + refreshed catalog/status
     // with every settled row exactly once and no prompt resend.
-    const liveControllers: ReadableStreamDefaultController[] = [];
+    const liveControllers: FrameController[] = [];
     let connections = 0;
     const head = (events: object[]) =>
       JSON.stringify({ session: { session_id: SESSION }, events });
     let healthGeneration = 1;
-    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
-      const path = String(url);
-      if (path.includes("/api/commands")) {
+    const rpcMock = vi.fn(async (method: string): Promise<MockResponse> => {
+      if (method === "command.catalog") {
         return jsonResponse({ revision_id: "rev-1", commands: [] });
       }
-      if (path.includes("/api/sessions") && !path.includes("/events")) {
-        if (path.includes("/views")) {
+      if (
+        (method.startsWith("session.") && method !== "session.subscribe") ||
+        method === "action.confirm"
+      ) {
+        if (method === "session.views") {
           return jsonResponse({ revision_id: "rev-1", views: [] });
         }
-        if (path.includes("/show")) {
+        if (method === "session.show") {
           return jsonResponse({
             session_id: SESSION,
             status: "idle",
@@ -367,11 +354,11 @@ describe("gate preservation across upgrade_pending", () => {
           ],
         });
       }
-      if (path.includes("/events")) {
+      if (method === "session.subscribe") {
         connections += 1;
         if (connections === 1) {
           // Initial connection: one head, stays open until the test EOFs it.
-          return sseResponse(
+          return frameSource(
             [
               head([
                 storedEvent(
@@ -389,7 +376,7 @@ describe("gate preservation across upgrade_pending", () => {
           // Clean EOF after events plus a lying restart watermark: the client
           // must reconnect from its own applied cursor and reconcile even
           // though no error announced the drop.
-          return sseResponse(
+          return frameSource(
             [
               head([
                 storedEvent(
@@ -411,7 +398,7 @@ describe("gate preservation across upgrade_pending", () => {
         }
         // Reconnected server, new identity; backlog replays, then continues.
         healthGeneration = 2;
-        return sseResponse(
+        return frameSource(
           [
             head([
               storedEvent(
@@ -431,7 +418,7 @@ describe("gate preservation across upgrade_pending", () => {
           liveControllers,
         );
       }
-      if (path.includes("/api/health")) {
+      if (method === "health.get") {
         return jsonResponse({
           status: "ok",
           fenced: false,
@@ -444,7 +431,7 @@ describe("gate preservation across upgrade_pending", () => {
       }
       return jsonResponse({});
     });
-    vi.stubGlobal("fetch", fetchMock);
+    installRpcPeer(rpcMock);
 
     const { unmount } = render(<CoreApp baseUrl="" />);
     // Initial settled row from the first connections.
@@ -471,7 +458,7 @@ describe("gate preservation across upgrade_pending", () => {
     expect(screen.getAllByTestId("event-1")).toHaveLength(1);
     expect(screen.getAllByTestId("event-2")).toHaveLength(1);
     expect(
-      fetchMock.mock.calls.some(([url]) => String(url).includes("/run")),
+      rpcMock.mock.calls.some(([method]) => method === "session.run"),
     ).toBe(false);
     unmount();
   }, 15000);
@@ -501,21 +488,23 @@ describe("tool birth icons", () => {
         ),
       ],
     });
-    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
-      const path = String(url);
-      if (path.includes("/api/commands")) {
+    const rpcMock = vi.fn(async (method: string): Promise<MockResponse> => {
+      if (method === "command.catalog") {
         return jsonResponse({ revision_id: "rev-1", commands: [] });
       }
-      if (path.includes("/views")) {
+      if (method === "session.views") {
         return jsonResponse({ revision_id: "rev-1", views: [] });
       }
-      if (path.includes("/events")) {
-        return sseResponse([head], []);
+      if (method === "session.subscribe") {
+        return frameSource([head], []);
       }
-      if (path.includes("/api/health")) {
+      if (method === "health.get") {
         return jsonResponse({ status: "ok", fenced: false });
       }
-      if (path.includes("/api/sessions") && !path.includes("/events")) {
+      if (
+        (method.startsWith("session.") && method !== "session.subscribe") ||
+        method === "action.confirm"
+      ) {
         return jsonResponse({
           sessions: [
             {
@@ -532,7 +521,7 @@ describe("tool birth icons", () => {
       }
       return jsonResponse({});
     });
-    vi.stubGlobal("fetch", fetchMock);
+    installRpcPeer(rpcMock);
 
     const { unmount } = render(<CoreApp baseUrl="" />);
     await waitFor(() => {
@@ -571,21 +560,23 @@ describe("tool birth icons", () => {
         ),
       ],
     });
-    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
-      const path = String(url);
-      if (path.includes("/api/commands")) {
+    const rpcMock = vi.fn(async (method: string): Promise<MockResponse> => {
+      if (method === "command.catalog") {
         return jsonResponse({ revision_id: "rev-1", commands: [] });
       }
-      if (path.includes("/views")) {
+      if (method === "session.views") {
         return jsonResponse({ revision_id: "rev-1", views: [] });
       }
-      if (path.includes("/events")) {
-        return sseResponse([head], []);
+      if (method === "session.subscribe") {
+        return frameSource([head], []);
       }
-      if (path.includes("/api/health")) {
+      if (method === "health.get") {
         return jsonResponse({ status: "ok", fenced: false });
       }
-      if (path.includes("/api/sessions") && !path.includes("/events")) {
+      if (
+        (method.startsWith("session.") && method !== "session.subscribe") ||
+        method === "action.confirm"
+      ) {
         return jsonResponse({
           sessions: [
             {
@@ -602,7 +593,7 @@ describe("tool birth icons", () => {
       }
       return jsonResponse({});
     });
-    vi.stubGlobal("fetch", fetchMock);
+    installRpcPeer(rpcMock);
     const { unmount } = render(<CoreApp baseUrl="" />);
     await waitFor(() => {
       expect(screen.getByTestId("event-4")).toHaveTextContent("▷");
@@ -661,21 +652,23 @@ describe("canonical transcript cutover", () => {
         ),
       ],
     });
-    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
-      const path = String(url);
-      if (path.includes("/api/commands")) {
+    const rpcMock = vi.fn(async (method: string): Promise<MockResponse> => {
+      if (method === "command.catalog") {
         return jsonResponse({ revision_id: "rev-1", commands: [] });
       }
-      if (path.includes("/views")) {
+      if (method === "session.views") {
         return jsonResponse({ revision_id: "rev-1", views: [] });
       }
-      if (path.includes("/events")) {
-        return sseResponse([head], []);
+      if (method === "session.subscribe") {
+        return frameSource([head], []);
       }
-      if (path.includes("/api/health")) {
+      if (method === "health.get") {
         return jsonResponse({ status: "ok", fenced: false });
       }
-      if (path.includes("/api/sessions") && !path.includes("/events")) {
+      if (
+        (method.startsWith("session.") && method !== "session.subscribe") ||
+        method === "action.confirm"
+      ) {
         return jsonResponse({
           sessions: [
             {
@@ -692,7 +685,7 @@ describe("canonical transcript cutover", () => {
       }
       return jsonResponse({});
     });
-    vi.stubGlobal("fetch", fetchMock);
+    installRpcPeer(rpcMock);
     const { unmount } = render(<CoreApp baseUrl="" />);
     await waitFor(() => {
       expect(screen.getByTestId("event-7")).toHaveTextContent("continued work");
@@ -756,21 +749,23 @@ describe("canonical transcript cutover", () => {
         ),
       ],
     });
-    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
-      const path = String(url);
-      if (path.includes("/api/commands")) {
+    const rpcMock = vi.fn(async (method: string): Promise<MockResponse> => {
+      if (method === "command.catalog") {
         return jsonResponse({ revision_id: "rev-1", commands: [] });
       }
-      if (path.includes("/views")) {
+      if (method === "session.views") {
         return jsonResponse({ revision_id: "rev-1", views: [] });
       }
-      if (path.includes("/events")) {
-        return sseResponse([head], []);
+      if (method === "session.subscribe") {
+        return frameSource([head], []);
       }
-      if (path.includes("/api/health")) {
+      if (method === "health.get") {
         return jsonResponse({ status: "ok", fenced: false });
       }
-      if (path.includes("/api/sessions") && !path.includes("/events")) {
+      if (
+        (method.startsWith("session.") && method !== "session.subscribe") ||
+        method === "action.confirm"
+      ) {
         return jsonResponse({
           sessions: [
             {
@@ -787,7 +782,7 @@ describe("canonical transcript cutover", () => {
       }
       return jsonResponse({});
     });
-    vi.stubGlobal("fetch", fetchMock);
+    installRpcPeer(rpcMock);
     const { unmount } = render(<CoreApp baseUrl="" />);
     await waitFor(() => {
       expect(screen.getByTestId("event-5")).toHaveTextContent("Tool [read]");
@@ -829,22 +824,24 @@ describe("canonical transcript cutover", () => {
           "projection failed: sequence=2 type=core.tool_completed error=ValidationError",
       }),
     ];
-    const fetchMock = vi.fn(async (url: unknown): Promise<Response> => {
-      const path = String(url);
-      if (path.includes("/api/commands")) {
+    const rpcMock = vi.fn(async (method: string): Promise<MockResponse> => {
+      if (method === "command.catalog") {
         return jsonResponse({ revision_id: "rev-1", commands: [] });
       }
-      if (path.includes("/views")) {
+      if (method === "session.views") {
         return jsonResponse({ revision_id: "rev-1", views: [] });
       }
-      if (path.includes("/events")) {
+      if (method === "session.subscribe") {
         connections += 1;
-        return sseResponse(frames, [], connections > 1);
+        return frameSource(frames, [], connections > 1);
       }
-      if (path.includes("/api/health")) {
+      if (method === "health.get") {
         return jsonResponse({ status: "ok", fenced: false });
       }
-      if (path.includes("/api/sessions") && !path.includes("/events")) {
+      if (
+        (method.startsWith("session.") && method !== "session.subscribe") ||
+        method === "action.confirm"
+      ) {
         return jsonResponse({
           sessions: [
             {
@@ -861,7 +858,7 @@ describe("canonical transcript cutover", () => {
       }
       return jsonResponse({});
     });
-    vi.stubGlobal("fetch", fetchMock);
+    installRpcPeer(rpcMock);
     const { unmount } = render(<CoreApp baseUrl="" />);
     await waitFor(() => {
       expect(screen.getByTestId("event-1")).toHaveTextContent("hi");

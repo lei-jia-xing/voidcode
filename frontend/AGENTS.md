@@ -1,6 +1,6 @@
 # Frontend Guide
 
-Bun + Vite + React 19 client for the VoidCode core's HTTP/SSE transport. `src/main.tsx` mounts `src/core/CoreApp.tsx` unconditionally; there is no second app and no other backend client.
+Bun + Vite + React 19 client for the VoidCode core's WebSocket RPC transport. `src/main.tsx` mounts `src/core/CoreApp.tsx` unconditionally; there is no second app and no other backend client.
 
 ## Where to Look
 
@@ -14,7 +14,7 @@ Bun + Vite + React 19 client for the VoidCode core's HTTP/SSE transport. `src/ma
 | Wire types | `src/lib/core/types.ts` |
 | Generated API types | `src/lib/core/generated/api.d.ts` |
 | Translations | `src/i18n/index.ts`, `src/i18n/locales/*.json` |
-| End-to-end spec | `e2e/core.spec.ts` |
+| End-to-end specs | `e2e/core.spec.ts`, `e2e/rpc-reconnect.spec.ts` |
 
 ## Core client contract
 
@@ -25,7 +25,7 @@ Bun + Vite + React 19 client for the VoidCode core's HTTP/SSE transport. `src/ma
 
 ## Generated API types
 
-`src/lib/core/generated/api.d.ts` comes from the core transport's OpenAPI document. After changing the transport models, run `mise run frontend:api:generate`; `mise run frontend:api:check` fails when the committed types are stale. Never hand-edit the generated file.
+`src/lib/core/generated/api.d.ts` comes from the core transport schema document, including its RPC method/notification registry. After changing the transport models, run `mise run frontend:api:generate`; `mise run frontend:api:check` fails when the committed types are stale. Never hand-edit the generated file.
 
 ## i18n
 

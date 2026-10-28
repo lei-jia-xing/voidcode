@@ -22,6 +22,7 @@ from pathlib import Path
 import uvicorn
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
+from tests.rpc_client import request as _request
 from voidcode.transport.http import create_core_app
 
 _HELLO_ID = "hello-state"
@@ -225,7 +226,9 @@ def _listening_http(workspace: Path, state: Path, token: str) -> Iterator[str]:
         worker.join(timeout=10)
 
 
-def _request(base: str, method: str, path: str, *, token: str | None = None, body: object = None, origin: str | None = None) -> tuple[int, bytes]:
+def _http_request(
+    base: str, method: str, path: str, *, token: str | None = None, body: object = None, origin: str | None = None
+) -> tuple[int, bytes]:
     data = None if body is None else json.dumps(body).encode("utf-8")
     request = urllib.request.Request(base + path, data=data, method=method)
     if data is not None:
@@ -300,7 +303,7 @@ def test_revision_bound_actions_refuse_missing_empty_and_stale_revisions(tmp_pat
         _cli(workspace, state, "create-session", "--session-id", "rev-1")
         token = "revision-bound-token"
         with _listening_http(workspace, state, token) as base:
-            status, body = _request(base, "GET", "/api/commands", token=token)
+            status, body = _request(base, "command.catalog", {}, token=token)
             assert status == 200, body.decode()
             catalog = json.loads(body)
             displayed = catalog["revision_id"]
@@ -309,12 +312,12 @@ def test_revision_bound_actions_refuse_missing_empty_and_stale_revisions(tmp_pat
 
             # The catalog envelope revision is the session's active revision: one
             # displayed generation, not a per-response guess.
-            status, body = _request(base, "GET", "/api/sessions/rev-1", token=token)
+            status, body = _request(base, "session.get", {"session_id": "rev-1"}, token=token)
             assert status == 200, body.decode()
             assert json.loads(body)["active_revision_id"] == displayed
 
             # The views envelope carries that same captured generation.
-            status, body = _request(base, "GET", "/api/sessions/rev-1/views", token=token)
+            status, body = _request(base, "session.views", {"session_id": "rev-1"}, token=token)
             assert status == 200, body.decode()
             views = json.loads(body)
             assert views["revision_id"] == displayed
@@ -322,16 +325,15 @@ def test_revision_bound_actions_refuse_missing_empty_and_stale_revisions(tmp_pat
 
             # Missing and empty revisions never reach a lookup: 400 invalid_params.
             status, body = _request(
-                base, "POST", "/api/sessions/rev-1/invoke/hello_set", token=token, body={"arguments": {"greeting": "must-not-land"}}
+                base, "command.invoke", {"session_id": "rev-1", "name": "hello_set", "arguments": {"greeting": "must-not-land"}}, token=token
             )
             assert status == 400, body.decode()
             assert json.loads(body)["code"] == "invalid_params"
             status, body = _request(
                 base,
-                "POST",
-                "/api/sessions/rev-1/invoke/hello_set",
+                "command.invoke",
+                {"session_id": "rev-1", "name": "hello_set", "arguments": {"greeting": "must-not-land"}, "expected_revision": ""},
                 token=token,
-                body={"arguments": {"greeting": "must-not-land"}, "expected_revision": ""},
             )
             assert status == 400, body.decode()
             assert json.loads(body)["code"] == "invalid_params"
@@ -339,10 +341,9 @@ def test_revision_bound_actions_refuse_missing_empty_and_stale_revisions(tmp_pat
             # A revision the client did not display is stale: 409, no dispatch.
             status, body = _request(
                 base,
-                "POST",
-                "/api/sessions/rev-1/invoke/hello_set",
+                "command.invoke",
+                {"session_id": "rev-1", "name": "hello_set", "arguments": {"greeting": "must-not-land"}, "expected_revision": "rev-never-displayed"},
                 token=token,
-                body={"arguments": {"greeting": "must-not-land"}, "expected_revision": "rev-never-displayed"},
             )
             assert status == 409, body.decode()
             refusal = json.loads(body)
@@ -353,16 +354,15 @@ def test_revision_bound_actions_refuse_missing_empty_and_stale_revisions(tmp_pat
             # stored request id, so an unknown id cannot be probed under a lie.
             status, body = _request(
                 base,
-                "POST",
-                "/api/sessions/rev-1/confirm",
+                "action.confirm",
+                {"session_id": "rev-1", "request_id": "req-not-stored", "decision": "allow", "expected_revision": "rev-never-displayed"},
                 token=token,
-                body={"request_id": "req-not-stored", "decision": "allow", "expected_revision": "rev-never-displayed"},
             )
             assert status == 409, body.decode()
             assert json.loads(body)["code"] == "stale_revision"
 
             # Nothing refused had an outside effect, and the displayed revision works.
-            status, body = _request(base, "POST", "/api/sessions/rev-1/invoke/hello_get", token=token, body={"expected_revision": displayed})
+            status, body = _request(base, "command.invoke", {"session_id": "rev-1", "name": "hello_get", "expected_revision": displayed}, token=token)
             assert status == 200, body.decode()
             assert json.loads(body)["data"]["greeting"] == "none"
 
@@ -382,18 +382,18 @@ def test_listening_http_bearer_and_origin_boundary(tmp_path: Path) -> None:
         _configure(workspace, server, source)
         token = "test-token-abc123"
         with _listening_http(workspace, state, token) as base:
-            status, body = _request(base, "GET", "/api/commands")
+            status, body = _request(base, "command.catalog", {})
             assert status == 401
-            status, body = _request(base, "GET", "/api/commands", token="wrong")
+            status, body = _request(base, "command.catalog", {}, token="wrong")
             assert status == 401
-            status, body = _request(base, "GET", "/api/commands", token=token)
+            status, body = _request(base, "command.catalog", {}, token=token)
             assert status == 200, body.decode()
             assert token not in body.decode()
             payload = json.loads(body)
             assert any(command["name"] == "hello_set" for command in payload["commands"])
-            status, body = _request(base, "GET", "/no-such-route", token=token)
+            status, body = _http_request(base, "GET", "/no-such-route", token=token)
             assert status == 404
-            status, body = _request(base, "POST", "/api/sessions", token=token, body={"unknown_field": 1})
+            status, body = _request(base, "session.create", {"unknown_field": 1}, token=token)
             assert status == 400
 
 
@@ -415,19 +415,15 @@ def test_cli_and_http_share_generic_command_route_with_restart(tmp_path: Path) -
         with _listening_http(workspace, state, token) as base:
             # The CLI already exited, so HTTP owns the core now. The HTTP client
             # acts as a real client: it reads the catalog and echoes its revision.
-            status, body = _request(base, "GET", "/api/commands", token=token)
+            status, body = _request(base, "command.catalog", {}, token=token)
             assert status == 200, body.decode()
             displayed = json.loads(body)["revision_id"]
             status, body = _request(
-                base,
-                "POST",
-                "/api/sessions/shared-1/invoke/hello_get",
-                token=token,
-                body={"expected_revision": displayed},
+                base, "command.invoke", {"session_id": "shared-1", "name": "hello_get", "expected_revision": displayed}, token=token
             )
             assert status == 200, body.decode()
             assert json.loads(body)["data"]["greeting"] == "persist-me"
-            status, body = _request(base, "GET", "/api/sessions/shared-1/views", token=token)
+            status, body = _request(base, "session.views", {"session_id": "shared-1"}, token=token)
             assert status == 200, body.decode()
             views = json.loads(body)["views"]
             hello = next(view for view in views if view["name"] == "hello_view")
@@ -576,15 +572,15 @@ def test_targeted_cancel_requests_one_session_only(tmp_path: Path) -> None:
         _cli(workspace, state, "create-session", "--session-id", "cancel-b")
         token = "cancel-scope-token"
         with _listening_http(workspace, state, token) as base:
-            status, body = _request(base, "POST", "/api/sessions/cancel-b/cancel", token=token)
+            status, body = _request(base, "session.cancel", {"session_id": "cancel-b"}, token=token)
             assert status == 200, body.decode()
             payload = json.loads(body)
             assert payload["session_id"] == "cancel-b"
             assert payload["cancellation_requested"] is False  # idle session owns no active run
-            status, body = _request(base, "GET", "/api/sessions/cancel-a", token=token)
+            status, body = _request(base, "session.get", {"session_id": "cancel-a"}, token=token)
             assert status == 200, body.decode()
             assert json.loads(body)["status"] == "idle"
-            status, body = _request(base, "GET", "/api/sessions/cancel-b", token=token)
+            status, body = _request(base, "session.get", {"session_id": "cancel-b"}, token=token)
             assert status == 200, body.decode()
             assert json.loads(body)["status"] == "idle"
 
@@ -605,16 +601,16 @@ def test_events_cursor_replays_tail_without_full_rescan(tmp_path: Path) -> None:
         assert mid > 1
         token = "events-cursor-token"
         with _listening_http(workspace, state, token) as base:
-            status, body = _request(base, "GET", f"/api/sessions/events-1/events?after_sequence={mid}", token=token)
+            status, body = _request(base, "session.subscribe", {"session_id": "events-1", "after_sequence": mid}, token=token)
             assert status == 200, body.decode()
-            frames = [frame for frame in body.decode("utf-8").split("\n\n") if frame.startswith("data: ")]
+            frames = json.loads(body)
             assert frames, body.decode()
-            head = json.loads(frames[0][len("data: ") :])
+            head = frames[0]
             assert head["events"] == []
-            status, body = _request(base, "GET", "/api/sessions/events-1/events?after_sequence=0", token=token)
+            status, body = _request(base, "session.subscribe", {"session_id": "events-1", "after_sequence": 0}, token=token)
             assert status == 200, body.decode()
-            frames = [frame for frame in body.decode("utf-8").split("\n\n") if frame.startswith("data: ")]
-            replayed = json.loads(frames[0][len("data: ") :])
+            frames = json.loads(body)
+            replayed = frames[0]
             assert [event["sequence"] for event in replayed["events"]] == list(range(1, mid + 1))
 
 
@@ -657,11 +653,11 @@ def test_malformed_conversational_record_is_a_terminal_error_not_a_null_transcri
             connection.close()
         token = "malformed-head-token"
         with _listening_http(workspace, state, token) as base:
-            status, body = _request(base, "GET", "/api/sessions/malformed-1/events?after_sequence=0", token=token)
+            status, body = _request(base, "session.subscribe", {"session_id": "malformed-1", "after_sequence": 0}, token=token)
             assert status == 200, body.decode()
             text = body.decode("utf-8")
             assert sentinel not in text and "leaked" not in text
-            frames = [json.loads(frame[len("data: ") :]) for frame in text.split("\n\n") if frame.startswith("data: ")]
+            frames = json.loads(text)
             assert len(frames) == 1, frames
             (error,) = frames
             assert error["kind"] == "error"

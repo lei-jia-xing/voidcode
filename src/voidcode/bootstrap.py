@@ -435,13 +435,13 @@ def open_session_client(
     server_url: str | None = None,
     token: str | None = None,
 ) -> Iterator[SessionClient]:
-    """Open one typed session client: local owned core or remote HTTP.
+    """Open one typed session client: local owned core or remote WebSocket RPC.
 
     Exactly one of ``workspace`` (local arm, owns its ``Core``) or
     ``server_url`` (remote arm) is required. Closing the context closes the
     client, and the local arm's core with it.
     """
-    from .tui.client import CoreHttpClient
+    from .tui.client import CoreRpcClient
     from .tui.local_client import CoreLocalClient
 
     if (workspace is None) == (server_url is None):
@@ -454,7 +454,7 @@ def open_session_client(
             core.close()
     else:
         assert server_url is not None
-        client = CoreHttpClient(server_url, token=token)
+        client = CoreRpcClient(server_url, token=token)
         try:
             yield client
         finally:
