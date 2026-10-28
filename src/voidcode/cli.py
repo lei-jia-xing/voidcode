@@ -65,7 +65,7 @@ _COMMANDS = frozenset(
 )
 _ROOT_VALUE_OPTIONS = frozenset({"--workspace", "--state-dir"})
 #: Every value option the command scan skips, so a session named e.g. ``run`` never reads as a subcommand.
-_COMMAND_SCAN_VALUE_OPTIONS = _ROOT_VALUE_OPTIONS | frozenset({"--server", "--token", "--session-id", "--icons"})
+_COMMAND_SCAN_VALUE_OPTIONS = _ROOT_VALUE_OPTIONS | frozenset({"--server", "--token", "--session-id", "--icons", "--footer"})
 
 
 def _normalized_argv(argv: Sequence[str]) -> list[str]:
@@ -127,6 +127,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("glyph", "ascii"),
         default="glyph",
         help="Tool icon style: glyph (tool-declared Unicode) or ascii (explicit fallback; default: glyph)",
+    )
+    client.add_argument(
+        "--no-border",
+        action="store_true",
+        help="Render the composer without its box frame (default: boxed)",
+    )
+    client.add_argument(
+        "--footer",
+        choices=("full", "compact", "off"),
+        default=None,
+        help="Footer context row: full (workspace, model, effort), compact (model, effort), or off (gates/notices only)",
+    )
+    client.add_argument(
+        "--show-session",
+        action="store_true",
+        help="Show the short session id in the footer context row",
     )
     roots = parser.add_argument_group("workspace options")
     roots.add_argument(
@@ -236,18 +252,47 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve.add_argument("--open", dest="open_browser", action="store_true", help="Open the served web client in a browser")
     normalized = _normalized_argv(argv if argv is not None else sys.argv[1:])
     args = parser.parse_args(normalized)
-    if args.command is not None and (args.server is not None or args.token is not None or args.tui_session_id is not None or args.icons != "glyph"):
-        parser.error("--server/--token/--session-id/--icons are bare-client options and cannot be combined with a subcommand")
+    bare_client = (
+        args.server is not None
+        or args.token is not None
+        or args.tui_session_id is not None
+        or args.icons != "glyph"
+        or args.no_border
+        or args.footer is not None
+        or args.show_session
+    )
+    if args.command is not None and bare_client:
+        parser.error("--server/--token/--session-id/--icons/--no-border/--footer/--show-session are bare-client options, not subcommand flags")
     try:
         workspace = args.workspace.resolve(strict=True)
         bare_directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
         if args.command is None:
             from .tui import run_tui
 
-            icon_style = cast(Literal["glyph", "ascii"], args.icons)
+            prefs = _tui_prefs(args, workspace=workspace)
+            icon_style = cast(Literal["glyph", "ascii"], prefs["icons"])
+            border = cast(Literal["box", "borderless"], prefs["border"])
+            footer = cast(Literal["full", "compact", "off"], prefs["footer"])
+            show_session = bool(prefs["show_session"])
             if args.server is not None:
-                return run_tui(args.server, token=args.token, session_id=args.tui_session_id, icon_style=icon_style)
-            return _embedded_tui(workspace, bare_directory, session_id=args.tui_session_id, icon_style=icon_style)
+                return run_tui(
+                    args.server,
+                    token=args.token,
+                    session_id=args.tui_session_id,
+                    icon_style=icon_style,
+                    border=border,
+                    footer=footer,
+                    show_session=show_session,
+                )
+            return _embedded_tui(
+                workspace,
+                bare_directory,
+                session_id=args.tui_session_id,
+                icon_style=icon_style,
+                border=border,
+                footer=footer,
+                show_session=show_session,
+            )
         if args.command == "show":
             return _show(workspace, bare_directory, args.session_id, events=args.events)
         if args.command == "invoke":
@@ -344,11 +389,52 @@ def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) ->
     return 0
 
 
-def _embedded_tui(workspace: Path, directory: Path, *, session_id: str | None, icon_style: Literal["glyph", "ascii"] = "glyph") -> int:
+def _tui_prefs(args: argparse.Namespace, *, workspace: Path) -> dict[str, object]:
+    """Per-field precedence CLI > file > defaults; remote reads the LOCAL cwd file best-effort."""
+    from .config import CONFIG_FILE_NAME, parse_config
+
+    file_tui: dict[str, object] = {}
+    # Embedded: the workspace file. Remote: the server owns its own file, so
+    # the client's LOCAL cwd file is the only honest source; a malformed or
+    # missing file degrades to defaults (display prefs must never refuse launch).
+    candidate = workspace / CONFIG_FILE_NAME if args.server is None else Path.cwd() / CONFIG_FILE_NAME
+    try:
+        raw = candidate.read_text(encoding="utf-8") if candidate.is_file() else ""
+        if raw:
+            parsed = parse_config(json.loads(raw))
+            file_tui = {"border": parsed.tui.border, "footer": parsed.tui.footer, "show_session": parsed.tui.show_session, "icons": parsed.tui.icons}
+    except Exception:
+        file_tui = {}
+    prefs: dict[str, object] = {"border": "box", "footer": "full", "show_session": False, "icons": "glyph"}
+    prefs.update(file_tui)
+    if args.no_border:
+        prefs["border"] = "borderless"
+    if args.footer is not None:
+        prefs["footer"] = args.footer
+    if args.show_session:
+        prefs["show_session"] = True
+    args_icons = cast(str, args.icons)
+    if args_icons != "glyph":
+        prefs["icons"] = args_icons
+    return prefs
+
+
+def _embedded_tui(
+    workspace: Path,
+    directory: Path,
+    *,
+    session_id: str | None,
+    icon_style: Literal["glyph", "ascii"] = "glyph",
+    border: Literal["box", "borderless"] = "box",
+    footer: Literal["full", "compact", "off"] = "full",
+    show_session: bool = False,
+) -> int:
     """Run the TUI directly against an in-process core: no socket, no HTTP framing."""
     from .tui import run_embedded_tui
 
-    return run_embedded_tui(workspace, directory, session_id=session_id, icon_style=icon_style)
+    return run_embedded_tui(
+        workspace, directory, session_id=session_id, icon_style=icon_style, border=border, footer=footer, show_session=show_session
+    )
 
 
 def _dispatch(core: Core, args: argparse.Namespace) -> int:

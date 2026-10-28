@@ -51,6 +51,20 @@ _SESSION_ROW_ADAPTER: TypeAdapter[SessionRow] = TypeAdapter(SessionRow)
 
 
 @dataclass(frozen=True, slots=True)
+class HealthModel:
+    """Admitted model identity plus supported thinking levels for the footer."""
+
+    raw: str | None
+    provider: str | None
+    model: str | None
+    reasoning_effort: str | None
+    reasoning_levels: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reasoning_levels", tuple(self.reasoning_levels))
+
+
+@dataclass(frozen=True, slots=True)
 class HealthStatus:
     """Core health and identity: the stable surface clients poll."""
 
@@ -64,6 +78,7 @@ class HealthStatus:
     web_bundle: str | None
     generation: int
     active_upgrade: Mapping[str, object] | None
+    model: HealthModel | None = None
 
     def __post_init__(self) -> None:
         if self.active_upgrade is not None:
@@ -526,6 +541,7 @@ __all__ = [
     "EventFrameWire",
     "HeadFrame",
     "HeadFrameWire",
+    "HealthModel",
     "HealthStatus",
     "MAX_PROMPT_BYTES",
     "MAX_PROMPT_CHARS",

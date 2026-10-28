@@ -69,7 +69,7 @@ One CLI serves every operation: `voidcode [OPTIONS] [COMMAND]` (or `python -m vo
 - **Agent runs**: `run "<prompt>" [--session-id] [--max-steps]`, `resume <session_id> [--approval-request-id --decision allow|deny] [--max-steps]`.
 - **Session truth**: `create-session`, `sessions [--limit]`, `show <session_id> [--events]` (a rescue read directly from SQLite without starting a core).
 - **Capability surface**: `catalog`, `invoke <session_id> <name> --arguments JSON --expected-revision <id>`, `confirm <session_id> <request_id> --decision allow|deny --expected-revision <id>`, `views <session_id>`, `drain <session_id> [--limit]`, `usage <session_id> [--since-sequence] [--until-sequence]`.
-- **Clients**: bare `[--server URL --token TOKEN --session-id ID]`, `serve [--host] [--port] [--bearer-token] [--open]` (loopback only, binds dynamically on port 0 with IPv6 bracketed, serves WebSocket RPC API plus built web bundle at `/`).
+- **Clients**: bare `[--server URL --token TOKEN --session-id ID --icons glyph|ascii --no-border --footer full|compact|off --show-session]`, `serve [--host] [--port] [--bearer-token] [--open]` (loopback only, binds dynamically on port 0 with IPv6 bracketed, serves WebSocket RPC API plus built web bundle at `/`).
 - **Root options**: `--workspace PATH` (default: current directory), `--state-dir PATH`.
 
 In-session commands come from the core command catalog: the reserved core commands (`run`, `resume`, `show`, `status`, `help`, `core.reload`) plus every plugin-declared command. They reach every client the same way — `/<name>` in the TUI and web client, `voidcode invoke` from the CLI — and there is no client-side command table.

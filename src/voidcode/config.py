@@ -39,6 +39,17 @@ class ModelConfig(BaseModel):
         return v
 
 
+class TuiConfig(BaseModel):
+    """Local TUI chrome prefs: display-only, never admitted, never snapshotted."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    border: Literal["box", "borderless"] = "box"
+    footer: Literal["full", "compact", "off"] = "full"
+    show_session: bool = False
+    icons: Literal["glyph", "ascii"] = "glyph"
+
+
 class PolicyConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
@@ -156,6 +167,7 @@ class Config(BaseModel):
         Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*$")],
         PluginEntry,
     ] = Field(default_factory=dict)
+    tui: TuiConfig = Field(default_factory=TuiConfig)
 
     @field_validator("schema_version", mode="before")
     @classmethod

@@ -249,7 +249,7 @@ class Composer:
         width: int,
         placeholder: str = "",
         max_height: int = 10,
-        style: str = "band",
+        style: str = "box",
         gutter: str = "prompt",
         padding: str = "normal",
         clock: Callable[[], float] | None = None,
@@ -608,12 +608,15 @@ class Composer:
             parts.append(self._styles.fg("border", vertical))
         return clamp_row("".join(parts), width)
 
-    def _horizontal_rule(self, *, corners: bool = False) -> str:
+    def _horizontal_rule(self, *, corners: bool = False, overlay: str = "") -> str:
         horizontal = symbol("boxRound.horizontal") or "-"
-        if corners and self._width >= 2:
-            line = symbol("boxRound.topLeft") + horizontal * (self._width - 2) + symbol("boxRound.topRight")
-        else:
-            line = horizontal * self._width
+        top_left = symbol("boxRound.topLeft")
+        top_right = symbol("boxRound.topRight")
+        inner_width = max(0, self._width - 2 if corners else self._width)
+        inner = horizontal * inner_width
+        if overlay and visible_width(overlay) + 2 <= inner_width:
+            inner = f" {overlay} " + inner[visible_width(overlay) + 2 :]
+        line = f"{top_left}{inner}{top_right}" if corners and self._width >= 2 else inner
         return clamp_row(self._styles.fg("border", line), self._width)
 
     def _status_row(self, status: str) -> str | None:
@@ -633,7 +636,7 @@ class Composer:
             row = self._styles.fg("border", vertical) + row
         return clamp_row(row, self._width)
 
-    def _style_rows(self, rows: list[str], status: str) -> list[str]:
+    def _style_rows(self, rows: list[str], status: str, border_status: str = "") -> list[str]:
         frame = _FRAMES[self._style]
         status_row = self._status_row(status)
         padded = self._padding == "normal"
@@ -641,7 +644,7 @@ class Composer:
         padding_row = self._styles.fg("border", vertical + " " * max(0, self._width - 2) + vertical) if frame.sides else ""
         output: list[str] = []
         if frame.top_rule:
-            output.append(self._horizontal_rule(corners=frame.sides))
+            output.append(self._horizontal_rule(corners=frame.sides, overlay=border_status))
         if padded:
             output.append(padding_row)
         if status_row is not None and frame.status_dock != "bottom":
@@ -674,7 +677,7 @@ class Composer:
             self._cursor_position = row + input_start, min(self._width - 1, column + inset)
         return [clamp_row(row, self._width) for row in output]
 
-    def _input_rows(self, status: str) -> list[str]:
+    def _input_rows(self, status: str, border_status: str = "") -> list[str]:
         frame = _FRAMES[self._style]
         inset = int(frame.sides) * 2 + int(frame.sidebar) * 2 + int(frame.rail)
         width = max(1, self._width - inset)
@@ -690,7 +693,7 @@ class Composer:
         if self._text == "":
             self._cursor_position = (0, gutter_width) if self._enabled else None
             row = self._input_row(first_gutter, self._empty_content(layout_width), layout_width, self._width)
-            return self._style_rows([row], status)
+            return self._style_rows([row], status, border_status)
 
         lines = self._text.split("\n")
         offsets: list[int] = []
@@ -729,11 +732,11 @@ class Composer:
         self._cursor_position = (
             (visible_cursor, min(width - 1, gutter_width + cursor_cell)) if self._enabled and 0 <= visible_cursor < len(rows) else None
         )
-        return self._style_rows(rows, status)
+        return self._style_rows(rows, status, border_status)
 
-    def render(self, status: str = "") -> Sequence[str]:
+    def render(self, status: str = "", *, border_status: str = "") -> Sequence[str]:
         """Compose one actual status dock, frame, visible input rows, and cursor."""
-        return self._input_rows(status)
+        return self._input_rows(status, border_status)
 
     def completion_rows(self) -> Sequence[str]:
         """Popup rows above the composer (chrome only, never committed)."""

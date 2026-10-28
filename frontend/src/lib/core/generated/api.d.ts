@@ -530,6 +530,22 @@ export interface components {
             session: components["schemas"]["SessionRow"];
         };
         /**
+         * HealthModel
+         * @description Admitted model identity plus supported thinking levels for the footer.
+         */
+        HealthModel: {
+            /** Model */
+            model: string | null;
+            /** Provider */
+            provider: string | null;
+            /** Raw */
+            raw: string | null;
+            /** Reasoning Effort */
+            reasoning_effort: string | null;
+            /** Reasoning Levels */
+            reasoning_levels: string[];
+        };
+        /**
          * HealthStatus
          * @description Core health and identity: the stable surface clients poll.
          */
@@ -544,6 +560,7 @@ export interface components {
             generation: number;
             /** Launch Protocol */
             launch_protocol: number;
+            model?: components["schemas"]["HealthModel"] | null;
             /** Pid */
             pid: number;
             /** Revision Id */

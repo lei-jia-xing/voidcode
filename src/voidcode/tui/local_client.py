@@ -35,6 +35,7 @@ from voidcode.transport.projection import (
     core_error_status,
     event_payload,
     health_payload,
+    model_payload,
     safe_projection_error,
     session_payload,
     validated_session_id,
@@ -75,6 +76,7 @@ class CoreLocalClient:
             raise CoreClientError(str(exc), status_code=400, code="invalid_params") from None
 
     def health(self) -> HealthStatus:
+        config = self._core.config
         return HealthStatus.from_payload(
             health_payload(
                 revision_id=self._core.revision_id,
@@ -82,6 +84,7 @@ class CoreLocalClient:
                 workspace=self._workspace,
                 generation=1,
                 upgrade_id=None,
+                model=model_payload(raw=config.model, configured_effort=config.reasoning_effort),
             )
         )
 

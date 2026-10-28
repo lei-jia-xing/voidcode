@@ -34,7 +34,7 @@ from voidcode.sdk.views import (
 )
 
 from .models import AuthenticateParams, SessionFrameParams, SubscriptionClosedParams
-from .projection import health_payload
+from .projection import health_payload, model_payload
 from .rpc import CONNECTION_METHODS, METHODS, RpcConnection, failure, parse_json
 
 
@@ -235,6 +235,14 @@ class CoreTransportApp(FastAPI):
                     revision_id = found or ""
                 except Exception:
                     pass
+        model = None
+        if self._core is not None:
+            try:
+                config = await asyncio.to_thread(lambda: self._core.config if self._core is not None else None)
+            except Exception:
+                config = None
+            if config is not None:
+                model = model_payload(raw=config.model, configured_effort=config.reasoning_effort)
         return JsonResponse(
             health_payload(
                 revision_id=revision_id,
@@ -242,6 +250,7 @@ class CoreTransportApp(FastAPI):
                 workspace=str(self._workspace) if self._workspace else "",
                 generation=self._generation,
                 upgrade_id=self._upgrade_id,
+                model=model,
             )
         )
 

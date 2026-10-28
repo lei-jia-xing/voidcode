@@ -55,8 +55,21 @@ The `my-linter` entry illustrates an external plugin: the directory must exist a
 | `policy` | object | Execution policy: `approval_mode`, `read_only`, and `max_root_children`. |
 | `sandbox` | object | Optional transparent exec backend: `mode`, `network`, `writable_roots`. Absent means unconfined host exec. |
 | `providers` | object | Endpoint configuration for provider names declared by admitted plugins. |
+| `plugins` | object | Per-plugin entries: `enabled`, `path`, `config`. |
+| `tui` | object | Optional local TUI chrome prefs: `border`, `footer`, `show_session`, `icons`. Display-only: never admitted, never snapshotted, zero revision churn. |
 
 No other top-level field is accepted.
+
+### `tui`
+
+Optional. Read by the terminal client only (embedded: the workspace file; remote `--server`: the client's local cwd file best-effort, never the server's block). CLI flags win per-field over the file, which wins over defaults. A malformed file never refuses TUI launch: prefs degrade to defaults.
+
+| Field | Type | Description |
+|---|---|---|
+| `border` | string | `box` (default) or `borderless` (`--no-border` forces borderless). |
+| `footer` | string | `full` (default: workspace · model · effort), `compact` (model · effort), or `off` (context row hidden; gates/notices still show). `--footer` overrides. |
+| `show_session` | boolean | Default `false`. `true` adds the short session id to the full footer. `--show-session` forces true. |
+| `icons` | string | `glyph` (default) or `ascii`. `--icons` stays the CLI authority; the file value applies only when the flag is unset. |
 
 ### `model`
 

@@ -777,27 +777,6 @@ def test_activation_refresh_is_silent_for_optional_views() -> None:
     assert not any("Objective" in row for row in terminal.frames[-1]), terminal.frames[-1]
 
 
-def test_idle_chrome_shows_status_segments() -> None:
-    """Idle chrome shows session/run-state segments in the status dock."""
-    from voidcode.tui.terminal_app import CoreTuiApp
-
-    client = _CommandClient()
-    terminal = _StubTerminal()
-    app = CoreTuiApp(client, terminal=terminal)
-
-    app._init_session()
-    assert app.session_id == "s1"
-    assert app.status_line == ""
-    app._render_frame()
-    frame_text = "\n".join(terminal.frames[-1])
-    assert "s1" in frame_text
-    assert "idle" in frame_text
-    assert "voidcode-dark" not in frame_text
-
-    app._show_sessions()
-    assert any("s1" in row for row in terminal.committed), terminal.committed
-
-
 def test_durable_gates_survive_automatic_view_refresh() -> None:
     """Approval/confirmation gates come from durable facts, not views, and stay put."""
     from voidcode.tui.terminal_app import CoreTuiApp

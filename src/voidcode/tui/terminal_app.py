@@ -6,12 +6,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import queue
 import threading
 import time
 from collections.abc import Mapping
 from typing import Any, Literal
 
+from voidcode.capabilities.providers.native.reasoning_effort import normalize_reasoning_effort
 from voidcode.core.events import EventType
 from voidcode.sdk.client import (
     CommandCatalog,
@@ -67,7 +69,7 @@ from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
 from .region import TuiFrame
 from .styles import SPINNER_FRAMES, Styles
-from .term import Terminal, escape_terminal_controls
+from .term import Terminal, clamp_row, crop_row_right, escape_terminal_controls, visible_width
 from .views import (
     InteractiveApproval,
     InteractiveChoices,
@@ -288,6 +290,66 @@ def _notice_row(text: object, tone: str, styles: Styles) -> str:
     return styles.fg(slot, f"[{_safe(text)}]")
 
 
+def _model_segment(model: object) -> str:
+    """`provider/model`, elif raw, else `no model` — from the frozen health.model DTO only."""
+    if model is None:
+        return "no model"
+    raw = getattr(model, "raw", None)
+    provider = getattr(model, "provider", None)
+    name = getattr(model, "model", None)
+    if isinstance(provider, str) and provider and isinstance(name, str) and name:
+        return f"{provider}/{name}"
+    if isinstance(raw, str) and raw:
+        return raw
+    return "no model"
+
+
+def _effort_segment(model: object) -> str | None:
+    """reasoning_effort verbatim; None hides the segment (no marker)."""
+    effort = getattr(model, "reasoning_effort", None)
+    return effort if isinstance(effort, str) and effort else None
+
+
+def _levels_text(model: object) -> str:
+    """Supported levels verbatim, generic over the DTO; empty/unknown stays honest."""
+    levels = getattr(model, "reasoning_levels", None)
+    if isinstance(levels, (list, tuple)) and levels and all(isinstance(entry, str) for entry in levels):
+        return ", ".join(levels)
+    return "unknown"
+
+
+def _short_workspace(path: str, *, local: bool) -> str:
+    """`~`-shorten only when the path is known local; server paths stay full (crop handles width)."""
+    if not local:
+        return path
+    home = os.path.expanduser("~")
+    if home and home != "~" and (path == home or path.startswith(home + os.sep)):
+        return "~" + path[len(home) :]
+    return path
+
+
+def _footer_row(workspace: str, model: str, effort: str | None, session: str, *, width: int, compact: bool) -> str:
+    """Context row with width degrade: crop workspace → drop session → drop workspace → model·effort → model."""
+    sep = " · "
+    if compact:
+        return clamp_row(sep.join([model] + ([effort] if effort else [])), width)
+    tail = [model] + ([effort] if effort else [])
+    for drop_session in (False, True):
+        segments = ([workspace] if drop_session or not session else [workspace, session]) + tail if workspace else tail
+        text = sep.join(s for s in segments if s)
+        if visible_width(text) <= width:
+            return text
+        if workspace and visible_width(workspace) > 8:
+            rest = sep.join(s for s in segments[1:] if s)
+            room = max(0, width - visible_width(sep + rest) if rest else width)
+            if room >= 8:
+                return crop_row_right(workspace, room) + (sep + rest if rest else "")
+    text = sep.join(tail)
+    if visible_width(text) <= width:
+        return text
+    return clamp_row(model, width)
+
+
 class CoreTuiApp:
     """RPC-backed inline TUI using Terminal and TuiFrame."""
 
@@ -298,6 +360,10 @@ class CoreTuiApp:
         session_id: str | None = None,
         terminal: Terminal | None = None,
         icon_style: Literal["glyph", "ascii"] = "glyph",
+        border: Literal["box", "borderless"] = "box",
+        footer: Literal["full", "compact", "off"] = "full",
+        show_session: bool = False,
+        workspace_dir: object = None,
     ) -> None:
         self.client = client
         self.terminal = terminal or Terminal.open()
@@ -306,11 +372,19 @@ class CoreTuiApp:
         # Non-UTF8 output cannot encode the glyph bytes: ascii mode is an
         # encoding limit, never a font heuristic.
         self.icon_style: Literal["glyph", "ascii"] = "ascii" if getattr(self.terminal, "unicode_ok", True) is False else icon_style
+        if border not in ("box", "borderless"):
+            raise ValueError("border must be 'box' or 'borderless'")
+        if footer not in ("full", "compact", "off"):
+            raise ValueError("footer must be 'full', 'compact', or 'off'")
+        self.border: Literal["box", "borderless"] = border
+        self.footer_mode: Literal["full", "compact", "off"] = footer
+        self.show_session = bool(show_session)
+        self._workspace_dir = None if workspace_dir is None else str(workspace_dir)
         self.owns_terminal = terminal is None
         self.session_id = session_id or ""
         self.running = False
         self.styles = Styles(self.terminal.color_system)
-        self.composer = Composer(styles=self.styles, width=self.terminal.width, placeholder="Type a message or /command...")
+        self.composer = Composer(styles=self.styles, width=self.terminal.width, placeholder="Type a message or /command...", style=border)
         self.key_decoder = KeyDecoder()
         self._escape_flush_at = 0.0
         self.event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
@@ -357,7 +431,7 @@ class CoreTuiApp:
         self.status_line = "Connecting to server..."
         self._stream_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        #: Owns the current generation's event subscription so quit can wake a blocked idle read
+        #: Owns the current generation's session event connection so quit can wake a blocked idle read
         #: before joining. A replacement stream closes this handle and installs its own; workers
         #: capture their handle locally so a late detach from an old generation cannot clear it.
         self._stream_cancel: StreamCancellation | None = None
@@ -497,17 +571,24 @@ class CoreTuiApp:
         rows = [f"{head}{rows[0]}", *rows[1:]] if rows else ([head.strip()] if head else [])
         return rows
 
-    def _status_with_spinner(self) -> str:
-        """Segments: short session id, run-state + spinner, notice."""
-        if self._run_active:
-            spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)]
-            run_state = f"{spinner} running" if spinner else "running"
-        else:
-            run_state = "idle"
-        segments = [self.session_id[:8], run_state]
-        if self.status_line:
-            segments.append(self.status_line)
-        return " · ".join(segment for segment in segments if segment)
+    def _footer_context(self, width: int) -> str:
+        """Context row from the admitted health DTO only: workspace · model · effort."""
+        if self.footer_mode == "off":
+            return ""
+        from voidcode.tui.local_client import CoreLocalClient
+
+        model = getattr(self.upgrade, "model", None)
+        local = isinstance(self.client, CoreLocalClient)
+        workspace = _short_workspace(self.upgrade.workspace, local=local) if self.upgrade is not None and self.upgrade.workspace else ""
+        session = self.session_id[:8] if self.show_session and self.session_id else ""
+        return _footer_row(workspace, _model_segment(model), _effort_segment(model), session, width=width, compact=self.footer_mode == "compact")
+
+    def _border_status(self) -> str:
+        """`<spinner> working` while a run is active; idle borders stay clean."""
+        if not self._run_active:
+            return ""
+        spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
+        return f"{spinner} working" if spinner else "working"
 
     def _drain_events(self) -> None:
         rows_to_commit: list[str] = []
@@ -648,9 +729,12 @@ class CoreTuiApp:
                 ):
                     self._reconcile_applied = serial
                     self.upgrade = snapshot
+                    # A cosmetic refresh never overwrites a live gate prompt: the
+                    # approval/confirmation text owns the notice row until decided.
+                    gate_open = self.pending_approval is not None or isinstance(self.active_overlay, InteractiveConfirmation)
                     if snapshot.fenced:
                         self.status_line = "Core upgrade in progress: dispatch paused"
-                    else:
+                    elif not gate_open:
                         self.status_line = ""
             elif kind == "reconciled":
                 serial = frame.get("reconcile_serial")
@@ -761,6 +845,7 @@ class CoreTuiApp:
                 self.active_overlay = None
             self._apply_gate_change(ActivationCommitted(to_revision_id))
             self._load_catalog()
+            self._refresh_health_async()
             self._present_queued_confirmation()
             suffix = " (stale action discarded)" if dropped else ""
             rows.append(self.styles.fg("warning", f"[Capabilities changed: command catalog refreshed{suffix}]"))
@@ -1310,7 +1395,7 @@ class CoreTuiApp:
         if not draft.startswith("/"):
             return []
         names = [entry.name for entry in self.catalog_cache]
-        names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "views", "cancel", "quit", "exit"))
+        names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit"))
         prefix = draft[1:].strip()
         return sorted(f"/{name}" for name in names if name and name.startswith(prefix))
 
@@ -1431,6 +1516,12 @@ class CoreTuiApp:
         if cmd == "views":
             self._show_views(arg_str)
             return True
+        if cmd == "model":
+            self._tui_model(arg_str.strip())
+            return True
+        if cmd == "thinking":
+            self._tui_thinking(arg_str.strip())
+            return True
         if cmd in ("quit", "exit"):
             self.running = False
             return True
@@ -1492,6 +1583,8 @@ class CoreTuiApp:
             "  /tui session <id>      Switch active session",
             "  /tui new               Create new session",
             "  /tui views [name]      Open plugin views/forms (for example goal)",
+            "  /tui model [provider/model]  Show or switch the model (embedded only)",
+            "  /tui thinking [level|off]  Show or set thinking level (embedded only)",
             "  /tui cancel            Cancel active session run",
             "  /tui quit              Exit TUI",
             "  Ctrl+C                 Cancel a run, or close/deny a dialog",
@@ -1504,6 +1597,112 @@ class CoreTuiApp:
         for c in self.catalog_cache:
             lines.append(f"  /{c.name:<16} {c.description}")
         self.terminal.commit_rows(lines)
+
+    def _tui_model(self, arg: str) -> None:
+        """Show the admitted model detail, or switch it (embedded, idle only)."""
+        model = getattr(self.upgrade, "model", None)
+        if not arg:
+            self.terminal.commit_rows(
+                [
+                    self.styles.render("accent", "=== Model (admitted) ==="),
+                    f"  model: {_safe(_model_segment(model))}",
+                    f"  thinking: {_safe(getattr(model, 'reasoning_effort', None))}",
+                    f"  supported levels: {_safe(_levels_text(model))}",
+                ]
+            )
+            return
+        self._tui_switch_model("model", arg)
+
+    def _tui_thinking(self, arg: str) -> None:
+        """Show current + supported levels, or set one (embedded, idle only)."""
+        model = getattr(self.upgrade, "model", None)
+        if not arg:
+            self.terminal.commit_rows(
+                [
+                    self.styles.render("accent", "=== Thinking (admitted) ==="),
+                    f"  current: {_safe(getattr(model, 'reasoning_effort', None))}",
+                    f"  supported levels: {_safe(_levels_text(model))}",
+                ]
+            )
+            return
+        if arg.lstrip("+-").isdigit():
+            self.terminal.commit_rows([self.styles.fg("error", "Numeric budgets are hidden here: use a supported named level or off")])
+            return
+        self._tui_switch_model("reasoning_effort", arg)
+
+    def _tui_switch_model(self, field: str, value: str) -> None:
+        """Rewrite the workspace model section and reload once; refusals stay visible."""
+        from voidcode.tui.local_client import CoreLocalClient
+
+        if not isinstance(self.client, CoreLocalClient):
+            self.terminal.commit_rows([self.styles.fg("error", "Model config lives with the server: switch from the server workspace")])
+            return
+        if self._run_active or self.pending_approval is not None or isinstance(self.active_overlay, InteractiveConfirmation):
+            self.terminal.commit_rows([self.styles.fg("error", "Session is busy: resolve the run or gate first")])
+            return
+        if field == "model":
+            if not value.strip():
+                self.terminal.commit_rows([self.styles.fg("error", "Model must be a non-empty provider/model string")])
+                return
+            new_value: str | int = value
+        else:
+            try:
+                normalized = normalize_reasoning_effort(value)
+            except ValueError as exc:
+                self.terminal.commit_rows([self.styles.fg("error", f"Invalid effort: {_safe(exc)}")])
+                return
+            if normalized is None:
+                self.terminal.commit_rows([self.styles.fg("error", "Invalid effort: value is required")])
+                return
+            new_value = normalized
+            levels = getattr(getattr(self.upgrade, "model", None), "reasoning_levels", None)
+            if isinstance(levels, (list, tuple)) and levels and isinstance(new_value, str) and new_value != "off" and new_value not in levels:
+                supported = _levels_text(getattr(self.upgrade, "model", None))
+                self.terminal.commit_rows([self.styles.fg("error", f"Unsupported level for this model: {_safe(new_value)} ({_safe(supported)})")])
+                return
+        if self._workspace_dir is None:
+            self.terminal.commit_rows([self.styles.fg("error", "No workspace: cannot rewrite configuration")])
+            return
+        from pathlib import Path
+
+        from voidcode.capabilities.files._replace import replace_file
+        from voidcode.config import CONFIG_FILE_NAME, parse_config
+
+        path = Path(self._workspace_dir) / CONFIG_FILE_NAME
+        try:
+            expected = path.read_bytes() if path.is_file() else None
+            payload: dict[str, object] = json.loads(expected.decode("utf-8")) if expected is not None else {"schema_version": 1}
+            if not isinstance(payload, dict):
+                raise ValueError("config must be an object")
+            raw_section = payload.get("model", {})
+            if not isinstance(raw_section, (dict, type(None))):
+                raise ValueError("model section must be an object")
+            section = dict(raw_section or {})
+            section[field] = new_value
+            payload["model"] = section
+            parse_config(payload)  # validate before writing
+            replace_file(path, (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8"), expected_content=expected)
+        except Exception as exc:
+            self.terminal.commit_rows([self.styles.fg("error", f"Config rewrite refused: {_safe(exc)}")])
+            return
+        revision = self.catalog_revision or self._displayed_revision()
+        try:
+            result = self.client.invoke_command(self.session_id, "core.reload", {}, expected_revision=revision)
+        except Exception as exc:
+            self.terminal.commit_rows([self.styles.fg("error", f"Reload failed: {_safe(exc)}")])
+            return
+        if result.status == "ok":
+            data = result.data if isinstance(result.data, Mapping) else {}
+            to_revision = str(data.get("to_revision_id", "")) if data else ""
+            self.terminal.commit_rows([self.styles.fg("success", f"[Model switched: revision {to_revision or revision} admitted]")])
+        else:
+            self.terminal.commit_rows([self.styles.fg("error", f"Reload {result.status}: {_safe(result.error)}")])
+        self._refresh_health_async()
+
+    def _displayed_revision(self) -> str:
+        if not self.catalog_cache:
+            self._load_catalog()
+        return self.catalog_revision
 
     def _show_sessions(self) -> None:
         try:
@@ -1611,7 +1810,7 @@ class CoreTuiApp:
             return
         # The revision of the catalog this descriptor was read from.
         revision = self.catalog_revision
-        # Core read commands answer over HTTP only; plugin commands and run/resume
+        # Core read commands answer through the session client; plugin commands and run/resume
         # already project through durable events. Classify by contract metadata,
         # never by a client-side command name list.
         effects = frozenset(cmd_desc.effects)
@@ -1656,42 +1855,62 @@ class CoreTuiApp:
         width = self.terminal.width
         if self._run_active or self._stream_dispatch is not None:
             self._spinner_tick += 1
-        # One status row for every branch, styled only when it has real text:
-        # an empty reverse-video row would paint a blank band, not a quiet idle.
-        status_line = self._status_with_spinner()
-        status_text = self.styles.render("text", status_line, reverse=True) if status_line else ""
-        status_rows = (status_text,) if status_text else ()
+        # Context row (server truth) plus a SEPARATE transient notice row.
+        # footer=off hides the context row only: gates/errors always show.
+        context = self._footer_context(width)
+        context_row = (self.styles.render("text", context, reverse=True) if context else "",)
+        notice = self.styles.render("text", self.status_line, reverse=True) if self.status_line else ""
+        notice_rows = (notice,) if notice else ()
+        footer_rows = tuple(row for row in (*context_row, *notice_rows) if row)
         if self.pending_approval is not None:
             rows = self.pending_approval.render_rows(width, self.styles, icon_style=self.icon_style)
-            frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *status_rows), cursor=None)
+            frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *footer_rows), cursor=None)
             self.terminal.paint_frame(frame)
         elif self.active_overlay is not None:
             overlay_rows = self.active_overlay.render_rows(width, self.styles)
-            frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, *status_rows), cursor=None)
+            frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, *footer_rows), cursor=None)
             self.terminal.paint_frame(frame)
         else:
             self.composer.set_width(width)
-            composer_rows = self.composer.render(status=status_text)
+            composer_rows = self.composer.render(border_status=self._border_status())
             cursor = self.composer.cursor_position
             live = self._live_stream_rows(width)
             popup = list(self.composer.completion_rows())
             if cursor is not None and (live or popup):
                 row, column = cursor
                 cursor = (row + len(live) + len(popup), column)
-            frame = TuiFrame(transcript_rows=(), chrome_rows=(*live, *popup, *composer_rows), cursor=cursor)
+            frame = TuiFrame(transcript_rows=(), chrome_rows=(*live, *popup, *composer_rows, *footer_rows), cursor=cursor)
             self.terminal.paint_frame(frame)
 
 
-def run_tui(server_url: str, *, token: str | None = None, session_id: str | None = None, icon_style: Literal["glyph", "ascii"] = "glyph") -> int:
+def run_tui(
+    server_url: str,
+    *,
+    token: str | None = None,
+    session_id: str | None = None,
+    icon_style: Literal["glyph", "ascii"] = "glyph",
+    border: Literal["box", "borderless"] = "box",
+    footer: Literal["full", "compact", "off"] = "full",
+    show_session: bool = False,
+) -> int:
     """Launch the generic TUI connected to a running core."""
     from voidcode.bootstrap import open_session_client
 
     with open_session_client(server_url=server_url, token=token) as client:
-        app = CoreTuiApp(client, session_id=session_id, icon_style=icon_style)
+        app = CoreTuiApp(client, session_id=session_id, icon_style=icon_style, border=border, footer=footer, show_session=show_session)
         return app.run()
 
 
-def run_embedded_tui(workspace: object, state_dir: object, *, session_id: str | None = None, icon_style: Literal["glyph", "ascii"] = "glyph") -> int:
+def run_embedded_tui(
+    workspace: object,
+    state_dir: object,
+    *,
+    session_id: str | None = None,
+    icon_style: Literal["glyph", "ascii"] = "glyph",
+    border: Literal["box", "borderless"] = "box",
+    footer: Literal["full", "compact", "off"] = "full",
+    show_session: bool = False,
+) -> int:
     """Launch the TUI against an in-process core: no socket, no HTTP framing."""
     import signal
     from pathlib import Path
@@ -1701,7 +1920,15 @@ def run_embedded_tui(workspace: object, state_dir: object, *, session_id: str | 
     workspace_path = Path(str(workspace))
     state_path = None if state_dir is None else Path(str(state_dir))
     with open_session_client(workspace=workspace_path, state_dir=state_path) as client:
-        app = CoreTuiApp(client, session_id=session_id, icon_style=icon_style)
+        app = CoreTuiApp(
+            client,
+            session_id=session_id,
+            icon_style=icon_style,
+            border=border,
+            footer=footer,
+            show_session=show_session,
+            workspace_dir=workspace_path,
+        )
         active = app
 
         def _cancel(*_: object) -> None:

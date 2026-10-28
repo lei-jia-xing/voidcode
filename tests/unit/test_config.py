@@ -130,3 +130,32 @@ def test_legacy_and_unknown_fields_rejected() -> None:
         parse_config({"policy": {"unknown_field": True}})
     with pytest.raises(ValueError):
         parse_config({"plugins": {"plug": {"unknown_field": True}}})
+
+
+def test_tui_prefs_are_strict_closed_and_defaulted() -> None:
+    from voidcode.config import parse_config
+
+    assert parse_config({}).tui.border == "box"
+    assert parse_config({}).tui.footer == "full"
+    assert parse_config({}).tui.show_session is False
+    assert parse_config({}).tui.icons == "glyph"
+    cfg = parse_config({"tui": {"border": "borderless", "footer": "compact", "show_session": True, "icons": "ascii"}})
+    assert (cfg.tui.border, cfg.tui.footer, cfg.tui.show_session, cfg.tui.icons) == ("borderless", "compact", True, "ascii")
+    bad_cases = ({"tui": {"border": "round"}}, {"tui": {"footer": "tiny"}}, {"tui": {"show_session": "yes"}})
+    bad_cases += ({"tui": {"icons": "emoji"}}, {"tui": {"nope": 1}})
+    for bad in bad_cases:
+        with pytest.raises(ValueError):
+            parse_config(bad)
+
+
+def test_tui_prefs_cause_zero_revision_churn(tmp_path) -> None:
+    """admit_live ignores tui: same file ± tui block admits identical payload/snapshot/config."""
+    from voidcode.bootstrap import admit_live, bundled_sources
+
+    base = {"schema_version": 1, "plugins": {}}
+    with_prefs = {**base, "tui": {"border": "borderless", "footer": "off", "show_session": True, "icons": "ascii"}}
+    first = admit_live(parse_config(base), workspace=tmp_path, bundled_sources=bundled_sources(), revision_id="rev-fixed")
+    second = admit_live(parse_config(with_prefs), workspace=tmp_path, bundled_sources=bundled_sources(), revision_id="rev-fixed")
+    assert dict(first.revision_payload) == dict(second.revision_payload)
+    assert dict(first.private_snapshot) == dict(second.private_snapshot)
+    assert first.config == second.config

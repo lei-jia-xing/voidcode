@@ -3,12 +3,13 @@
 The HTTP transport and the in-process TUI client must render one identical
 surface: the same session payloads, event frames, health body, and error
 envelope. This module owns those shapes so neither client can drift from the
-other; JSON-RPC framing stays in ``rpc.py``.
+other; the wire framing (JSON-RPC messages) stays in ``http.py``.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any
 
 from voidcode import __version__
@@ -41,7 +42,7 @@ def session_payload(record: SessionRecord) -> dict[str, object]:
 
 
 def event_payload(session_id: str, event: StoredEvent) -> dict[str, object]:
-    """One stored event as session frames carry it; malformed conversation records fail visibly."""
+    """One stored event as session event frames carry it; malformed conversation records fail visibly."""
     entry = transcript_entry(event)
     return {
         "session_id": session_id,
@@ -61,6 +62,56 @@ def safe_projection_error(event: StoredEvent, error: Exception) -> str:
     return f"projection failed: sequence={event.sequence} type={event.event_type} error={type(error).__name__}"
 
 
+def model_payload(*, raw: str | None, configured_effort: str | int | None) -> dict[str, object]:
+    """The health ``model`` section: admitted identity plus supported thinking levels.
+
+    Levels come from the shipped catalog row for ``provider/model``: its own
+    ``supported_effort_levels``, else the thinking rule's budget-tier names for a
+    known budget-backed row. ``off`` joins only when the row explicitly advertises
+    ``supports_reasoning_off``. ``reasoning_effort`` is the configured level
+    clamped to them. Unknown/non-reasoning/unset/numeric configs hide the effort.
+    """
+    from voidcode.capabilities.providers.native.model_catalog import static_catalog_metadata
+    from voidcode.capabilities.providers.native.reasoning_effort import CANONICAL_EFFORTS, clamp_effort_to_supported, normalize_reasoning_effort
+    from voidcode.capabilities.providers.native.thinking_rules import thinking_rule_for
+
+    provider: str | None = None
+    model: str | None = None
+    if raw is not None:
+        provider_segment, separator, model_segment = raw.partition("/")
+        if separator and provider_segment and model_segment:
+            provider, model = provider_segment, model_segment
+    levels: list[str] = []
+    effort: str | None = None
+    if provider is not None and model is not None:
+        metadata = static_catalog_metadata(provider, model)
+        if metadata is not None and metadata.supports_reasoning is True:
+            row_levels = metadata.supported_effort_levels
+            if row_levels:
+                levels = [level for level in CANONICAL_EFFORTS if level in row_levels]
+            elif metadata.supports_thinking_budget is True:
+                budgets = thinking_rule_for(provider, model).budgets
+                levels = [level for level in CANONICAL_EFFORTS if level in budgets]
+            if levels and metadata.supports_reasoning_off is True:
+                levels = ["off", *levels]
+            if levels and not isinstance(configured_effort, bool) and isinstance(configured_effort, str):
+                try:
+                    normalized = normalize_reasoning_effort(configured_effort)
+                except ValueError:
+                    normalized = None
+                if normalized == "off":
+                    effort = "off" if "off" in levels else None
+                elif isinstance(normalized, str):
+                    effort = clamp_effort_to_supported(normalized, tuple(level for level in levels if level != "off"))
+    return {
+        "raw": raw,
+        "provider": provider,
+        "model": model,
+        "reasoning_effort": effort,
+        "reasoning_levels": levels,
+    }
+
+
 def health_payload(
     *,
     revision_id: str,
@@ -68,6 +119,7 @@ def health_payload(
     workspace: str,
     generation: int,
     upgrade_id: str | None,
+    model: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     return {
         "status": "ok",
@@ -80,6 +132,7 @@ def health_payload(
         "web_bundle": None,
         "generation": generation,
         "active_upgrade": None if upgrade_id is None else {"upgrade_id": upgrade_id, "stage": stage},
+        "model": dict(model) if model is not None else None,
     }
 
 
