@@ -11,7 +11,7 @@ from typing import Literal
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
-from voidcode.plugins.cron import cron_plugin
+from voidcode.plugins.cron import create_plugin, cron_plugin
 from voidcode.plugins.cron.cron_plugin import (
     DEFAULT_RECURRING_EXPIRY_SECONDS,
     MAX_SCHEDULES_PER_WORKSPACE,
@@ -22,7 +22,6 @@ from voidcode.plugins.cron.cron_plugin import (
     CronLoopCommand,
     CronState,
     ScheduleEntry,
-    create_plugin,
     cron_observer,
 )
 from voidcode.plugins.cron.loop_command import USAGE_MESSAGE, loop_confirmation_message

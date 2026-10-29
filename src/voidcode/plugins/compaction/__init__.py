@@ -1,85 +1,42 @@
-"""Compaction plugin package: window projection over the core's verified seam."""
+"""Compaction plugin: window projection over the core's verified seam."""
 
-from .compaction_plugin import (
-    CONTEXT_COMPACTED_EVENT,
-    SCHEMA_VERSION,
-    CompactCommand,
-    CompactionConfig,
-    CompactionState,
-    LastProjection,
-    ProjectionOutcome,
-    apply_projection,
-    compaction_observer,
-    create_plugin,
-    parse_compaction_config,
-)
-from .projection import (
-    CONTINUITY_ANCHOR_PREFIX,
-    CONTINUITY_SUMMARY_OUTPUT_CHARS,
-    CONTINUITY_SUMMARY_SYSTEM_PROMPT,
-    DEFAULT_CONTEXT_RESERVE_TOKENS,
-    DEFAULT_KEEP_RECENT_TOKENS,
-    PROJECTION_PREFIX,
-    CompactionBudget,
-    ProjectionPlan,
-    ToolResultFact,
-    clip_summary_text,
-    continuity_anchor,
-    continuity_sections,
-    dropped_tool_preview,
-    effective_reserve_tokens,
-    event_payload_bytes,
-    measured_dispatch_input_tokens,
-    measured_tokens_per_character,
-    plan_projection,
-    recent_tail_character_budget,
-    render_deterministic_replacement,
-    render_model_replacement,
-    resolve_budget_reserve_tokens,
-    resolve_compaction_budget,
-    resolve_threshold_tokens,
-    should_compact,
-    summary_prompt,
-    tool_result_fact,
-)
+from collections.abc import Mapping
+from functools import partial
 
-__all__ = [
-    "CONTEXT_COMPACTED_EVENT",
-    "CONTINUITY_ANCHOR_PREFIX",
-    "CONTINUITY_SUMMARY_OUTPUT_CHARS",
-    "CONTINUITY_SUMMARY_SYSTEM_PROMPT",
-    "DEFAULT_CONTEXT_RESERVE_TOKENS",
-    "DEFAULT_KEEP_RECENT_TOKENS",
-    "PROJECTION_PREFIX",
-    "SCHEMA_VERSION",
-    "CompactCommand",
-    "CompactionBudget",
-    "CompactionConfig",
-    "CompactionState",
-    "LastProjection",
-    "ProjectionOutcome",
-    "ProjectionPlan",
-    "ToolResultFact",
-    "apply_projection",
-    "clip_summary_text",
-    "compaction_observer",
-    "continuity_anchor",
-    "continuity_sections",
-    "create_plugin",
-    "dropped_tool_preview",
-    "effective_reserve_tokens",
-    "event_payload_bytes",
-    "measured_dispatch_input_tokens",
-    "measured_tokens_per_character",
-    "parse_compaction_config",
-    "plan_projection",
-    "recent_tail_character_budget",
-    "render_deterministic_replacement",
-    "render_model_replacement",
-    "resolve_budget_reserve_tokens",
-    "resolve_compaction_budget",
-    "resolve_threshold_tokens",
-    "should_compact",
-    "summary_prompt",
-    "tool_result_fact",
-]
+from voidcode.sdk.plugin import Plugin, StateSchema
+
+from .compaction_plugin import SCHEMA_VERSION, CompactCommand, compaction_observer, parse_compaction_config, prepare_compaction_deactivation
+
+
+def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
+    resolved = parse_compaction_config(config)
+    return Plugin(
+        commands=(CompactCommand(resolved),),
+        observer=partial(compaction_observer, config=resolved),
+        observed_facts=("usage", "run_finished"),
+        state=StateSchema(
+            version=SCHEMA_VERSION,
+            schema={
+                "type": "object",
+                "required": ["schema_version", "cursor_sequence", "last_projection"],
+                "additionalProperties": False,
+                "properties": {
+                    "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
+                    "cursor_sequence": {"type": "integer", "minimum": 0},
+                    "last_projection": {
+                        "type": ["object", "null"],
+                        "required": ["covered_from_sequence", "covered_to_sequence", "covered_bytes", "dropped_bytes", "summary_kind"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "covered_from_sequence": {"type": "integer", "minimum": 0},
+                            "covered_to_sequence": {"type": "integer", "minimum": 0},
+                            "covered_bytes": {"type": "integer", "minimum": 0},
+                            "dropped_bytes": {"type": "integer", "minimum": 0},
+                            "summary_kind": {"type": "string", "enum": ["deterministic", "model"]},
+                        },
+                    },
+                },
+            },
+        ),
+        prepare_deactivate=prepare_compaction_deactivation,
+    )

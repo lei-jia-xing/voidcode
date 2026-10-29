@@ -6,10 +6,10 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.plugins.btw import create_plugin
 from voidcode.plugins.btw.btw_plugin import (
     SIDE_QUESTION_WRAPPER,
     BtwCommand,
-    create_plugin,
     wrap_side_question,
 )
 from voidcode.sdk.commands import CommandInvocation, CommandResult

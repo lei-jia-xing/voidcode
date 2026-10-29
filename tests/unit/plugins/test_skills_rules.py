@@ -9,6 +9,7 @@ from typing import Literal
 
 import pytest
 
+from voidcode.plugins.skills import create_plugin
 from voidcode.plugins.skills.rules import (
     LOCAL_RULE_FILE_NAME,
     MAX_RULE_FILE_CHARS,
@@ -30,7 +31,6 @@ from voidcode.plugins.skills.skills_plugin import (
     RulesState,
     SkillsConfig,
     SkillsContextProvider,
-    create_plugin,
     skills_observer,
 )
 from voidcode.sdk.hooks import FactPage, InvocationFinishedFact, UsageFact
@@ -500,5 +500,6 @@ def test_context_contribution_keeps_rules_when_skills_are_disabled(tmp_path: Pat
         "Use tabs."
     )
     assert plugin.observer is skills_observer
-    assert [tool.definition.name for tool in plugin.tools] == ["skill"]
+    assert plugin.tools == ()
+    assert [reader.scheme for reader in plugin.resource_readers] == ["skill"]
     assert [command.definition.name for command in plugin.commands] == ["skills"]

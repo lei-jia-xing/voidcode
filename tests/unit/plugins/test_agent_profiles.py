@@ -4,7 +4,7 @@ from importlib.resources import files
 
 import pytest
 
-from voidcode.plugins.delegation.delegation_plugin import create_plugin
+from voidcode.plugins.delegation import create_plugin
 from voidcode.plugins.delegation.profiles.builtin import list_builtin_agents
 from voidcode.plugins.delegation.profiles.commands import AgentsCommand, AgentShowCommand
 from voidcode.plugins.delegation.profiles.registry import agent_from_markdown, load_agent_registry, project_agent_dir, user_agent_dir

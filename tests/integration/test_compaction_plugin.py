@@ -160,11 +160,10 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: int
                 "config": {
                     "enabled": True,
                     "threshold_tokens": threshold_tokens,
-                    # A deterministic gate: the trigger is exactly ``threshold_tokens``.
+                    # A fixed gate: the trigger is exactly ``threshold_tokens``.
                     "reserve_tokens": 0,
                     # Retain nothing: the covered prefix is then everything coverable.
                     "keep_recent_tokens": 0,
-                    "summary_enabled": False,
                 },
             },
         },
@@ -210,12 +209,21 @@ def _command(core: Core, session_id: str, name: str, arguments: dict[str, object
 
 
 def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Path) -> None:
+    def _summary(text: str) -> dict[str, object]:
+        return openai_response(message={"role": "assistant", "content": text}, finish="stop")
+
     replies = [
         _turn(_tool_call("call-1", _WRITE_TOOL, {"path": "notes.txt", "text": _NOTES_TEXT})),
+        _summary("the probe wrote its notes"),
         _turn(output="notes written"),
+        _summary("the probe wrote and read its notes"),
         _turn(_tool_call("call-2", _READ_TOOL, {"path": "notes.txt"})),
+        _summary("the probe wrote, read, and answered"),
         _turn(output="notes read"),
+        _summary("the probe finished both batches"),
         _turn(output="third answer"),
+        _summary("the probe kept going"),
+        _turn(output="fourth answer"),
     ]
     with _loopback_server(replies) as server:
         core = _core(tmp_path, server)
@@ -228,8 +236,9 @@ def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Pat
 
         # The first dispatch had no projection to substitute, so nothing was summarised yet.
         assert _summary_messages(server.requests[0]) == []
-        # From the second dispatch on, the plugin's projection is in force.
-        assert len(_summary_messages(server.requests[1])) == 1
+        # From the second dispatch on, the plugin's projection is in force (request 1 is the
+        # tool-free summary turn the first projection consumed).
+        assert len(_summary_messages(server.requests[2])) == 1
 
         assert core.run(second_prompt, session_id=session_id).status == "completed"
 
@@ -242,11 +251,15 @@ def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Pat
         assert projection.covered_bytes > len(projection.replacement.encode("utf-8")) > 0
         assert projection.dropped_bytes == projection.covered_bytes - len(projection.replacement.encode("utf-8"))
         assert projection.replacement.startswith("Runtime context projection:")
+        # The committed replacement is model-produced: it carries the latest summary turn's answer.
+        assert "the probe finished both batches" in projection.replacement
 
         # (b) The dispatch that followed the projection carries the substituted summary, and
         # the covered prompt text is gone from it. The numbers are the core's own: the label
         # and the replacement agree on the bytes the projection measured.
-        sent = server.requests[-1]
+        # The last request is the final projection's own summary turn; the substituted dispatch
+        # is the newest request that actually carries the summary message.
+        sent = next(request for request in reversed(server.requests) if _summary_messages(request))
         summaries = _summary_messages(sent)
         assert len(summaries) == 1
         labelled = _SUMMARY_LABEL.fullmatch(summaries[0])
@@ -292,9 +305,10 @@ def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Pat
 
         # The substitution is exact: the next dispatch renders the projection row verbatim.
         in_force = core.store.window_projection(session_id)
+        seen_requests = len(server.requests)
         assert core.run("third prompt: keep going", session_id=session_id).status == "completed"
-        last = _summary_messages(server.requests[-1])
-        assert last == [
+        sent = next(request for request in server.requests[seen_requests:] if _summary_messages(request))
+        assert _summary_messages(sent) == [
             f"[window summary by compaction; {in_force.covered_to_sequence} covered events "
             f"({in_force.covered_bytes} bytes -> {in_force.dropped_bytes} dropped)]\n{in_force.replacement}"
         ]
@@ -305,6 +319,7 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
     replies = [
         _turn(_tool_call("call-1", _WRITE_TOOL, {"path": "notes.txt", "text": _NOTES_TEXT}), prompt_tokens=10),
         _turn(output="notes written", prompt_tokens=10),
+        openai_response(message={"role": "assistant", "content": "the manual probe notes"}, finish="stop"),
         _turn(output="second answer", prompt_tokens=10),
     ]
     with _loopback_server(replies) as server:
@@ -320,9 +335,10 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         assert projected.status == "ok"
         assert projected.data is not None
         assert projected.data["noop"] is False
-        assert projected.data["summary_kind"] == "deterministic"
+        assert projected.data["summary_kind"] == "model"
         row = core.store.window_projection(session_id)
         assert row is not None
+        assert "the manual probe notes" in row.replacement
         assert row.owner == "compaction"
         assert projected.data["covered_bytes"] == row.covered_bytes
         assert projected.data["dropped_bytes"] == row.dropped_bytes
@@ -340,7 +356,7 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         stored, version = core.store.plugin_state("compaction", "session", session_id)
         assert version >= 1
         assert isinstance(stored, Mapping)
-        from voidcode.plugins.compaction.compaction_plugin import create_plugin as create_compaction_plugin
+        from voidcode.plugins.compaction import create_plugin as create_compaction_plugin
 
         state_schema = create_compaction_plugin(None).state.schema
         assert state_schema is not None
@@ -350,7 +366,7 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         assert stored["cursor_sequence"] >= row.covered_to_sequence
         assert stored["last_projection"]["covered_bytes"] == row.covered_bytes
         assert stored["last_projection"]["dropped_bytes"] == row.dropped_bytes
-        assert stored["last_projection"]["summary_kind"] == "deterministic"
+        assert stored["last_projection"]["summary_kind"] == "model"
 
         # The declared projection is what the next dispatch actually sees.
         assert core.run("second prompt: ask again", session_id=session_id).status == "completed"
@@ -360,3 +376,24 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         assert first_prompt not in [str(message.get("content", "")) for message in _messages(server.requests[-1]) if message.get("role") == "user"]
         events = core.events_after(session_id)
         assert any(str(event.payload.get("content", "")) == first_prompt for event in events if event.event_type == "core.user_message")
+
+
+def test_a_blank_model_summary_fails_loudly_and_stages_nothing(tmp_path: Path) -> None:
+    replies = [
+        _turn(_tool_call("call-1", _WRITE_TOOL, {"path": "notes.txt", "text": _NOTES_TEXT}), prompt_tokens=10),
+        _turn(output="notes written", prompt_tokens=10),
+        openai_response(message={"role": "assistant", "content": "   \n  "}, finish="stop"),
+    ]
+    with _loopback_server(replies) as server:
+        core = _core(tmp_path, server)
+        session_id = core.create_session("sess-blank").session_id
+        assert core.run("first prompt: start the probe", session_id=session_id).status == "completed"
+        assert core.store.window_projection(session_id) is None
+
+        failed = _command(core, session_id, "compact", {})
+        assert failed.status == "error"
+        assert "blank" in (failed.error or "")
+        assert core.store.window_projection(session_id) is None
+        stored, _ = core.store.plugin_state("compaction", "session", session_id)
+        assert stored is None
+        assert not [event for event in core.events_after(session_id) if event.event_type == "plugin.compaction.context_compacted"]

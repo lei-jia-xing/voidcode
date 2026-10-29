@@ -9,7 +9,6 @@ from typing import ClassVar, Literal
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
-from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import ChildOutcome, PluginServices
 from voidcode.sdk.tools import ToolEffect
 
@@ -242,7 +241,3 @@ class ReviewCommand:
         except (ValueError, PermissionError, RuntimeError) as exc:
             return CommandResult(status="error", error=str(exc), data={"child_session_id": child_id, "target_type": target.type})
         return _outcome_result(target, child_id, outcome)
-
-
-def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    return Plugin(commands=(ReviewCommand(),))

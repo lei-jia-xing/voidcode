@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.plugins.goal import create_plugin
 from voidcode.plugins.goal.goal_plugin import (
     ActiveWindow,
     CreateGoalTool,
@@ -22,7 +23,6 @@ from voidcode.plugins.goal.goal_plugin import (
     GoalState,
     GoalStatus,
     UpdateGoalTool,
-    create_plugin,
     goal_observer,
     prepare_goal_deactivation,
     read_full_objective,

@@ -11,7 +11,7 @@ import pytest
 from tests.fixtures.fake_services import FakeServices
 from voidcode.core.storage.store import StoredEvent
 from voidcode.core.transcript import context_records
-from voidcode.plugins.compaction import compaction_plugin as plugin_module
+from voidcode.plugins.compaction import create_plugin
 from voidcode.plugins.compaction.compaction_plugin import (
     CONTEXT_COMPACTED_EVENT,
     SCHEMA_VERSION,
@@ -21,7 +21,6 @@ from voidcode.plugins.compaction.compaction_plugin import (
     LastProjection,
     apply_projection,
     compaction_observer,
-    create_plugin,
     parse_compaction_config,
 )
 from voidcode.plugins.compaction.projection import (
@@ -36,7 +35,6 @@ from voidcode.plugins.compaction.projection import (
     measured_tokens_per_character,
     plan_projection,
     recent_tail_character_budget,
-    render_deterministic_replacement,
     render_model_replacement,
     resolve_budget_reserve_tokens,
     resolve_compaction_budget,
@@ -219,7 +217,6 @@ def test_threshold_clamps_an_explicit_value_and_derives_the_default_one() -> Non
 
 def test_trigger_subtracts_the_reserve_from_an_explicit_threshold() -> None:
     explicit = resolve_compaction_budget(None, threshold_tokens=40_000, reserve_tokens=4_000)
-    assert explicit == plugin_module.resolve_compaction_budget(None, threshold_tokens=40_000, reserve_tokens=4_000)
     assert explicit.threshold_tokens == 40_000
     assert explicit.reserve_tokens == 4_000
     assert explicit.explicit_threshold is True
@@ -243,44 +240,25 @@ def test_should_compact_compares_measured_tokens_against_the_trigger() -> None:
     assert should_compact(10**9, resolve_compaction_budget(None, threshold_tokens=0)) is False
 
 
-# --- Deterministic replacement text (legacy shape, verbatim) ---
+# --- Plan shape: coverage, counts, and the material handed to the model ---
 
 
-def test_deterministic_replacement_carries_the_legacy_sections_verbatim() -> None:
+def test_plan_carries_the_coverage_and_the_summary_material() -> None:
     plan = _plan()
     assert plan.covered_from_sequence == 1
     assert plan.covered_to_sequence == 8
     assert plan.covered_event_count == 8
     assert plan.covered_bytes == sum(_size(event) for event in _session_events())
+    assert plan.covered_tool_result_count == 2
     assert plan.retained_tool_result_count == 0
-    # The exact provider-facing text: legacy sections, the dropped preview, and the anchor.
-    assert render_deterministic_replacement(plan) == (
-        "Runtime context projection:\n"
-        "## Objective\n"
-        "Rebuild the parser. The tokenizer must stay allocation free. Never reorder diagnostics.\n"
-        "\n"
-        "## Constraints\n"
-        "- Rebuild the parser. The tokenizer must stay allocation free. Never reorder diagnostics.\n"
-        "\n"
-        "## Progress Completed\n"
-        '- Tool result compacted: write ok path=src/parser.py content_preview="wrote 42 bytes to src/parser.py"\n'
-        "\n"
-        "## Blockers / Open Questions\n"
-        '- Tool error compacted: read error path=src/parser.py error_preview="missing file"\n'
-        "\n"
-        "## Relevant Files / Commands / Errors\n"
-        "- file:src/parser.py\n"
-        "\n"
-        "## Dropped Tool Preview\n"
-        "Compacted 2 earlier tool results:\n"
-        '1. write ok path=src/parser.py content_preview="wrote 42 bytes to src/parser.py"\n'
-        '2. read error path=src/parser.py error_preview="missing file"\n'
-        "continuity:8f451100f442b57f"
-    )
+    material = "\n\n".join(plan.summary_material)
+    assert _USER_MESSAGE in material
+    assert "tool=write status=ok\nwrote 42 bytes to src/parser.py" in material
+    assert "tool=read status=error\n\nmissing file" in material
 
 
-def test_a_todo_result_is_preserved_when_it_is_the_sole_covered_fact() -> None:
-    """No per-tool discard: a lone todo result still reaches the projection text."""
+def test_a_todo_result_reaches_the_summary_material_without_per_tool_discard() -> None:
+    """No per-tool discard: a lone todo result still reaches the model summary."""
     todo_call = ToolCall("todo", {"op": "view"}, "call-todo")
     events = (
         _event(1, "core.user_message", {"content": _USER_MESSAGE}),
@@ -289,30 +267,9 @@ def test_a_todo_result_is_preserved_when_it_is_the_sole_covered_fact() -> None:
         _tool_completed(4, batch_sequence=3, call=todo_call, content="2 phases, 1 in progress"),
         _model_turn(5, dispatch_sequence=2, output="noted", input_tokens=9_000),
     )
-    text = render_deterministic_replacement(_plan(events))
-    assert "Tool result compacted: todo ok" in text
-    assert "2 phases, 1 in progress" in text
-    assert "## Dropped Tool Preview\nCompacted 1 earlier tool results:\n1. todo ok" in text
-
-
-def test_objective_is_previewed_at_160_chars_and_constraints_match_the_legacy_markers() -> None:
-    long_prompt = "A" * 200
-    events = (
-        _event(1, "core.user_message", {"content": long_prompt}),
-        _event(2, "core.user_message", {"content": "Always keep the public API stable."}),
-        _event(3, "core.user_message", {"content": "Keep it boring."}),
-        _intent(4),
-        _model_turn(5, dispatch_sequence=4, output="ok"),
-    )
-    plan = _plan(events)
-    assert plan.objective == f"{'A' * 160}..."
-    # Only lines carrying a legacy marker word become constraints; plain lines do not.
-    assert plan.constraints == ("Always keep the public API stable.",)
-    text = render_deterministic_replacement(plan)
-    assert "## Constraints\n- Always keep the public API stable." in text
-    assert "Keep it boring." not in text
-    # Nothing was dropped, so the legacy dropped-preview section is absent.
-    assert "## Dropped Tool Preview" not in text
+    material = "\n\n".join(_plan(events).summary_material)
+    assert "tool=todo status=ok" in material
+    assert "2 phases, 1 in progress" in material
 
 
 # --- Boundary selection: never split a call/result pair ---
@@ -329,7 +286,7 @@ def test_boundary_stops_before_an_unanswered_tool_call() -> None:
     plan = _plan(events)
     # The batch opened at sequence 3 is never covered: only its call exists so far.
     assert plan.covered_to_sequence == 2
-    assert plan.covered_tool_results == ()
+    assert plan.covered_tool_result_count == 0
     assert plan.covered_event_count == 2
 
 
@@ -345,7 +302,7 @@ def test_boundary_requires_every_call_of_a_multi_call_batch_to_be_answered() -> 
     assert plan.covered_to_sequence == 2
     full = _plan((*events, _tool_completed(5, batch_sequence=3, call=second_call, content="1 passed")))
     assert full.covered_to_sequence == 5
-    assert [fact.tool_name for fact in full.covered_tool_results] == ["write", "bash"]
+    assert full.covered_tool_result_count == 2
 
 
 def test_large_payloads_remain_coverable_without_silent_truncation() -> None:
@@ -373,7 +330,7 @@ def test_retention_keeps_the_newest_content_raw_at_the_measured_rate() -> None:
     assert recent_tail_character_budget(_records(events[:1]), keep_recent_tokens=1_500, reached_end=True) == 0
 
 
-# --- Plan refusals and no-ops ---
+# --- Plan no-ops ---
 
 
 def test_plan_is_none_when_the_window_has_nothing_new_to_cover() -> None:
@@ -382,31 +339,31 @@ def test_plan_is_none_when_the_window_has_nothing_new_to_cover() -> None:
     assert plan_projection((), previous_covered_to_sequence=None, keep_recent_tokens=0, reached_end=True) is None
 
 
-def test_apply_projection_refuses_a_replacement_that_would_not_shrink_the_window() -> None:
+def test_apply_projection_raises_for_a_summary_that_would_not_shrink_the_window() -> None:
     # One tiny event: any labelled projection of it is bigger than the event itself.
     events = (_event(1, "core.user_message", {"content": "hi"}),)
-    services = FakeServices(events)
-    outcome = apply_projection(
-        services,
-        state=CompactionState(),
-        version=0,
-        config=CompactionConfig(keep_recent_tokens=0),
-        reason="manual",
-        events=_records(events),
-        reached_end=True,
-        measured_input_tokens=None,
-    )
-    assert outcome.status == "refused"
-    assert "would not shrink" in outcome.reason
+    services = FakeServices(events, model_answer="a summary longer than the two bytes it replaces")
+    with pytest.raises(ValueError, match="would not shrink"):
+        apply_projection(
+            services,
+            state=CompactionState(),
+            version=0,
+            config=CompactionConfig(keep_recent_tokens=0),
+            reason="manual",
+            events=_records(events),
+            reached_end=True,
+            measured_input_tokens=None,
+        )
     assert services.projections == []
     assert services.staged == []
+    assert services.state is None
 
 
 def test_apply_projection_is_a_noop_when_nothing_is_coverable() -> None:
     services = FakeServices(_session_events())
     outcome = apply_projection(
         services,
-        state=CompactionState(cursor_sequence=8, last_projection=LastProjection(1, 8, 4_000, 1_000, "deterministic")),
+        state=CompactionState(cursor_sequence=8, last_projection=LastProjection(1, 8, 4_000, 1_000, "model")),
         version=3,
         config=CompactionConfig(keep_recent_tokens=0),
         reason="manual",
@@ -426,7 +383,7 @@ def test_apply_projection_is_a_noop_when_nothing_is_coverable() -> None:
 
 def test_apply_projection_reports_the_core_measured_accounting() -> None:
     events = _session_events()
-    services = FakeServices(events)
+    services = FakeServices(events, model_answer="the parser work, summarized")
     outcome = apply_projection(
         services,
         state=CompactionState(),
@@ -438,7 +395,7 @@ def test_apply_projection_reports_the_core_measured_accounting() -> None:
         measured_input_tokens=9_000,
     )
     assert outcome.status == "projected"
-    assert outcome.summary_kind == "deterministic"
+    assert outcome.summary_kind == "model"
     assert outcome.covered_from_sequence == 1
     assert outcome.covered_to_sequence == 8
     assert outcome.covered_bytes == services.row["covered_bytes"]
@@ -453,7 +410,7 @@ def test_apply_projection_reports_the_core_measured_accounting() -> None:
                 "covered_bytes": outcome.covered_bytes,
                 "dropped_bytes": outcome.dropped_bytes,
                 "covered_events": 8,
-                "summary_kind": "deterministic",
+                "summary_kind": "model",
                 "reason": "threshold",
                 "measured_input_tokens": 9_000,
                 "replacement_bytes": len(services.row["replacement"].encode("utf-8")),
@@ -467,22 +424,22 @@ def test_apply_projection_reports_the_core_measured_accounting() -> None:
             covered_to_sequence=8,
             covered_bytes=outcome.covered_bytes,
             dropped_bytes=outcome.dropped_bytes,
-            summary_kind="deterministic",
+            summary_kind="model",
         ),
     )
 
 
-# --- Model summary lane (stubbed model_query) ---
+# --- Model summary (stubbed model_query): the only lane ---
 
 
-def test_model_summary_lane_replaces_the_text_and_keeps_the_real_accounting() -> None:
+def test_model_summary_replaces_the_text_and_keeps_the_real_accounting() -> None:
     events = _session_events()
     services = FakeServices(events, model_answer="  MODEL SUMMARY TEXT  ")
     outcome = apply_projection(
         services,
         state=CompactionState(),
         version=0,
-        config=CompactionConfig(keep_recent_tokens=0, summary_enabled=True),
+        config=CompactionConfig(keep_recent_tokens=0),
         reason="manual",
         events=_records(events),
         reached_end=True,
@@ -501,69 +458,77 @@ def test_model_summary_lane_replaces_the_text_and_keeps_the_real_accounting() ->
     assert len(prompt.encode("utf-8")) <= 64 * 1024
 
 
-def test_model_summary_failure_and_blank_answer_fall_back_to_the_deterministic_text() -> None:
+def test_model_summary_failure_and_blank_answer_raise_and_stage_nothing() -> None:
     events = _session_events()
     failing = FakeServices(events, model_error=RuntimeError("provider exploded"))
-    failed = apply_projection(
-        failing,
-        state=CompactionState(),
-        version=0,
-        config=CompactionConfig(keep_recent_tokens=0, summary_enabled=True),
-        reason="manual",
-        events=_records(events),
-        reached_end=True,
-        measured_input_tokens=9_000,
-    )
-    assert failed.status == "projected"
-    assert failed.summary_kind == "deterministic"
-    assert failing.row["replacement"] == render_deterministic_replacement(_plan(events))
+    with pytest.raises(RuntimeError, match="provider exploded"):
+        apply_projection(
+            failing,
+            state=CompactionState(),
+            version=0,
+            config=CompactionConfig(keep_recent_tokens=0),
+            reason="manual",
+            events=_records(events),
+            reached_end=True,
+            measured_input_tokens=9_000,
+        )
+    assert failing.projections == []
+    assert failing.staged == []
+    assert failing.state is None
     blank = FakeServices(events, model_answer="   \n  ")
-    blanked = apply_projection(
-        blank,
-        state=CompactionState(),
-        version=0,
-        config=CompactionConfig(keep_recent_tokens=0, summary_enabled=True),
-        reason="manual",
-        events=_records(events),
-        reached_end=True,
-        measured_input_tokens=9_000,
-    )
-    assert blanked.summary_kind == "deterministic"
+    with pytest.raises(ValueError, match="blank"):
+        apply_projection(
+            blank,
+            state=CompactionState(),
+            version=0,
+            config=CompactionConfig(keep_recent_tokens=0),
+            reason="manual",
+            events=_records(events),
+            reached_end=True,
+            measured_input_tokens=9_000,
+        )
+    assert blank.projections == []
+    assert blank.staged == []
+    assert blank.state is None
 
 
-def test_a_model_summary_that_would_grow_the_window_falls_back_to_the_deterministic_text() -> None:
+def test_a_model_summary_that_would_grow_the_window_raises_and_stages_nothing() -> None:
     events = _session_events()
     services = FakeServices(events, model_answer="X" * 20_000)
-    outcome = apply_projection(
-        services,
-        state=CompactionState(),
-        version=0,
-        config=CompactionConfig(keep_recent_tokens=0, summary_enabled=True),
-        reason="manual",
-        events=_records(events),
-        reached_end=True,
-        measured_input_tokens=9_000,
-    )
-    assert outcome.status == "projected"
-    assert outcome.summary_kind == "deterministic"
-    assert services.row["replacement"] == render_deterministic_replacement(_plan(events))
+    with pytest.raises(ValueError, match="would not shrink"):
+        apply_projection(
+            services,
+            state=CompactionState(),
+            version=0,
+            config=CompactionConfig(keep_recent_tokens=0),
+            reason="manual",
+            events=_records(events),
+            reached_end=True,
+            measured_input_tokens=9_000,
+        )
+    assert services.projections == []
+    assert services.staged == []
+    assert services.state is None
 
 
-def test_an_unshrinkable_prefix_is_refused_before_the_model_lane_is_asked() -> None:
-    events = (_event(1, "core.user_message", {"content": "hi"}),)
-    services = FakeServices(events, model_answer="SHORT")
-    outcome = apply_projection(
-        services,
-        state=CompactionState(),
-        version=0,
-        config=CompactionConfig(keep_recent_tokens=0, summary_enabled=True),
-        reason="threshold",
-        events=_records(events),
-        reached_end=True,
-        measured_input_tokens=9_000,
-    )
-    assert outcome.status == "refused"
-    assert services.queries == []
+def test_a_failed_core_declaration_stages_no_state_or_event() -> None:
+    events = _session_events()
+    services = FakeServices(events, model_answer="the parser work, summarized")
+    services.refuse = True
+    with pytest.raises(ValueError, match="core refused"):
+        apply_projection(
+            services,
+            state=CompactionState(),
+            version=0,
+            config=CompactionConfig(keep_recent_tokens=0),
+            reason="threshold",
+            events=_records(events),
+            reached_end=True,
+            measured_input_tokens=9_000,
+        )
+    assert services.projections == []
+    assert services.staged == []
+    assert services.state is None
 
 
 def test_summary_output_is_clipped_at_the_legacy_bound() -> None:
@@ -594,7 +559,7 @@ def test_model_replacement_is_a_pure_function_of_the_summary() -> None:
 
 def test_observer_projects_once_the_measured_dispatch_crosses_the_trigger() -> None:
     events = _session_events()
-    services = FakeServices(events)
+    services = FakeServices(events, model_answer="the parser work, summarized")
     config = CompactionConfig(threshold_tokens=1_000, reserve_tokens=0, keep_recent_tokens=0)
     compaction_observer(_usage(8, input_tokens=9_000), _context(), services, config=config)
     assert len(services.projections) == 1
@@ -642,7 +607,7 @@ def test_observer_ignores_fact_kinds_it_does_not_subscribe_to() -> None:
 
 
 def test_observer_projects_at_run_finish_when_the_last_dispatch_crossed_the_trigger() -> None:
-    services = FakeServices(_session_events())
+    services = FakeServices(_session_events(), model_answer="the parser work, summarized")
     config = CompactionConfig(threshold_tokens=1_000, reserve_tokens=0, keep_recent_tokens=0)
     fact = RunFinishedFact(
         session_id=SESSION_ID,
@@ -661,7 +626,7 @@ def test_observer_projects_at_run_finish_when_the_last_dispatch_crossed_the_trig
 
 def test_compact_command_reports_accounting_and_noops_on_a_second_call() -> None:
     events = _session_events()
-    services = FakeServices(events)
+    services = FakeServices(events, model_answer="the parser work, summarized")
     command = CompactCommand(CompactionConfig(keep_recent_tokens=0))
     invocation = CommandInvocation(context=_context(), name="compact", arguments={})
     first = command.invoke(invocation, services)
@@ -672,10 +637,10 @@ def test_compact_command_reports_accounting_and_noops_on_a_second_call() -> None
     assert first.data["covered_to_sequence"] == 8
     assert first.data["covered_bytes"] == services.row["covered_bytes"]
     assert first.data["dropped_bytes"] == services.row["dropped_bytes"]
-    assert first.data["summary_kind"] == "deterministic"
+    assert first.data["summary_kind"] == "model"
     assert (
         first.output
-        == f"Compacted events 1-8: {services.row['covered_bytes']} bytes covered -> {services.row['dropped_bytes']} dropped (deterministic summary)."
+        == f"Compacted events 1-8: {services.row['covered_bytes']} bytes covered -> {services.row['dropped_bytes']} dropped (model summary)."
     )
 
     second = command.invoke(invocation, services)
@@ -690,14 +655,13 @@ def test_compact_command_reports_accounting_and_noops_on_a_second_call() -> None
     assert len(services.projections) == 1
 
 
-def test_compact_command_refusal_and_empty_session_are_visible() -> None:
+def test_compact_command_size_guard_and_empty_session_are_visible() -> None:
     events = (_event(1, "core.user_message", {"content": "hi"}),)
-    services = FakeServices(events)
+    services = FakeServices(events, model_answer="a summary longer than the two bytes it replaces")
     command = CompactCommand(CompactionConfig(keep_recent_tokens=0))
     invocation = CommandInvocation(context=_context(), name="compact", arguments={})
-    refused = command.invoke(invocation, services)
-    assert refused.status == "error"
-    assert "compaction refused" in (refused.error or "")
+    with pytest.raises(ValueError, match="would not shrink"):
+        command.invoke(invocation, services)
     empty = command.invoke(invocation, FakeServices(()))
     assert empty.status == "ok"
     assert empty.data == {"noop": True, "reason": "no_events"}
@@ -721,6 +685,10 @@ def test_state_round_trips_and_rejects_unknown_keys() -> None:
     assert CompactionState.from_payload(payload) == state
     assert CompactionState.from_payload(None) == CompactionState()
     assert CompactionState.from_payload({"schema_version": 1, "cursor_sequence": 0, "last_projection": None}) == CompactionState()
+    # Read compatibility: an old stored deterministic row still validates, though nothing writes it again.
+    legacy = dict(payload["last_projection"])
+    legacy["summary_kind"] = "deterministic"
+    assert CompactionState.from_payload({**payload, "last_projection": legacy}).last_projection.summary_kind == "deterministic"
     with pytest.raises(ValueError, match="unsupported field"):
         CompactionState.from_payload({"schema_version": 1, "cursor_sequence": 0, "last_projection": None, "extra": 1})
     with pytest.raises(ValueError, match="schema_version"):
@@ -749,17 +717,19 @@ def test_config_parsing_uses_legacy_defaults_and_rejects_unknown_keys() -> None:
     assert parse_compaction_config(None) == CompactionConfig()
     default = parse_compaction_config({})
     assert default.enabled is True
-    assert default.summary_enabled is False
     assert default.threshold_tokens is None
     assert default.reserve_tokens is None
     assert default.keep_recent_tokens == DEFAULT_KEEP_RECENT_TOKENS
-    parsed = parse_compaction_config(
-        {"enabled": False, "threshold_tokens": 90_000, "reserve_tokens": 0, "keep_recent_tokens": 1_000, "summary_enabled": True}
-    )
-    assert parsed == CompactionConfig(enabled=False, threshold_tokens=90_000, reserve_tokens=0, keep_recent_tokens=1_000, summary_enabled=True)
-    with pytest.raises(ValueError, match="unsupported field"):
+    parsed = parse_compaction_config({"enabled": False, "threshold_tokens": 90_000, "reserve_tokens": 0, "keep_recent_tokens": 1_000})
+    assert parsed == CompactionConfig(enabled=False, threshold_tokens=90_000, reserve_tokens=0, keep_recent_tokens=1_000)
+    # The retired model flag is an unknown key now, not a knob.
+    with pytest.raises(ValueError, match="summary_enabled"):
+        parse_compaction_config({"summary_enabled": True})
+    # The reserved providers key is accepted and ignored.
+    assert parse_compaction_config({"providers": {"endpoint": {}}, "threshold_tokens": 5}) == CompactionConfig(threshold_tokens=5)
+    with pytest.raises(ValueError, match="threshold"):
         parse_compaction_config({"threshold": 1})
-    with pytest.raises(ValueError, match="must be a boolean"):
+    with pytest.raises(ValueError, match="enabled"):
         parse_compaction_config({"enabled": "yes"})
     with pytest.raises(ValueError, match="threshold_tokens"):
         parse_compaction_config({"threshold_tokens": -1})
@@ -777,7 +747,7 @@ def test_create_plugin_registers_the_command_and_the_observer() -> None:
     assert plugin.context is None
 
 
-def test_summary_uses_reported_resources_and_actual_children_with_arbitrary_tool_names():
+def test_summary_material_ignores_raw_arguments_and_non_transcript_records() -> None:
     from voidcode.sdk.transcript import ContextRecord, TranscriptChild, TranscriptEntry, TranscriptTool
 
     call = ToolCall("unrelated_name", {"targets": "actual.py", "path": "misleading.py", "command": "display text"}, "substitute")
@@ -788,10 +758,12 @@ def test_summary_uses_reported_resources_and_actual_children_with_arbitrary_tool
         ContextRecord(3, 1_000, True, TranscriptEntry(3, RUN_ID, REVISION_ID, "custom", TranscriptChild("actual-child"))),
     )
     plan = plan_projection(records, previous_covered_to_sequence=None, keep_recent_tokens=0, reached_end=True)
-    assert plan.references == ("file:actual.py", "file:old.py")
-    assert plan.delegated == ("child:actual-child",)
-    assert "file:misleading.py" not in render_deterministic_replacement(plan)
-    assert "command:display text" not in render_deterministic_replacement(plan)
+    assert plan.covered_tool_result_count == 1
+    material = "\n\n".join(plan.summary_material)
+    assert "tool=unrelated_name status=ok\nmoved" in material
+    assert "actual-child" not in material
+    assert "misleading.py" not in material
+    assert "display text" not in material
 
 
 def test_interrupted_dispatch_cannot_reuse_an_older_usage_measurement():

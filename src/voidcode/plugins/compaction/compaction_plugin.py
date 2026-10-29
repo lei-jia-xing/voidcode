@@ -24,13 +24,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from typing import ClassVar, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import PluginFact, RunFinishedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
 from voidcode.sdk.transcript import ContextRecord
@@ -41,7 +41,6 @@ from .projection import (
     clip_summary_text,
     measured_dispatch_input_tokens,
     plan_projection,
-    render_deterministic_replacement,
     render_model_replacement,
     resolve_compaction_budget,
     should_compact,
@@ -61,7 +60,6 @@ _EVENT_PAGE_SIZE = 200
 
 _STATE_KEYS: frozenset[str] = frozenset({"schema_version", "cursor_sequence", "last_projection"})
 _PROJECTION_KEYS: frozenset[str] = frozenset({"covered_from_sequence", "covered_to_sequence", "covered_bytes", "dropped_bytes", "summary_kind"})
-_CONFIG_KEYS: frozenset[str] = frozenset({"enabled", "threshold_tokens", "reserve_tokens", "keep_recent_tokens", "summary_enabled", "providers"})
 _SUMMARY_KINDS: frozenset[str] = frozenset({"deterministic", "model"})
 
 ProjectionReason = Literal["threshold", "manual"]
@@ -154,53 +152,24 @@ def _load_state(services: PluginServices) -> tuple[CompactionState, int]:
     return CompactionState.from_payload(stored), version
 
 
-# --- Configuration (legacy knob names, strict) ---
+# --- Configuration (strict) ---
 
 
-@dataclass(frozen=True, slots=True)
-class CompactionConfig:
+class CompactionConfig(BaseModel):
     """The compaction knobs, resolved from the plugin's configuration block."""
 
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
     enabled: bool = True
-    threshold_tokens: int | None = None
-    reserve_tokens: int | None = None
-    keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS
-    summary_enabled: bool = False
-
-
-def _optional_count(raw: object, *, field: str) -> int | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
-        raise ValueError(f"compaction config '{field}' must be a non-negative integer or null")
-    return raw
+    threshold_tokens: int | None = Field(default=None, ge=0)
+    reserve_tokens: int | None = Field(default=None, ge=0)
+    keep_recent_tokens: int = Field(default=DEFAULT_KEEP_RECENT_TOKENS, ge=0)
 
 
 def parse_compaction_config(config: Mapping[str, object] | None) -> CompactionConfig:
     """Validate one plugin configuration block; an unknown key is an error, never ignored."""
-    if config is None:
-        return CompactionConfig()
-    if not isinstance(config, Mapping):
-        raise ValueError("compaction config must be an object")
-    unknown = sorted(set(config) - _CONFIG_KEYS)
-    if unknown:
-        raise ValueError(f"compaction config has unsupported field: {unknown[0]}")
     # Reserved config key: the core injects its resolved providers map into every factory.
-    _ = config.get("providers")
-    enabled = config.get("enabled", True)
-    if not isinstance(enabled, bool):
-        raise ValueError("compaction config 'enabled' must be a boolean")
-    summary_enabled = config.get("summary_enabled", False)
-    if not isinstance(summary_enabled, bool):
-        raise ValueError("compaction config 'summary_enabled' must be a boolean")
-    keep_recent = _optional_count(config.get("keep_recent_tokens"), field="keep_recent_tokens")
-    return CompactionConfig(
-        enabled=enabled,
-        threshold_tokens=_optional_count(config.get("threshold_tokens"), field="threshold_tokens"),
-        reserve_tokens=_optional_count(config.get("reserve_tokens"), field="reserve_tokens"),
-        keep_recent_tokens=DEFAULT_KEEP_RECENT_TOKENS if keep_recent is None else keep_recent,
-        summary_enabled=summary_enabled,
-    )
+    raw = {key: value for key, value in (config or {}).items() if key != "providers"}
+    return CompactionConfig.model_validate(raw)
 
 
 # --- The projection itself ---
@@ -210,7 +179,7 @@ def parse_compaction_config(config: Mapping[str, object] | None) -> CompactionCo
 class ProjectionOutcome:
     """Result of one projection attempt, reported in the core's own terms."""
 
-    status: Literal["projected", "noop", "refused"]
+    status: Literal["projected", "noop"]
     reason: str
     covered_from_sequence: int | None = None
     covered_to_sequence: int | None = None
@@ -237,31 +206,22 @@ def _read_window(services: PluginServices) -> tuple[tuple[ContextRecord, ...], b
     return history.records, history.reached_end
 
 
-def _replacement_text(
-    services: PluginServices,
-    plan,
-    config: CompactionConfig,
-    deterministic: str,
-) -> tuple[str, SummaryKind]:
-    """The replacement, preferring the model summary and degrading to the deterministic text.
+def _replacement_text(services: PluginServices, plan) -> str:
+    """The replacement: the model's summary, or a loud failure when it cannot be produced.
 
-    A model answer that would not shrink the window is discarded like a failed call: the
-    deterministic projection was already checked against the same bound by the caller.
+    A failed, blank, or unshrinkable answer raises ``ValueError``: there is no second lane to
+    fall back to. (The legacy 60s bound is the seam's own here: ``services.model_query``
+    carries no timeout argument, so the core's RPC timeout is the only bound available.)
     """
-    if not config.summary_enabled:
-        return deterministic, "deterministic"
-    try:
-        # The legacy 60s bound is the seam's own here: ``services.model_query`` carries no
-        # timeout argument, so the core's RPC timeout is the only bound available.
-        answer = clip_summary_text(services.model_query(summary_prompt(plan)))
-    except Exception:  # noqa: BLE001 - a failed summary degrades, it never fails the observation
-        return deterministic, "deterministic"
+    answer = clip_summary_text(services.model_query(summary_prompt(plan)))
     if answer is None:
-        return deterministic, "deterministic"
-    model = render_model_replacement(plan, answer)
-    if len(model.encode("utf-8")) >= plan.covered_bytes:
-        return deterministic, "deterministic"
-    return model, "model"
+        raise ValueError("the model summary was blank")
+    replacement = render_model_replacement(plan, answer)
+    if len(replacement.encode("utf-8")) >= plan.covered_bytes:
+        raise ValueError(
+            f"the model replacement ({len(replacement.encode('utf-8'))} bytes) would not shrink the covered prefix ({plan.covered_bytes} bytes)"
+        )
+    return replacement
 
 
 def _measured_projection(services: PluginServices) -> tuple[int, int]:
@@ -287,11 +247,11 @@ def apply_projection(
     reached_end: bool,
     measured_input_tokens: int | None,
 ) -> ProjectionOutcome:
-    """Plan, guard, declare and record one projection.
+    """Plan, guard, summarize, declare and record one projection.
 
-    The size guard runs *before* ``project_window`` so an unshrinkable prefix is refused
-    visibly instead of being sent for the core to reject, and the core's measured numbers
-    -- not this plugin's plan -- are what the staged event and the state record.
+    The summary is the replacement: when it cannot shrink the prefix the projection raises
+    instead of being sent for the core to reject, and the core's measured numbers -- not
+    this plugin's plan -- are what the staged event and the state record.
     """
     plan = plan_projection(
         events,
@@ -301,18 +261,7 @@ def apply_projection(
     )
     if plan is None:
         return ProjectionOutcome(status="noop", reason="nothing_new_to_cover", measured_input_tokens=measured_input_tokens)
-    # The guard runs before any model call: an unshrinkable prefix is refused without spending
-    # a provider turn on a summary the core would reject anyway.
-    deterministic = render_deterministic_replacement(plan)
-    if len(deterministic.encode("utf-8")) >= plan.covered_bytes:
-        return ProjectionOutcome(
-            status="refused",
-            reason=(f"the replacement ({len(deterministic.encode('utf-8'))} bytes) would not shrink the covered prefix ({plan.covered_bytes} bytes)"),
-            covered_from_sequence=plan.covered_from_sequence,
-            covered_to_sequence=plan.covered_to_sequence,
-            measured_input_tokens=measured_input_tokens,
-        )
-    replacement, summary_kind = _replacement_text(services, plan, config, deterministic)
+    replacement = _replacement_text(services, plan)
     replacement_bytes = len(replacement.encode("utf-8"))
     services.project_window(
         covered_from_sequence=plan.covered_from_sequence,
@@ -328,7 +277,7 @@ def apply_projection(
         covered_bytes=covered_bytes,
         dropped_bytes=dropped_bytes,
         covered_events=plan.covered_event_count,
-        summary_kind=summary_kind,
+        summary_kind="model",
         measured_input_tokens=measured_input_tokens,
     )
     tip = max(state.cursor_sequence, events[-1].sequence)
@@ -339,7 +288,7 @@ def apply_projection(
             covered_to_sequence=plan.covered_to_sequence,
             covered_bytes=covered_bytes,
             dropped_bytes=dropped_bytes,
-            summary_kind=summary_kind,
+            summary_kind="model",
         ),
     )
     services.replace_state(projected.to_payload(), expected_version=version)
@@ -369,8 +318,9 @@ def compaction_observer(
 
     ``usage`` is the per-dispatch measurement and the timely trigger; ``run_finished`` catches
     the end of a run, where the newest dispatch in the window supplies the same measurement.
-    A projection this plugin refuses raises, so the core records an owned
-    ``core.observer_error`` instead of the observation silently doing nothing.
+    A model summary that fails, comes back blank, or would not shrink the prefix raises, so
+    the core records an owned ``core.observer_error`` instead of the observation silently
+    doing nothing.
     """
     _ = context
     if not isinstance(fact, (UsageFact, RunFinishedFact)) or not config.enabled:
@@ -468,8 +418,6 @@ class CompactCommand:
                 ),
                 data={"noop": False, "reason": outcome.reason, **outcome.accounting, "measured_input_tokens": outcome.measured_input_tokens},
             )
-        if outcome.status == "refused":
-            return CommandResult(status="error", error=f"compaction refused: {outcome.reason}", data=dict(outcome.accounting))
         current = _row_accounting(services.window_projection())
         if current["covered_bytes"] is None:
             return CommandResult(
@@ -510,40 +458,6 @@ def prepare_compaction_deactivation(
     return state
 
 
-def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    resolved = parse_compaction_config(config)
-    return Plugin(
-        commands=(CompactCommand(resolved),),
-        observer=partial(compaction_observer, config=resolved),
-        observed_facts=("usage", "run_finished"),
-        state=StateSchema(
-            version=SCHEMA_VERSION,
-            schema={
-                "type": "object",
-                "required": ["schema_version", "cursor_sequence", "last_projection"],
-                "additionalProperties": False,
-                "properties": {
-                    "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
-                    "cursor_sequence": {"type": "integer", "minimum": 0},
-                    "last_projection": {
-                        "type": ["object", "null"],
-                        "required": ["covered_from_sequence", "covered_to_sequence", "covered_bytes", "dropped_bytes", "summary_kind"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "covered_from_sequence": {"type": "integer", "minimum": 0},
-                            "covered_to_sequence": {"type": "integer", "minimum": 0},
-                            "covered_bytes": {"type": "integer", "minimum": 0},
-                            "dropped_bytes": {"type": "integer", "minimum": 0},
-                            "summary_kind": {"type": "string", "enum": ["deterministic", "model"]},
-                        },
-                    },
-                },
-            },
-        ),
-        prepare_deactivate=prepare_compaction_deactivation,
-    )
-
-
 __all__ = [
     "CONTEXT_COMPACTED_EVENT",
     "DEFAULT_KEEP_RECENT_TOKENS",
@@ -555,6 +469,5 @@ __all__ = [
     "ProjectionOutcome",
     "apply_projection",
     "compaction_observer",
-    "create_plugin",
     "parse_compaction_config",
 ]

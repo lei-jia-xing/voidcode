@@ -4,7 +4,7 @@ Workspace skill discovery and on-demand loading, plus always-on rule context: th
 
 ## Surface
 
-- Tool `skill` (`READ`, safe): `name` (required) loads one discovered skill's `SKILL.md` body plus metadata (description, source path, base directory); optional `user_message` carries command arguments or extra context. Unknown or disabled skills fail instead of guessing. The tool description stays static — the skill catalog travels in system-prompt metadata, not on every provider request.
+- Reader `skill://<name>` (`READ` via `read`): loads one discovered skill's `SKILL.md` body plus metadata (description, source path, base directory); unknown names are no-such-resource while disabled or malformed skills fail loudly instead of guessing. Line `offset`/`limit` page the render; byte args are refused. The skill catalog travels in system-prompt metadata, not on every provider request.
 - Command `/skills` (`READ`): lists discovered skills with enabled state and paths; reports "Skills are disabled." when the catalog is off.
 - Context (every dispatch, three parts): the skill catalog (gated on `enabled`), touched-path file rules, then the rulebook. Rule context is independent of the skills setting — it ships whether or not skills are enabled.
 - Observer on `invocation_finished`: records the workspace paths each finished invocation touched (from committed `resource_paths` in public facts, never tool-name guessing) into recency-ordered session state (most recent 64).

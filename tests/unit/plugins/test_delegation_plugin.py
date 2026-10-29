@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.plugins.delegation import create_plugin
 from voidcode.plugins.delegation.delegation_plugin import (
     CANCEL_REASON,
     DEFAULT_JOIN_TIMEOUT_SECONDS,
@@ -18,7 +19,6 @@ from voidcode.plugins.delegation.delegation_plugin import (
     DelegationState,
     TaskBatchTool,
     TaskTool,
-    create_plugin,
 )
 from voidcode.plugins.delegation.profiles.registry import load_agent_registry
 from voidcode.sdk.invocation import ToolContext

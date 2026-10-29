@@ -1,10 +1,10 @@
-"""Deterministic continuity projection and the compaction budget math.
+"""Model-summary continuity projection and the compaction budget math.
 
-Ported from legacy ``runtime/context/window.py`` (the continuity projection, the
-threshold/reserve resolution and the summary lane's constants) so this plugin stands on
-its own once the legacy tree is deleted. This module only *plans*: the core re-verifies
-the boundary and measures the accounting of every declared projection
-(``services.project_window``), so nothing here is trusted about coverage.
+Ported from legacy ``runtime/context/window.py`` (the threshold/reserve resolution and the
+summary lane's constants) so this plugin stands on its own once the legacy tree is deleted.
+This module only *plans*: the core re-verifies the boundary and measures the accounting of
+every declared projection (``services.project_window``), so nothing here is trusted about
+coverage.
 
 Rulers: a token number is either provider-reported (a dispatch's usage record, a usage
 fact) or a legacy constant. Sizes this module compares against each other are measured on
@@ -16,22 +16,16 @@ from __future__ import annotations
 
 import hashlib
 from bisect import bisect_right
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
-from voidcode.sdk.services import ArtifactReference
-from voidcode.sdk.tools import TextOutput, ToolFailure, ToolOutput, ToolResult, ToolSuccess
-from voidcode.sdk.transcript import ContextRecord, TranscriptChild, TranscriptDispatch, TranscriptInterrupted, TranscriptTool
+from voidcode.sdk.tools import TextOutput, ToolFailure, ToolOutput, ToolResult
+from voidcode.sdk.transcript import ContextRecord, TranscriptDispatch, TranscriptInterrupted, TranscriptTool
 
 # --- Legacy constants (``runtime/context/window.py``) ---
 
-#: Chars of the first covered user message that become the projection's objective.
-_CONTINUITY_OBJECTIVE_PREVIEW_CHARS = 160
-#: Bounded item/char caps of every preview list the deterministic projection carries.
-_COMPACTION_PREVIEW_ITEM_LIMIT = 8
-_COMPACTION_PREVIEW_CHAR_LIMIT = 240
 #: The output reserve is 15% of the window (``_TOKEN_RESERVE_*``), with a fixed floor.
 _TOKEN_RESERVE_NUMERATOR = 15
 _TOKEN_RESERVE_DENOMINATOR = 100
@@ -41,9 +35,8 @@ DEFAULT_KEEP_RECENT_TOKENS = 20_000
 #: The provider-facing prefix and the anchor that identifies one projection's text.
 PROJECTION_PREFIX = "Runtime context projection:"
 CONTINUITY_ANCHOR_PREFIX = "continuity:"
-DROPPED_PREVIEW_TITLE = "## Dropped Tool Preview"
 
-#: The opt-in model summary (legacy ``service.py:_CONTINUITY_SUMMARY_SYSTEM_PROMPT``), verbatim.
+#: The model summary (legacy ``service.py:_CONTINUITY_SUMMARY_SYSTEM_PROMPT``), verbatim.
 CONTINUITY_SUMMARY_SYSTEM_PROMPT = (
     "You compress conversation history that is about to be discarded from a coding agent's context window.\n"
     "Summarize the work: the objective, user constraints that must survive verbatim, what was completed, "
@@ -247,37 +240,16 @@ def recent_tail_character_budget(events: Sequence[ContextRecord], *, keep_recent
 class ToolResultFact:
     """One committed tool result in provider-visible form."""
 
-    sequence: int
     tool_name: str
     status: Literal["ok", "error"]
-    arguments: Mapping[str, object]
     #: Result output as the provider saw it, and the failure reason when there was one.
     content: str
-    resource_paths: tuple[str, ...] = ()
     error: str | None = None
-    artifact: ArtifactReference | None = None
 
     @property
     def text(self) -> str:
         """Provider-visible body (legacy ``result_payload_text``): output, then error."""
         return f"{self.content}\n{self.error}" if self.error else self.content
-
-    def preview(self, *, max_preview_chars: int = _COMPACTION_PREVIEW_CHAR_LIMIT) -> str:
-        """The legacy one-line preview: identity, refs, then a clipped content/error excerpt."""
-        parts = [self.tool_name, self.status]
-        if self.artifact is not None:
-            parts.extend((f"uri={self.artifact.uri}", f"bytes={self.artifact.bytes}"))
-            return " ".join(parts)
-        for key, value in self.arguments.items():
-            if isinstance(value, str) and value:
-                parts.append(f"{key}={value[:max_preview_chars]}")
-        preview_source = self.content or (self.error or "")
-        if preview_source:
-            clipped = preview_source[:max_preview_chars]
-            if len(preview_source) > max_preview_chars:
-                clipped = f"{clipped}..."
-            parts.append(f'{"content_preview" if self.content else "error_preview"}="{clipped}"')
-        return " ".join(parts)
 
 
 def _output_text(output: ToolOutput) -> str:
@@ -297,38 +269,16 @@ def tool_result_fact(event: ContextRecord) -> ToolResultFact | None:
     if not isinstance(content, TranscriptTool):
         return None
     result, call = content.result, content.call
-    paths = (
-        tuple(
-            dict.fromkeys(
-                [
-                    *(item.path for item in result.coverage),
-                    *(item.path for item in result.changes),
-                    *(item.old_path for item in result.changes if item.old_path is not None),
-                ]
-            )
-        )
-        if isinstance(result, ToolSuccess)
-        else ()
-    )
     return ToolResultFact(
-        sequence=event.sequence,
         tool_name=call.tool_name,
         status="ok" if not content.interrupted and not isinstance(result, ToolFailure) else "error",
-        arguments=call.arguments,
         content=_output_text(result.output),
-        resource_paths=paths,
         error=_result_error(result),
-        artifact=result.output.bounds.reference if isinstance(result.output.bounds.reference, ArtifactReference) else None,
     )
 
 
 def _model_turn_output(event: ContextRecord) -> str | None:
     return event.content.output if isinstance(event.content, ProviderTurnResult) else None
-
-
-def _user_message_text(event: ContextRecord) -> str | None:
-    content = event.content
-    return content.content if isinstance(content, ProviderMessage) and content.role == "user" else None
 
 
 # --- The covered prefix: boundary, accounting, and the replacement it earns ---
@@ -342,73 +292,13 @@ class ProjectionPlan:
     covered_to_sequence: int
     covered_event_count: int
     covered_bytes: int
-    covered_tool_results: tuple[ToolResultFact, ...]
+    covered_tool_result_count: int
     retained_tool_result_count: int
-    objective: str | None
-    constraints: tuple[str, ...]
-    progress: tuple[str, ...]
-    blockers: tuple[str, ...]
-    references: tuple[str, ...]
-    delegated: tuple[str, ...]
     summary_material: tuple[str, ...]
 
 
-def _line_preview(value: str, *, limit: int) -> str:
-    collapsed = " ".join(part.strip() for part in value.splitlines() if part.strip())
-    if len(collapsed) <= limit:
-        return collapsed
-    return f"{collapsed[:limit]}..."
-
-
-_LEGACY_CONSTRAINT_MARKERS = ("must", "must not", "never", "always", "do not", "don't", "forbidden")
-
-
-def _constraint_lines(prompt: str) -> tuple[str, ...]:
-    constraints: list[str] = []
-    for raw_line in prompt.splitlines():
-        line = raw_line.strip(" -\t")
-        lowered = line.lower()
-        if line and any(marker in lowered for marker in _LEGACY_CONSTRAINT_MARKERS):
-            constraints.append(line)
-    return tuple(constraints[:8])
-
-
-def _merge_unique_strings(*groups: tuple[str, ...], limit: int = 12) -> tuple[str, ...]:
-    merged: list[str] = []
-    seen: set[str] = set()
-    for group in groups:
-        for value in group:
-            stripped = value.strip()
-            if not stripped or stripped in seen:
-                continue
-            seen.add(stripped)
-            merged.append(stripped)
-            if len(merged) >= limit:
-                return tuple(merged)
-    return tuple(merged)
-
-
-def _facts_from_tool_results(
-    results: Sequence[ToolResultFact],
-    *,
-    preview_item_limit: int,
-    preview_char_limit: int,
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    progress: list[str] = []
-    blockers: list[str] = []
-    refs: list[str] = []
-    for result in results[:preview_item_limit]:
-        preview = result.preview(max_preview_chars=preview_char_limit)
-        if result.status == "ok":
-            progress.append(f"Tool result compacted: {preview}")
-        else:
-            blockers.append(f"Tool error compacted: {preview}")
-        refs.extend(f"file:{path}" for path in result.resource_paths)
-    return tuple(progress), tuple(blockers), tuple(refs)
-
-
 def _summary_material(events: Sequence[ContextRecord]) -> tuple[str, ...]:
-    """Bounded, oldest-first transcript of the covered prefix for the model lane.
+    """Bounded, oldest-first transcript of the covered prefix for the model summary.
 
     Each item is previewed under its own cap so one oversized payload cannot crowd out the
     rest, and the running total stops the list (legacy ``_continuity_summary_input``).
@@ -494,84 +384,18 @@ def plan_projection(
     covered_to_sequence = candidates[-1]
     if covered_to_sequence > last_boundary:
         return None
-
     covered = tuple(event for event in readable if event.sequence <= covered_to_sequence)
-    covered_tool_results = tuple(
-        fact for fact in (tool_result_fact(event) for event in covered if isinstance(event.content, TranscriptTool)) if fact is not None
-    )
-    retained_tool_results = tuple(
-        fact
-        for fact in (
-            tool_result_fact(event) for event in readable if event.sequence > covered_to_sequence and isinstance(event.content, TranscriptTool)
-        )
-        if fact is not None
-    )
-    user_messages = tuple(
-        text for text in (_user_message_text(event) for event in covered if isinstance(event.content, ProviderMessage)) if text is not None
-    )
-    objective = _line_preview(user_messages[0], limit=_CONTINUITY_OBJECTIVE_PREVIEW_CHARS) if user_messages else None
-    constraints = _merge_unique_strings(*(_constraint_lines(message) for message in user_messages), limit=12)
-    progress, blockers, refs = _facts_from_tool_results(
-        covered_tool_results,
-        preview_item_limit=_COMPACTION_PREVIEW_ITEM_LIMIT,
-        preview_char_limit=_COMPACTION_PREVIEW_CHAR_LIMIT,
-    )
+    covered_tool_result_count = sum(1 for event in covered if isinstance(event.content, TranscriptTool))
+    retained_tool_result_count = sum(1 for event in readable if event.sequence > covered_to_sequence and isinstance(event.content, TranscriptTool))
     return ProjectionPlan(
         covered_from_sequence=readable[0].sequence,
         covered_to_sequence=covered_to_sequence,
         covered_event_count=len(covered),
         covered_bytes=sum(event_payload_bytes(event) for event in covered),
-        covered_tool_results=covered_tool_results,
-        retained_tool_result_count=len(retained_tool_results),
-        objective=objective,
-        constraints=constraints,
-        progress=tuple(_merge_unique_strings(progress, limit=16)),
-        blockers=tuple(_merge_unique_strings(blockers, limit=12)),
-        references=tuple(_merge_unique_strings(refs, limit=16)),
-        delegated=tuple(
-            _merge_unique_strings(
-                tuple(f"child:{event.content.child_session_id}" for event in covered if isinstance(event.content, TranscriptChild)), limit=12
-            )
-        ),
+        covered_tool_result_count=covered_tool_result_count,
+        retained_tool_result_count=retained_tool_result_count,
         summary_material=_summary_material(covered),
     )
-
-
-def continuity_sections(plan: ProjectionPlan) -> tuple[str, ...]:
-    """The legacy section rendering (``_continuity_summary_text``), minus an empty section."""
-    sections: list[str] = []
-
-    def add_section(title: str, values: tuple[str, ...] | str | None) -> None:
-        if isinstance(values, str):
-            value = values.strip()
-            if value:
-                sections.append(f"## {title}\n{value}")
-            return
-        if not values:
-            return
-        lines = "\n".join(f"- {value}" for value in values if value.strip())
-        if lines:
-            sections.append(f"## {title}\n{lines}")
-
-    add_section("Objective", plan.objective)
-    add_section("Constraints", plan.constraints)
-    add_section("Progress Completed", plan.progress)
-    add_section("Blockers / Open Questions", plan.blockers)
-    add_section("Relevant Files / Commands / Errors", plan.references)
-    add_section("Delegated / Background Tasks", plan.delegated)
-    return tuple(sections)
-
-
-def dropped_tool_preview(plan: ProjectionPlan) -> tuple[str, ...]:
-    """The legacy ``## Dropped Tool Preview`` body: counted previews, capped items, remainder."""
-    previewable = tuple(plan.covered_tool_results)
-    lines = [f"Compacted {len(plan.covered_tool_results)} earlier tool results:"]
-    for index, fact in enumerate(previewable[:_COMPACTION_PREVIEW_ITEM_LIMIT], start=1):
-        lines.append(f"{index}. {fact.preview()}")
-    remaining = len(previewable) - min(_COMPACTION_PREVIEW_ITEM_LIMIT, len(previewable))
-    if remaining > 0:
-        lines.append(f"... and {remaining} more")
-    return tuple(lines)
 
 
 def continuity_anchor(*, summary_text: str, dropped_count: int, retained_count: int) -> str:
@@ -580,36 +404,12 @@ def continuity_anchor(*, summary_text: str, dropped_count: int, retained_count: 
     return f"{CONTINUITY_ANCHOR_PREFIX}{digest}"
 
 
-def body_text(plan: ProjectionPlan) -> str:
-    """The section text an anchor is taken over (legacy ``state.summary_text``)."""
-    return "\n\n".join(continuity_sections(plan))
-
-
-def render_deterministic_replacement(plan: ProjectionPlan) -> str:
-    """The legacy deterministic projection, labelled and anchored for the provider.
-
-    Legacy dropped the whole continuity text when nothing was pruned; here the covered prefix
-    always exists, so the sections stand on their own and only the dropped-tool preview (which
-    has nothing to list) is left out.
-    """
-    summary = body_text(plan)
-    text = f"{PROJECTION_PREFIX}\n{summary}" if summary else PROJECTION_PREFIX
-    if plan.covered_tool_results:
-        text = f"{text}\n\n{DROPPED_PREVIEW_TITLE}\n{chr(10).join(dropped_tool_preview(plan))}"
-    anchor = continuity_anchor(
-        summary_text=summary,
-        dropped_count=len(plan.covered_tool_results),
-        retained_count=plan.retained_tool_result_count,
-    )
-    return f"{text}\n{anchor}"
-
-
 def render_model_replacement(plan: ProjectionPlan, summary: str) -> str:
-    """The model lane's replacement: the model's text stands in for the whole projection."""
+    """The replacement: the model's text stands in for the whole covered prefix."""
     text = summary.strip()
     anchor = continuity_anchor(
         summary_text=text,
-        dropped_count=len(plan.covered_tool_results),
+        dropped_count=plan.covered_tool_result_count,
         retained_count=plan.retained_tool_result_count,
     )
     return f"{PROJECTION_PREFIX}\n{text}\n{anchor}"
@@ -646,18 +446,14 @@ __all__ = [
     "CompactionBudget",
     "ProjectionPlan",
     "ToolResultFact",
-    "body_text",
     "clip_summary_text",
     "continuity_anchor",
-    "continuity_sections",
-    "dropped_tool_preview",
     "effective_reserve_tokens",
     "event_payload_bytes",
     "measured_dispatch_input_tokens",
     "measured_tokens_per_character",
     "plan_projection",
     "recent_tail_character_budget",
-    "render_deterministic_replacement",
     "render_model_replacement",
     "resolve_budget_reserve_tokens",
     "resolve_compaction_budget",

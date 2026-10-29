@@ -4,6 +4,9 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Model-only compaction (BREAKING)
+- The deterministic rendering path is deleted: every projection's replacement is the model's summary text, and a failed, blank, or unshrinkable summary fails loudly instead of falling back. The `summary_enabled` config key is removed (strict parsers refuse it); old stored `deterministic` rows still validate but nothing writes that kind again. `CompactionConfig` parsing is now pydantic (`strict=True`, `extra="forbid"`).
+
 ### Extensible resource readers (BREAKING)
 - The `tool://`, `artifact://`, `transcript://` renderers moved out of `read_tool.py` into shared capability modules registered by the files plugin (`capabilities/files/resource_readers.py`, sharing one bounded stored-artifact pager in `capabilities/resource_pages.py`); `read` imports no reader and holds no scheme table. Admission rejects duplicate schemes naming both owners; disabling a provider removes its scheme with no fallback.
 - Error taxonomy: unregistered scheme raises `ResourceUnavailable` (`read` maps it to `unsupported resource URI` — wording preserved); provider `None` is unknown-resource; malformed pages raise `ResourceContractError`; handler bugs and backend failures (including handler-raised `QueryUnavailable`) propagate visibly. `read_artifact` raises `FileNotFoundError` only for genuinely absent digests; permission/storage failures propagate.

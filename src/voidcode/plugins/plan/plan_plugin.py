@@ -26,7 +26,6 @@ from typing import ClassVar
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
 
@@ -166,23 +165,3 @@ def prepare_plan_deactivation(
     _ = (scope, scope_key, tip_sequence)
     PlanState.from_payload(state)
     return PlanState(active=False).to_payload()
-
-
-def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    return Plugin(
-        commands=(PlanCommand(), PlanOffCommand(), PlanStatusCommand()),
-        context=plan_context,
-        state=StateSchema(
-            version=SCHEMA_VERSION,
-            schema={
-                "type": "object",
-                "required": ["schema_version", "active"],
-                "additionalProperties": False,
-                "properties": {
-                    "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
-                    "active": {"type": "boolean"},
-                },
-            },
-        ),
-        prepare_deactivate=prepare_plan_deactivation,
-    )

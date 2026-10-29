@@ -16,10 +16,10 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 from uuid import uuid4
 
-from voidcode.capabilities.agent_queries import AGENT_DEFINITIONS, AgentDefinition, AgentDefinitionRequest, apply_agent_profile
+from voidcode.capabilities.agent_queries import AgentDefinition, AgentDefinitionRequest, apply_agent_profile
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin, PluginQueryCaller
+from voidcode.sdk.plugin import PluginQueryCaller
 from voidcode.sdk.services import ChildOutcome, PluginServices
 from voidcode.sdk.tools import (
     TextOutput,
@@ -31,7 +31,6 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from .profiles.commands import AgentsCommand, AgentShowCommand
 from .profiles.registry import AgentRegistry, load_agent_registry
 
 SCHEMA_VERSION = 1
@@ -554,7 +553,7 @@ def _spawn_child(
     return child_id
 
 
-def _agent_definition(request: AgentDefinitionRequest, caller: PluginQueryCaller) -> AgentDefinition | None:
+def agent_definition(request: AgentDefinitionRequest, caller: PluginQueryCaller) -> AgentDefinition | None:
     try:
         registry = load_agent_registry(caller.workspace)
     except (ValueError, OSError) as exc:
@@ -1294,12 +1293,3 @@ def prepare_delegation_deactivation(
     """
     _ = (scope, scope_key, tip_sequence)
     return state
-
-
-def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    return Plugin(
-        tools=(TaskTool(), TaskBatchTool()),
-        commands=(AgentsCommand(), AgentShowCommand()),
-        queries=(AGENT_DEFINITIONS.bind(_agent_definition),),
-        prepare_deactivate=prepare_delegation_deactivation,
-    )

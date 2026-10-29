@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.plugins.todo import create_plugin
 from voidcode.plugins.todo.todo_plugin import (
     DEFAULT_TODO_REMINDER_MAX_PER_CYCLE,
     SCHEMA_VERSION,
@@ -22,7 +23,6 @@ from voidcode.plugins.todo.todo_plugin import (
     TodoState,
     TodoStatusCommand,
     TodoTool,
-    create_plugin,
     decide_todo_mid_run_nudge,
     decide_todo_reminder,
     incomplete_todo_phases,

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.plugins.review import create_plugin
 from voidcode.plugins.review.review_plugin import (
     DEFAULT_JOIN_TIMEOUT_SECONDS,
     REVIEW_CHILD_LABEL,
@@ -16,7 +17,6 @@ from voidcode.plugins.review.review_plugin import (
     ReviewCommand,
     ReviewTarget,
     build_review_prompt,
-    create_plugin,
     resolve_review_target,
 )
 from voidcode.plugins.review.workspace_review import WorkspaceReviewService, git_status_snapshot

@@ -1,5 +1,11 @@
 """The ``!`` command plugin."""
 
-from .user_shell_plugin import create_plugin
+from collections.abc import Mapping
 
-__all__ = ["create_plugin"]
+from voidcode.sdk.plugin import Plugin
+
+from .user_shell_plugin import ShellCommand
+
+
+def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
+    return Plugin(commands=(ShellCommand(),))

@@ -27,7 +27,6 @@ from voidcode.sdk.hooks import (
 )
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderTokenUsage
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
@@ -1667,40 +1666,3 @@ def prepare_goal_deactivation(
         active_windows=tuple(replace(window, end_sequence=tip_sequence) if window.end_sequence is None else window for window in goal.active_windows),
     )
     return prepared.to_dict()
-
-
-# --- Factory ---
-
-
-def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    tools = (
-        GetGoalTool(),
-        CreateGoalTool(),
-        UpdateGoalTool(),
-    )
-    commands = (
-        GoalCommand(),
-        GoalSetCommand(),
-        GoalEditCommand(),
-        GoalPauseCommand(),
-        GoalResumeCommand(),
-        GoalClearCommand(),
-        GoalLoadObjectiveCommand(),
-    )
-    views = (
-        GoalStatusView(),
-        GoalDetailsView(),
-        GoalFormView(),
-    )
-
-    return Plugin(
-        tools=tools,
-        commands=commands,
-        views=views,
-        providers=(),
-        context=goal_context,
-        observer=goal_observer,
-        observed_facts=("usage", "invocation_finished", "run_finished"),
-        prepare_deactivate=prepare_goal_deactivation,
-        close=None,
-    )

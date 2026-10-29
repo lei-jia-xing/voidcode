@@ -1,7 +1,7 @@
 """Workspace skill discovery, metadata catalog, on-demand loading and rule context.
 
 The registry is rebuilt per call so new SKILL.md files become visible immediately.
-Skills require explicit configuration; bodies enter context through the skill tool.
+Skills require explicit configuration; bodies enter context through the skill:// reader.
 AGENTS.md hierarchy and .voidcode/rules guidance are independent of that setting.
 Touched paths come from durable public resource facts.
 """
@@ -15,27 +15,22 @@ from pathlib import Path
 from typing import ClassVar
 
 from voidcode.capabilities.frontmatter import load_frontmatter_mapping, split_frontmatter
+from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES, format_resource_text
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact
-from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin, StateSchema
+from voidcode.sdk.resources import ResourcePage, ResourceReadCaller, ResourceReaderServices, ResourceReadRequest
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import (
-    TextOutput,
-    ToolCall,
-    ToolDefinition,
-    ToolEffect,
-    ToolFailure,
-    ToolResult,
-    ToolSuccess,
-)
+from voidcode.sdk.tools import OutputBounds, ToolEffect
 
 from .rules import build_rule_catalog, render_file_rules, rulebook_prompt_context, runtime_file_rule_contexts
 
 SKILL_ENTRY_FILE_NAME = "SKILL.md"
 DEFAULT_SKILL_SEARCH_PATHS: tuple[str, ...] = (".voidcode/skills",)
 SUPPORTED_FRONTMATTER_KEYS: frozenset[str] = frozenset({"name", "description"})
+
+SKILL_URI_PREFIX = "skill://"
+DEFAULT_SKILL_READ_LIMIT = 2000
 
 
 def _validated_non_empty_string(value: object, *, field_name: str) -> str:
@@ -356,7 +351,7 @@ def catalog_skill_context(skill_registry: SkillRegistry) -> str:
         "Each entry is metadata only; the full SKILL.md body is NOT in your",
         "current context.",
         "Load a skill body ONLY when its description matches the active task.",
-        'Use the skill tool: skill(name="..."). Do NOT speculatively load every',
+        'Use the read tool: read(path="skill://..."). Do NOT speculatively load every',
         "skill; lazy loading keeps the harness lightweight and the model focused.",
         "",
         "<available_skills>",
@@ -376,119 +371,87 @@ def catalog_skill_context(skill_registry: SkillRegistry) -> str:
     return "\n".join(lines)
 
 
-# --- Tool ---
+# --- Reader ---
 
 
-@dataclass(frozen=True, slots=True)
-class SkillResultBody:
-    name: str
-    description: str
-    source_path: str
-    directory: str
-    content: str
-    user_message: str | None = None
-
-    def as_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "name": self.name,
-            "description": self.description,
-            "sourcePath": self.source_path,
-            "baseDirectory": self.directory,
-            "content": self.content,
-        }
-        if self.user_message is not None:
-            payload["user_message"] = self.user_message
-        return payload
-
-
-SKILL_DESCRIPTION = (
-    "Load a runtime-discovered skill into the current conversation context.\n"
-    "\n"
-    "Usage:\n"
-    "- Use this tool when the task matches a skill in the runtime skills catalog "
-    "listed in the system prompt metadata.\n"
-    "- The name argument is required and must match a catalog skill name.\n"
-    "- The tool returns the resolved SKILL.md body and metadata so the agent can "
-    "follow it in the current turn.\n"
-    "- This tool does not create or edit skills; it only loads already-discovered "
-    "local skills.\n"
-    "- If the skill is unknown, the tool fails instead of guessing."
-)
-
-
-class SkillTool:
-    # Static description: the skill catalog lives in system-prompt metadata, not in this tool's
-    # description, so the catalog is not shipped twice on every provider request.
-    definition: ClassVar[ToolDefinition] = ToolDefinition(
-        name="skill",
-        icon=Icon(glyph="✦"),
-        description=SKILL_DESCRIPTION,
-        input_schema={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Skill name to load."},
-                "user_message": {
-                    "type": "string",
-                    "description": "Optional command arguments or extra context for the skill.",
-                },
-            },
-            "required": ["name"],
-            "additionalProperties": False,
-        },
-        effects=frozenset({ToolEffect.READ}),
-        replay_policy="safe",
+def _skill_rendered_content(skill: SkillMetadata) -> str:
+    return (
+        f"## Skill: {skill.name}\n"
+        f"**Description**: {skill.description}\n"
+        f"sourcePath: {skill.entry_path}\n"
+        f"baseDirectory: {skill.directory}\n\n"
+        f"{skill.content}"
     )
+
+
+def _skill_page(rendered: str, *, uri: str, skill: SkillMetadata, offset: int, limit: int) -> ResourcePage:
+    lines = rendered.split("\n")
+    total = len(lines)
+    if offset > total:
+        raise ValueError(f"Offset {offset} is out of range for this skill ({total} lines)")
+    start = offset - 1
+    shown = lines[start : start + limit]
+    next_offset = offset + len(shown) if start + len(shown) < total else None
+    truncated = next_offset is not None
+    raw_content = "\n".join(shown)
+    if shown and (start + len(shown) < total or rendered.endswith("\n")):
+        raw_content += "\n"
+    summary = f"Read {len(shown)} line(s) from {uri}"
+    summary += f"; continue with offset={next_offset}." if next_offset is not None else "."
+    return ResourcePage(
+        output=format_resource_text(
+            summary,
+            raw_content=raw_content,
+            next_offset=next_offset,
+            truncated=truncated,
+            partial=truncated,
+            bounds=OutputBounds(truncated=truncated, partial=truncated),
+        ),
+        body={
+            "path": uri,
+            "type": "skill",
+            "name": skill.name,
+            "description": skill.description,
+            "sourcePath": str(skill.entry_path),
+            "baseDirectory": str(skill.directory),
+            "offset": offset,
+            "offset_unit": "lines",
+            "limit": limit,
+            "next_offset": next_offset,
+            "truncated": truncated,
+            "partial": truncated,
+            "byte_count": len(raw_content.encode("utf-8")),
+            "raw_content": raw_content,
+            "line_count": len(shown),
+        },
+    )
+
+
+class SkillReader:
+    """The ``skill://`` namespace: one discovered skill's rendered SKILL.md per URI."""
 
     def __init__(self, config: SkillsConfig) -> None:
         self._config = config
 
-    def invoke(
-        self,
-        call: ToolCall,
-        *,
-        context: ToolContext,
-        services: PluginServices,
-    ) -> ToolResult:
+    def read(self, request: ResourceReadRequest, caller: ResourceReadCaller, services: ResourceReaderServices) -> ResourcePage | None:
         _ = services
-
-        raw_name = call.arguments.get("name")
-        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        if request.byte_offset is not None or request.byte_limit is not None:
+            raise ValueError("byte_offset and byte_limit are not supported for skill:// URIs")
+        name = request.uri[len(SKILL_URI_PREFIX) :].strip()
         if not name:
-            message = "skill name must be a non-empty string"
-            return ToolFailure(self.definition.name, error=message, output=TextOutput(text=message))
-        raw_user_message = call.arguments.get("user_message")
-        if raw_user_message is not None and not isinstance(raw_user_message, str):
-            message = "skill user_message must be a string"
-            return ToolFailure(self.definition.name, error=message, output=TextOutput(text=message))
-
-        try:
-            registry = build_registry(workspace=context.require_workspace(), config=self._config)
-            skill = registry.resolve(name)
-        except (ValueError, OSError) as exc:
-            message = str(exc)
-            return ToolFailure(self.definition.name, error=message, output=TextOutput(text=message))
-
-        content = (
-            f"## Skill: {skill.name}\n"
-            f"**Description**: {skill.description}\n"
-            f"sourcePath: {skill.entry_path}\n"
-            f"baseDirectory: {skill.directory}\n\n"
-            f"{skill.content}"
-        )
-        if raw_user_message:
-            content += f"\n\nUser message: {raw_user_message}"
-        return ToolSuccess(
-            tool_name=self.definition.name,
-            output=TextOutput(content),
-            body=SkillResultBody(
-                name=skill.name,
-                description=skill.description,
-                source_path=str(skill.entry_path),
-                directory=str(skill.directory),
-                content=skill.content,
-                user_message=raw_user_message,
-            ),
-        )
+            raise ValueError("skill://<name> requires a skill name")
+        registry = build_registry(workspace=caller.workspace, config=self._config)
+        skill = registry.skills.get(name)
+        if skill is None:
+            return None
+        if not skill.enabled:
+            raise ValueError(f"skill '{name}' is disabled")
+        rendered = _skill_rendered_content(skill)
+        if len(rendered.encode("utf-8")) > MAX_RESOURCE_PAGE_BYTES:
+            line_count = rendered.count("\n") + (0 if rendered.endswith("\n") else 1)
+            raise ValueError(f"skill '{name}' renders {line_count} line(s); narrow the read with offset/limit")
+        limit = request.limit if request.limit is not None else DEFAULT_SKILL_READ_LIMIT
+        return _skill_page(rendered, uri=request.uri, skill=skill, offset=request.offset, limit=limit)
 
 
 # --- Command ---
@@ -702,28 +665,3 @@ def prepare_skills_deactivation(
     """
     _ = (scope, scope_key, tip_sequence)
     return state
-
-
-def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    skills_config = parse_skills_config(config)
-    return Plugin(
-        tools=(SkillTool(skills_config),),
-        commands=(SkillsCommand(skills_config),),
-        context=SkillsContextProvider(skills_config),
-        observer=skills_observer,
-        observed_facts=("invocation_finished",),
-        state=StateSchema(
-            version=1,
-            schema={
-                "type": "object",
-                "required": ["schema_version", "cursor_sequence", "touched_paths"],
-                "additionalProperties": False,
-                "properties": {
-                    "schema_version": {"type": "integer", "enum": [1]},
-                    "cursor_sequence": {"type": "integer", "minimum": 0},
-                    "touched_paths": {"type": "array", "items": {"type": "string"}},
-                },
-            },
-        ),
-        prepare_deactivate=prepare_skills_deactivation,
-    )

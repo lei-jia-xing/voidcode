@@ -1,5 +1,11 @@
-"""Review plugin package."""
+"""The ``review`` command: governed child review of workspace Git changes."""
 
-from .review_plugin import create_plugin
+from collections.abc import Mapping
 
-__all__ = ["create_plugin"]
+from voidcode.sdk.plugin import Plugin
+
+from .review_plugin import ReviewCommand
+
+
+def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
+    return Plugin(commands=(ReviewCommand(),))

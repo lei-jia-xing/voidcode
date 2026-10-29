@@ -2,8 +2,8 @@
 
 from dataclasses import replace
 
+from voidcode.plugins.effectiveness import create_plugin
 from voidcode.plugins.effectiveness.effectiveness_plugin import (
-    create_plugin,
     project_session_effectiveness,
     read_session_facts,
     render_summary,

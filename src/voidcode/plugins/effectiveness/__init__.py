@@ -1,5 +1,11 @@
-"""Effectiveness plugin package."""
+"""The ``effectiveness`` command: aggregate session tool-outcome metrics."""
 
-from .effectiveness_plugin import create_plugin
+from collections.abc import Mapping
 
-__all__ = ["create_plugin"]
+from voidcode.sdk.plugin import Plugin
+
+from .effectiveness_plugin import EffectivenessCommand
+
+
+def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
+    return Plugin(commands=(EffectivenessCommand(),))

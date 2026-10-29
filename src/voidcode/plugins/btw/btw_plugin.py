@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
-from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
 
@@ -55,7 +53,3 @@ class BtwCommand:
         if not answer.strip():
             return CommandResult(status="error", error="side question received an empty response")
         return CommandResult(status="ok", output=answer, data={"question": question, "answer": answer})
-
-
-def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    return Plugin(commands=(BtwCommand(),))

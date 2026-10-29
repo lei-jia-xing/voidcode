@@ -9,7 +9,6 @@ from typing import ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import ApprovalRequestedFact, ChildSpawnedFact, ContextProjectedFact, InvocationFinishedFact, PluginFact, RunRequestedFact
-from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import PluginServices, SessionUsageReport
 from voidcode.sdk.tools import ToolEffect
 
@@ -381,7 +380,3 @@ class EffectivenessCommand:
             usage=services.get_usage(),
         )
         return CommandResult(status="ok", output=render_summary(report), data=report.to_payload())
-
-
-def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    return Plugin(commands=(EffectivenessCommand(),))

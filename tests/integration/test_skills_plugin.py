@@ -1,8 +1,8 @@
 """End-to-end integration test for the Skills plugin on the real core stack.
 
-Proves the discovery -> catalog context -> skill tool path with a real provider request:
-the catalog is contributed to the model, the model loads a body by name, and disabling the
-plugin removes the tool, the context and the command.
+Proves the discovery -> catalog context -> skill:// reader path with a real provider
+request: the catalog is contributed to the model, the model loads a body by URI, and
+disabling the plugin removes the reader, the context and the command.
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
+from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
 
 _SKILLS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "skills"
 
@@ -47,7 +49,7 @@ def _close_created_cores() -> Iterator[None]:
 
 def _core(
     tmp_path: Path,
-    server: OpenAILoopbackServer,
+    server: OpenAILoopbackServer | None,
     *,
     skill_plugin_enabled: bool,
     skills_enabled: bool,
@@ -56,19 +58,22 @@ def _core(
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    config = {
-        "schema_version": 1,
-        "model": {"model": "endpoint/test-model"},
-        "policy": {"approval_mode": "ask"},
-        "providers": {
+    providers: dict[str, object] = {}
+    model: dict[str, object] = {}
+    if server is not None:
+        providers = {
             "endpoint": {
                 "api_key": "loopback-test-key",
                 "base_url": f"http://127.0.0.1:{server.server_port}/v1",
             }
-        },
+        }
+        model = {"model": "endpoint/test-model"}
+    config = {
+        "schema_version": 1,
+        "model": model,
+        "policy": {"approval_mode": "ask"},
+        "providers": providers,
         "plugins": {
-            # The bundled files plugin is not under test here and is rewritten by another P4 lane.
-            "files": {"enabled": False},
             "skills": {
                 "path": str(_SKILLS_PLUGIN_ROOT),
                 "enabled": skill_plugin_enabled,
@@ -114,9 +119,9 @@ def test_skill_catalog_context_and_on_demand_body_on_the_real_stack(tmp_path: Pa
                 "content": None,
                 "tool_calls": [
                     {
-                        "id": "call-skill-1",
+                        "id": "call-read-1",
                         "type": "function",
-                        "function": {"name": "skill", "arguments": json.dumps({"name": "release"})},
+                        "function": {"name": "read", "arguments": json.dumps({"path": "skill://release"})},
                     }
                 ],
             },
@@ -144,13 +149,15 @@ def test_skill_catalog_context_and_on_demand_body_on_the_real_stack(tmp_path: Pa
         assert result.output == "Followed the release skill."
 
         first_request = _messages(server.requests[0])
-        assert "skill" in _tool_names(server.requests[0])
+        assert "read" in _tool_names(server.requests[0])
+        assert "skill" not in _tool_names(server.requests[0])
         catalog = [message for message in first_request if message.get("role") == "system"]
         catalog_text = "\n".join(str(message.get("content")) for message in catalog)
         assert "<available_skills>" in catalog_text
         assert "<name>release</name>" in catalog_text
         assert "<description>Cut a release</description>" in catalog_text
         assert entry.resolve().as_uri() in catalog_text
+        assert 'read(path="skill://...")' in catalog_text
 
         tool_messages = [message for message in _messages(server.requests[1]) if message.get("role") == "tool"]
         assert len(tool_messages) == 1
@@ -177,7 +184,6 @@ def test_disabled_skills_plugin_contributes_nothing(tmp_path: Path) -> None:
         _write_skill(tmp_path / "workspace", name="release", description="Cut a release", body="body")
         session_id = core.create_session().session_id
         assert core.run("hello", session_id=session_id).status == "completed"
-        assert "skill" not in _tool_names(server.requests[0])
         request_text = json.dumps(_messages(server.requests[0]), ensure_ascii=False)
         assert "<available_skills>" not in request_text
         names = [descriptor.name for descriptor in core.command_catalog().commands]
@@ -197,9 +203,31 @@ def test_plugin_enabled_but_skills_disabled_in_config(tmp_path: Path) -> None:
         _write_skill(tmp_path / "workspace", name="release", description="Cut a release", body="body")
         session_id = core.create_session().session_id
         assert core.run("hello", session_id=session_id).status == "completed"
-        # The tool stays advertised (discovery is per call), but no catalog context is contributed.
-        assert "skill" in _tool_names(server.requests[0])
         request_text = json.dumps(_messages(server.requests[0]), ensure_ascii=False)
         assert "<available_skills>" not in request_text
         listed = core.invoke_command(session_id, "skills", {}, expected_revision=core.command_catalog().revision_id)
         assert listed.output == "Skills are disabled."
+
+
+def test_skill_reader_serves_unknown_and_disabled_through_real_read(tmp_path: Path) -> None:
+    core = _core(tmp_path, None, skill_plugin_enabled=True, skills_enabled=True)
+    entry = _write_skill(tmp_path / "workspace", name="release", description="Cut a release", body="steps")
+    session_id = core.create_session().session_id
+    context = ToolContext(
+        workspace=tmp_path / "workspace",
+        session_id=session_id,
+        run_id="run-skill-reader",
+        invocation_id="inv-skill-reader",
+        revision_id=core.plugin_runtime.revision_id,
+        actor="model",
+    )
+    served = core.plugin_runtime.invoke(ToolCall("read", {"path": "skill://release"}), context=context)
+    assert isinstance(served, ToolSuccess)
+    assert served.coverage == ()
+    assert f"## Skill: release\n**Description**: Cut a release\nsourcePath: {entry}" in str(getattr(served.output, "text", ""))
+    assert served.body is not None
+    assert served.body.as_payload()["name"] == "release"
+
+    missing = core.plugin_runtime.invoke(ToolCall("read", {"path": "skill://missing"}), context=context)
+    assert isinstance(missing, ToolFailure)
+    assert missing.error == "read cannot resolve resource URI skill://missing: no such resource"

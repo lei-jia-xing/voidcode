@@ -45,7 +45,6 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandR
 from voidcode.sdk.hooks import PluginFact, RunFinishedFact, WakeupFiredFact
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
     TextOutput,
@@ -628,43 +627,3 @@ def prepare_cron_deactivation(
     parsed = CronState.from_payload(state)
     parked = {schedule_id: replace(entry, enabled=False, wakeup_id=None) for schedule_id, entry in parsed.schedules.items()}
     return replace(parsed, schedules=parked).to_payload()
-
-
-def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    # The schedule policy is the ported legacy policy; there is no configuration surface.
-    _ = config
-    return Plugin(
-        tools=(CronCreateTool(), CronDeleteTool(), CronListTool()),
-        commands=(CronLoopCommand(),),
-        observer=cron_observer,
-        observed_facts=("run_finished",),
-        state=StateSchema(
-            version=SCHEMA_VERSION,
-            schema={
-                "type": "object",
-                "required": ["schema_version", "schedules", "cursor_sequence"],
-                "additionalProperties": False,
-                "properties": {
-                    "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
-                    "cursor_sequence": {"type": "integer", "minimum": 0},
-                    "schedules": {
-                        "type": "object",
-                        "additionalProperties": {
-                            "type": "object",
-                            "required": ["schedule_text", "kind", "prompt", "enabled", "expires_at", "wakeup_id"],
-                            "additionalProperties": False,
-                            "properties": {
-                                "schedule_text": {"type": "string"},
-                                "kind": {"type": "string", "enum": ["every", "at", "cron", "once"]},
-                                "prompt": {"type": "string"},
-                                "enabled": {"type": "boolean"},
-                                "expires_at": {"type": ["integer", "null"]},
-                                "wakeup_id": {"type": ["string", "null"]},
-                            },
-                        },
-                    },
-                },
-            },
-        ),
-        prepare_deactivate=prepare_cron_deactivation,
-    )

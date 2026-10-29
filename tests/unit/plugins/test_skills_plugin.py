@@ -1,4 +1,4 @@
-"""Unit tests for the Skills plugin: discovery, registry rules, catalog text, tool and commands."""
+"""Unit tests for the Skills plugin: discovery, registry rules, catalog text, reader and commands."""
 
 from __future__ import annotations
 
@@ -8,26 +8,27 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.plugins.skills import create_plugin
 from voidcode.plugins.skills.skills_plugin import (
     DEFAULT_SKILL_SEARCH_PATHS,
     SkillEnableRule,
     SkillLoadError,
     SkillManifestParseError,
+    SkillReader,
     SkillRegistry,
     SkillsCommand,
     SkillsConfig,
     SkillsContextProvider,
-    SkillTool,
     build_registry,
     catalog_skill_context,
-    create_plugin,
     loaded_skill_names,
     parse_skill_manifest,
     parse_skills_config,
 )
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
+from voidcode.sdk.resources import ResourcePage, ResourceReadCaller, ResourceReadRequest
+from voidcode.sdk.tools import TextOutput
 
 
 def _context(workspace: Path) -> ToolContext:
@@ -144,7 +145,7 @@ def test_catalog_text_lists_metadata_only_with_file_uri(tmp_path: Path) -> None:
         "Each entry is metadata only; the full SKILL.md body is NOT in your\n"
         "current context.\n"
         "Load a skill body ONLY when its description matches the active task.\n"
-        'Use the skill tool: skill(name="..."). Do NOT speculatively load every\n'
+        'Use the read tool: read(path="skill://..."). Do NOT speculatively load every\n'
         "skill; lazy loading keeps the harness lightweight and the model focused.\n"
         "\n"
         "<available_skills>"
@@ -199,48 +200,88 @@ def test_build_registry_requires_explicit_enablement(tmp_path: Path) -> None:
     assert loaded_skill_names(enabled) == ("alpha",)
 
 
-# --- Tool ---
+# --- Reader ---
 
 
-def test_skill_tool_returns_body_metadata_and_user_message(tmp_path: Path) -> None:
+def _caller(workspace: Path) -> ResourceReadCaller:
+    return ResourceReadCaller(session_id="session-1", workspace=workspace, revision_id="rev-1", run_id="run-1")
+
+
+def _read(
+    config: SkillsConfig,
+    workspace: Path,
+    uri: str,
+    offset: int = 1,
+    limit: int | None = None,
+    byte_offset: int | None = None,
+    byte_limit: int | None = None,
+) -> ResourcePage | None:
+    return SkillReader(config).read(
+        ResourceReadRequest(uri=uri, offset=offset, limit=limit, byte_offset=byte_offset, byte_limit=byte_limit),
+        _caller(workspace),
+        FakeServices(),  # type: ignore[arg-type]
+    )
+
+
+def test_skill_reader_returns_body_and_metadata(tmp_path: Path) -> None:
     entry = _write_skill(tmp_path, name="alpha", description="a", body="# Body\n\n    indented")
-    tool = SkillTool(SkillsConfig(enabled=True))
-    res = tool.invoke(
-        ToolCall(tool_name="skill", arguments={"name": "alpha", "user_message": "for release 1.2"}),
-        context=_context(tmp_path),
-        services=FakeServices(),
-    )
-    assert isinstance(res, ToolSuccess)
-    assert res.output.text == (
-        f"## Skill: alpha\n**Description**: a\nsourcePath: {entry}\nbaseDirectory: {entry.parent}\n\n"
-        "# Body\n\n    indented\n\nUser message: for release 1.2"
-    )
-    payload = res.body.as_payload()
-    assert payload["name"] == "alpha"
-    assert payload["sourcePath"] == str(entry)
-    assert payload["baseDirectory"] == str(entry.parent)
-    assert payload["content"] == "# Body\n\n    indented"
-    assert payload["user_message"] == "for release 1.2"
+    page = _read(SkillsConfig(enabled=True), tmp_path, "skill://alpha")
+    assert isinstance(page, ResourcePage)
+    rendered = f"## Skill: alpha\n**Description**: a\nsourcePath: {entry}\nbaseDirectory: {entry.parent}\n\n# Body\n\n    indented"
+    assert isinstance(page.output, TextOutput)
+    assert page.output.text == f"Read 8 line(s) from skill://alpha.\n\n{rendered}"
+    assert page.body["name"] == "alpha"
+    assert page.body["description"] == "a"
+    assert page.body["sourcePath"] == str(entry)
+    assert page.body["baseDirectory"] == str(entry.parent)
+    assert page.body["raw_content"] == rendered
+    assert page.body["next_offset"] is None
+    assert page.body["truncated"] is False
 
 
-@pytest.mark.parametrize(
-    "arguments",
-    [{"name": "missing"}, {"name": "  "}, {}],
-)
-def test_skill_tool_fails_visibly_for_unknown_or_empty_names(tmp_path: Path, arguments: Mapping[str, object]) -> None:
+def test_skill_reader_pages_long_renders_by_line(tmp_path: Path) -> None:
+    body = "\n".join(f"line {index}" for index in range(30))
+    _write_skill(tmp_path, name="alpha", description="a", body=body)
+    config = SkillsConfig(enabled=True)
+    first = _read(config, tmp_path, "skill://alpha", limit=10)
+    assert isinstance(first, ResourcePage)
+    assert first.body["next_offset"] == 11
+    assert first.body["truncated"] is True
+    second = _read(config, tmp_path, "skill://alpha", offset=11, limit=100)
+    assert isinstance(second, ResourcePage)
+    assert second.body["next_offset"] is None
+    assert "line 29" in str(second.body["raw_content"])
+    with pytest.raises(ValueError, match="Offset 36 is out of range for this skill"):
+        _read(config, tmp_path, "skill://alpha", offset=36)
+
+
+def test_skill_reader_refuses_byte_args_and_empty_names(tmp_path: Path) -> None:
     _write_skill(tmp_path, name="alpha", description="a", body="A")
-    tool = SkillTool(SkillsConfig(enabled=True))
-    res = tool.invoke(ToolCall(tool_name="skill", arguments=arguments), context=_context(tmp_path), services=FakeServices())
-    assert isinstance(res, ToolFailure)
-    assert res.output.text == res.error
-    assert res.error
+    config = SkillsConfig(enabled=True)
+    with pytest.raises(ValueError, match="byte_offset and byte_limit are not supported"):
+        _read(config, tmp_path, "skill://alpha", byte_offset=0)
+    with pytest.raises(ValueError, match="requires a skill name"):
+        _read(config, tmp_path, "skill://")
+    with pytest.raises(ValueError, match="requires a skill name"):
+        _read(config, tmp_path, "skill://   ")
 
 
-def test_skill_tool_reports_unknown_skill_when_disabled_or_absent(tmp_path: Path) -> None:
-    tool = SkillTool(SkillsConfig(enabled=False))
-    res = tool.invoke(ToolCall(tool_name="skill", arguments={"name": "alpha"}), context=_context(tmp_path), services=FakeServices())
-    assert isinstance(res, ToolFailure)
-    assert res.error == "unknown skill: alpha"
+def test_skill_reader_unknown_is_absence_while_disabled_fails(tmp_path: Path) -> None:
+    _write_skill(tmp_path, name="alpha", description="a", body="A")
+    enabled = SkillsConfig(enabled=True)
+    assert _read(enabled, tmp_path, "skill://missing") is None
+    assert _read(SkillsConfig(), tmp_path, "skill://alpha") is None
+    by_name = SkillsConfig(enabled=True, rules=(SkillEnableRule(name="alpha", enabled=False),))
+    with pytest.raises(ValueError, match="skill 'alpha' is disabled"):
+        _read(by_name, tmp_path, "skill://alpha")
+
+
+def test_skill_reader_propagates_malformed_skills(tmp_path: Path) -> None:
+    root = tmp_path / ".voidcode" / "skills" / "boom"
+    root.mkdir(parents=True)
+    (root / "SKILL.md").write_text("---\nname: boom\n---\nbody\n", encoding="utf-8")
+    with pytest.raises(SkillLoadError):
+        _read(SkillsConfig(enabled=True), tmp_path, "skill://boom")
 
 
 # --- Command and context ---
@@ -286,12 +327,11 @@ def test_context_provider_emits_catalog_only_when_enabled_and_present(tmp_path: 
     assert disabled_plugin.context(_context(tmp_path), FakeServices()) is None
 
 
-def test_create_plugin_registers_declared_tool_and_command() -> None:
+def test_create_plugin_registers_declared_reader_and_command() -> None:
     plugin = create_plugin({"enabled": True})
-    assert [tool.definition.name for tool in plugin.tools] == ["skill"]
+    assert plugin.tools == ()
+    assert [reader.scheme for reader in plugin.resource_readers] == ["skill"]
     assert [command.definition.name for command in plugin.commands] == ["skills"]
-    assert plugin.tools[0].definition.effects == frozenset({"read"})
-    assert plugin.tools[0].definition.replay_policy == "safe"
 
 
 @pytest.mark.parametrize(

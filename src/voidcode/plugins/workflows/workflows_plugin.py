@@ -19,7 +19,6 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar, Literal
@@ -30,7 +29,6 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandR
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, json_wire_value, own_json_value
-from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.services import BackgroundActionStatus, BackgroundContext, ChildOutcome, PluginServices, QueryContractError, QueryUnavailable
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 from voidcode.sdk.views import PluginViewDescriptor
@@ -1817,23 +1815,3 @@ def prepare_workflows_deactivation(
         for run_id, run in decoded.runs.items()
     }
     return WorkflowState(MappingProxyType(parked)).to_payload()
-
-
-# --- Factory ---
-
-
-def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    workflows = parse_workflows_config(config)
-    return Plugin(
-        tools=(WorkflowRunTool(workflows),),
-        commands=(
-            WorkflowRunCommand(workflows),
-            WorkflowStatusCommand(),
-            WorkflowPauseCommand(),
-            WorkflowResumeCommand(workflows),
-            WorkflowCancelCommand(),
-        ),
-        views=(WorkflowStatusView(), WorkflowRunFormView(workflows)),
-        prepare_deactivate=prepare_workflows_deactivation,
-        background_action=partial(drive_workflow_action, workflows=workflows),
-    )
