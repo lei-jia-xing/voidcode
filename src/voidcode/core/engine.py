@@ -4182,6 +4182,22 @@ class Core:
                         "provider": provider_name,
                         "model": model_name,
                     }
+                    if effective_abort.cancelled and turn.done_reason == "cancelled":
+                        # A provider may acknowledge cancellation with a typed result
+                        # instead of raising. Preserve its measured result/usage, then
+                        # settle the actual user stop rather than inventing a failure.
+                        self._commit(
+                            execution,
+                            "interrupted",
+                            "interrupted",
+                            EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
+                        )
+                        return self._stop(
+                            execution,
+                            effective_abort.reason or "run cancelled",
+                            stop_cause=effective_abort.stop_cause or "user_stop",
+                        )
+
                     if has_duplicate_or_missing_ids:
                         self._commit(
                             execution,

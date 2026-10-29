@@ -48,11 +48,12 @@ class UnsupportedViewError(ValueError):
 def render_notice(data: NoticeViewData, width: int, styles: Styles | None = None) -> list[str]:
     resolved = _styles_arg(styles)
     fg, bg, tone_slot = resolve_component(data.style, level=data.level)
-    prefix = {"info": "[info]", "warning": "[warn]", "error": "[error]"}.get(data.level, "[info]")
+    prefix = {"warning": "Warning: ", "error": "Error: "}.get(data.level, "")
     slot = tone_slot or {"info": "accent", "warning": "warning", "error": "error"}.get(data.level, "accent")
+    message_slot = "text" if prefix or slot not in ("warning", "error", "success") else slot
     content = Text.assemble(
-        (f"{prefix}: ", resolved.style(slot, color=fg, background=bg, bold=True)),
-        (escape_terminal_controls(data.message), resolved.style("text", color=fg, background=bg)),
+        (prefix, resolved.style(slot, color=fg, background=bg, bold=True)),
+        (escape_terminal_controls(data.message), resolved.style(message_slot, color=fg, background=bg)),
     )
     return render_lines(content, width, theme=markdown_theme(), color_system=resolved.color_system)
 
@@ -66,42 +67,64 @@ def render_assistant_markdown(text: str, width: int, styles: Styles | None = Non
     return render_markdown(MarkdownViewData(content=text), width, styles)
 
 
-def render_tool_call(name: str, arguments: object, width: int, styles: Styles | None = None, icon: Icon | None = None) -> list[str]:
-    """One tool-call header plus its pretty JSON arguments, never one raw line."""
+def render_user_message(text: str, width: int, styles: Styles | None = None) -> list[str]:
+    """User text verbatim (newlines/code/HTML-like syntax intact); no role label."""
     resolved = _styles_arg(styles)
-    pretty = json.dumps(json_wire_value(arguments), indent=2, ensure_ascii=False, default=str)
+    clean = escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True)
+    return render_lines(
+        Text(clean, style=resolved.style("text", bold=True)),
+        width,
+        theme=markdown_theme(),
+        color_system=resolved.color_system,
+    )
+
+
+def render_thinking(text: str, width: int, styles: Styles | None = None) -> list[str]:
+    """Reasoning trace as muted italic text; no label, no toggle."""
+    resolved = _styles_arg(styles)
+    clean = escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True)
+    return render_lines(
+        Text(clean, style=resolved.style("muted", italic=True)),
+        width,
+        theme=markdown_theme(),
+        color_system=resolved.color_system,
+    )
+
+
+def render_tool_call(name: str, arguments: object, width: int, styles: Styles | None = None, icon: Icon | None = None) -> list[str]:
+    """Compact tool intent with a bounded argument preview; history keeps full data."""
+    resolved = _styles_arg(styles)
+    pretty = json.dumps(json_wire_value(arguments), ensure_ascii=False, default=str)
     glyph = render_icon(icon)
     header = Text.assemble(
-        ((f"{glyph} " if glyph else ""), resolved.style("warning")),
-        (f"> Tool call {escape_terminal_controls(name)}", resolved.style("warning", bold=True)),
+        ((f"{glyph} " if glyph else ""), resolved.style("dim")),
+        (escape_terminal_controls(name), resolved.style("text", bold=True)),
     )
     rows = render_lines(header, width, theme=markdown_theme(), color_system=resolved.color_system)
     if pretty and pretty != "{}":
-        syntax = Syntax(
-            escape_terminal_controls(pretty, preserve_newlines=True, preserve_tabs=True),
-            "json",
-            theme=syntax_theme(),
-            word_wrap=True,
+        preview = render_lines(
+            Text(escape_terminal_controls(pretty), style=resolved.style("dim")),
+            width,
+            theme=markdown_theme(),
+            color_system=resolved.color_system,
         )
-        rows.extend(render_lines(syntax, width, theme=markdown_theme(), color_system=resolved.color_system))
+        rows.extend(preview[:2])
+        if len(preview) > 2:
+            rows.append(resolved.fg("dim", '… arguments shortened · /show {"events":true}'))
     return rows
 
 
 def render_tool_result(
-    name: str,
     result: Mapping[str, Any],
     width: int,
     styles: Styles | None = None,
     *,
     interrupted: bool = False,
 ) -> list[str]:
-    """One tool-result block: header, then text or a bounds note."""
+    """Bound successful output previews; preserve failures and source bounds."""
     resolved = _styles_arg(styles)
     failed = interrupted or result.get("status") == "error"
-    slot = "error" if failed else "success"
-    verb = "failed" if failed else "ok"
-    header = Text.assemble((f"[{verb}] Tool {name}", resolved.style(slot, bold=True)))
-    rows = render_lines(header, width, theme=markdown_theme(), color_system=resolved.color_system)
+    rows: list[str] = []
     output = result.get("output")
     body = ""
     suffix = ""
@@ -121,16 +144,26 @@ def render_tool_result(
                 suffix = f"[{note}]"
     if failed:
         error = result.get("error")
-        rows.append(resolved.fg("error", escape_terminal_controls(str(error or body or "interrupted"))))
-    elif body:
+        label = "Interrupted" if interrupted else "Error"
+        detail = escape_terminal_controls(str(error or body or "interrupted"), preserve_newlines=True)
         rows.extend(
             render_lines(
-                Text(escape_terminal_controls(body, preserve_newlines=True, preserve_tabs=True), style=resolved.style("text")),
+                Text(f"{label}: {detail}", style=resolved.style("dim" if interrupted else "error")),
                 width,
                 theme=markdown_theme(),
                 color_system=resolved.color_system,
             )
         )
+    elif body:
+        preview = render_lines(
+            Text(escape_terminal_controls(body, preserve_newlines=True, preserve_tabs=True), style=resolved.style("dim")),
+            width,
+            theme=markdown_theme(),
+            color_system=resolved.color_system,
+        )
+        rows.extend(preview[:8])
+        if len(preview) > 8:
+            rows.append(resolved.fg("dim", f'… {len(preview) - 8} more lines · /show {{"events":true}}'))
     if suffix:
         rows.append(resolved.fg("dim", suffix))
     return rows

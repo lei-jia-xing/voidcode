@@ -287,6 +287,11 @@ class Composer:
         return self._text
 
     @property
+    def cursor(self) -> int:
+        """Caret offset in the draft (grapheme-snapped by editing keys)."""
+        return self._cursor
+
+    @property
     def cursor_position(self) -> tuple[int, int] | None:
         """Native cursor location in the most recently rendered composer frame."""
         return self._cursor_position
@@ -349,10 +354,10 @@ class Composer:
         """Highlighted candidate while the popup is open."""
         return self._completion_index
 
-    def set_completion(self, candidates: Sequence[str]) -> None:
+    def set_completion(self, candidates: Sequence[str], index: int = 0) -> None:
         """Open the popup over ``candidates`` (empty closes it)."""
         self._completion = tuple(candidates)
-        self._completion_index = 0
+        self._completion_index = min(max(0, index), max(0, len(self._completion) - 1))
 
     # -- editing primitives ------------------------------------------------
 
@@ -439,13 +444,10 @@ class Composer:
         self._edited()
 
     def _complete(self) -> ComposerOutcome:
-        """Tab: cycle the open popup, or complete the one candidate inline."""
+        """Tab: accept the highlighted candidate (arrows move first)."""
         if not self._completion:
             return ComposerOutcome()
-        if len(self._completion) == 1:
-            self._accept_completion()
-            return ComposerOutcome()
-        self._completion_index = (self._completion_index + 1) % len(self._completion)
+        self._accept_completion()
         return ComposerOutcome()
 
     # -- key handling ------------------------------------------------------
@@ -493,12 +495,18 @@ class Composer:
             self._cursor = _next_boundary(self._text, self._cursor)
             return ComposerOutcome()
         if name == "up":
+            if self._completion:
+                self._completion_index = (self._completion_index - 1) % len(self._completion)
+                return ComposerOutcome()
             if self._history_index is not None or self._bounds()[0] == 0:
                 self._history_up()
             else:
                 self._cursor_up()
             return ComposerOutcome()
         if name == "down":
+            if self._completion:
+                self._completion_index = (self._completion_index + 1) % len(self._completion)
+                return ComposerOutcome()
             if self._history_index is not None or self._bounds()[1] == len(self._text):
                 self._history_down()
             else:
@@ -736,13 +744,15 @@ class Composer:
         """Compose one actual status dock, frame, visible input rows, and cursor."""
         return self._input_rows(status, border_status)
 
-    def completion_rows(self) -> Sequence[str]:
+    def completion_rows(self, *, max_rows: int = 6) -> Sequence[str]:
         """Popup rows above the composer (chrome only, never committed)."""
         rows: list[str] = []
-        for index, candidate in enumerate(self._completion):
+        start = max(0, self._completion_index - max(1, max_rows) + 1)
+        for index in range(start, min(len(self._completion), start + max(1, max_rows))):
+            candidate = self._completion[index]
             label = escape_terminal_controls(candidate)
             if index == self._completion_index:
-                rows.append(self._styles.render("accent", f"> {label}", bold=True, reverse=True))
+                rows.append(self._styles.render("accent", f"{symbol('nav.cursor')} {label}", bold=True, reverse=True))
             else:
                 rows.append(self._styles.fg("dim", f"  {label}"))
         return [clamp_row(row, self._width) for row in rows]

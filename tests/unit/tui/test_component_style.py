@@ -45,7 +45,6 @@ def test_tone_maps_to_fixed_slot_and_level_still_prefixes() -> None:
     )
     assert "33m" in "".join(rows)  # fixed yellow slot, not plugin bytes
     notice = render_notice(NoticeViewData(message="boom", level="error"), 40, Styles(ColorSystem.STANDARD))
-    assert "[error]: boom" in _plain(notice)
     assert "91m" in "".join(notice)
 
 

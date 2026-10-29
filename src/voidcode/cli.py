@@ -125,7 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     client.add_argument(
         "--no-border",
         action="store_true",
-        help="Render the composer without its box frame (default: boxed)",
+        help="Render the composer without horizontal rules (default: horizontal rules)",
     )
     client.add_argument(
         "--footer",
@@ -263,7 +263,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .tui import run_tui
 
             prefs = _tui_prefs(args, workspace=workspace)
-            border = cast(Literal["box", "borderless"], prefs["border"])
+            border = cast(Literal["lines", "box", "borderless"], prefs["border"])
             footer = cast(Literal["full", "compact", "off"], prefs["footer"])
             show_session = bool(prefs["show_session"])
             if args.server is not None:
@@ -395,7 +395,7 @@ def _tui_prefs(args: argparse.Namespace, *, workspace: Path) -> dict[str, object
             file_tui = {"border": parsed.tui.border, "footer": parsed.tui.footer, "show_session": parsed.tui.show_session}
     except Exception:
         file_tui = {}
-    prefs: dict[str, object] = {"border": "box", "footer": "full", "show_session": False}
+    prefs: dict[str, object] = {"border": "lines", "footer": "full", "show_session": False}
     prefs.update(file_tui)
     if args.no_border:
         prefs["border"] = "borderless"
@@ -411,7 +411,7 @@ def _embedded_tui(
     directory: Path,
     *,
     session_id: str | None,
-    border: Literal["box", "borderless"] = "box",
+    border: Literal["lines", "box", "borderless"] = "lines",
     footer: Literal["full", "compact", "off"] = "full",
     show_session: bool = False,
 ) -> int:

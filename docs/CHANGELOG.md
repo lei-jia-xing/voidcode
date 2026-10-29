@@ -3,6 +3,19 @@
 Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
+
+### Minimal TUI transcript and automatic slash completion
+- User prompts render verbatim without role badges; system context and internal
+  scheduling metadata stay out of the chat view without changing stored history
+  or provider context. Thinking and tool output stay compact, without Pi-style
+  cards or an added renderer framework.
+- Errors retain their reason once; deliberate cancellation is distinct from
+  provider failure and limit interruption. Routine success/status labels are
+  omitted, while decision gates and terminal stream failures stay visible.
+- Typing `/` opens live catalog suggestions; editing filters them, arrows select,
+  Tab/Enter completes, and Esc closes without cancelling. Exact selected commands
+  submit with one Enter; argument entry and multiline input are left alone.
+
 ### Glyph-only tool icons (BREAKING)
 - Tool icons are one Unicode glyph (`Icon(glyph)`); the ASCII `fallback` field, TUI `--icons` flag, `tui.icons` config key, and web `iconStyle` prop / `?icons=ascii` param are removed with no aliases. Strict ingress rejects the old shapes; clients render the recorded glyph (`None` = generic mark).
 - The TUI is Unicode-only chrome: rounded box borders, a Unicode prompt, and a Braille working spinner (proven under a real PTY).

@@ -66,7 +66,7 @@ Optional. Read by the terminal client only (embedded: the workspace file; remote
 
 | Field | Type | Description |
 |---|---|---|
-| `border` | string | `box` (default) or `borderless` (`--no-border` forces borderless). |
+| `border` | string | `lines` (default, horizontal rules), `box`, or `borderless` (`--no-border` forces borderless). |
 | `footer` | string | `full` (default: workspace · model · effort), `compact` (model · effort), or `off` (context row hidden; gates/notices still show). `--footer` overrides. |
 | `show_session` | boolean | Default `false`. `true` adds the short session id to the full footer. `--show-session` forces true. |
 

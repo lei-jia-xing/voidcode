@@ -44,7 +44,7 @@ class TuiConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    border: Literal["box", "borderless"] = "box"
+    border: Literal["lines", "box", "borderless"] = "lines"
     footer: Literal["full", "compact", "off"] = "full"
     show_session: bool = False
 

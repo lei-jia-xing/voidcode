@@ -48,7 +48,6 @@ from voidcode.sdk.icons import Icon
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
 from voidcode.sdk.tools import (
     ToolEffect,
-    ToolResult,
 )
 from voidcode.sdk.transcript import (
     TranscriptChild,
@@ -77,8 +76,10 @@ from .views import (
     InteractiveForm,
     render_assistant_markdown,
     render_plugin_view,
+    render_thinking,
     render_tool_call,
     render_tool_result,
+    render_user_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -144,27 +145,16 @@ def _command_result_text(result: CommandResult) -> str:
 
 
 def _command_result_rows(name: str, result: CommandResult, styles: Styles) -> list[str]:
-    """One visible command-result block shared by direct receipts and events.
-
-    A direct core read receipt and a durable plugin ``core.command_completed``
-    payload are the same ``CommandResult`` shape. Rendering both here keeps the
-    format, error precedence, and multi-line handling identical; no command
-    name needs a branch. Unknown statuses never render as success.
-    """
+    """Render direct receipts and durable command results consistently."""
     label = _safe(name or "command")
     text = _command_result_text(result)
     if result.status == "error":
-        return _prefixed_rows(f"[error] Command /{label} failed:", text, styles, slot="error")
+        return _prefixed_rows(f"Error: /{label}:", text or "Command failed", styles, slot="error")
     if result.status == "pending_confirmation":
-        return [styles.fg("warning", f"[wait] Command /{label} awaits confirmation")]
+        return [styles.fg("warning", f"Confirmation required: /{label}")]
     if result.status == "ok":
-        return _prefixed_rows(f"[ok] Command /{label}:", text, styles, slot="success")
-    return _prefixed_rows(f"Command /{label} [{result.status or 'unknown'}]:", text, styles, slot="warning")
-
-
-def _tool_result_rows(name: str, result: ToolResult, width: int, styles: Styles, *, interrupted: bool) -> list[str]:
-    """One tool-result block from the typed result; same pixels as the wire path."""
-    return render_tool_result(name, encode_tool_result(result), width, styles, interrupted=interrupted)
+        return escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True).split("\n") if text else []
+    return _prefixed_rows(f"Warning: /{label} ({result.status or 'unknown'}):", text, styles, slot="warning")
 
 
 def _content_rows(
@@ -177,23 +167,21 @@ def _content_rows(
     """Render one typed transcript content into settled rows."""
     if isinstance(content, ProviderMessage):
         if content.role == "user":
-            user = styles.render("accent", "User>", bold=True)
-            return [f"{user} {_safe(content.content)}"]
+            return render_user_message(content.content or "", width, styles) if content.content and content.content.strip() else []
         if content.role == "system":
-            return _prefixed_rows("System>", content.content or "", styles, slot="dim")
+            return []
         rows: list[str] = []
         if content.content:
             rows.extend(render_assistant_markdown(content.content, width, styles))
         return rows
     if isinstance(content, ProviderTurnResult):
         rows = []
+        if isinstance(content.reasoning, str) and content.reasoning:
+            rows.extend(render_thinking(content.reasoning, width, styles))
         if isinstance(content.output, str) and content.output:
             rows.extend(render_assistant_markdown(content.output, width, styles))
-        if isinstance(content.reasoning, str) and content.reasoning:
-            rows.extend(_prefixed_rows("Reasoning>", content.reasoning, styles, slot="muted"))
         return rows
     if isinstance(content, TranscriptTool):
-        name = _safe(content.result.tool_name or "unknown")
         rows = []
         if include_tool_header:
             rows.extend(
@@ -205,18 +193,18 @@ def _content_rows(
                     icon=content.icon,
                 )
             )
-        rows.extend(_tool_result_rows(name, content.result, width, styles, interrupted=content.interrupted))
+        rows.extend(render_tool_result(encode_tool_result(content.result), width, styles, interrupted=content.interrupted))
         return rows
     if isinstance(content, TranscriptRun):
         if content.status == "failed":
-            return [styles.fg("error", "[Run failed]")]
+            return [styles.fg("error", "Error: Run failed")]
         if content.status == "interrupted":
-            return [styles.fg("warning", "[Run interrupted]")]
+            return [styles.fg("dim", "Interrupted")]
         return []
     if isinstance(content, TranscriptInterrupted):
-        return [styles.fg("dim", "[interrupted: usage unknown]")]
+        return []  # The terminal run event owns the human outcome; /usage keeps accounting.
     if isinstance(content, TranscriptChild):
-        return [styles.fg("dim", f"[child session: {_safe(content.child_session_id)}]")]
+        return []
     if isinstance(content, TranscriptDispatch):
         return []
     raise ValueError(f"unknown transcript content: {type(content).__name__}")
@@ -281,8 +269,9 @@ def _tool_icon(raw: object) -> Icon | None:
 
 
 def _notice_row(text: object, tone: str, styles: Styles) -> str:
-    slot = {"ok": "success", "warning": "warning", "error": "error"}.get(tone, "accent")
-    return styles.fg(slot, f"[{_safe(text)}]")
+    slot = {"ok": "success", "warning": "warning", "error": "error"}.get(tone, "dim")
+    prefix = {"warning": "Warning: ", "error": "Error: "}.get(tone, "")
+    return styles.fg(slot, f"{prefix}{_safe(text)}")
 
 
 def _model_segment(model: object) -> str:
@@ -354,18 +343,18 @@ class CoreTuiApp:
         *,
         session_id: str | None = None,
         terminal: Terminal | None = None,
-        border: Literal["box", "borderless"] = "box",
+        border: Literal["lines", "box", "borderless"] = "lines",
         footer: Literal["full", "compact", "off"] = "full",
         show_session: bool = False,
         workspace_dir: object = None,
     ) -> None:
         self.client = client
         self.terminal = terminal or Terminal.open()
-        if border not in ("box", "borderless"):
-            raise ValueError("border must be 'box' or 'borderless'")
+        if border not in ("lines", "box", "borderless"):
+            raise ValueError("border must be 'lines', 'box', or 'borderless'")
         if footer not in ("full", "compact", "off"):
             raise ValueError("footer must be 'full', 'compact', or 'off'")
-        self.border: Literal["box", "borderless"] = border
+        self.border: Literal["lines", "box", "borderless"] = border
         self.footer_mode: Literal["full", "compact", "off"] = footer
         self.show_session = bool(show_session)
         self._workspace_dir = None if workspace_dir is None else str(workspace_dir)
@@ -373,7 +362,9 @@ class CoreTuiApp:
         self.session_id = session_id or ""
         self.running = False
         self.styles = Styles(self.terminal.color_system)
-        self.composer = Composer(styles=self.styles, width=self.terminal.width, placeholder="Type a message or /command...", style=border)
+        self.composer = Composer(
+            styles=self.styles, width=self.terminal.width, style="claude" if border == "lines" else border, gutter="none", padding="compact"
+        )
         self.key_decoder = KeyDecoder()
         self._escape_flush_at = 0.0
         self.event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
@@ -413,6 +404,8 @@ class CoreTuiApp:
         self._stream_dispatch: str | None = None
         self._spinner_tick = 0
         self._run_active = False
+        self._quit_armed_at = float("-inf")
+        self._cancel_pending = False
         self.catalog_cache: tuple[CommandDescriptor, ...] = ()
         #: The capability revision the displayed catalog came from; slash dispatch
         #: echoes it verbatim. Rendered overlays carry their own captured revision.
@@ -476,6 +469,8 @@ class CoreTuiApp:
             catalog = self.client.command_catalog()
             self.catalog_cache = catalog.commands
             self.catalog_revision = catalog.revision_id
+            if self.composer.completion:
+                self._sync_slash_completion()
         except Exception as exc:
             self.catalog_cache = ()
             self.catalog_revision = ""
@@ -554,11 +549,7 @@ class CoreTuiApp:
         text = "".join(self._stream_buffers.get(dispatch, []))
         if not text:
             return []
-        rows = render_assistant_markdown(text, width, self.styles)
-        spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)]
-        head = f"{spinner} " if spinner else ""
-        rows = [f"{head}{rows[0]}", *rows[1:]] if rows else ([head.strip()] if head else [])
-        return rows
+        return render_assistant_markdown(text, width, self.styles)
 
     def _footer_context(self, width: int) -> str:
         """Context row from the admitted health DTO only: workspace · model · effort."""
@@ -577,7 +568,8 @@ class CoreTuiApp:
         if not self._run_active:
             return ""
         spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
-        return f"{spinner} working" if spinner else "working"
+        label = "cancelling" if self._cancel_pending else "working · Esc to interrupt"
+        return f"{spinner} {label}" if spinner else label
 
     def _drain_events(self) -> None:
         rows_to_commit: list[str] = []
@@ -622,7 +614,7 @@ class CoreTuiApp:
                 fenced = self.upgrade is not None and self.upgrade.fenced
                 gate_open = self.pending_approval is not None or isinstance(self.active_overlay, InteractiveConfirmation)
                 if status in ("ok", "error") and not fenced and not gate_open:
-                    self.status_line = f"/{_safe(raw_name)}: {status}"
+                    self.status_line = ""
                 receipt = frame.get("result")
                 if isinstance(receipt, CommandResult):
                     rows_to_commit.extend(_command_result_rows(raw_name, receipt, self.styles))
@@ -633,26 +625,32 @@ class CoreTuiApp:
                 self._in_flight.discard(accepted)
                 if accepted:
                     self._apply_gate_change(GateDecided(accepted))
-                decision = str(frame.get("decision", ""))
-                status = str(frame.get("status", ""))
-                self.status_line = f"Approval {decision}: {status}"
+                self.status_line = ""
             elif kind == "decision_done":
                 # A failed submission releases its in-flight marker so the user
                 # can retry; the gate/overlay itself stays mounted.
                 self._in_flight.discard(str(frame.get("request_id", "")))
             elif kind == "run_status":
                 status = str(frame.get("status", ""))
-                if status == "waiting":
-                    self.status_line = "Waiting for tool approval"
-                if status in ("failed", "interrupted"):
-                    detail = frame.get("error")
-                    suffix = f": {_safe(detail)}" if detail else ""
-                    rows_to_commit.append(self.styles.fg("warning", f"[Run {status}]{suffix}"))
+                # Returned runs have durable terminal events; only failures without
+                # a run id need local rows. This preserves transcript order.
+                if status in ("failed", "interrupted") and not frame.get("run_id"):
+                    self._render_run_notice(status, frame.get("error"), rows_to_commit)
                 if status in ("completed", "failed", "interrupted"):
                     self._run_active = False
+                    self._cancel_pending = False
+                    self.status_line = ""
                 elif status in ("running", "waiting"):
                     self._run_active = True
-                self.status_line = f"Run {status}" if status else self.status_line
+                    self.status_line = ""
+            elif kind == "cancel_done":
+                self._cancel_pending = False
+                self.status_line = ""
+            elif kind == "run_rejected":
+                self._run_active = False
+                self._cancel_pending = False
+                if not self.composer.value:
+                    self.composer.set_text(str(frame.get("prompt") or ""))
             elif kind == "run_waiting":
                 gate = frame.get("gate")
                 if isinstance(gate, ApprovalGate):
@@ -673,9 +671,7 @@ class CoreTuiApp:
                 self._in_flight.discard(accepted)
                 if accepted:
                     self._apply_gate_change(GateDecided(accepted))
-                decision = str(frame.get("decision", ""))
-                status = str(frame.get("status", ""))
-                self.status_line = f"Confirmation {decision}: {status}"
+                self.status_line = ""
             elif kind == "invoke_accepted":
                 # The server accepted the submitting overlay's action: close it,
                 # but only when it is still the overlay that submitted (same
@@ -739,6 +735,8 @@ class CoreTuiApp:
                     failures = frame.get("failures")
                     if isinstance(catalog, CommandCatalog):
                         self.catalog_revision, self.catalog_cache = catalog.revision_id, catalog.commands
+                        if self.composer.completion:
+                            self._sync_slash_completion()
                     status = frame.get("session_status")
                     if isinstance(status, str) and status:
                         self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
@@ -752,9 +750,9 @@ class CoreTuiApp:
                 # the reconnected stream (first-frame trigger above), so an
                 # announced restart and a silent drop share one path — and no
                 # blocking request ever runs on this UI thread.
-                self.status_line = "Core restarting -- reconnecting..."
+                self.status_line = "Reconnecting…"
             elif kind == "error":
-                rows_to_commit.append(f"{self.styles.fg('error', '[Core stream error]')} {_safe(frame.get('error'))}")
+                rows_to_commit.extend(_prefixed_rows("Error: event stream:", str(frame.get("error") or "Stream stopped"), self.styles, slot="error"))
 
         if rows_to_commit:
             self.terminal.commit_rows(rows_to_commit)
@@ -788,7 +786,10 @@ class CoreTuiApp:
                     include_header = invocation not in self._tool_headers
                     self._tool_headers.discard(invocation)
             rows.extend(_content_rows(entry.content, self.terminal.width, self.styles, include_tool_header=include_header))
-        if etype == EventType.TOOL_INTENT:
+        if etype in (EventType.USER_MESSAGE, EventType.RUN_RESUMED):
+            self._run_active = True
+            self.status_line = ""
+        elif etype == EventType.TOOL_INTENT:
             invocation = payload.get("invocation_id")
             raw_call = payload.get("call")
             if isinstance(invocation, str) and invocation and isinstance(raw_call, Mapping):
@@ -833,21 +834,19 @@ class CoreTuiApp:
             self._load_catalog()
             self._refresh_health_async()
             self._present_queued_confirmation()
-            suffix = " (stale action discarded)" if dropped else ""
-            rows.append(self.styles.fg("warning", f"[Capabilities changed: command catalog refreshed{suffix}]"))
+            if dropped:
+                rows.append(self.styles.fg("warning", "Warning: pending action discarded after configuration changed"))
         elif etype in (EventType.CONFIRMATION_REQUESTED, EventType.CONFIRMATION_DECIDED, EventType.APPROVAL_REQUESTED, EventType.APPROVAL_DECIDED):
-            if etype == EventType.APPROVAL_DECIDED:
-                rows.append(self.styles.fg("warning", f"[Approval {_safe(payload.get('decision'))}]"))
             for change in _gate_changes(event)[0]:
                 self._apply_gate_change(change)
         elif etype == EventType.RUN_INTERRUPTED:
-            rows.append(self.styles.fg("warning", f"[Run interrupted: {_safe(payload.get('stop_cause'))}]"))
+            self._render_run_notice("interrupted", payload.get("reason"), rows, stop_cause=payload.get("stop_cause"))
             for change in _gate_changes(event)[0]:
                 self._apply_gate_change(change)
             self._clear_stream()
             self._present_queued_confirmation()
         elif etype == EventType.RUN_FAILED:
-            rows.append(self.styles.fg("error", "[Run failed]"))
+            self._render_run_notice("failed", payload.get("error"), rows)
             for change in _gate_changes(event)[0]:
                 self._apply_gate_change(change)
             self._clear_stream()
@@ -857,7 +856,18 @@ class CoreTuiApp:
                 self._apply_gate_change(change)
             self._clear_stream()
         elif etype == EventType.OBSERVER_ERROR:
-            rows.append(f"{self.styles.fg('error', '[Plugin observer error]')} {_safe(payload.get('error'))}")
+            rows.extend(_prefixed_rows("Warning: plugin observer:", str(payload.get("error") or "Observer failed"), self.styles, slot="warning"))
+
+    def _render_run_notice(self, status: str, detail: object, rows: list[str], *, stop_cause: object = None) -> None:
+        if status == "failed":
+            rows.extend(_prefixed_rows("Error:", str(detail or "Run failed"), self.styles, slot="error"))
+        elif stop_cause in ("user_stop", "owner_cancel"):
+            rows.append(self.styles.fg("dim", "Operation aborted"))
+        elif detail:
+            label = "Stopped:" if stop_cause == "limit_reached" else "Interrupted:"
+            rows.extend(_prefixed_rows(label, str(detail), self.styles, slot="dim"))
+        else:
+            rows.append(self.styles.fg("dim", "Interrupted"))
 
     def _apply_gate_change(self, change: GateChange) -> None:
         """Fold one typed gate change and sync the mounted widgets to the reducer."""
@@ -912,13 +922,17 @@ class CoreTuiApp:
             if self._stream_dispatch == dispatch:
                 self._stream_dispatch = None
         else:
-            self._clear_stream()
+            self._stream_buffers.clear()
+            self._stream_reasoning.clear()
+            self._stream_dispatch = None
 
     def _clear_stream(self) -> None:
         self._stream_buffers.clear()
         self._stream_reasoning.clear()
         self._stream_dispatch = None
         self._run_active = False
+        self._cancel_pending = False
+        self.status_line = ""
 
     def _show_or_queue_confirmation(self, overlay: InteractiveConfirmation) -> None:
         """Show one pending confirmation, or retain it until the live region frees.
@@ -974,17 +988,15 @@ class CoreTuiApp:
                 # "esc". The composer keeps the decoder's own name.
                 key = Key("esc")
             if key.name == "ctrl+c":
-                if isinstance(self.active_overlay, InteractiveConfirmation):
-                    # Never claim the request was cancelled: deny it for real.
-                    self._resolve_confirmation("deny")
-                elif self.active_overlay is not None:
-                    self.active_overlay = None
-                    self.status_line = "Overlay closed"
-                    self._present_queued_confirmation()
-                else:
-                    self._cancel_active_run()
+                now = time.monotonic()
+                if now - self._quit_armed_at < 1.5:
+                    self.running = False
+                    return
+                self._quit_armed_at = now
+                self.composer.clear()
                 continue
-            if key.name == "ctrl+d":
+            self._quit_armed_at = float("-inf")
+            if key.name == "ctrl+d" and not self.composer.value and self.pending_approval is None and self.active_overlay is None:
                 self.running = False
                 return
 
@@ -996,21 +1008,20 @@ class CoreTuiApp:
                 self._handle_composer_key(key)
 
     def _cancel_active_run(self) -> None:
-        self.status_line = "Requesting cancellation..."
+        if not self._run_active or self._cancel_pending:
+            return
+        self._cancel_pending = True
+        self.status_line = ""
         session_id, generation = self.session_id, self._generation
 
         def worker() -> None:
             try:
                 res = self.client.cancel(session_id)
-                requested = bool(res.cancellation_requested)
-                self._queue_notice(
-                    "Cancellation requested" if requested else "No active run to cancel",
-                    tone="warning" if requested else "info",
-                    session_id=session_id,
-                    generation=generation,
-                )
+                if not res.cancellation_requested:
+                    self.event_queue.put({"kind": "cancel_done", "session_id": session_id, "generation": generation})
             except Exception as exc:
                 self._queue_notice(f"Cancel error: {exc}", tone="error", session_id=session_id, generation=generation)
+                self.event_queue.put({"kind": "cancel_done", "session_id": session_id, "generation": generation})
 
         threading.Thread(target=worker, daemon=True, name="CoreCancel").start()
 
@@ -1081,7 +1092,7 @@ class CoreTuiApp:
 
         if outcome.get("cancel"):
             self.active_overlay = None
-            self.status_line = "Overlay closed"
+            self.status_line = ""
             self._present_queued_confirmation()
             return
 
@@ -1361,12 +1372,25 @@ class CoreTuiApp:
         threading.Thread(target=worker, daemon=True, name="CoreReconcile").start()
 
     def _handle_composer_key(self, key: Any) -> None:
-        if key.name == "tab" and not self.composer.completion:
-            self.composer.set_completion(self._completion_candidates())
-            if len(self.composer.completion) != 1:
-                return  # popup opened (or nothing matched): Tab cycles once open
+        name = key.name
+        if name == "enter" and self.composer.completion and self.composer.value == self.composer.completion[self.composer.completion_index]:
+            self.composer.set_completion(())
+        elif name in ("enter", "tab", "up", "down", "escape") and (self.composer.completion or name in ("tab", "up", "down", "escape")):
+            was_open = bool(self.composer.completion)
+            outcome = self.composer.handle_key(key)
+            if name not in ("up", "down") or not self.composer.completion:
+                self._sync_slash_completion(dismissed=(was_open and name in ("enter", "tab")) or name == "escape")
+            return self._outcome(outcome)
         outcome = self.composer.handle_key(key)
-        if outcome.action == ComposerAction.SUBMIT and outcome.text is not None:
+        self._sync_slash_completion()
+        return self._outcome(outcome)
+
+    def _outcome(self, outcome: Any) -> None:
+        if outcome.action == ComposerAction.CANCEL_TURN:
+            self._cancel_active_run()
+        elif outcome.action == ComposerAction.INTERRUPT:
+            self.running = False
+        elif outcome.action == ComposerAction.SUBMIT and outcome.text is not None:
             line = outcome.text.strip()
             if not line:
                 return
@@ -1375,14 +1399,31 @@ class CoreTuiApp:
             else:
                 self._dispatch_user_prompt(line)
 
+    def _sync_slash_completion(self, *, dismissed: bool = False) -> None:
+        """Refresh the slash-name popup after one composer key; preserve selection."""
+        if dismissed:
+            self.composer.set_completion(())
+            return
+        candidates = self._completion_candidates()
+        if not candidates:
+            self.composer.set_completion(())
+            return
+        previous = self.composer.completion
+        index = self.composer.completion_index
+        selected = previous[index] if previous and 0 <= index < len(previous) else None
+        self.composer.set_completion(candidates, index=candidates.index(selected) if selected in candidates else 0)
+
     def _completion_candidates(self) -> list[str]:
         """Slash-command names matching the draft prefix (catalog + /tui controls)."""
         draft = self.composer.value
-        if not draft.startswith("/"):
+        if not draft.startswith("/") or "\n" in draft or self.composer.cursor != len(draft):
             return []
         names = [entry.name for entry in self.catalog_cache]
         names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit"))
-        prefix = draft[1:].strip()
+        head, space, _rest = draft[1:].partition(" ")
+        if space and head.strip() != "tui":
+            return []
+        prefix = draft[1:].lstrip()
         return sorted(f"/{name}" for name in names if name and name.startswith(prefix))
 
     def _dispatch_user_prompt(self, prompt: str) -> None:
@@ -1397,7 +1438,12 @@ class CoreTuiApp:
                 self.composer.set_text(prompt)
             self.status_line = "Core is draining for an upgrade; retry after it restarts"
             return
-        self.status_line = "Dispatching agent run..."
+        if self._run_active:
+            if not self.composer.value:
+                self.composer.set_text(prompt)
+            self.status_line = "Run in progress · Esc to interrupt"
+            return
+        self.status_line = ""
         self._run_active = True
         session_id, generation = self.session_id, self._generation
 
@@ -1410,6 +1456,7 @@ class CoreTuiApp:
                         "kind": "run_status",
                         "status": status,
                         "error": res.error,
+                        "run_id": res.run_id,
                         "session_id": session_id,
                         "generation": generation,
                     }
@@ -1430,6 +1477,7 @@ class CoreTuiApp:
                         )
             except CoreClientError as exc:
                 if exc.code == "upgrade_pending":
+                    self.event_queue.put({"kind": "run_rejected", "prompt": prompt, "session_id": session_id, "generation": generation})
                     self._upgrade_pending_notice("the prompt", session_id=session_id, generation=generation)
                 else:
                     self.event_queue.put(
@@ -1573,8 +1621,9 @@ class CoreTuiApp:
             "  /tui thinking [level|off]  Show or set thinking level (embedded only)",
             "  /tui cancel            Cancel active session run",
             "  /tui quit              Exit TUI",
-            "  Ctrl+C                 Cancel a run, or close/deny a dialog",
-            "  Ctrl+D                 Quit",
+            "  Esc                    Cancel a run, or close/deny a dialog",
+            "  Ctrl+C                 Clear input; press again within 1.5s to quit",
+            "  Ctrl+D                 Quit when input is empty",
             "  (/views, /sessions, ... are local when no admitted command owns the name)",
             self.styles.render("accent", "=== Admitted Commands ==="),
         ]
@@ -1844,9 +1893,10 @@ class CoreTuiApp:
         # Context row (server truth) plus a SEPARATE transient notice row.
         # footer=off hides the context row only: gates/errors always show.
         context = self._footer_context(width)
-        context_row = (self.styles.render("text", context, reverse=True) if context else "",)
-        notice = self.styles.render("text", self.status_line, reverse=True) if self.status_line else ""
-        notice_rows = (notice,) if notice else ()
+        context_row = (self.styles.fg("dim", context) if context else "",)
+        notice = self.styles.fg("dim", self.status_line) if self.status_line else ""
+        quit_hint = self.styles.fg("dim", "Press Ctrl+C again to exit") if time.monotonic() - self._quit_armed_at < 1.5 else ""
+        notice_rows = tuple(row for row in (notice, quit_hint) if row)
         footer_rows = tuple(row for row in (*context_row, *notice_rows) if row)
         if self.pending_approval is not None:
             rows = self.pending_approval.render_rows(width, self.styles)
@@ -1858,10 +1908,18 @@ class CoreTuiApp:
             self.terminal.paint_frame(frame)
         else:
             self.composer.set_width(width)
-            composer_rows = self.composer.render(border_status=self._border_status())
+            height = getattr(self.terminal, "height", 24)
+            available = max(1, height - len(footer_rows))
+            self.composer.set_max_height(self.composer.input_height(available, status_visible=self.border == "borderless" and self._run_active))
+            composer_rows = self.composer.render(
+                self._border_status() if self.border == "borderless" else "",
+                border_status=self._border_status(),
+            )
             cursor = self.composer.cursor_position
             live = self._live_stream_rows(width)
-            popup = list(self.composer.completion_rows())
+            popup = list(self.composer.completion_rows(max_rows=max(1, min(6, available - len(composer_rows)))))
+            live_space = max(0, available - len(composer_rows) - len(popup))
+            live = live[-live_space:] if live_space else []
             if cursor is not None and (live or popup):
                 row, column = cursor
                 cursor = (row + len(live) + len(popup), column)
@@ -1874,7 +1932,7 @@ def run_tui(
     *,
     token: str | None = None,
     session_id: str | None = None,
-    border: Literal["box", "borderless"] = "box",
+    border: Literal["lines", "box", "borderless"] = "lines",
     footer: Literal["full", "compact", "off"] = "full",
     show_session: bool = False,
 ) -> int:
@@ -1891,7 +1949,7 @@ def run_embedded_tui(
     state_dir: object,
     *,
     session_id: str | None = None,
-    border: Literal["box", "borderless"] = "box",
+    border: Literal["lines", "box", "borderless"] = "lines",
     footer: Literal["full", "compact", "off"] = "full",
     show_session: bool = False,
 ) -> int:

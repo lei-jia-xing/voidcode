@@ -850,7 +850,7 @@ def test_core_help_receipt_renders_multiline_and_clears_dispatching() -> None:
     _drain_until(app, terminal, "Available commands:")
     assert any("/status" in row for row in terminal.committed), terminal.committed
     assert all("\\x0a" not in row for row in terminal.committed), terminal.committed
-    assert app.status_line == "/help: ok"
+    assert app.status_line == ""
     assert [entry[1] for entry in client.invoked] == ["help"]
 
 
@@ -879,7 +879,7 @@ def test_core_data_receipt_preserves_empty_mapping_and_falsy_values() -> None:
     text = "\n".join(terminal.committed)
     for expected in ('"empty": {}', '"turn": 0', '"ok": false', '"none": null'):
         assert expected in text, (expected, text)
-    assert app.status_line == "/show: ok"
+    assert app.status_line == ""
 
 
 def test_long_settled_command_result_wraps_without_losing_content() -> None:
@@ -1008,8 +1008,8 @@ def test_late_completion_does_not_overwrite_gate_or_fence_status() -> None:
     assert app.status_line == "Core upgrade in progress: dispatch paused"
 
 
-def test_run_failure_error_is_rendered_once_from_the_response_path() -> None:
-    """The run response owns the error text; the durable event must not repeat it."""
+def test_run_failure_is_rendered_once_from_the_durable_event() -> None:
+    """The durable outcome owns the error; the response must not repeat it."""
     from voidcode.tui.terminal_app import CoreTuiApp
 
     terminal = _StubTerminal()
@@ -1017,8 +1017,13 @@ def test_run_failure_error_is_rendered_once_from_the_response_path() -> None:
     app._stream_ready = True
 
     app._dispatch_user_prompt("hello")
-    _drain_until(app, terminal, "boom")
-    assert sum("boom" in row for row in terminal.committed) == 1
+    import time
+
+    deadline = time.monotonic() + 2
+    while app.event_queue.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    app._drain_events()
+    assert terminal.committed == []
 
     app.event_queue.put(
         {
@@ -1030,6 +1035,7 @@ def test_run_failure_error_is_rendered_once_from_the_response_path() -> None:
     )
     app._drain_events()
     assert sum("boom" in row for row in terminal.committed) == 1, terminal.committed
+    assert app.status_line == ""
 
 
 def test_rows_carry_no_hardcoded_colors() -> None:
@@ -1047,10 +1053,10 @@ def test_rows_carry_no_hardcoded_colors() -> None:
     # color_system=None strips every SGR code: a hardcoded escape would survive the strip.
     assert not any("\x1b" in row for row in rows), rows
     plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
-    assert any("User>" in row for row in plain)
+    assert any("hi" in row for row in plain)
     assert any("hello" in row for row in plain)
-    assert any("Reasoning>" in row for row in plain)
-    assert any("Run failed" in row for row in plain)
+    assert any("why" in row for row in plain)
+    assert any("boom" in row for row in plain)
 
 
 def test_model_turn_renders_markdown_and_structured_tool_rows() -> None:
@@ -1090,9 +1096,8 @@ def test_model_turn_renders_markdown_and_structured_tool_rows() -> None:
     plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
     text = "\n".join(plain)
     assert "Title" in text and "bold" in text
-    assert any("> Tool call read" in row for row in plain)
+    assert any("read" in row for row in plain)
     assert any('"path"' in row for row in plain)
-    assert any("[ok] Tool read" in row for row in plain)
     assert any("file body" in row for row in plain)
     assert any("truncated" in row for row in plain)
 
@@ -1135,7 +1140,7 @@ def test_tool_result_prefers_presentation_and_flags_failure() -> None:
     )
     plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
     text = "\n".join(plain)
-    assert "[failed] Tool exec" in text and "exit 1" in text
+    assert "exit 1" in text and "exec" in text
     assert "Image read successfully" in text and "raw bytes" not in text
 
 
@@ -1361,7 +1366,7 @@ def test_head_transcript_arrives_canonical_and_terminal_error_stops_the_worker()
     assert app._stream_thread is not None
     try:
         _drain_until(app, terminal, "hello")
-        _drain_until(app, terminal, "Core stream error")
+        _drain_until(app, terminal, "sequence=3")
         app._stream_thread.join(timeout=5.0)
         assert not app._stream_thread.is_alive()
         app._drain_events()
@@ -1373,3 +1378,180 @@ def test_head_transcript_arrives_canonical_and_terminal_error_stops_the_worker()
         app._stop_event.set()
         app._stream_thread.join(timeout=5.0)
         assert not app._stream_thread.is_alive()
+
+
+@pytest.mark.parametrize("event_first", [False, True])
+def test_run_failure_receipt_and_event_share_one_notice(event_first: bool) -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)
+    app._stream_ready = True
+    receipt = {"kind": "run_status", "status": "failed", "error": "boom", "run_id": "run-1"}
+    event = {"kind": "stream_event", "frame": EventFrame(session_id="s1", event=_event(1, "core.run_failed", error="boom"))}
+    for frame in [event, receipt] if event_first else [receipt, event]:
+        app.event_queue.put(frame)
+        app._drain_events()
+    assert sum("boom" in row for row in terminal.committed) == 1
+    assert app.status_line == ""
+    assert not app._run_active
+
+
+def test_escape_cancels_run_but_completion_consumes_escape(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    app = CoreTuiApp(_RunClient(), session_id="s1", terminal=_StubTerminal())
+    cancelled: list[bool] = []
+    monkeypatch.setattr(app, "_cancel_active_run", lambda: cancelled.append(True))
+    app.composer.set_text("/sh")
+    app.composer.set_completion(("/show", "/shell"))
+    app._handle_composer_key(Key("escape"))
+    assert not cancelled
+    assert app.composer.value == "/sh"
+    app._handle_composer_key(Key("escape"))
+    assert cancelled == [True]
+
+
+def test_ctrl_c_clears_input_then_quits_without_cancelling_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)
+    app.running = True
+    app._run_active = True
+    app.composer.set_text("draft")
+    cancelled: list[bool] = []
+    monkeypatch.setattr(app, "_cancel_active_run", lambda: cancelled.append(True))
+    monkeypatch.setattr(terminal, "read_bytes", lambda **kwargs: b"\x03")
+    app._process_input()
+    assert app.running
+    assert app.composer.value == ""
+    app._render_frame()
+    assert any("Ctrl+C again" in row for row in terminal.frames[-1])
+    app._process_input()
+    assert not app.running
+    assert not cancelled
+
+
+def test_idle_cancel_is_silent() -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)
+    app.status_line = ""
+    app._cancel_active_run()
+    assert app.status_line == ""
+    assert not terminal.committed
+    assert not app._cancel_pending
+
+
+def test_multiline_user_message_preserves_line_breaks() -> None:
+    from voidcode.tui.styles import Styles
+    from voidcode.tui.terminal_app import _content_rows
+
+    text = "first\n\n第二行 <literal>"
+    rows = _content_rows(ProviderMessage("user", text), 80, Styles(None))
+    assert "\n".join(row.rstrip() for row in rows).strip() == text
+
+
+def test_system_context_is_hidden_without_replaying_visible_messages() -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=_StubTerminal())
+    rows: list[str] = []
+    context = _event(1, "core.continuation_started", content=ProviderMessage("system", "private model context"))
+    app._handle_stream_event(context, rows)
+    assert rows == []
+    assert app._session_cursors["s1"] == 1
+    app._handle_stream_event(_user_event(2, "visible prompt"), rows)
+    app._handle_stream_event(context, rows)
+    assert sum("visible prompt" in row for row in rows) == 1
+    assert not any("private model context" in row for row in rows)
+    assert app._session_cursors["s1"] == 2
+
+
+def test_busy_run_keeps_new_prompt_as_draft() -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    app = CoreTuiApp(_RunClient(), session_id="s1", terminal=_StubTerminal())
+    app._run_active = True
+    app._dispatch_user_prompt("next question")
+    assert app.composer.value == "next question"
+    assert app.event_queue.empty()
+
+
+def test_short_terminal_reserves_input_and_bounds_completion() -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    terminal.height = 10
+    app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)
+    app.status_line = ""
+    app.composer.set_completion(tuple(f"/command-{i}" for i in range(30)))
+    app._stream_dispatch = "dispatch"
+    app._stream_buffers["dispatch"] = ["stream\n" * 30]
+    app._render_frame()
+    assert len(terminal.frames[-1]) <= terminal.height
+    assert terminal.frames[-1][-3].strip() == ""
+
+
+def test_ctrl_d_edits_nonempty_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)
+    app.running = True
+    app.composer.set_text("draft")
+    app.composer.handle_key(Key("home"))
+    monkeypatch.setattr(terminal, "read_bytes", lambda **kwargs: b"\x04")
+    app._process_input()
+    assert app.running
+    assert app.composer.value == "raft"
+
+
+def test_ctrl_c_does_not_decide_pending_approval(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.views import InteractiveApproval
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)
+    app.running = True
+    approval = InteractiveApproval(_approval_gate())
+    app.pending_approval = approval
+    monkeypatch.setattr(terminal, "read_bytes", lambda **kwargs: b"\x03")
+    app._process_input()
+    assert app.running
+    assert app.pending_approval is approval
+    assert not app._in_flight
+    app._process_input()
+    assert not app.running
+    assert app.pending_approval is approval
+
+
+def test_ctrl_c_exit_window_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)
+    app.running = True
+    monkeypatch.setattr(terminal, "read_bytes", lambda **kwargs: b"\x03")
+    app._process_input()
+    app._quit_armed_at -= 2
+    app._process_input()
+    assert app.running
+
+
+def test_rejected_run_preserves_prompt_and_stops_spinner() -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    class Rejected(_RunClient):
+        def run(self, session_id: str, spec: RunSpec) -> RunResult:
+            raise CoreClientError("upgrade in progress", status_code=503, code="upgrade_pending")
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(Rejected(), session_id="s1", terminal=terminal)
+    app._dispatch_user_prompt("keep this prompt")
+    _drain_until(app, terminal, "was not dispatched")
+    assert app.composer.value == "keep this prompt"
+    assert not app._run_active
+    assert not any("Run failed" in row for row in terminal.committed)

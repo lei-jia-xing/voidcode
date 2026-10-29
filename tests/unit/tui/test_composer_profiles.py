@@ -20,3 +20,17 @@ def test_composer_profile_styles_respect_cell_width(style: str, gutter: str, pad
     row, column = composer.cursor_position
     assert 0 <= row < len(rows)
     assert 0 <= column < 12
+
+
+def test_completion_window_follows_selection() -> None:
+    from voidcode.tui.keys import Key
+
+    composer = Composer(styles=Styles(None), width=40)
+    composer.set_completion(tuple(f"/command-{i}" for i in range(20)))
+    for _ in range(12):
+        composer.handle_key(Key("down"))
+    rows = composer.completion_rows(max_rows=4)
+    assert len(rows) == 4
+    assert "/command-12" in rows[-1]
+    composer.handle_key(Key("enter"))
+    assert composer.value == "/command-12"

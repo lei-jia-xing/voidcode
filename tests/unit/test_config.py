@@ -135,7 +135,7 @@ def test_legacy_and_unknown_fields_rejected() -> None:
 def test_tui_prefs_are_strict_closed_and_defaulted() -> None:
     from voidcode.config import parse_config
 
-    assert parse_config({}).tui.border == "box"
+    assert parse_config({}).tui.border == "lines"
     assert parse_config({}).tui.footer == "full"
     assert parse_config({}).tui.show_session is False
     cfg = parse_config({"tui": {"border": "borderless", "footer": "compact", "show_session": True}})

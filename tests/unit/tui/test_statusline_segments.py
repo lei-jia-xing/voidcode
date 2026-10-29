@@ -162,3 +162,31 @@ def test_remote_workspace_is_never_home_shortened() -> None:
     app._render_frame()
     # Remote arm (non-local client): the server path stays full, never "~".
     assert f"{home}/remote-ws" in _frame_text(terminal)
+
+
+def test_default_composer_is_compact_and_has_no_prompt_or_placeholder() -> None:
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_StubClient(), session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    app.status_line = ""
+    app._render_frame()
+    rows = terminal.frames[-1]
+    assert len(rows) == 4
+    assert rows[0] == rows[2] == "─" * terminal.width
+    assert rows[1].strip() == ""
+    assert app.composer.cursor_position == (1, 0)
+
+    app.composer.set_text("hello\nworld")
+    app._render_frame()
+    assert terminal.frames[-1][1].rstrip() == "hello"
+    assert terminal.frames[-1][2].rstrip() == "world"
+    assert len(terminal.frames[-1]) == 5
+
+
+def test_borderless_composer_has_no_vertical_padding() -> None:
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_StubClient(), terminal=terminal, border="borderless", footer="off")  # type: ignore[arg-type]
+    app.status_line = ""
+    app._render_frame()
+    assert len(terminal.frames[-1]) == 1
+    assert terminal.frames[-1][0].strip() == ""
+    assert app.composer.cursor_position == (0, 0)

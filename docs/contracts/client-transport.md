@@ -177,9 +177,20 @@ A request id from one gate is never sent to the other endpoint. Both are project
 - Launched embedded against a direct in-process core (`CoreLocalClient`: no socket, same refusals and frames as HTTP) or remote with `--server`/`--token` (`CoreRpcClient`). Both implement the typed `SessionClient` Protocol (`sdk/client.py`); programmatic callers open either arm with `bootstrap.open_session_client()`.
 - Inline scrollback with a **commit-once ledger**: rows are committed to the native scrollback exactly once by the main loop, driven by a durable `last_sequence` cursor. Committed text wraps to terminal cell width without dropping long output; live input/dialog geometry remains bounded. Reconnects, follow polling, resizes, and session switches never replay or clear settled output; only the live region repaints.
 - Renders conversational rows from the canonical transcript (`core.user_message`, `core.model_turn`, `core.tool_completed`/`core.tool_interrupted`) plus the direct `CommandResult` of core read-only commands (`help`, `status`, `show`), which have no command event; command/control payloads (`core.command_completed`, gates, progress) remain dynamic. Plugin and run/resume results remain event-projected; one shared formatter renders each result once, preserving multi-line output and falling back to JSON for data-only receipts. Every model- and plugin-provided string is escaped for terminal control bytes.
+- User text is shown verbatim without role labels; thinking is muted, without a
+  `Reasoning>` heading. System context, dispatch metadata, and child-session ids
+  stay out of the chat view but remain in recorded history and model context.
+  Explicit plugin notices and decision gates remain visible.
 - Startup, connect, reconnect, session switch, and capability activation never fetch or display optional plugin views: the TUI reconciles health, the catalog, durable session state, and the event-projected decision gates only. `/tui views [name]` explicitly fetches a revision-bound views envelope and displays passive content inline and borderless — passive field values wrap rather than ellipsize (deliberate plugin-level previews/limits still apply) — or an interactive form/choices/confirmation as a framed dialog. The two decision gates above remain event-projected and are never closed or denied by a refresh.
+- The default composer uses two horizontal rules with no vertical padding, prompt marker, or placeholder. Input grows with its content. `tui.border` also accepts `box` and `borderless`; `--no-border` selects borderless. The footer context uses dim text.
 - Footer context row (server truth only): `workspace · provider/model · effort` (`no model` when unset; the effort segment hides when `reasoning_effort` is null — unknown, unset, non-reasoning, and numeric-budget configs show no marker). No run-state and no session id by default (`--show-session` adds the short id). The composer top border carries `<spinner> working` while a run is active (animating on the render tick; clean when idle); gates, errors, and transient notices render on a separate row below that `footer=off` never hides. Idle chrome carries no Attached/Created banners; explicit `/status`, `/show`, and `/tui sessions` keep diagnostics and ids.
-- Slash input resolves against the displayed catalog and echoes its revision; overlays capture the revision that rendered them. `Esc`/`Ctrl+C` on a confirmation overlay submit an explicit `deny`, never a local "cancelled".
+- Typing `/` opens command suggestions automatically; edits filter the current
+  catalog plus `/tui` controls, without requests per keystroke. Up/Down selects,
+  Tab or Enter fills a partial command, and Enter submits an exact selected
+  command. Esc closes the popup without cancelling the run. Command arguments
+  and ordinary multiline text do not trigger name completion. Catalog refreshes
+  update an open popup; dispatch still uses the displayed revision. Overlays
+  capture their rendered revision; Esc on confirmation submits an explicit deny.
 - Local controls that are not admitted commands: `/tui help|sessions|session <id>|new|views [name]|model [provider/model]|thinking [level|off]|cancel|quit` (bare forms work when no admitted command owns the name). `/tui <control>` always reaches the client control, so a plugin cannot shadow navigation. `/tui model`/`/tui thinking` with an argument rewrite the workspace `model` section and invoke `core.reload` once (embedded, idle sessions only; refused visibly when remote or busy). `/tui thinking` lists current + supported levels; numeric budgets stay valid backend config but are hidden in this UI.
 - All blocking client calls happen on worker threads; only the main loop writes rows.
 
@@ -245,3 +256,15 @@ mise run frontend:api:check
 ```
 
 Do not hand-edit `frontend/src/lib/core/generated/api.d.ts`.
+
+The TUI renders committed failures/interruption from durable events only, in transcript order. Run receipts update activity state without duplicating history; transport/admission failures without a run id display a local error. Failures show their reason once in history; terminal status never lingers in the footer. Esc cancels an active run (completion popups consume Esc first); idle cancellation is silent. Ctrl+C clears the draft and arms exit for 1.5 seconds; a second Ctrl+C exits, including while a dialog is open. Ctrl+C does not decide an approval or confirmation. Ctrl+D quits on empty input and otherwise deletes at the insertion point. Submitting another prompt during a run preserves it as a draft and offers Esc to interrupt.
+
+Run failures show `Error:` with the recorded reason once. Deliberate user/owner
+cancellation is `Operation aborted`, not a provider error; limits show `Stopped:`
+with their reason, while other interruptions retain their details. A provider
+that cancels without a user stop is still an error. Terminal stream/projection
+errors remain visible and stop the reader; reconnection never resends mutations.
+
+Tool intent uses the declared icon and name, followed by at most two physical rows of compact JSON arguments. Successful results show at most eight physical rows, without a redundant success header. Omitted rows are labeled explicitly and `/show {"events":true}` exposes the recorded arguments/results. Tool errors remain complete; source partial/truncated bounds remain visible separately from the display preview. Streaming prose shares settled markdown geometry, without an extra spinner prefix. Completion popups follow selection in a six-row window; input space is reserved on short terminals.
+Empty successful tool results add no `Done` row. Tool failures keep their complete
+details without repeating the tool name already present in the compact header.
