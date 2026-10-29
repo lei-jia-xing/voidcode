@@ -6,7 +6,8 @@ This package is a thin adapter: `create_plugin` wraps the shared `voidcode.capab
 
 ## Surface
 
-- Tool `read` (`READ`): read a file or resource URI. Regular-file pages report a SHA-256 content hash callers can pass back as `expectedHash`; attachment and resource-URI pages carry no such hash authorization.
+- Tool `read` (`READ`): read a file or resource URI. Regular-file pages report a SHA-256 content hash callers can pass back as `expectedHash`; attachment and resource-URI pages carry no such hash authorization. Any `scheme://` URI dispatches to the plugin that registered the scheme; disabling that plugin makes the scheme unsupported with no fallback.
+- Resource readers `tool://`, `artifact://`, `transcript://`: the default namespaces this plugin serves (tool docs, stored-artifact pages, lineage-gated transcript pages). Each parses its own URI and default; `read` itself knows no scheme table.
 - Tool `write` (`WRITE`, never replayed): write a UTF-8 text file inside the workspace.
 - Tool `edit` (`WRITE`): replace text (single replacement or ordered batch) or apply a marker patch. Single/batch replacement requires the caller's `expectedHash` to match current bytes plus exact old-string matching; patch mode takes only `patch` text and validates through exact marker preflight plus checked commits, with no mandatory `expectedHash`.
 - Tool `apply_workspace_edit` (`WRITE`): apply validated LSP text edits; each edit is checked against its caller-supplied `expectedHash` and, when given, an LSP document version from the document-state query.

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from .hooks import FactPage
     from .invocation import ToolContext
     from .observed_effects import ObservedEffects
+    from .resources import ResourcePage, ResourceReadRequest
     from .tools import ToolDefinition
     from .transcript import ContextHistory, TranscriptPage
 
@@ -719,6 +720,18 @@ class PluginServices(Protocol):
         """
         ...
 
+    def read_resource(self, request: ResourceReadRequest) -> ResourcePage | None:
+        """Dispatch one ``scheme://`` URI to its registering provider's reader.
+
+        Runs synchronously inside this invocation under a provider-owner,
+        read-only sub-lease (caller's session/workspace/revision). Returns
+        ``None`` when the provider knows no such resource. An unregistered
+        scheme raises ``ResourceUnavailable``; a malformed page raises
+        ``ResourceContractError``; handler bugs and backend failures raise
+        visibly and are never confused with "unavailable" or ``None``.
+        """
+        ...
+
     def invoke_tool(
         self,
         name: str,
@@ -778,7 +791,12 @@ class PluginServices(Protocol):
         offset: int = 0,
         limit: int = 65536,
     ) -> ArtifactPage:
-        """Read one byte page by SHA-256 digest; URI parsing belongs to the caller."""
+        """Read one byte page by SHA-256 digest; URI parsing belongs to the caller.
+
+        Raises ``FileNotFoundError`` when the digest is well-formed but not
+        stored; malformed digests, bad bounds, and storage failures raise
+        ``ValueError``/``OSError`` and must never be treated as absence.
+        """
         ...
 
     def spawn_service_process(

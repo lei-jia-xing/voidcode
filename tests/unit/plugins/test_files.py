@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +17,7 @@ from voidcode.plugins.files import create_plugin as _orig_create_plugin
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderAbortSignal
-from voidcode.sdk.services import ArtifactPage, ArtifactReference
+from voidcode.sdk.services import ArtifactReference
 from voidcode.sdk.tools import ConfirmedStop, ReadObservation, ToolCall, ToolFailure, ToolSuccess
 
 
@@ -288,21 +287,20 @@ def test_read_tool_allows_external_paths_with_absolute_display(tmp_path: Path) -
 
 def test_read_tool_uri_read_grants_no_coverage(tmp_path: Path) -> None:
     """A lineage-free artifact read's lines are not workspace file versions."""
+    from voidcode.sdk.resources import ResourcePage
+    from voidcode.sdk.tools import TextOutput
+
     plugin = create_plugin({})
     read_tool = next(t for t in plugin.tools if t.definition.name == "read")
-    raw = b"uri line one\nuri line two\n"
-    artifact_id = hashlib.sha256(raw).hexdigest()
-    total = len(raw)
 
-    def read_artifact(sha256: str, *, offset: int = 0, limit: int = 65536):  # type: ignore[no-untyped-def]
-        assert sha256 == artifact_id
-        page = raw[offset : offset + limit]
-        return ArtifactPage(artifact=ArtifactReference(artifact_id, total, ""), offset=offset, data=page, eof=offset + len(page) >= total)
+    def read_resource(request):  # type: ignore[no-untyped-def]
+        assert request.uri.startswith("artifact://")
+        return ResourcePage(output=TextOutput("uri line one\nuri line two"), body={"path": request.uri, "type": "artifact"})
 
     result = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": f"artifact://{artifact_id}"}),
+        ToolCall(tool_name="read", arguments={"path": "artifact://" + "a" * 64}),
         context=_context(tmp_path),
-        services=cast(Any, SimpleNamespace(read_artifact=read_artifact)),
+        services=cast(Any, SimpleNamespace(read_resource=read_resource)),
     )
     assert isinstance(result, ToolSuccess)
     assert "uri line one" in result.output.text  # type: ignore[union-attr]
@@ -522,7 +520,7 @@ def test_write_tool_honors_cancellation_before_side_effects(tmp_path: Path) -> N
 
 
 class _UriServices:
-    """The narrow service surface the resource URI branches consume, scripted per test."""
+    """Scripted ``read_resource`` dispatcher backed by the real default readers."""
 
     def __init__(
         self,
@@ -532,18 +530,17 @@ class _UriServices:
         child_events: tuple = (),
         refuse_child: Exception | None = None,
     ) -> None:
+        from voidcode.capabilities.files.resource_readers import create_resource_readers
+
         self._definitions = definitions or {}
         self._events = events
         self._child_events = child_events
         self._refuse_child = refuse_child
         self.child_session_ids: list = []
+        self._readers = {reader.scheme: reader.handler for reader in create_resource_readers()}
 
     def tool_definition(self, name: str):  # type: ignore[no-untyped-def]
         return self._definitions.get(name)
-
-    def read_events(self, *, after_sequence: int = 0, limit: int = 100, include_payload: bool = True):  # type: ignore[no-untyped-def]
-        assert include_payload is True
-        return tuple(event for event in self._events if event.sequence > after_sequence)[:limit]
 
     def read_session_history(self, session_id: str, *, after_sequence: int = 0, offset: int = 0, limit: int = 100):  # type: ignore[no-untyped-def]
         self.child_session_ids.append(session_id)
@@ -553,6 +550,14 @@ class _UriServices:
 
         events = self._events if session_id == "session-test" else self._child_events
         return render_history_page(events, after_sequence=after_sequence, offset=offset)
+
+    def read_resource(self, request):  # type: ignore[no-untyped-def]
+        from voidcode.sdk.resources import ResourceReadCaller
+
+        handler = self._readers.get(request.scheme)
+        assert handler is not None
+        caller = ResourceReadCaller(session_id="session-test", workspace=Path("."), revision_id="rev-test", run_id="run-test")
+        return handler(request, caller, self)
 
 
 def test_read_tool_documentation_renders_visible_definition_and_refuses_hidden(tmp_path: Path) -> None:
@@ -581,7 +586,7 @@ def test_read_tool_documentation_renders_visible_definition_and_refuses_hidden(t
         services=cast(Any, _UriServices(definitions={"read": definition})),
     )
     assert isinstance(hidden, ToolFailure)
-    assert "profile scope/read-only stance hides it" in hidden.error
+    assert "no such resource" in hidden.error
     assert hidden.output.text == hidden.error  # type: ignore[union-attr]
 
 
@@ -656,14 +661,12 @@ def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_r
     assert "CHILD-PROMPT" in child.output.text  # type: ignore[union-attr]
     assert child_services.child_session_ids == ["child-test"]
 
-    sibling = read_tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "transcript://sibling"}),
-        context=_context(tmp_path),
-        services=cast(Any, _UriServices(refuse_child=PermissionError("child events are readable only for this session's own descendants"))),
-    )
-    assert isinstance(sibling, ToolFailure)
-    assert "transcript not accessible for session sibling" in json.dumps(sibling.error)
-    assert "own descendants" in json.dumps(sibling.error)
+    with pytest.raises(PermissionError, match="own descendants"):
+        read_tool.invoke(
+            ToolCall(tool_name="read", arguments={"path": "transcript://sibling"}),
+            context=_context(tmp_path),
+            services=cast(Any, _UriServices(refuse_child=PermissionError("child events are readable only for this session's own descendants"))),
+        )
 
 
 class _VersionServices:

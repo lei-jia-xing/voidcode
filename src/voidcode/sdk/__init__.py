@@ -124,6 +124,15 @@ from .provider import (
     StreamableTurnProvider,
     TurnProvider,
 )
+from .resources import (
+    ResourceContractError,
+    ResourcePage,
+    ResourceReadCaller,
+    ResourceReader,
+    ResourceReaderServices,
+    ResourceReadRequest,
+    ResourceUnavailable,
+)
 from .services import (
     ArtifactPage,
     ArtifactReference,
@@ -336,6 +345,13 @@ __all__ = [
     "ReadObservation",
     "RequestWindow",
     "ResourceChange",
+    "ResourceContractError",
+    "ResourcePage",
+    "ResourceReadCaller",
+    "ResourceReadRequest",
+    "ResourceReader",
+    "ResourceReaderServices",
+    "ResourceUnavailable",
     "RestartFrame",
     "ResumeSpec",
     "RunFinishedFact",

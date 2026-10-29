@@ -9,11 +9,11 @@ from typing import Any, cast
 
 import pytest
 
-from voidcode.capabilities.files.read_tool import MAX_ARTIFACT_PAGE_BYTES, MAX_INLINE_ATTACHMENT_BYTES
+from voidcode.capabilities.resource_pages import MAX_INLINE_ATTACHMENT_BYTES, MAX_RESOURCE_PAGE_BYTES
 from voidcode.plugins.files import create_plugin
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactPage, ArtifactReference
-from voidcode.sdk.tools import AttachmentOutput, OpaqueToolBody, TextOutput, ToolCall, ToolSuccess
+from voidcode.sdk.tools import AttachmentOutput, OpaqueToolBody, TextOutput, ToolCall, ToolFailure, ToolSuccess
 
 
 class FakeArtifactStore:
@@ -33,7 +33,10 @@ class FakeArtifactStore:
         return ArtifactReference(sha256=sha256, bytes=len(raw), media_type=media_type)
 
     def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
-        raw = self.blobs[sha256]
+        try:
+            raw = self.blobs[sha256]
+        except KeyError:
+            raise FileNotFoundError(f"artifact is not stored: {sha256}") from None
         start = min(max(0, offset), len(raw))
         page = raw[start : start + limit]
         return ArtifactPage(
@@ -42,6 +45,14 @@ class FakeArtifactStore:
             data=page,
             eof=start + len(page) >= len(raw),
         )
+
+    def read_resource(self, request):  # type: ignore[no-untyped-def]
+        from voidcode.capabilities.files.resource_readers import read_artifact_resource
+        from voidcode.sdk.resources import ResourceReadCaller
+
+        assert request.scheme == "artifact"
+        caller = ResourceReadCaller(session_id="session-artifacts", workspace=Path("."), revision_id="rev-test", run_id="run-test")
+        return read_artifact_resource(request, caller, self)
 
 
 def _context(tmp_path: Path) -> ToolContext:
@@ -126,8 +137,14 @@ def test_artifact_byte_page_honors_byte_window(tmp_path: Path) -> None:
 
 def test_unknown_artifact_id_is_refused(tmp_path: Path) -> None:
     store = FakeArtifactStore()
-    with pytest.raises(ValueError, match="cannot resolve artifact URI"):
-        _read_body(store, tmp_path, path=f"artifact://{'0' * 64}")
+    tool = next(tool for tool in create_plugin({}).tools if tool.definition.name == "read")
+    result = tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": f"artifact://{'0' * 64}"}),
+        context=_context(tmp_path),
+        services=cast(Any, store),
+    )
+    assert isinstance(result, ToolFailure)
+    assert "no such resource" in result.error
 
 
 def test_invalid_artifact_id_is_refused(tmp_path: Path) -> None:
@@ -160,7 +177,7 @@ def test_image_artifact_renders_as_attachment(tmp_path: Path) -> None:
 def test_large_image_artifact_reuses_stored_reference(tmp_path: Path) -> None:
     store = FakeArtifactStore()
     # Above the inline bound and across two store pages.
-    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * (MAX_INLINE_ATTACHMENT_BYTES + MAX_ARTIFACT_PAGE_BYTES)
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * (MAX_INLINE_ATTACHMENT_BYTES + MAX_RESOURCE_PAGE_BYTES)
     artifact = store.spill_artifact(png, media_type="image/png")
     sha256 = artifact.sha256
     uri = f"artifact://{sha256}"

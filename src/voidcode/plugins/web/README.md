@@ -1,11 +1,13 @@
 # web
 
-Web search through the first configured backend, with a keyless fallback.
+Web search and page fetch over HTTP(S).
 
 ## Surface
 
 - Tool `web_search` with `query` (non-empty) and optional `numResults` (1–20, default 8). Effects `READ` + `NETWORK`.
 - Returns ranked results (title, URL, snippet) naming the backend in `Search source: <id>`. A selected-backend failure is returned directly as a tool error, not retried against another backend.
+- Tool `web_fetch` with `url` (non-empty http(s), no credentials). Effects `READ` + `NETWORK`, never replayed. Returns a bounded Markdown preview plus a `web://` snapshot URI for continuation.
+- Resource `web://<sha256>`: already-fetched rendered snapshots owned by this plugin; page them with `read` like any stored artifact.
 
 ## Configuration
 
@@ -18,4 +20,10 @@ See [configuration](../../../../docs/configuration.md) for global config.
 
 ## Behavior and limits
 
-- Stateless: keeps no state of its own. HTTP timeout is 30s; transport faults produce one bounded failure sentence while raw details stay in the log.
+- Stateless: keeps no state of its own.
+- Search: HTTP timeout is 30s; transport faults produce one bounded failure sentence while raw details stay in the log.
+- Fetch is static only: no JS, no browser, no retries. HTML (and XHTML) converts to Markdown in one parse (scripts dropped, relative links resolved against the final URL); declared charsets decode strictly — unknown names, non-text codecs, and undecodable bytes fail explicitly without leaking body bytes; binary types fail without decoding.
+- Fetch bounds: at most 5 redirects (every target re-validated as credentialless http(s)), 30s per-operation timeout plus an advisory 30s total budget checked between chunks/redirects, 5 MiB decompressed body cap (Content-Length never trusted), 8000-char inline preview. The full rendered bytes always spill to an artifact; the preview never implies completeness.
+- Fetch output leads with recovery identifiers: the `web://` snapshot URI and the canonical `artifact://` link. The structured body carries identity only (requested/final URL, content type, artifact reference), never full content, so the recovery link survives model projection. `web://` proves bytes, not provenance: same bytes share a digest, and disabling `web` only removes the alias — the canonical artifact read still works.
+- Trust: fetched bytes are untrusted data, never instructions, never executed. Arbitrary URLs are fetched as-is, including private-network addresses: there is no SSRF sandbox and NETWORK is not approval-gated, so treat fetch targets like shell egress.
+- Cancellation is honored between chunks and redirects.

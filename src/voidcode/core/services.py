@@ -39,6 +39,7 @@ from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
 from .history_renderer import render_history_page
 
 if TYPE_CHECKING:
+    from voidcode.sdk.resources import ResourcePage, ResourceReadRequest
     from voidcode.sdk.tools import ToolDefinition
 
     from .plugins import LeaseContext, PluginRuntime
@@ -335,12 +336,15 @@ class RuntimeServices:
         offset: int = 0,
         limit: int = 65536,
     ) -> ArtifactPage:
-        from .artifacts import SHA256_PATTERN
+        from .artifacts import SHA256_PATTERN, ArtifactNotFoundError
 
         self._active_lease()
         if not isinstance(sha256, str) or SHA256_PATTERN.fullmatch(sha256) is None:
             raise ValueError("artifact reference must be a lowercase sha256 digest")
-        data, total, eof, media_type = self._runtime.require_artifacts().read(sha256, offset=offset, limit=limit)
+        try:
+            data, total, eof, media_type = self._runtime.require_artifacts().read(sha256, offset=offset, limit=limit)
+        except ArtifactNotFoundError as exc:
+            raise FileNotFoundError(f"artifact is not stored: {sha256}") from exc
         return ArtifactPage(
             artifact=ArtifactReference(sha256, total, media_type),
             offset=offset,
@@ -883,6 +887,31 @@ class RuntimeServices:
         lease = self._active_lease()
         return self._runtime.execute_query(str(name), own_json_object(dict(arguments or {})), session_id=lease.session_id, workspace=lease.workspace)
 
+    def read_resource(self, request: ResourceReadRequest) -> ResourcePage | None:
+        from voidcode.sdk.invocation import ToolContext
+
+        lease = self._active_lease()
+        self._check_hook("read_resource")
+        abort_signal = self._abort_signal_for(lease)
+        context = ToolContext(
+            workspace=lease.workspace,
+            session_id=lease.session_id,
+            run_id=lease.run_id,
+            invocation_id=lease.invocation_id,
+            revision_id=lease.revision_id,
+            actor=lease.actor,
+            invocation_depth=lease.invocation_depth,
+            abort_signal=abort_signal,
+        )
+        return self._runtime.read_resource(request, context=context)
+
+    def _abort_signal_for(self, lease: LeaseContext):  # type: ignore[no-untyped-def]
+        """The caller's cancellation handle, so reader paging can stop promptly."""
+        event = self._runtime.cancel_event_for(lease)
+        if event.is_set():
+            return _CancelledAbortSignal()
+        return _LeaseAbortSignal(event)
+
     def invoke_tool(
         self,
         name: str,
@@ -1007,3 +1036,69 @@ class RuntimeServices:
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
             lease.staged_budget = "clear"
+
+
+class _LeaseAbortSignal:
+    """A ``ProviderAbortSignal`` view over one lease's runtime cancel event."""
+
+    def __init__(self, event) -> None:  # type: ignore[no-untyped-def]
+        self._event = event
+
+    @property
+    def cancelled(self) -> bool:
+        return bool(self._event.is_set())
+
+    @property
+    def reason(self) -> str | None:
+        return "cancelled" if self.cancelled else None
+
+    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
+        del reason
+        if value:
+            self._event.set()
+        else:
+            self._event.clear()
+
+
+class _CancelledAbortSignal:
+    """An already-cancelled signal for a revoked parent lease."""
+
+    @property
+    def cancelled(self) -> bool:
+        return True
+
+    @property
+    def reason(self) -> str | None:
+        return "cancelled"
+
+    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
+        del value, reason
+
+
+class ResourceReaderServicesView:
+    """The ``ResourceReaderServices`` protocol over one reader sub-lease.
+
+    A thin wrapper, not a second implementation: the four read verbs delegate
+    to the same ``RuntimeServices`` gates (lease liveness, lineage, visibility),
+    and the sub-lease itself is read-only with no internal work. Staging,
+    spawn, process, and network methods do not exist here.
+    """
+
+    def __init__(self, runtime: PluginRuntime, lease: LeaseContext) -> None:
+        self._services = RuntimeServices(runtime, lease)
+
+    @property
+    def owner(self) -> str:
+        return self._services.owner
+
+    def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
+        return self._services.get_state(scope)
+
+    def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
+        return self._services.read_artifact(sha256, offset=offset, limit=limit)
+
+    def tool_definition(self, name: str) -> ToolDefinition | None:
+        return self._services.tool_definition(name)
+
+    def read_session_history(self, session_id: str, *, after_sequence: int = 0, offset: int = 0, limit: int = 100) -> HistoryPage:
+        return self._services.read_session_history(session_id, after_sequence=after_sequence, offset=offset, limit=limit)

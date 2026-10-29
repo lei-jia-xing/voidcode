@@ -19,6 +19,7 @@ from .hooks import ContextContribution, ObservedFactKind, PluginFact, RunLifecyc
 from .invocation import ToolContext
 from .json_values import json_wire_object, own_json_object
 from .provider import TurnProvider
+from .resources import ResourceReader
 from .services import BackgroundContext, PluginServices
 from .tools import Tool
 from .views import PluginView
@@ -92,6 +93,7 @@ class Plugin:
     providers: tuple[TurnProvider, ...] = ()
     views: tuple[PluginView, ...] = ()
     queries: tuple[PluginQuery, ...] = ()
+    resource_readers: tuple[ResourceReader, ...] = ()
     context: Callable[[ToolContext, PluginServices], ContextContribution | None] | None = None
     observer: Callable[[PluginFact, ToolContext, PluginServices], None] | None = None
     #: Fact kinds this plugin's observer wants delivered.
@@ -123,7 +125,7 @@ class Plugin:
     close: Callable[[], None] | None = None
 
     def __post_init__(self) -> None:
-        for name in ("tools", "commands", "providers", "views", "queries"):
+        for name in ("tools", "commands", "providers", "views", "queries", "resource_readers"):
             if not isinstance(getattr(self, name), tuple):
                 object.__setattr__(self, name, tuple(getattr(self, name)))
         facts = tuple(self.observed_facts)

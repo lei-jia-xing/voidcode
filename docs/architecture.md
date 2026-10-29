@@ -103,7 +103,7 @@ graph TD
 
 ### SDK (`src/voidcode/sdk/`)
 
-The shared vocabulary: `plugin.py` (`Plugin` registration: tools, commands, providers, views, queries, context, observers, lifecycle, pre/post tool, state schema, deactivation, close), `tools.py`, `commands.py` (command descriptors, results, confirmations, catalog), `invocation.py` (`ToolContext`), `services.py` (`PluginServices`: state, events, child sessions, governed tool requests, process spawning, usage, bounded history, artifacts, plus the optional-query transport and its `QueryUnavailable`/`QueryContractError` errors), `provider.py` (wire-agnostic turn providers), `hooks.py` (context contributions, facts, lifecycle), `views.py` (the eight bounded UI kinds), `history.py` (`HistoryEvent`, `HistoryPage`, page bounds), `codec.py` / `json_values.py` / `limits.py` (strict JSON boundary and shared bounds).
+The shared vocabulary: `plugin.py` (`Plugin` registration: tools, commands, providers, views, queries, resource readers, context, observers, lifecycle, pre/post tool, state schema, deactivation, close), `tools.py`, `commands.py` (command descriptors, results, confirmations, catalog), `invocation.py` (`ToolContext`), `resources.py` (`ResourceReader`: typed `scheme://` handlers answered under a provider-owner read lease, with `ResourceUnavailable` for unregistered schemes), `services.py` (`PluginServices`: state, events, child sessions, governed tool requests, process spawning, usage, bounded history, artifacts, plus the optional-query transport and its `QueryUnavailable`/`QueryContractError` errors), `provider.py` (wire-agnostic turn providers), `hooks.py` (context contributions, facts, lifecycle), `views.py` (the eight bounded UI kinds), `history.py` (`HistoryEvent`, `HistoryPage`, page bounds), `codec.py` / `json_values.py` / `limits.py` (strict JSON boundary and shared bounds).
 
 ### Bundled plugins (`src/voidcode/plugins/`)
 
@@ -111,10 +111,10 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 
 | Plugin | Contributes |
 |---|---|
-| `files` | `read`, `write`, `edit`, `glob`, `grep`, `apply_workspace_edit` |
+| `files` | `read`, `write`, `edit`, `glob`, `grep`, `apply_workspace_edit`; `tool://`, `artifact://`, `transcript://` resource readers |
 | `ast_grep` | `ast_grep` structural search |
 | `exec` | `shell_exec`, `background_process` |
-| `web` | `web_search` (multi-backend) |
+| `web` | `web_search` (multi-backend), `web_fetch` page snapshots, `web://` resource reader |
 | `lsp` | `lsp` tool and `/lsp` command |
 | `mcp` | `mcp` tool and `/mcp` inventory |
 | `providers` | turn providers for OpenAI-compatible, Anthropic, and Google families, plus `/model` and `/providers` panels |

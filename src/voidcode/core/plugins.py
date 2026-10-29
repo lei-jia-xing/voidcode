@@ -67,6 +67,7 @@ from voidcode.sdk.provider import (
     ProviderTurnResult,
     StreamableTurnProvider,
 )
+from voidcode.sdk.resources import ResourceContractError, ResourcePage, ResourceReadCaller, ResourceReadRequest, ResourceUnavailable
 from voidcode.sdk.services import (
     EventView,
     PluginBudget,
@@ -91,7 +92,7 @@ from .events import EventType
 from .facts import fact_for_event
 from .processes import ProcessRegistry
 from .sandbox import SandboxBackend
-from .services import RuntimeServices
+from .services import ResourceReaderServicesView, RuntimeServices
 from .storage.store import (
     EventDraft,
     SessionRecord,
@@ -300,6 +301,7 @@ class PluginRuntime:
         self._background_actions: dict[str, Any] = {}
         self._state_deactivators: dict[str, Any] = {}
         self._queries: dict[str, tuple[Any, str]] = {}
+        self._resource_readers: dict[str, tuple[Any, str]] = {}
 
         self._plugins: list[Plugin] = []
         self._plugin_ids: list[str] = []
@@ -425,6 +427,12 @@ class PluginRuntime:
                 raise ValueError(f"Duplicate query name registered across plugins: {query.name}")
             _check_arity(query.handler, 2, f"Plugin {plugin_id} query {query.name} handler")
             self._queries[query.name] = (query.handler, plugin_id)
+        for reader in plugin_instance.resource_readers:
+            existing = self._resource_readers.get(reader.scheme)
+            if existing is not None:
+                raise ValueError(f"Duplicate resource scheme {reader.scheme!r} registered by {plugin_id} and {existing[1]}")
+            _check_arity(reader.handler, 3, f"Plugin {plugin_id} resource reader {reader.scheme} handler")
+            self._resource_readers[reader.scheme] = (reader.handler, plugin_id)
 
     def _build_catalog(self) -> None:
         self._tool_defs = tuple(tool.definition for tool, _ in self._tools.values())
@@ -866,6 +874,53 @@ class PluginRuntime:
         if len(json.dumps(json_wire_object(owned), allow_nan=False)) > MAX_QUERY_RESULT_BYTES:
             raise ValueError(f"query {name!r} answer exceeded {MAX_QUERY_RESULT_BYTES} bytes")
         return owned
+
+    def read_resource(
+        self,
+        request: ResourceReadRequest,
+        *,
+        context: ToolContext,
+    ) -> ResourcePage | None:
+        """Dispatch one ``scheme://`` URI to its registering provider's reader.
+
+        Opens a provider-owner sub-lease (caller's session/run/revision,
+        read-only, no internal work) and revokes it before returning. Returns
+        ``None`` when the provider knows no such resource; unknown schemes
+        raise ``ResourceUnavailable`` so callers keep unknown-scheme distinct
+        from unknown-resource. Malformed pages raise ``ResourceContractError``.
+        """
+        scheme = request.scheme
+        entry = self._resource_readers.get(scheme)
+        if entry is None:
+            raise ResourceUnavailable(f"no admitted plugin reads the resource scheme {scheme!r}")
+        handler, owner = entry
+        lease = self._open_lease(
+            owner=owner,
+            session_id=context.session_id,
+            run_id=context.run_id,
+            invocation_id=context.invocation_id,
+            readonly=True,
+            actor=context.actor,
+            internal_work=False,
+            invocation_depth=context.invocation_depth,
+        )
+        try:
+            services = ResourceReaderServicesView(self, lease)
+            caller = ResourceReadCaller(
+                session_id=context.session_id,
+                workspace=context.workspace,
+                revision_id=context.revision_id,
+                run_id=context.run_id,
+                abort_signal=context.abort_signal,
+            )
+            page = handler(request, caller, services)
+        finally:
+            self._revoke_lease(lease)
+        if page is None:
+            return None
+        if not isinstance(page, ResourcePage):
+            raise ResourceContractError(f"resource reader {scheme!r} must answer with a ResourcePage or None")
+        return page
 
     # ---- dispatch (direct synchronous calls; a hung plugin blocks) ----
 

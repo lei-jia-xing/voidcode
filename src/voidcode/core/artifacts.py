@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,10 @@ _MEDIA_TYPE_MAX: Final[int] = 128
 
 class ArtifactError(ValueError):
     """A spill or read that the store refuses, always with a reason a caller can act on."""
+
+
+class ArtifactNotFoundError(ArtifactError, LookupError):
+    """The requested digest is well-formed but no artifact is stored under it."""
 
 
 def _valid_media_type(value: str) -> bool:
@@ -171,8 +176,11 @@ class ArtifactStore:
         if not isinstance(sha256, str) or not SHA256_PATTERN.match(sha256):
             raise ArtifactError("artifact reference must be a lowercase sha256 digest")
         path = self.root / sha256
-        if not path.is_file():
-            raise ArtifactError(f"artifact is not stored: {sha256}")
+        try:
+            if not stat.S_ISREG(path.stat().st_mode):
+                raise ArtifactNotFoundError(f"artifact is not stored: {sha256}")
+        except FileNotFoundError:
+            raise ArtifactNotFoundError(f"artifact is not stored: {sha256}") from None
         return path
 
     def media_type(self, sha256: str) -> str:

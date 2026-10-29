@@ -225,7 +225,7 @@ The provider entry, its `base_url`, and the selected `model` still belong in `vo
 
 ### Web search APIs
 
-The bundled `web_search` tool selects the first available backend in this order:
+The bundled `web_search` tool selects the first available backend in this order (`web_fetch` snapshots reuse the same process environment; no new config keys):
 
 | Backend | Environment variables |
 |---|---|

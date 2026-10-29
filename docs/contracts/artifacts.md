@@ -32,9 +32,12 @@ page = services.read_artifact(artifact.sha256, offset=0, limit=4096)
 `ArtifactPage` carries that same reference as `.artifact`, plus `offset`, `data`
 and `eof`. Metadata is not restated using a second set of field names.
 
-Only the `read` tool translates `artifact://` input into a digest and renders
-bounded text/image output. Storage and byte paging remain available through the
-SDK independently of whether the files plugin is enabled.
+`artifact://<sha256>` input is served by the files plugin's registered resource
+reader: `read` routes the URI by scheme and the reader renders bounded
+text/image output through the shared stored-artifact pager. Other namespaces
+(e.g. `web://<sha256>` snapshots) may render the same stored bytes under their
+own scheme. Storage and byte paging remain available through the SDK
+independently of whether the files plugin is enabled.
 
 The bytes exist before a referencing result commits. Identical bytes share one
 content address; the first stored media-type claim remains authoritative and

@@ -3,24 +3,22 @@
 from __future__ import annotations
 
 import base64
-import codecs
 import hashlib
 import json
 import mimetypes
-import re
 from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from io import TextIOWrapper
 from pathlib import Path
 from typing import ClassVar, final
-from urllib.parse import parse_qs
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from voidcode.capabilities.resource_pages import MAX_INLINE_ATTACHMENT_BYTES, MAX_RESOURCE_PAGE_BYTES, RASTER_IMAGE_MIMES, format_resource_text
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.services import ArtifactPage, ArtifactReference, PluginServices
+from voidcode.sdk.resources import ResourceReadRequest, ResourceUnavailable
+from voidcode.sdk.services import ArtifactReference, PluginServices
 from voidcode.sdk.tools import (
     AttachmentOutput,
     ConfirmedStop,
@@ -34,339 +32,13 @@ from voidcode.sdk.tools import (
     ToolFailure,
     ToolResult,
     ToolSuccess,
-    is_read_tier,
 )
-
-_ARTIFACT_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-MAX_ARTIFACT_PAGE_BYTES = 50 * 1024 - 4096
-MAX_INLINE_ATTACHMENT_BYTES = (50 * 1024 - 128) * 3 // 4
-MAX_BINARY_READ_BYTES = 50 * 1024 * 1024
-RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
-
-TOOL_URI_PREFIX = "tool://"
-ARTIFACT_URI_PREFIX = "artifact://"
-TRANSCRIPT_URI_PREFIX = "transcript://"
-
-
-def _render_tool_documentation(
-    path: str, *, context: ToolContext, services: PluginServices, tool_name_label: str = "read"
-) -> _ReadOutcome | ToolFailure:
-    tool_name = path[len(TOOL_URI_PREFIX) :].strip()
-    if not tool_name:
-        return _uri_failure(tool_name_label, "tool://<name> requires a tool name")
-    context.require_session_id()
-    definition = services.tool_definition(tool_name)
-    if definition is None:
-        return _uri_failure(
-            tool_name_label,
-            f"no tool documentation for {tool_name}: the active revision admits no such tool, "
-            "or this session's profile scope/read-only stance hides it",
-        )
-    guidance = definition.description
-    schema = json_wire_object(definition.input_schema)
-    effects = sorted(effect.value for effect in definition.effects)
-    read_only = is_read_tier(definition.effects)
-    content = "\n\n".join(
-        (
-            f"# Tool: {definition.name}",
-            guidance,
-            "JSON input schema (input_schema):",
-            json.dumps(schema, indent=2),
-            "effects: " + ", ".join(effects),
-            f"read_only: {str(read_only).lower()}",
-        )
-    )
-    return _ReadOutcome(
-        output=_text_output(f"Read documentation for tool {tool_name}.", raw_content=content),
-        body=OpaqueToolBody(
-            {
-                "path": path,
-                "type": "tool_documentation",
-                "tool_name": definition.name,
-                "effects": effects,
-                "read_only": read_only,
-                "guidance": guidance,
-                "input_schema": schema,
-                "raw_content": content,
-            }
-        ),
-    )
-
-
-def _render_artifact(
-    path: str,
-    *,
-    context: ToolContext,
-    services: PluginServices,
-    offset: int,
-    limit: int,
-    byte_offset: int | None = None,
-    byte_limit: int | None = None,
-) -> _ReadOutcome:
-    """Read a bounded text page or an existing image artifact."""
-
-    artifact_id = path[len(ARTIFACT_URI_PREFIX) :].strip()
-    if not artifact_id:
-        raise ValueError("artifact://<id> requires an artifact id")
-    if _ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None:
-        raise ValueError(f"invalid artifact id: {artifact_id}")
-
-    def _window(byte_start: int, byte_length: int = MAX_ARTIFACT_PAGE_BYTES) -> ArtifactPage:
-        if context.abort_signal is not None and context.abort_signal.cancelled:
-            raise CancelledError("read cancelled")
-        try:
-            return services.read_artifact(artifact_id, offset=byte_start, limit=byte_length)
-        except (OSError, ValueError, LookupError) as exc:
-            raise ValueError(f"read cannot resolve artifact URI {path}: {exc}") from exc
-
-    head: ArtifactPage | None = None
-
-    def _page(byte_start: int, byte_length: int = MAX_ARTIFACT_PAGE_BYTES) -> ArtifactPage:
-        """Reuse the first page for image classification and text paging."""
-        nonlocal head
-        if byte_start == 0 and byte_length == MAX_ARTIFACT_PAGE_BYTES:
-            if head is None:
-                head = _window(0, byte_length)
-            return head
-        return _window(byte_start, byte_length)
-
-    first_page = _page(0)
-    artifact = first_page.artifact
-    media_type = artifact.media_type
-
-    if byte_offset is None and media_type in RASTER_IMAGE_MIMES:
-        uri = path
-        data_uri = None
-        if artifact.bytes <= MAX_INLINE_ATTACHMENT_BYTES:
-            raw = first_page.data
-            data_uri = f"data:{media_type};base64,{base64.b64encode(raw).decode('ascii')}"
-        presentation = "Image artifact read successfully"
-        if data_uri is None:
-            presentation += f"; the full image is stored at {uri}."
-        return _ReadOutcome(
-            output=AttachmentOutput(
-                media_type,
-                data_uri,
-                presentation=presentation,
-                bounds=OutputBounds(reference=artifact, source=path),
-            ),
-            body=OpaqueToolBody(
-                {
-                    "path": path,
-                    "type": "attachment",
-                    "artifact": artifact.as_payload(),
-                }
-            ),
-        )
-
-    if byte_offset is not None:
-        window_limit = min(byte_limit if byte_limit is not None else MAX_ARTIFACT_PAGE_BYTES, MAX_ARTIFACT_PAGE_BYTES)
-        window = _page(byte_offset, window_limit)
-        data = window.data
-        decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        raw_content = decoder.decode(data, final=window.eof)
-        if len(raw_content.encode("utf-8")) > MAX_ARTIFACT_PAGE_BYTES:
-            # Each invalid input byte can expand to a three-byte replacement.
-            data = data[: MAX_ARTIFACT_PAGE_BYTES // 3]
-            decoder.reset()
-            raw_content = decoder.decode(data, final=False)
-        consumed = len(data) - len(decoder.getstate()[0])
-        next_byte_offset = None if window.eof and consumed == len(window.data) else window.offset + consumed
-        truncated = next_byte_offset is not None
-        summary = f"Read {consumed} artifact byte(s) from byte offset {byte_offset}"
-        summary += f"; continue with byte_offset={next_byte_offset}." if next_byte_offset is not None else "."
-        return _ReadOutcome(
-            output=_text_output(
-                summary,
-                raw_content=raw_content,
-                content_hash=artifact.sha256,
-                next_byte_offset=next_byte_offset,
-                truncated=truncated,
-                partial=truncated,
-                bounds=OutputBounds(truncated=truncated, partial=truncated, reference=artifact),
-            ),
-            body=OpaqueToolBody(
-                {
-                    "path": path,
-                    "type": "artifact",
-                    "artifact": artifact.as_payload(),
-                    "offset": byte_offset,
-                    "offset_unit": "bytes",
-                    "byte_limit": window_limit,
-                    "next_byte_offset": next_byte_offset,
-                    "truncated": truncated,
-                    "partial": truncated,
-                    "byte_count": consumed,
-                    "raw_content": raw_content,
-                }
-            ),
-        )
-
-    # The store pages by bytes, so line paging walks windows until the
-    # requested 1-based line starts, then renders one bounded line page.
-    page_limit = min(limit, DEFAULT_READ_LIMIT)
-    byte_start = 0
-    remaining = max(0, offset - 1)
-    while remaining > 0:
-        window = _page(byte_start)
-        chunk = window.data
-        newlines = chunk.count(b"\n")
-        if newlines >= remaining:
-            index = -1
-            for _ in range(remaining):
-                index = chunk.index(b"\n", index + 1)
-            byte_start += index + 1
-            break
-        remaining -= newlines
-        if not chunk or window.eof:
-            raise ValueError(f"Offset {offset} is out of range for this artifact")
-        byte_start += len(chunk)
-
-    window = _page(byte_start)
-    data = window.data
-    # A byte window may stop inside a line. Leave that fragment for the next
-    # line page; a line larger than the window must continue by byte instead.
-    if not window.eof:
-        last_newline = data.rfind(b"\n")
-        if last_newline == -1:
-            return _render_artifact(path, context=context, services=services, offset=offset, limit=limit, byte_offset=byte_start)
-        data = data[: last_newline + 1]
-    text = data.decode("utf-8", "replace")
-    if len(text.encode("utf-8")) > MAX_ARTIFACT_PAGE_BYTES:
-        return _render_artifact(path, context=context, services=services, offset=offset, limit=limit, byte_offset=byte_start)
-    page_lines = text.split("\n")
-    if page_lines[-1] == "":
-        page_lines.pop()
-    page_lines = [line[:-1] if line.endswith("\r") else line for line in page_lines]
-    shown = page_lines[:page_limit]
-    has_more = len(shown) < len(page_lines) or not window.eof
-    next_offset = offset + len(shown) if has_more else None
-    raw_content = "\n".join(shown)
-    if shown and (len(shown) < len(page_lines) or text.endswith("\n")):
-        raw_content += "\n"
-    summary = f"Read {len(shown)} line(s) from {path}"
-    if has_more:
-        summary += f"; continue with offset={next_offset}." if next_offset is not None else "; output is truncated."
-    else:
-        summary += "."
-    return _ReadOutcome(
-        output=_text_output(
-            summary,
-            raw_content=raw_content,
-            content_hash=artifact.sha256,
-            next_offset=next_offset,
-            truncated=has_more,
-            partial=has_more,
-            bounds=OutputBounds(truncated=has_more, partial=has_more, reference=artifact),
-        ),
-        body=OpaqueToolBody(
-            {
-                "path": path,
-                "type": "artifact",
-                "artifact": artifact.as_payload(),
-                "offset": offset,
-                "offset_unit": "lines",
-                "limit": page_limit,
-                "next_offset": next_offset,
-                "truncated": has_more,
-                "partial": has_more,
-                "byte_count": len(raw_content.encode("utf-8")),
-                "raw_content": raw_content,
-                "line_count": len(shown),
-            }
-        ),
-    )
-
-
-def _render_transcript(
-    path: str,
-    *,
-    services: PluginServices,
-    limit: int,
-    tool_name_label: str = "read",
-) -> _ReadOutcome | ToolFailure:
-    """Render a readable, bounded transcript page of the caller or one of its descendants.
-
-    The core enforces lineage: parents, siblings, unrelated roots, and foreign workspaces are
-    refused before any event is read. Payloads are included so the page shows actual prompts,
-    assistant text, tool calls/results, and progress instead of event names only; provider
-    reasoning is deliberately not rendered. ``?after_sequence=<n>&offset=<bytes>`` continues
-    exactly where the previous page stopped.
-    """
-    raw_target = path[len(TRANSCRIPT_URI_PREFIX) :].strip()
-    session_id, _, query = raw_target.partition("?")
-    session_id = session_id.strip()
-    if not session_id:
-        return _uri_failure(tool_name_label, "transcript://<session_id> requires a session id")
-    if "/" in session_id or "?" in session_id:
-        return _uri_failure(tool_name_label, "session_id must not contain '/' or '?'")
-    after_sequence = 0
-    offset = 0
-    if query:
-        try:
-            params = parse_qs(query, strict_parsing=True, keep_blank_values=True)
-        except ValueError as exc:
-            return _uri_failure(tool_name_label, f"invalid transcript query: {exc}")
-        unknown = sorted(set(params) - {"after_sequence", "offset"})
-        if unknown:
-            return _uri_failure(tool_name_label, f"unsupported transcript query parameter: {unknown[0]}")
-        for name in ("after_sequence", "offset"):
-            values = params.get(name)
-            if values is None:
-                continue
-            if len(values) != 1 or not values[0].isdecimal():
-                return _uri_failure(tool_name_label, f"transcript {name} must be one non-negative integer")
-            try:
-                value = int(values[0])
-            except ValueError:
-                return _uri_failure(tool_name_label, f"transcript {name} exceeds the supported integer length")
-            if name == "after_sequence":
-                after_sequence = value
-            else:
-                offset = value
-    limit = max(1, min(limit, MAX_EVENT_PAGE))
-    try:
-        page = services.read_session_history(session_id, after_sequence=after_sequence, offset=offset, limit=limit)
-    except Exception as exc:
-        return _uri_failure(tool_name_label, f"transcript not accessible for session {session_id}: {exc}")
-    truncated = page.truncated
-    body_text = page.text if page.text else "(no readable events in this range)"
-    lines = [
-        f"Transcript for session {session_id} after sequence {after_sequence} (untrusted session data).",
-        body_text,
-    ]
-    next_uri: str | None = None
-    if truncated:
-        next_uri = f"{TRANSCRIPT_URI_PREFIX}{session_id}?after_sequence={page.next_after_sequence}&offset={page.next_offset}"
-        lines.append(f"More history: read(path={json.dumps(next_uri)}).")
-    body = {
-        "path": path,
-        "type": "transcript",
-        "session_id": session_id,
-        "after_sequence": after_sequence,
-        "next_after_sequence": page.next_after_sequence,
-        "next_offset": page.next_offset,
-        "truncated": truncated,
-    }
-    return _ReadOutcome(
-        output=_text_output(
-            "\n".join(lines),
-            truncated=truncated,
-            partial=truncated,
-            bounds=OutputBounds(
-                truncated=truncated,
-                partial=truncated,
-                reference=next_uri,
-            ),
-        ),
-        body=OpaqueToolBody(body),
-    )
 
 
 class ReadArgs(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    path: str = Field(description="File path, artifact://<id>, tool://<name>, or transcript://<session_id>.")
+    path: str = Field(description="File path or a resource URI.")
     offset: int | None = Field(
         default=None,
         ge=1,
@@ -379,10 +51,10 @@ class ReadArgs(BaseModel):
         description="Maximum text lines to return.",
     )
     byte_offset: int | None = Field(
-        default=None, ge=0, description="Zero-based UTF-8 byte offset for continuing a long artifact line; use the returned next_byte_offset."
+        default=None, ge=0, description="Zero-based UTF-8 byte offset for continuing a long resource line; use the returned next_byte_offset."
     )
     byte_limit: int | None = Field(
-        default=None, ge=4, le=MAX_ARTIFACT_PAGE_BYTES, description="Maximum UTF-8 bytes in an artifact page; requires byte_offset."
+        default=None, ge=4, le=MAX_RESOURCE_PAGE_BYTES, description="Maximum UTF-8 bytes in a resource page; requires byte_offset."
     )
 
     @field_validator("path")
@@ -394,9 +66,6 @@ class ReadArgs(BaseModel):
 
 
 DEFAULT_READ_LIMIT = 2000
-DEFAULT_TRANSCRIPT_LIMIT = 20
-#: One transcript read never asks the core for more events than one event page carries.
-MAX_EVENT_PAGE = 200
 MAX_LINE_LENGTH = 2000
 MAX_BYTES = 50 * 1024
 MAX_ATTACHMENT_BYTES = 50 * 1024
@@ -473,31 +142,6 @@ def _uri_failure(tool_name: str, message: str) -> ToolFailure:
     return ToolFailure(tool_name=tool_name, error=message, output=TextOutput(text=message))
 
 
-def _text_output(
-    content: str,
-    *,
-    raw_content: str | None = None,
-    content_hash: str | None = None,
-    next_offset: int | None = None,
-    next_byte_offset: int | None = None,
-    truncated: bool = False,
-    partial: bool = False,
-    bounds: OutputBounds | None = None,
-) -> TextOutput:
-    text = content
-    if content_hash is not None:
-        text = f"{text}\nSHA-256 content hash: {content_hash}"
-    if next_offset is not None:
-        text = f"{text}\nNext offset: {next_offset}"
-    if next_byte_offset is not None:
-        text = f"{text}\nNext byte offset: {next_byte_offset} (zero-based UTF-8 byte offset; continue with byte_offset={next_byte_offset})"
-    if raw_content:
-        text = f"{text}\n\n{raw_content}"
-    if bounds is not None:
-        return TextOutput(text, bounds=bounds)
-    return TextOutput(text, bounds=OutputBounds(truncated=truncated, partial=partial))
-
-
 def _truncate_line(line: str) -> tuple[str, bool]:
     if len(line) <= MAX_LINE_LENGTH:
         return line, False
@@ -570,7 +214,7 @@ def _render_file(
         sample = source.read(BINARY_SNIFF_BYTES)
         source.seek(0)
         if attachment or (not is_svg and _is_binary_content(candidate, sample)):
-            maximum = MAX_ATTACHMENT_BYTES if attachment else MAX_BINARY_READ_BYTES
+            maximum = MAX_ATTACHMENT_BYTES if attachment else 50 * 1024 * 1024
             raw = source.read(maximum + 1)
             if len(raw) > maximum:
                 raise ValueError(f"read file exceeds the maximum supported size ({maximum} bytes): {relative_path}")
@@ -623,9 +267,9 @@ def _render_file(
                     content_truncated |= line_truncated
                 if any(line.truncated for line in rendered_lines):
                     source.seek(0)
-                    original = source.read(MAX_BINARY_READ_BYTES + 1)
-                    if len(original) > MAX_BINARY_READ_BYTES:
-                        raise ValueError(f"long-line recovery exceeds the maximum supported size ({MAX_BINARY_READ_BYTES} bytes): {relative_path}")
+                    original = source.read(50 * 1024 * 1024 + 1)
+                    if len(original) > 50 * 1024 * 1024:
+                        raise ValueError(f"long-line recovery exceeds the maximum supported size ({50 * 1024 * 1024} bytes): {relative_path}")
                     if hashlib.sha256(original).digest() != digest.digest():
                         raise ValueError(f"file changed while preparing long-line recovery; retry read: {relative_path}")
                     recovery_reference = services.spill_artifact(original, media_type="text/plain; charset=utf-8")
@@ -655,7 +299,7 @@ def _render_file(
         raw_content=raw_content,
     )
     return _ReadOutcome(
-        output=_text_output(
+        output=format_resource_text(
             f"Read {len(rendered_lines)} line(s) from {relative_path}"
             + ("; output is truncated." if content_truncated else ".")
             + (f" Full text: read(path={json.dumps(recovery_reference.uri)}, byte_offset=0)." if recovery_reference is not None else ""),
@@ -701,39 +345,32 @@ class ReadTool:
         args = ReadArgs.model_validate(dict(call.arguments))
         if context.abort_signal is not None and context.abort_signal.cancelled:
             return ToolFailure(self.definition.name, error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
-        if (args.byte_offset is not None or args.byte_limit is not None) and not args.path.startswith(ARTIFACT_URI_PREFIX):
-            raise ValueError("byte_offset and byte_limit are only valid for artifact:// URIs")
         if args.byte_limit is not None and args.byte_offset is None:
             raise ValueError("byte_limit requires byte_offset")
 
-        if args.path.startswith(TOOL_URI_PREFIX):
-            outcome = _render_tool_documentation(args.path, context=context, services=services, tool_name_label=self.definition.name)
-            return outcome if isinstance(outcome, ToolFailure) else _read_success(outcome)
-        if args.path.startswith(ARTIFACT_URI_PREFIX):
+        if "://" in args.path:
             try:
-                outcome = _render_artifact(
-                    args.path,
-                    context=context,
-                    services=services,
+                request = ResourceReadRequest(
+                    uri=args.path,
                     offset=args.offset or 1,
-                    limit=args.limit or DEFAULT_READ_LIMIT,
+                    limit=args.limit,
                     byte_offset=args.byte_offset,
                     byte_limit=args.byte_limit,
                 )
+            except ValueError as exc:
+                raise ValueError(f"unsupported resource URI: {args.path}") from exc
+            try:
+                page = services.read_resource(request)
+            except ResourceUnavailable as exc:
+                raise ValueError(f"unsupported resource URI: {args.path}") from exc
             except CancelledError:
                 return ToolFailure(self.definition.name, error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
-            return _read_success(outcome)
-        if args.path.startswith(TRANSCRIPT_URI_PREFIX):
-            outcome = _render_transcript(
-                args.path,
-                services=services,
-                limit=args.limit or DEFAULT_TRANSCRIPT_LIMIT,
-                tool_name_label=self.definition.name,
-            )
-            return outcome if isinstance(outcome, ToolFailure) else _read_success(outcome)
+            if page is None:
+                return _uri_failure(self.definition.name, f"read cannot resolve resource URI {args.path}: no such resource")
+            return _read_success(_ReadOutcome(output=page.output, body=OpaqueToolBody(dict(page.body))))
 
-        if "://" in args.path:
-            raise ValueError(f"unsupported resource URI: {args.path}")
+        if args.byte_offset is not None or args.byte_limit is not None:
+            raise ValueError("byte_offset and byte_limit require a resource URI")
         workspace = context.require_workspace()
         workspace_root = workspace.resolve()
         requested_path = Path(args.path)

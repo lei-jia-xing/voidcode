@@ -4,6 +4,14 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Extensible resource readers (BREAKING)
+- The `tool://`, `artifact://`, `transcript://` renderers moved out of `read_tool.py` into shared capability modules registered by the files plugin (`capabilities/files/resource_readers.py`, sharing one bounded stored-artifact pager in `capabilities/resource_pages.py`); `read` imports no reader and holds no scheme table. Admission rejects duplicate schemes naming both owners; disabling a provider removes its scheme with no fallback.
+- Error taxonomy: unregistered scheme raises `ResourceUnavailable` (`read` maps it to `unsupported resource URI` — wording preserved); provider `None` is unknown-resource; malformed pages raise `ResourceContractError`; handler bugs and backend failures (including handler-raised `QueryUnavailable`) propagate visibly. `read_artifact` raises `FileNotFoundError` only for genuinely absent digests; permission/storage failures propagate.
+
+### `web_fetch` page snapshots and `web://` reader
+- New `web_fetch` tool (`READ` + `NETWORK`, never replayed): fetches a credentialless http(s) URL (static HTML only, 5 redirects, 5 MiB cap, bounded Markdown preview) and spills the full rendered bytes to an artifact, returning a `web://<sha256>` snapshot URI plus the canonical `artifact://` link for recovery.
+- New `web://` resource reader owned by the web plugin: `read` pages fetched snapshots like any stored artifact through the shared pager, with no files-plugin dependency and no network at read time. Disabling `web` removes only the alias; the canonical artifact read still works.
+
 ### Minimal TUI transcript and automatic slash completion
 - User prompts render verbatim without role badges; system context and internal
   scheduling metadata stay out of the chat view without changing stored history

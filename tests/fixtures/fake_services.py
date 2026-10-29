@@ -17,6 +17,7 @@ from voidcode.core.transcript import context_records
 from voidcode.sdk.history import HistoryPage
 from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.resources import ResourcePage, ResourceReadRequest, ResourceUnavailable
 from voidcode.sdk.services import (
     ArtifactPage,
     ArtifactReference,
@@ -99,6 +100,7 @@ class FakeServices(PluginServices):
     tool_definitions: dict[str, ToolDefinition] = field(default_factory=dict)
     artifacts: dict[str, bytes] = field(default_factory=dict)
     queries_dict: dict[str, Mapping[str, object] | None] = field(default_factory=dict)
+    resources_dict: dict[str, ResourcePage | None] = field(default_factory=dict)
     processes: dict[str, ProcessHandle] = field(default_factory=dict)
     process_result: ProcessResult | None = None
 
@@ -454,6 +456,11 @@ class FakeServices(PluginServices):
     def query(self, name: str, arguments: Mapping[str, object] | None = None) -> Mapping[str, object] | None:
         _ = arguments
         return self.queries_dict.get(name)
+
+    def read_resource(self, request: ResourceReadRequest) -> ResourcePage | None:
+        if request.scheme in self.resources_dict:
+            return self.resources_dict[request.scheme]
+        raise ResourceUnavailable(f"no admitted plugin reads the resource scheme {request.scheme!r}")
 
     ask_query = query
 
