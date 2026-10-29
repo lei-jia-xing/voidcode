@@ -81,8 +81,7 @@ arguments against the registered schema before dispatch; a schema failure is
 
 Commands declare `argument_schema`, `effects`, `busy_gate`,
 and optional `client_syntax`.
-They reach every client the same way (`/<name>` in TUI/web, `voidcode
-invoke` from CLI), with no client-side command table.
+Clients render namespace dots as spaces (`/goal set`); CLI/RPC invocation and persisted facts retain the canonical ID (`goal.set`). A slash `client_syntax` chooses one preferred public path, with dots normalized the same way. There is no client-side command table or dotted slash alias.
 
 - `expected_revision` is REQUIRED and must equal the catalog revision the
   client displayed; a mismatch is a visible stale error with no side

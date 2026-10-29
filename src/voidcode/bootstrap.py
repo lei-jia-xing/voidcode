@@ -114,11 +114,17 @@ def admit_live(
     workspace: Path,
     bundled_sources: Mapping[str, Path],
     revision_id: str | None = None,
+    use_environment: bool = True,
 ) -> Admission:
     """Resolve every enabled configured plugin to a runtime input and build Admission."""
     workspace = Path(workspace).resolve(strict=True)
-    providers = resolve_providers(config)
     entries = merged_entries(config, bundled_sources)
+    provider_entry = entries.get("providers")
+    providers = resolve_providers(
+        config,
+        use_environment=use_environment,
+        discover=provider_entry is not None and provider_entry.enabled and provider_entry.path is None,
+    )
     plugins: list[PluginSource] = []
     snapshot_plugins: dict[str, object] = {}
     for plugin_id, entry in sorted(entries.items()):
@@ -179,7 +185,7 @@ def admit_live(
         revision_payload=payload,
         private_snapshot=snapshot,
         config=execution_config,
-        validate=lambda registered: validate_providers(config, registered),
+        validate=lambda registered: validate_providers(config, registered, providers=providers),
     )
 
 
@@ -222,7 +228,7 @@ def restore_admission(
     if payload.get("private_config_sha256") != digest:
         raise ValueError("private configuration snapshot does not match the revision it belongs to")
     config = config_from_snapshot(snapshot)
-    admission = admit_live(config, workspace=workspace, bundled_sources=bundled_sources, revision_id=revision_id)
+    admission = admit_live(config, workspace=workspace, bundled_sources=bundled_sources, revision_id=revision_id, use_environment=False)
     recorded = payload.get("plugins")
     if not isinstance(recorded, list) or not all(isinstance(plugin_id, str) for plugin_id in recorded):
         raise ValueError("revision payload has no plugin composition")
@@ -269,12 +275,12 @@ def _deactivation_unavailable(
     raise ValueError(f"plugin {owner} needs deactivation but this installation no longer ships it; disable it before upgrading")
 
 
-def validate_providers(config: Config, registered: Sequence[str]) -> None:
+def validate_providers(config: Config, registered: Sequence[str], *, providers: Mapping[str, object]) -> None:
     names = set(registered)
     model = config.model.model
     if model is not None:
         provider_name, separator, model_name = model.partition("/")
-        if not separator or not model_name or provider_name not in config.providers:
+        if not separator or not model_name or provider_name not in providers:
             raise ValueError("model must name a configured provider/model")
         if provider_name not in names:
             raise ValueError(f"model provider {provider_name!r} is not registered by any admitted plugin")
@@ -391,7 +397,13 @@ def open_core(
             cfg = config
         else:
             cfg = load_config(workspace)
-        return admit_live(cfg, workspace=workspace, bundled_sources=bundled_sources(), revision_id=revision_id)
+        return admit_live(
+            cfg,
+            workspace=workspace,
+            bundled_sources=bundled_sources(),
+            revision_id=revision_id,
+            use_environment=snapshot is None,
+        )
 
     if current_revision is None:
         config = load_config(workspace, allow_missing=fresh_first_adoption)
@@ -476,7 +488,7 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
             snapshot = load_private_snapshot(state_dir, expected_revision)
             config = config_from_snapshot(snapshot)
             plugins_sources = bundled_sources()
-            admission = admit_live(config, workspace=workspace, bundled_sources=plugins_sources, revision_id=uuid4().hex)
+            admission = admit_live(config, workspace=workspace, bundled_sources=plugins_sources, revision_id=uuid4().hex, use_environment=False)
 
             candidate_runtime: PluginRuntime | None = None
             try:
@@ -486,7 +498,7 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
                     revision_id="adopt-target",
                     store=None,
                 )
-                validate_providers(config, candidate_runtime.providers)
+                validate_providers(config, candidate_runtime.providers, providers=config.providers)
                 fact_observers = dict(candidate_runtime.observer_owners)
                 session_ids = [record.session_id for record in store.sessions(workspace=str(workspace))]
                 states = candidate_runtime.state_metadata()

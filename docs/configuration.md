@@ -2,9 +2,9 @@
 
 VoidCode is configured by exactly one file per workspace: `voidcode.json` at the workspace root, read by the product layer at startup. There is no configuration CLI, no user-level configuration file, and no per-run override.
 
-The live file is read only when it is needed. A truly fresh state directory (no database, no adopted revision) starts with empty in-memory defaults (bundled plugins enabled, no model or provider) and never creates `voidcode.json`. A restart with an adopted revision restores the recorded configuration and private snapshot without touching the live file. The live file is required only when it is actually read: explicit `core.reload`, and a start whose database exists but holds no revision for this workspace. Commands, tools, sessions, `/status`, and `/help` work without a model; model turns and governed model queries fail with configuration guidance until a valid file exists and `core.reload` is run.
+A fresh state directory (no database or adopted revision) starts with bundled plugins enabled and no selected model; supported environment credentials can supply providers without a file. It never creates `voidcode.json`. Restarts restore the recorded configuration and private snapshot without reading new environment keys or the live file. The live file is required for explicit `/core reload`, or when a database exists without an adopted revision. `/status` and `/help` work without a model; model turns require a selected `model.model` and an available provider.
 
-Configuration is adopted as a *revision*: the first start of a workspace with an empty state directory adopts the live file, and a later restart restores that persisted revision (and its private snapshot) instead of silently re-reading the workspace. To apply an edited `voidcode.json`, run the reserved `core.reload` command on an idle session (`voidcode catalog` prints it; `voidcode invoke <session_id> core.reload --expected-revision <revision_id>`); it re-admits the live file and commits a new revision (refused while the session is busy, and refused entirely under `policy.read_only`). Pointing `--state-dir` at a new directory adopts the current file as a fresh first revision.
+Configuration is adopted as a *revision*. To apply an edited `voidcode.json` or changed environment credentials, run `/core reload` on an idle session (`voidcode invoke <session_id> core.reload --expected-revision <revision_id>` from the CLI). It re-admits the live file and commits a new revision; busy sessions and `policy.read_only` refuse the reload. A new `--state-dir` adopts the current file and environment as a fresh first revision.
 
 Plugins may additionally read their own resources (for example agent profiles under `$XDG_CONFIG_HOME/voidcode/agents`), but that never overrides `voidcode.json`.
 
@@ -56,7 +56,7 @@ The `my-linter` entry illustrates an external plugin: the directory must exist a
 | `sandbox` | object | Optional transparent exec backend: `mode`, `network`, `writable_roots`. Absent means unconfined host exec. |
 | `providers` | object | Endpoint configuration for provider names declared by admitted plugins. |
 | `plugins` | object | Per-plugin entries: `enabled`, `path`, `config`. |
-| `tui` | object | Optional local TUI chrome prefs: `border`, `footer`, `show_session`. Display-only: never admitted, never snapshotted, zero revision churn. |
+| `tui` | object | Optional local TUI chrome prefs: `border`, `footer`, `show_session`, `banner`. Display-only: never admitted, never snapshotted, zero revision churn. |
 
 No other top-level field is accepted.
 
@@ -69,12 +69,28 @@ Optional. Read by the terminal client only (embedded: the workspace file; remote
 | `border` | string | `lines` (default, horizontal rules), `box`, or `borderless` (`--no-border` forces borderless). |
 | `footer` | string | `full` (default: workspace · model · effort), `compact` (model · effort), or `off` (context row hidden; gates/notices still show). `--footer` overrides. |
 | `show_session` | boolean | Default `false`. `true` adds the short session id to the full footer. `--show-session` forces true. |
+| `banner` | object or null | Empty-session welcome artwork and palette; `null` disables it. Default: a Unicode V in blue-violet/cyan. |
+
+The banner uses a centered header layout inspired by [dashboard-nvim](https://github.com/nvimdev/dashboard-nvim), without a dashboard framework or theme dependency. It appears only on an empty session, never over replayed conversation.
+
+```json
+{
+  "tui": {
+    "banner": {
+      "text": "██╗ ██╗\n╚███╔╝\n ╚═╝",
+      "colors": ["#8b5cf6", "#06b6d4"]
+    }
+  }
+}
+```
+
+`text` is optional; omitted or `null` uses the built-in V. Leading spaces and internal blank lines preserve the drawing's geometry. `colors` is a non-empty palette of `#RRGGBB` or the SDK's 16 ANSI color names, sampled from first to last across rows; one color is monochrome. Terminal controls are escaped, wide text is cell-clipped, and `NO_COLOR` removes color without replacing Unicode. These settings affect only the banner, not chat or composer styling.
 
 ### `model`
 
 | Field | Type | Description |
 |---|---|---|
-| `model` | string | `provider/model`, where `provider` must be a key in the root `providers` section *and* a name some admitted plugin declares as a provider. A model that names an unconfigured or undeclared provider is refused at admission. Optional only in the sense that the default is absent: the core then opens providerless and model turns fail with guidance until `model` and `providers` are configured and `core.reload` runs. |
+| `model` | string | `provider/model`, where the provider is explicitly configured or discovered from its environment credential, and an admitted plugin declares it. Unconfigured or undeclared providers are refused at admission. No model is selected automatically; set this field and run `/core reload` to enable model turns. |
 | `reasoning_effort` | string or integer | One of `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or a non-negative token budget integer. |
 
 ### `policy`
@@ -125,13 +141,17 @@ is out of threat model.
 
 Each key is a provider name matching `[a-z][a-z0-9_-]*`, and it must be declared by an admitted plugin — configuring a provider nobody declares is an error, not a no-op.
 
+With the bundled `providers` plugin enabled, recognized non-blank credentials such as `OPENROUTER_API_KEY` and `DEEPSEEK_API_KEY` make those providers available without a `providers` entry. Names, credential aliases, and default endpoints come from the shipped provider table. This discovery is disabled when the bundled provider plugin is disabled or replaced; other plugins keep explicit provider configuration. Unknown environment variable names are not scanned.
+
 | Field | Type | Description |
 |---|---|---|
-| `api_key` | string | Optional. When omitted, the product layer falls back to `<PROVIDER>_API_KEY` in the environment, uppercased with `-` replaced by `_` (for example `openai` → `OPENAI_API_KEY`). |
-| `base_url` | string | Required for every configured provider. |
+| `api_key` | string or null | Optional. Explicit values win, including `null` (no environment credential). Otherwise built-ins use their table-declared credential variables; explicitly configured names also accept `<PROVIDER>_API_KEY`, uppercased with `-` replaced by `_`. |
+| `base_url` | string | Optional for built-ins, which use their own vendor endpoint. Custom provider names still require it. Explicit URLs override defaults; the `endpoint` provider also accepts `ENDPOINT_BASE_URL`. |
 | *any other field* | any JSON value | Passed to the declaring plugin verbatim and validated there against that plugin's own configuration schema. The product layer assigns no vendor meaning to them: for OpenAI-wire providers the plugin accepts `organization`, `project`, and `timeout_seconds`. `api_key` and `base_url` may not be repeated here, and a nested `extra` object is forbidden — configure provider fields flat. |
 
 Credentials never reach events or revisions, which carry digests only: resolved credentials are written only into the private 0600 snapshot inside the state directory. The core never writes environment-resolved keys back to the workspace; an `api_key` written explicitly in `voidcode.json` stays where the user put it.
+
+`/model deepseek` reads the shipped catalog. `/model openrouter` reads current model IDs from the configured OpenAI-compatible `/models` endpoint because OpenRouter has no shipped catalog. Discovery is explicit, uses the recorded credential and endpoint, and makes no inference request. A failed listing is an error, not an empty catalog.
 
 For the Google provider, `auth: {"method": "oauth", "access_token": "..."}` uses Vertex AI OAuth credentials and requires `project`; `region` is optional and follows the SDK default. It sends a Bearer token, does not use `x-goog-api-key`, and does not fall back to an environment API key. Supply the current access token; this configuration does not perform an interactive login or refresh-token exchange. API-key and service-account authentication remain separate methods.
 
@@ -147,7 +167,7 @@ Each key is a plugin id matching `[a-z][a-z0-9_-]*`.
 
 Bundled plugin ids (those shipped in `src/voidcode/plugins/`) need no entry at all: they are enabled with an empty configuration by default, and an entry only exists to disable one, configure it, or point it at a different source.
 
-Agent discovery and `/agents`/`agents.show` belong to `delegation`, along with
+Agent discovery and `/agents`/`agents show` belong to `delegation`, along with
 `task`/`task_batch`. Agent files use `.claude/agents/` and the supported Claude Code
 Markdown format. See the [delegation](../src/voidcode/plugins/delegation/README.md)
 README for the supported fields and explicit runtime limitations.

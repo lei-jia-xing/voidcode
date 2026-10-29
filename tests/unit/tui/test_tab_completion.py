@@ -38,7 +38,8 @@ class _StubClient:
             commands=(
                 CommandDescriptor(name="help", owner="core", description="help"),
                 CommandDescriptor(name="show", owner="core", description="show"),
-                CommandDescriptor(name="shell", owner="core", description="shell"),
+                CommandDescriptor(name="show.more", owner="core", description="more"),
+                CommandDescriptor(name="shell", owner="core", description="shell", client_syntax="!"),
             ),
         )
 
@@ -79,7 +80,7 @@ def test_no_match_closes_and_editing_reopens() -> None:
 def test_arrows_move_tab_accepts_and_esc_keeps_draft() -> None:
     app, _ = _app()
     _type(app, "/sh")
-    assert app.composer.completion == ("/shell", "/show")
+    assert app.composer.completion == ("/shell", "/show", "/show more")
     app._handle_composer_key(Key("down"))
     assert app.composer.completion_index == 1
     app._handle_composer_key(Key("up"))
@@ -101,7 +102,7 @@ def test_arrows_move_tab_accepts_and_esc_keeps_draft() -> None:
     assert app.composer.value == "/sh"
     app._handle_composer_key(Key("o", text="o"))
     assert app.composer.value == "/sho"
-    assert app.composer.completion == ("/show",)
+    assert app.composer.completion == ("/show", "/show more")
 
 
 def test_partial_enter_fills_without_running_exact_enter_submits() -> None:
@@ -127,22 +128,21 @@ def test_partial_enter_fills_without_running_exact_enter_submits() -> None:
 
 def test_moved_highlight_enter_fills_instead_of_running_typed_exact() -> None:
     app, _ = _app()
-    app.catalog_cache = (*app.catalog_cache, CommandDescriptor(name="show.more", owner="core", description="more"))
     calls: list[str] = []
     app._dispatch_slash_command = lambda line: calls.append(line)  # type: ignore[method-assign]
     _type(app, "/show")
-    assert app.composer.completion == ("/show", "/show.more")
+    assert app.composer.completion == ("/show", "/show more")
     app._handle_composer_key(Key("down"))
     app._handle_composer_key(Key("enter"))
     assert calls == []
-    assert app.composer.value == "/show.more"
+    assert app.composer.value == "/show more"
     assert app.composer.completion == ()
 
 
 def test_args_multiline_plain_and_midline_never_open() -> None:
     app, _ = _app()
     _type(app, "/show ")
-    assert app.composer.completion == ()
+    assert app.composer.completion == ("/show more",)
     _type(app, "x")
     assert app.composer.completion == ()
     app.composer.clear()
@@ -181,7 +181,7 @@ def test_tui_subcommand_filters_and_cjk_plain_text_safe() -> None:
 def test_live_catalog_refresh_updates_open_menu_and_submit_history_intact() -> None:
     app, _ = _app()
     _type(app, "/sh")
-    assert app.composer.completion == ("/shell", "/show")
+    assert app.composer.completion == ("/shell", "/show", "/show more")
     app.catalog_cache = (CommandDescriptor(name="show", owner="core", description="show"),)
     app._sync_slash_completion()
     assert app.composer.completion == ("/show",)

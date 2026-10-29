@@ -1,25 +1,19 @@
-"""The ``providers`` and ``model`` information panels.
-
-Both panels report facts this plugin already owns: the provider entries the core injects
-into :func:`create_plugin`, the shipped provider table, the shipped model catalog, and the
-provider/model pairs the calling session actually dispatched with (its committed
-typed transcript dispatch records). Model *selection* is configuration plus hot reload by
-design, so neither panel writes state, events, or invocations; a panel that cannot read a
-dispatch payload says so instead of inventing a model.
-"""
+"""Read-only provider, model and catalog panels."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.provider import ProviderExecutionError
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
 from voidcode.sdk.transcript import TranscriptDispatch
 from voidcode.sdk.views import PluginViewDescriptor
 
+from .dispatch import RegisteredProvider
 from .native.model_catalog import static_catalog_model_ids
 from .native.naming import canonical_provider_id, provider_label
 from .native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID, ProviderTableRow
@@ -126,17 +120,24 @@ def providers_panel(facts: ProviderFacts) -> tuple[str, dict[str, object]]:
     return "\n".join(lines), data
 
 
-def model_panel(services: PluginServices, facts: ProviderFacts, provider: str | None) -> tuple[str, dict[str, object]]:
-    """Markdown plus data for one provider's shipped catalog, or for this session's dispatch."""
+def model_panel(
+    services: PluginServices,
+    facts: ProviderFacts,
+    provider: str | None,
+    *,
+    available_models: tuple[str, ...] | None = None,
+) -> tuple[str, dict[str, object]]:
+    """Markdown and data for a provider catalog or the session's dispatch."""
     if provider is not None:
         name = canonical_provider_id(provider)
-        models = static_catalog_model_ids(name)
+        models = static_catalog_model_ids(name) if available_models is None else available_models
+        source = "shipped catalog" if available_models is None else "available"
         lines = [f"## {provider_label(name)} (`{name}`)", ""]
         if models:
-            lines += [f"{_counted(len(models), 'shipped catalog model')}:", ""]
+            lines += [f"{_counted(len(models), f'{source} model')}:", ""]
             lines += [f"- `{model}`" for model in models]
         else:
-            lines.append(f"No shipped catalog models for `{name}`.")
+            lines.append(f"No {source} models for `{name}`.")
         return "\n".join(lines), {"provider": name, "models": list(models)}
 
     dispatch = last_dispatch(services)
@@ -177,23 +178,32 @@ class ProvidersCommand:
 
 
 class ModelCommand:
-    """Read-only report of the dispatching provider/model and a provider's shipped models."""
+    """Read-only model and provider-catalog lookup."""
 
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="model",
-        description="Show the provider/model this session last dispatched with, or one provider's shipped catalog models.",
+        description="Show the session model or list a provider's catalog models.",
         argument_schema={"type": "object", "properties": {"provider": {"type": "string"}}, "additionalProperties": False},
-        effects=frozenset({ToolEffect.READ}),
+        effects=frozenset({ToolEffect.READ, ToolEffect.NETWORK}),
     )
 
-    def __init__(self, facts: ProviderFacts) -> None:
+    def __init__(self, facts: ProviderFacts, providers: Sequence[RegisteredProvider]) -> None:
         self._facts = facts
+        self._providers = {provider.name: provider for provider in providers}
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         raw = invocation.arguments.get("provider")
         if raw is not None and (not isinstance(raw, str) or not raw.strip()):
             return CommandResult(status="error", error="provider must be a non-empty provider id")
-        output, data = model_panel(services, self._facts, raw if isinstance(raw, str) else None)
+        available_models = None
+        if isinstance(raw, str):
+            provider = self._providers.get(canonical_provider_id(raw))
+            if provider is not None and not static_catalog_model_ids(provider.name):
+                try:
+                    available_models = provider.list_models()
+                except ProviderExecutionError as exc:
+                    return CommandResult(status="error", error=exc.message)
+        output, data = model_panel(services, self._facts, raw if isinstance(raw, str) else None, available_models=available_models)
         return CommandResult(status="ok", output=output, data=data)
 
 

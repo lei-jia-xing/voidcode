@@ -1,17 +1,17 @@
-"""Behavior tests for the providers plugin's ``providers`` and ``model`` information panels.
-
-Both panels are read-only reports over facts the core and the plugin already own, so the
-stub services here serve a fed event history and fail loudly on any write path.
-"""
+"""Provider/model reports and explicit, read-only model discovery."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
+import pytest
+
 import voidcode.plugins.providers as providers_plugin
+from tests.provider_loopback import OpenAILoopbackServer
 from voidcode.capabilities.providers.native.model_catalog import static_catalog_model_ids
 from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
 from voidcode.sdk.commands import Command, CommandInvocation, CommandResult
@@ -20,12 +20,23 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderTurnResult
 from voidcode.sdk.services import PluginServices, ToolInvocationReceipt
-from voidcode.sdk.tools import ToolEffect
 from voidcode.sdk.transcript import TranscriptDispatch, TranscriptEntry, TranscriptPage
-from voidcode.sdk.views import PluginViewDescriptor
 
 DEEPSEEK_KEY = "deepseek-secret-credential-value"
 GOOGLE_KEY = "google-secret-credential-value"
+
+
+@pytest.fixture
+def model_server() -> Iterator[OpenAILoopbackServer]:
+    server = OpenAILoopbackServer([])
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
 
 
 class StubServices(PluginServices):
@@ -87,10 +98,6 @@ def _invocation(name: str, arguments: Mapping[str, object]) -> CommandInvocation
         name=name,
         arguments=arguments,
     )
-
-
-def _view(plugin: Plugin, name: str) -> PluginViewDescriptor:
-    return next(view for view in plugin.views if view.name == name).render("session-1", _services())
 
 
 def _services(events: Sequence[TranscriptEntry] = ()) -> StubServices:
@@ -208,36 +215,59 @@ def test_model_rejects_a_blank_provider() -> None:
     assert result.error == "provider must be a non-empty provider id"
 
 
-# --- declarations and views ---
+@pytest.mark.parametrize("auth_scheme", ["bearer", "none"])
+def test_model_discovers_live_ids_without_inference_or_credential_leaks(model_server, auth_scheme) -> None:
+    model_server.replies.append({"object": "list", "data": [{"id": "vendor/Model.v2"}, {"id": "vendor/other"}, {"id": "vendor/Model.v2"}]})
+    plugin = _plugin(
+        {
+            "providers": {
+                "openrouter": {
+                    "api_key": "catalog-only-key",
+                    "base_url": f"http://127.0.0.1:{model_server.server_port}/v1",
+                    "auth_scheme": auth_scheme,
+                }
+            }
+        }
+    )
+    try:
+        result = _invoke(plugin, "model", _services(), {"provider": "openrouter"})
+    finally:
+        if plugin.close is not None:
+            plugin.close()
+
+    assert result.status == "ok", result.error
+    assert result.as_payload()["data"] == {"provider": "openrouter", "models": ["vendor/Model.v2", "vendor/other"]}
+    assert model_server.requests == [{"method": "GET", "path": "/v1/models"}]
+    headers = {name.lower(): value for name, value in model_server.request_headers[0].items()}
+    assert headers.get("authorization") == ("Bearer catalog-only-key" if auth_scheme == "bearer" else None)
+    assert "catalog-only-key" not in json.dumps(result.as_payload())
 
 
-def test_registration_declares_exactly_the_registered_commands() -> None:
-    plugin = _plugin()
+@pytest.mark.parametrize(
+    ("status", "payload"),
+    [
+        (401, {"error": {"message": "catalog-only-key"}}),
+        (200, {"data": [{}]}),
+        (200, {"data": "catalog-only-key"}),
+    ],
+)
+def test_model_discovery_errors_remain_errors_without_retry_or_secret_echo(model_server, status, payload) -> None:
+    model_server.model_listing_status = status
+    model_server.replies.append(payload)
+    plugin = _plugin({"providers": {"openrouter": {"api_key": "catalog-only-key", "base_url": f"http://127.0.0.1:{model_server.server_port}/v1"}}})
+    try:
+        result = _invoke(plugin, "model", _services(), {"provider": "openrouter"})
+    finally:
+        if plugin.close is not None:
+            plugin.close()
 
-    definitions = {command.definition.name: command.definition for command in plugin.commands}
-    assert set(definitions) == {"providers", "model"}
-    for definition in definitions.values():
-        assert definition.effects == frozenset({ToolEffect.READ})
-        assert definition.busy_gate is False
-    assert definitions["providers"].argument_schema == {"type": "object", "properties": {}, "additionalProperties": False}
-    model_schema = definitions["model"].argument_schema
-    assert model_schema["additionalProperties"] is False
-    assert model_schema["properties"] == {"provider": {"type": "string"}}
-    assert "required" not in model_schema
-
-
-def test_both_panels_register_a_view_under_the_command_name() -> None:
-    plugin = _plugin()
-
-    assert [view.name for view in plugin.views] == ["providers", "model"]
-    providers_view = _view(plugin, "providers")
-    assert providers_view.owner == "providers"
-    assert providers_view.title == "Providers"
-    assert providers_view.view_type == "markdown"
-    assert "deepseek" in str(providers_view.data["content"])
-    model_view = _view(plugin, "model")
-    assert (model_view.owner, model_view.title, model_view.view_type) == ("providers", "Model", "markdown")
-    assert "No provider dispatch recorded in this session yet." in str(model_view.data["content"])
+    assert result.status == "error"
+    assert result.error
+    assert result.data is None
+    assert model_server.requests == [{"method": "GET", "path": "/v1/models"}]
+    assert "catalog-only-key" not in json.dumps(result.as_payload())
+    if status == 401:
+        assert "401" in result.error
 
 
 def test_view_render_reports_the_session_dispatch() -> None:

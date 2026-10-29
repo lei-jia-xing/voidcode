@@ -45,6 +45,58 @@ function toolOutputText(output: ToolOutput): string {
   return output.presentation ?? "";
 }
 
+/** Public slash paths use spaces; machine command IDs stay unchanged. */
+function slashPathOf(descriptor: {
+  name: string;
+  client_syntax?: string | null;
+}): string {
+  const syntax = descriptor.client_syntax;
+  const prefix =
+    typeof syntax === "string" && syntax.startsWith("/")
+      ? syntax.slice(1).trim()
+      : "";
+  return (prefix || descriptor.name).replace(/\./g, " ");
+}
+
+/** Public slash path for display: the catalog's preferred spelling when the
+name is admitted, else the canonical name with dots as spaces. */
+function displaySlashPath(
+  commands: Array<{ name: string; client_syntax?: string | null }>,
+  canonicalName: string,
+): string {
+  const descriptor = commands.find((c) => c.name === canonicalName);
+  return descriptor
+    ? slashPathOf(descriptor)
+    : canonicalName.replace(/\./g, " ");
+}
+
+/** Longest registered public path that matches the input tokens, or null on
+no match or on an equally-longest ambiguous collision (never silent first). */
+function matchSlashPath<
+  T extends { name: string; client_syntax?: string | null },
+>(
+  commands: T[],
+  tokens: string[],
+):
+  { descriptor: T; path: string; length: number } | { ambiguous: true } | null {
+  let best: { descriptor: T; path: string; length: number } | null = null;
+  let ambiguous = false;
+  for (const descriptor of commands) {
+    const path = slashPathOf(descriptor);
+    const parts = path.split(" ").filter((part) => part !== "");
+    if (parts.length === 0 || parts.length > tokens.length) continue;
+    if (!parts.every((part, index) => tokens[index] === part)) continue;
+    if (best === null || parts.length > best.length) {
+      best = { descriptor, path, length: parts.length };
+      ambiguous = false;
+    } else if (parts.length === best.length) {
+      ambiguous = true;
+    }
+  }
+  if (best === null) return null;
+  return ambiguous ? { ambiguous: true } : best;
+}
+
 /** Execution cue key for stopped/unknown-effects tools, else null. */
 function toolExecutionCueKey(
   execution: ToolExecution | null | undefined,
@@ -988,7 +1040,8 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     const clientKey = renderedClientKey;
     runActivityRef.current += 1;
     setIsRunning(true);
-    setStatusMessage(t("core.statusInvoking", { name: actionName }));
+    const displayName = displaySlashPath(catalog.commands, actionName);
+    setStatusMessage(t("core.statusInvoking", { name: displayName }));
     try {
       const res = await client.invoke(
         issueSession,
@@ -1000,7 +1053,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
         return; // session or epoch changed while the command ran: drop the reply
       }
       setStatusMessage(
-        t("core.statusInvoked", { name: actionName, status: res.status }),
+        t("core.statusInvoked", { name: displayName, status: res.status }),
       );
       if (res.status === "pending_confirmation" && res.confirmation) {
         const confirmation = res.confirmation;
@@ -1024,9 +1077,8 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     } catch (err: unknown) {
       if (!isCurrent(issueSession, epoch, clientKey)) return;
       if (err instanceof CoreApiError && err.code === "upgrade_pending") {
-        refreshHealth(issueSession, epoch, clientKey);
         setStatusMessage(
-          t("core.statusUpgradePendingAction", { name: actionName }),
+          t("core.statusUpgradePendingAction", { name: displayName }),
         );
         return;
       }
@@ -1050,14 +1102,17 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     }
     setPromptInput("");
     if (text.startsWith("/")) {
-      // Slash command dispatch
-      const [cmd, ...restParts] = text.slice(1).split(" ");
-      const argStr = restParts.join(" ").trim();
+      // Slash dispatch matches the longest registered public path (`/goal pause`
+      // wins over `/goal`); the tail after it is the verbatim argument string.
+      const body = text.slice(1).trimStart();
+      const tokens = body.split(/\s+/).filter((token) => token !== "");
+      const match =
+        tokens.length > 0 ? matchSlashPath(catalog.commands, tokens) : null;
 
       // Admitted plugin commands always win: local controls never shadow a
       // catalog command that happens to share the name.
-      const descriptor = catalog.commands.find((c) => c.name === cmd);
-      if (!descriptor) {
+      if (match === null) {
+        const cmd = tokens[0] ?? "";
         if (cmd === "cancel") {
           await handleCancelRun();
           return;
@@ -1070,9 +1125,23 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
           await handleCreateSession();
           return;
         }
-        setStatusMessage(t("core.statusUnknownCommand", { name: cmd }));
+        setStatusMessage(t("core.statusUnknownCommand", { name: body }));
         return;
       }
+      if ("ambiguous" in match) {
+        setStatusMessage(t("core.statusUnknownCommand", { name: body }));
+        return;
+      }
+
+      const descriptor = match.descriptor;
+      const cmd = descriptor.name;
+      // Consume the matched tokens, then one whitespace run; the rest (JSON,
+      // paths, dots) stays verbatim.
+      let rest = body;
+      for (let index = 0; index < match.length; index++) {
+        rest = rest.slice(tokens[index].length).trimStart();
+      }
+      const argStr = rest.trim();
 
       const schema = descriptor.argument_schema ?? {};
       const properties =
@@ -1157,14 +1226,16 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
 
   // Autocomplete hints
   const slashSuggestions = useMemo(() => {
-    if (!promptInput.startsWith("/") || promptInput.includes(" ")) {
+    if (!promptInput.startsWith("/")) {
       return [];
     }
     const query = promptInput.slice(1).toLowerCase();
     const builtins = ["help", "cancel", "views", "new"];
-    const fromCatalog = catalog.commands.map((c) => c.name);
+    const fromCatalog = catalog.commands.map(slashPathOf);
     const all = Array.from(new Set([...builtins, ...fromCatalog]));
-    return all.filter((name) => name.toLowerCase().startsWith(query));
+    return all.filter(
+      (name) => name !== "" && name.toLowerCase().startsWith(query),
+    );
   }, [promptInput, catalog]);
 
   return (
@@ -1386,7 +1457,10 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                     data-testid={`event-${ev.sequence}`}
                     className={`text-xs font-mono px-3 py-1.5 rounded border max-w-2xl ${tone}`}
                   >
-                    ✔ {t("core.commandLabel")} /{name ?? t("core.unknownLabel")}{" "}
+                    ✔ {t("core.commandLabel")} /
+                    {name === null
+                      ? t("core.unknownLabel")
+                      : displaySlashPath(catalog.commands, name)}{" "}
                     [{status}]: {detail}
                   </div>
                 );

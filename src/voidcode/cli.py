@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from . import __version__
 from .bootstrap import open_core, state_directory
+from .config import BannerConfig
 from .core.storage.store import SessionRecord, open_read_only
 from .sdk.json_values import json_wire_object, own_json_object
 
@@ -266,6 +267,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             border = cast(Literal["lines", "box", "borderless"], prefs["border"])
             footer = cast(Literal["full", "compact", "off"], prefs["footer"])
             show_session = bool(prefs["show_session"])
+            banner = cast(BannerConfig | None, prefs["banner"])
             if args.server is not None:
                 return run_tui(
                     args.server,
@@ -274,6 +276,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     border=border,
                     footer=footer,
                     show_session=show_session,
+                    banner=banner,
                 )
             return _embedded_tui(
                 workspace,
@@ -282,6 +285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 border=border,
                 footer=footer,
                 show_session=show_session,
+                banner=banner,
             )
         if args.command == "show":
             return _show(workspace, bare_directory, args.session_id, events=args.events)
@@ -392,10 +396,15 @@ def _tui_prefs(args: argparse.Namespace, *, workspace: Path) -> dict[str, object
         raw = candidate.read_text(encoding="utf-8") if candidate.is_file() else ""
         if raw:
             parsed = parse_config(json.loads(raw))
-            file_tui = {"border": parsed.tui.border, "footer": parsed.tui.footer, "show_session": parsed.tui.show_session}
+            file_tui = {
+                "border": parsed.tui.border,
+                "footer": parsed.tui.footer,
+                "show_session": parsed.tui.show_session,
+                "banner": parsed.tui.banner,
+            }
     except Exception:
         file_tui = {}
-    prefs: dict[str, object] = {"border": "lines", "footer": "full", "show_session": False}
+    prefs: dict[str, object] = {"border": "lines", "footer": "full", "show_session": False, "banner": BannerConfig()}
     prefs.update(file_tui)
     if args.no_border:
         prefs["border"] = "borderless"
@@ -411,6 +420,7 @@ def _embedded_tui(
     directory: Path,
     *,
     session_id: str | None,
+    banner: BannerConfig | None,
     border: Literal["lines", "box", "borderless"] = "lines",
     footer: Literal["full", "compact", "off"] = "full",
     show_session: bool = False,
@@ -418,7 +428,7 @@ def _embedded_tui(
     """Run the TUI directly against an in-process core: no socket, no HTTP framing."""
     from .tui import run_embedded_tui
 
-    return run_embedded_tui(workspace, directory, session_id=session_id, border=border, footer=footer, show_session=show_session)
+    return run_embedded_tui(workspace, directory, session_id=session_id, border=border, footer=footer, show_session=show_session, banner=banner)
 
 
 def _dispatch(core: Core, args: argparse.Namespace) -> int:

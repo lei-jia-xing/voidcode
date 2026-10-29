@@ -240,6 +240,24 @@ class OpenAIChatCompletionsTransport:
             raise OpenAITransportError(self._api_error_payload(exc)) from exc
         return result
 
+    def list_models(self, *, extra_headers: Mapping[str, str], timeout_seconds: float) -> tuple[str, ...]:
+        try:
+            response = self._sdk().models.list(**cast(Any, self._request_headers({"extra_headers": dict(extra_headers)})), timeout=timeout_seconds)
+        except OpenAIAPIError as exc:
+            status = getattr(exc, "status_code", None)
+            detail = f"HTTP {status}" if status is not None else type(exc).__name__
+            raise OpenAITransportError({"message": f"Model listing failed ({detail})", "status_code": status}) from None
+        data = getattr(response, "data", None)
+        if not isinstance(data, list):
+            raise OpenAITransportError({"message": "Model listing must contain a data array"})
+        names: set[str] = set()
+        for item in data:
+            name = getattr(item, "id", None)
+            if not isinstance(name, str) or not name.strip():
+                raise OpenAITransportError({"message": "Model listing requires non-empty string model IDs"})
+            names.add(name)
+        return tuple(sorted(names))
+
 
 def normalize_openai_base_url(base_url: str | None) -> str:
     """Normalize a chat-completions base URL exactly as the transport will use it."""
@@ -398,6 +416,25 @@ class OpenAIChatCompletionsProvider:
 
     def close(self) -> None:
         self._owned_transport.close()
+
+    def list_models(self) -> tuple[str, ...]:
+        transport = self._transport()
+        if not isinstance(transport, OpenAIChatCompletionsTransport):
+            raise ProviderExecutionError(
+                kind="unsupported_feature",
+                provider_name=self.name,
+                model_name="",
+                message="This transport does not support model listing",
+                retryable=False,
+                fallback_allowed=False,
+            )
+        timeout = 10.0
+        if self.config is not None and self.config.timeout_seconds is not None:
+            timeout = min(timeout, self.config.timeout_seconds)
+        try:
+            return transport.list_models(extra_headers=self.extra_request_headers, timeout_seconds=timeout)
+        except OpenAITransportError as exc:
+            raise self._map_exception(exc, provider_name=self.name, model_name="", source="model_listing") from None
 
     def _transport(self) -> OpenAITransport:
         if self.transport is not None:

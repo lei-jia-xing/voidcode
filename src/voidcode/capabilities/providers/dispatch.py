@@ -195,6 +195,12 @@ class RegisteredProvider:
             )
         return self._provider_for(provider_name)
 
+    def list_models(self) -> tuple[str, ...] | None:
+        if _entry_for(self._configs, self._name) is None:
+            return None
+        provider = self._provider_for(self._name)
+        return provider.list_models() if isinstance(provider, OpenAIChatCompletionsProvider) else None
+
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         return price_result(request, self._selected(request).propose_turn(request))
 

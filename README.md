@@ -93,17 +93,17 @@ In a source checkout without the console script installed, use `uv run python -m
 
 ### In-session commands
 
-Every client dispatches commands from the admitted catalog — the core's reserved commands (`run`, `resume`, `show`, `status`, `help`, `core.reload`) plus the plugin-declared commands below. Use `/name` in the TUI or web composer, or `voidcode invoke` from the CLI:
+Every client dispatches commands from the admitted catalog. TUI and web use space-separated paths such as `/core reload` and `/goal set`; dotted slash spellings are not aliases. CLI/RPC invocation keeps the catalog ID, for example `voidcode invoke <session_id> core.reload --expected-revision <revision_id>`:
 
 | Plugin | Commands |
 |---|---|
 | `session_info` | `/context`, `/usage`, `/export`, `/copy` |
-| `plan` | `/plan`, `/plan.off`, `/plan.status` |
-| `todo` | `/todo`, `/todo.clear` |
-| `goal` | `/goal`, `/goal.set`, `/goal.edit`, `/goal.pause`, `/goal.resume`, `/goal.clear`, `/goal.load_objective` |
+| `plan` | `/plan`, `/plan off`, `/plan status` |
+| `todo` | `/todo`, `/todo clear` |
+| `goal` | `/goal`, `/goal set`, `/goal edit`, `/goal pause`, `/goal resume`, `/goal clear`, `/goal load_objective` |
 | `skills` | `/skills` |
 | `providers` | `/model`, `/providers` |
-| `delegation` | `/agents`, `/agents.show` |
+| `delegation` | `/agents`, `/agents show` |
 | `review` | `/review` |
 | `btw` | `/btw` |
 | `cron` | `/loop` |

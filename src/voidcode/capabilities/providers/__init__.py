@@ -25,7 +25,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     return Plugin(
         commands=(
             ProvidersCommand(facts),
-            ModelCommand(facts),
+            ModelCommand(facts, providers),
         ),
         providers=providers,
         views=(ProvidersView(facts), ModelView(facts)),

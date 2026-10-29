@@ -5,7 +5,7 @@ Session todo list with provider-visible plan truth and durable reminders: the mo
 ## Surface
 
 - Tool `todo` (`SESSION`, never replayed): one `op` per call — `init` (create the plan from `list=[{phase, items}]`, or `items` plus optional `phase`), `start`, `done`, `drop`, `block` (optional `reason`), `unblock`, `append`, `rm`, `view` (never mutates). Targets use exact task content and phase names; only one task may be `in_progress` (the runtime normalizes that invariant); statuses are `pending | in_progress | completed | abandoned | blocked`. Mutations bump a revision and stage a `todo_updated` event; the tool never writes workspace files.
-- Command `/todo` (`READ`): show the current list. Command `/todo.clear` (`SESSION`): clear it.
+- Command `/todo` (`READ`): show the current list. Command `/todo clear` (`SESSION`): clear it.
 - Context: contributes the plan truth while active tasks (`pending`/`in_progress`/`blocked`) remain.
 - Observer on `invocation_finished` + `run_finished`: accounts reminders and hands each injection to the core as a user-role continuation with an idempotent `todo:<kind>:<cycle>:<attempt>` key, plus a `reminder_injected` event.
 

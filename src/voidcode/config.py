@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .sdk.json_values import own_json_object
+from .sdk.views import StyleColor
 
 CONFIG_FILE_NAME = "voidcode.json"
 CONFIG_SCHEMA_VERSION = 1
@@ -39,6 +40,26 @@ class ModelConfig(BaseModel):
         return v
 
 
+class BannerConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    text: str | None = None
+    colors: Annotated[tuple[StyleColor, ...], Field(min_length=1)] = (
+        "#9d7cfe",
+        "#9388fe",
+        "#8997fb",
+        "#7da7f7",
+        "#75b9f6",
+        "#76ccf5",
+        "#7dcfff",
+    )
+
+    @field_validator("colors", mode="before")
+    @classmethod
+    def _freeze_colors(cls, value: Any) -> Any:
+        return tuple(value) if isinstance(value, list) else value
+
+
 class TuiConfig(BaseModel):
     """Local TUI chrome prefs: display-only, never admitted, never snapshotted."""
 
@@ -47,6 +68,7 @@ class TuiConfig(BaseModel):
     border: Literal["lines", "box", "borderless"] = "lines"
     footer: Literal["full", "compact", "off"] = "full"
     show_session: bool = False
+    banner: BannerConfig | None = Field(default_factory=BannerConfig)
 
 
 class PolicyConfig(BaseModel):
@@ -190,14 +212,39 @@ def parse_config(payload: object) -> Config:
         raise ValueError(str(err)) from err
 
 
-def resolve_providers(config: Config) -> dict[str, object]:
-    """Resolve the private provider vocabulary once: configured fields plus the environment key."""
+def resolve_providers(config: Config, *, use_environment: bool = True, discover: bool = True) -> dict[str, object]:
+    """Resolve live credentials once; recorded admissions never read the environment."""
+    from .capabilities.providers.native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
+
+    credentials: dict[str, str] = {}
+    if use_environment:
+        for row in PROVIDER_TABLE:
+            if not discover and row.id not in config.providers:
+                continue
+            variables = row.env_vars[:1] if row.id == "endpoint" else row.env_vars
+            for variable in variables:
+                key = os.environ.get(variable)
+                if key and key.strip():
+                    credentials[row.id] = key
+                    break
+
     private: dict[str, object] = {}
-    for name, entry in config.providers.items():
-        if entry.base_url is None:
+    for name in sorted(config.providers.keys() | credentials.keys()):
+        entry = config.providers.get(name)
+        row = PROVIDER_TABLE_BY_ID.get(name)
+        base_url = None if entry is None else entry.base_url
+        if base_url is None and row is not None:
+            base_url = os.environ.get("ENDPOINT_BASE_URL") if use_environment and name == "endpoint" else None
+            base_url = base_url or row.default_base_url
+        if base_url is None:
             raise ValueError(f"provider {name} requires an explicit base_url")
-        key = entry.api_key if "api_key" in entry.model_fields_set else os.environ.get(f"{name.upper().replace('-', '_')}_API_KEY")
-        private[name] = {**entry.extra, "api_key": key, "base_url": entry.base_url}
+        if entry is not None and "api_key" in entry.model_fields_set:
+            key = entry.api_key
+        else:
+            key = credentials.get(name)
+            if key is None and use_environment:
+                key = os.environ.get(f"{name.upper().replace('-', '_')}_API_KEY")
+        private[name] = {**({} if entry is None else entry.extra), "api_key": key, "base_url": base_url}
     return private
 
 

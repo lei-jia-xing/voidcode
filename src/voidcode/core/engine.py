@@ -1646,7 +1646,10 @@ class Core:
                 if isinstance(commands, list):
                     for command in commands:
                         if isinstance(command, Mapping):
-                            lines.append(f"  /{command.get('name', '')} — {command.get('description', '')}")
+                            syntax = command.get("client_syntax")
+                            stripped = syntax[1:].strip().replace(".", " ") if isinstance(syntax, str) and syntax.startswith("/") else ""
+                            shown = stripped if stripped else str(command.get("name", "")).replace(".", " ")
+                            lines.append(f"  /{shown} — {command.get('description', '')}")
                 return CommandResult(status="ok", output="\n".join(lines), data=payload)
             return CommandResult(status="ok", data=dict(self.command_catalog().as_payload()))
 

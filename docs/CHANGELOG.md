@@ -12,6 +12,19 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - New `web_fetch` tool (`READ` + `NETWORK`, never replayed): fetches a credentialless http(s) URL (static HTML only, 5 redirects, 5 MiB cap, bounded Markdown preview) and spills the full rendered bytes to an artifact, returning a `web://<sha256>` snapshot URI plus the canonical `artifact://` link for recovery.
 - New `web://` resource reader owned by the web plugin: `read` pages fetched snapshots like any stored artifact through the shared pager, with no files-plugin dependency and no network at read time. Disabling `web` removes only the alias; the canonical artifact read still works.
 
+### Configurable Unicode TUI banner
+- Empty sessions show a centered, gradient-colored V built from Unicode blocks. Replayed sessions remain quiet; settled scrollback is not rewritten.
+- `tui.banner.text` and `tui.banner.colors` customize the artwork and its local palette; `tui.banner: null` disables it. Relative spacing, blank lines, narrow terminals, and `NO_COLOR` retain Unicode without restoring a theme system.
+
+### Environment-discovered provider catalogs
+- Built-in providers are discovered from their declared credential environment variables, including OpenRouter and DeepSeek, without requiring a `providers` entry or vendor `base_url`. Explicit configuration wins; disabled/replaced provider plugins do not gain hidden capabilities.
+- Credentials and provider identities are resolved at live admission and stored privately. Restart, replay, and generation adoption keep the recorded values; `/core reload` explicitly picks up changed environment credentials.
+- `/model openrouter` reads the configured `/models` endpoint through the existing SDK client when no shipped catalog exists. Listing makes no inference request or retry; errors stay visible and credentials stay out of public output.
+
+### Space-separated slash subcommands (BREAKING)
+- TUI and web use `/core reload`, `/goal set`, `/agents show`, and `/workflow status`; dotted slash input is no longer accepted. Completion, help, and command labels use the same catalog-derived spelling.
+- The longest registered path wins and argument text keeps its dots and whitespace. Machine command IDs, RPC/CLI invocation names, captured revisions, and decision gates are unchanged.
+
 ### Minimal TUI transcript and automatic slash completion
 - User prompts render verbatim without role badges; system context and internal
   scheduling metadata stay out of the chat view without changing stored history

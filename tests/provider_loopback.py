@@ -14,12 +14,32 @@ class OpenAILoopbackServer(ThreadingHTTPServer):
         self.request_headers: list[dict[str, str]] = []
         self.response_bodies: list[bytes] = []
         self.response_content_types: list[str] = []
+        self.model_listing_status = 200
         #: Optional test hook run after each request is recorded, before its reply
         #: is chosen. Returning a reply overrides the queued one for that request.
         self.before_reply: Callable[[dict[str, object], int], dict[str, object] | None] | None = None
 
 
 class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        server = cast(OpenAILoopbackServer, self.server)
+        request: dict[str, object] = {"method": "GET", "path": self.path}
+        server.request_headers.append({name: value for name, value in self.headers.items()})
+        server.requests.append(request)
+        if self.path != "/v1/models":
+            self.send_error(404)
+            return
+        override = server.before_reply(request, len(server.requests)) if server.before_reply is not None else None
+        response = override if override is not None else server.replies.pop(0)
+        encoded = json.dumps(response).encode()
+        server.response_bodies.append(encoded)
+        server.response_content_types.append("application/json")
+        self.send_response(server.model_listing_status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def do_POST(self) -> None:
         server = cast(OpenAILoopbackServer, self.server)
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))

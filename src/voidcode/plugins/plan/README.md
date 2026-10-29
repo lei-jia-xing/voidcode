@@ -5,8 +5,8 @@ Plan mode: a read-only exploration overlay plus the plan instruction.
 ## Surface
 
 - Command `/plan` (no arguments): enter plan mode. Sets the read-only session overlay and records the activation. Idempotent — re-entering reports `changed: false`.
-- Command `/plan.off` (no arguments): leave plan mode. Revokes this plugin's overlay only.
-- Command `/plan.status` (no arguments): reports `Mode: plan` or `Mode: default` plus `{"active"}`.
+- Command `/plan off` (no arguments): leave plan mode. Revokes this plugin's overlay only.
+- Command `/plan status` (no arguments): reports `Mode: plan` or `Mode: default` plus `{"active"}`.
 - Context contribution: while active, contributes the plan-mode instruction to the model context. All three commands run with `busy_gate=False`.
 
 ## Configuration

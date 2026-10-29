@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from voidcode.capabilities.providers.native.reasoning_effort import normalize_reasoning_effort
+from voidcode.config import BannerConfig
 from voidcode.core.events import EventType
 from voidcode.sdk.client import (
     CommandCatalog,
@@ -93,6 +94,38 @@ logger = logging.getLogger(__name__)
 #: Matches the 50 ms window the pre-cutover client used.
 _ESCAPE_FLUSH_SECONDS = 0.05
 
+_BUILTIN_BANNER = (
+    "███╗      ███╗",
+    "╚███╗    ███╔╝",
+    " ╚███╗  ███╔╝",
+    "  ╚███╗███╔╝",
+    "   ╚█████╔╝",
+    "    ╚███╔╝",
+    "     ╚═╝",
+)
+
+#: Immutable ctor/entry default: None at the boundary always means disabled.
+_DEFAULT_BANNER = BannerConfig()
+
+
+def _banner_rows(banner: BannerConfig | None, styles: Styles, *, width: int) -> list[str]:
+    """Centered welcome mark rows, or nothing when disabled/widthless."""
+    if banner is None or width <= 0:
+        return []
+    raw = _BUILTIN_BANNER if banner.text is None else tuple(banner.text.split("\n"))
+    cleaned = [escape_terminal_controls(line.rstrip(), preserve_tabs=False) for line in raw]
+    if not any(line.strip() for line in cleaned):
+        return []
+    colors = banner.colors
+    content_width = min(width, max(visible_width(line) for line in cleaned))
+    pad = " " * ((width - content_width) // 2)
+    rows: list[str] = []
+    for index, line in enumerate(cleaned):
+        clipped = clamp_row(line, width)
+        color = colors[index * (len(colors) - 1) // max(1, len(cleaned) - 1)]
+        rows.append(pad + styles.fg("accent", clipped, color=color))
+    return rows
+
 
 def _safe(value: object) -> str:
     """One-line, control-free rendering of any plugin- or model-provided value."""
@@ -144,9 +177,24 @@ def _command_result_text(result: CommandResult) -> str:
     return ""
 
 
+def _slash_public_path(descriptor: CommandDescriptor) -> str:
+    """One public slash path per catalog entry: preferred slash syntax, else dots-to-spaces."""
+    syntax = descriptor.client_syntax
+    if isinstance(syntax, str) and syntax.startswith("/"):
+        path = syntax[1:].strip().replace(".", " ")
+        if path:
+            return path
+    return descriptor.name.replace(".", " ")
+
+
+def _slash_display(name: str) -> str:
+    """Human slash spelling for a machine command id (result rows, notices, status)."""
+    return name.replace(".", " ")
+
+
 def _command_result_rows(name: str, result: CommandResult, styles: Styles) -> list[str]:
     """Render direct receipts and durable command results consistently."""
-    label = _safe(name or "command")
+    label = _safe(_slash_display(name) or "command")
     text = _command_result_text(result)
     if result.status == "error":
         return _prefixed_rows(f"Error: /{label}:", text or "Command failed", styles, slot="error")
@@ -347,8 +395,10 @@ class CoreTuiApp:
         footer: Literal["full", "compact", "off"] = "full",
         show_session: bool = False,
         workspace_dir: object = None,
+        banner: BannerConfig | None = _DEFAULT_BANNER,
     ) -> None:
         self.client = client
+        self.banner = banner
         self.terminal = terminal or Terminal.open()
         if border not in ("lines", "box", "borderless"):
             raise ValueError("border must be 'lines', 'box', or 'borderless'")
@@ -417,12 +467,15 @@ class CoreTuiApp:
         #: before joining. A replacement stream closes this handle and installs its own; workers
         #: capture their handle locally so a late detach from an old generation cannot clear it.
         self._stream_cancel: StreamCancellation | None = None
+        #: Sessions whose welcome mark already committed; each empty visit shows it once.
+        self._welcomed_sessions: set[str] = set()
 
     def run(self) -> int:
         self.running = True
         try:
             self._init_session()
             self._load_catalog()
+            self._maybe_welcome()
             self._start_event_stream()
             return self._main_loop()
         finally:
@@ -463,6 +516,21 @@ class CoreTuiApp:
                 self.session_id = actual_id
         # Routine attachment is quiet: ids are diagnostics, not idle chrome.
         self.status_line = ""
+
+    def _maybe_welcome(self) -> None:
+        """Commit the welcome mark once when the attached session is durably empty."""
+        if self.session_id in self._welcomed_sessions or self._session_cursors.get(self.session_id, 0):
+            return
+        try:
+            if self.client.get_session(self.session_id).last_event_sequence:
+                self._welcomed_sessions.add(self.session_id)
+                return
+        except Exception:
+            return
+        rows = _banner_rows(self.banner, self.styles, width=self.terminal.width)
+        self._welcomed_sessions.add(self.session_id)
+        if rows:
+            self.terminal.commit_rows(rows)
 
     def _load_catalog(self) -> None:
         try:
@@ -597,11 +665,14 @@ class CoreTuiApp:
             if kind == "stream_head":
                 head = frame.get("frame")
                 if isinstance(head, HeadFrame):
+                    if head.events:
+                        self._welcomed_sessions.add(self.session_id)
                     for event in head.events:
                         self._handle_stream_event(event, rows_to_commit)
             elif kind == "stream_event":
                 head = frame.get("frame")
                 if isinstance(head, EventFrame):
+                    self._welcomed_sessions.add(self.session_id)
                     self._handle_stream_event(head.event, rows_to_commit)
             elif kind == "notice":
                 rows_to_commit.append(_notice_row(frame.get("text"), str(frame.get("tone", "info")), self.styles))
@@ -1109,7 +1180,7 @@ class CoreTuiApp:
             if submit_key in self._in_flight:
                 return
             self._in_flight.add(submit_key)
-            self.status_line = f"Dispatching /{action}..."
+            self.status_line = f"Dispatching /{_slash_display(action)}..."
             self._invoke_async(action, arguments if isinstance(arguments, dict) else {}, revision, submit_key=submit_key)
 
     def _resolve_confirmation(self, decision: str) -> None:
@@ -1176,6 +1247,7 @@ class CoreTuiApp:
         *,
         submit_key: str | None = None,
         surface_result: bool = False,
+        display_name: str | None = None,
     ) -> None:
         """Run one command off the UI thread under the revision the user saw.
 
@@ -1185,6 +1257,7 @@ class CoreTuiApp:
         answers too would duplicate settled rows. ``surface_result`` comes from
         catalog metadata (owner plus effects), never a client command list.
         """
+        shown = display_name if display_name else _slash_display(name)
         session_id, generation = self.session_id, self._generation
 
         def finish(status: str, result: CommandResult | None = None) -> None:
@@ -1210,15 +1283,15 @@ class CoreTuiApp:
                 )
             except CoreClientError as exc:
                 if exc.code == "upgrade_pending":
-                    self._upgrade_pending_notice(f"/{name}", session_id=session_id, generation=generation)
+                    self._upgrade_pending_notice(f"/{shown}", session_id=session_id, generation=generation)
                 else:
-                    self._queue_notice(f"/{name} failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                    self._queue_notice(f"/{shown} failed: {exc}", tone="error", session_id=session_id, generation=generation)
                     finish("error")
                 if submit_key is not None:
                     self.event_queue.put({"kind": "decision_done", "request_id": submit_key, "session_id": session_id, "generation": generation})
                 return
             except Exception as exc:
-                self._queue_notice(f"/{name} failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                self._queue_notice(f"/{shown} failed: {exc}", tone="error", session_id=session_id, generation=generation)
                 finish("error")
                 if submit_key is not None:
                     self.event_queue.put({"kind": "decision_done", "request_id": submit_key, "session_id": session_id, "generation": generation})
@@ -1238,7 +1311,7 @@ class CoreTuiApp:
                     )
             elif status == "error":
                 self._queue_notice(
-                    f"/{name} failed: {res.error or 'error'}",
+                    f"/{shown} failed: {res.error or 'error'}",
                     tone="error",
                     session_id=session_id,
                     generation=generation,
@@ -1414,16 +1487,15 @@ class CoreTuiApp:
         self.composer.set_completion(candidates, index=candidates.index(selected) if selected in candidates else 0)
 
     def _completion_candidates(self) -> list[str]:
-        """Slash-command names matching the draft prefix (catalog + /tui controls)."""
+        """Slash-command paths matching the draft prefix (catalog + /tui controls)."""
         draft = self.composer.value
         if not draft.startswith("/") or "\n" in draft or self.composer.cursor != len(draft):
             return []
-        names = [entry.name for entry in self.catalog_cache]
-        names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit"))
-        head, space, _rest = draft[1:].partition(" ")
-        if space and head.strip() != "tui":
-            return []
         prefix = draft[1:].lstrip()
+        names = [_slash_public_path(entry) for entry in self.catalog_cache]
+        names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit"))
+        if " " in prefix.rstrip(" ") and f"/{prefix.rstrip(' ')}" in (f"/{name}" for name in names):
+            return []
         return sorted(f"/{name}" for name in names if name and name.startswith(prefix))
 
     def _dispatch_user_prompt(self, prompt: str) -> None:
@@ -1503,18 +1575,15 @@ class CoreTuiApp:
         threading.Thread(target=run_worker, daemon=True, name="CoreRun").start()
 
     def _dispatch_slash_command(self, line: str) -> None:
-        parts = line[1:].strip().split(maxsplit=1)
-        if not parts:
+        rest = line[1:].strip()
+        if not rest:
             return
-        cmd = parts[0]
-        arg_str = parts[1] if len(parts) > 1 else ""
-
-        admitted = {c.name for c in self._catalog()}
+        head, _, arg_str = rest.partition(" ")
 
         # "/tui <control>" always reaches the client's own controls, so a plugin
         # that declares e.g. "help" cannot make local navigation unreachable.
-        if cmd == "tui":
-            local, _, local_args = arg_str.partition(" ")
+        if head == "tui":
+            local, _, local_args = arg_str.strip().partition(" ")
             if not local:
                 self._show_help()
                 return
@@ -1523,11 +1592,30 @@ class CoreTuiApp:
             self.terminal.commit_rows([self.styles.fg("error", f"Unknown TUI control: /tui {_safe(local)}")])
             return
 
-        # A bare name is a local control only when no admitted command owns it.
-        if cmd not in admitted and self._run_local_control(cmd, arg_str):
+        descriptors = self._catalog()
+        tokens = rest.split()
+        ranked = sorted(
+            (
+                (len(parts), index, entry)
+                for index, entry in enumerate(descriptors)
+                if (parts := _slash_public_path(entry).split()) and parts == tokens[: len(parts)]
+            ),
+            key=lambda item: (item[0], -item[1]),
+            reverse=True,
+        )
+        if ranked and (len(ranked) == 1 or ranked[0][0] > ranked[1][0]):
+            width, _, entry = ranked[0]
+            tail = rest.split(maxsplit=width)[width] if len(tokens) > width else ""
+            self._dispatch_catalog_command(entry, tail)
+            return
+        if ranked:
+            self.terminal.commit_rows([f"{self.styles.fg('error', f'Unknown command: /{_safe(rest)}')} (try /help)"])
             return
 
-        self._dispatch_catalog_command(cmd, arg_str)
+        # A bare name is a local control only when no admitted command owns it.
+        if head not in {c.name for c in descriptors} and self._run_local_control(head, arg_str):
+            return
+        self._dispatch_catalog_command(None, rest)
 
     def _run_local_control(self, cmd: str, arg_str: str) -> bool:
         """Run one client-local control; False when the name is not a control."""
@@ -1596,6 +1684,7 @@ class CoreTuiApp:
         # A new stream is about to start: its first frame reconciles.
         self._stream_ready = False
         self.status_line = ""
+        self._maybe_welcome()
         self._start_event_stream()
 
     def _create_session(self) -> None:
@@ -1630,7 +1719,7 @@ class CoreTuiApp:
         if not self.catalog_cache:
             self._load_catalog()
         for c in self.catalog_cache:
-            lines.append(f"  /{c.name:<16} {c.description}")
+            lines.append(f"  /{_slash_public_path(c):<16} {c.description}")
         self.terminal.commit_rows(lines)
 
     def _tui_model(self, arg: str) -> None:
@@ -1838,10 +1927,9 @@ class CoreTuiApp:
 
         threading.Thread(target=worker, daemon=True, name="CoreFormLoad").start()
 
-    def _dispatch_catalog_command(self, cmd_name: str, arg_str: str) -> None:
-        cmd_desc = next((c for c in self._catalog() if c.name == cmd_name), None)
+    def _dispatch_catalog_command(self, cmd_desc: CommandDescriptor | None, arg_str: str) -> None:
         if cmd_desc is None:
-            self.terminal.commit_rows([f"{self.styles.fg('error', f'Unknown command: /{_safe(cmd_name)}')} (try /help)"])
+            self.terminal.commit_rows([f"{self.styles.fg('error', f'Unknown command: /{_safe(arg_str)}')} (try /help)"])
             return
         # The revision of the catalog this descriptor was read from.
         revision = self.catalog_revision
@@ -1883,8 +1971,8 @@ class CoreTuiApp:
                     return
                 arguments = parsed
 
-        self.status_line = f"Dispatching /{cmd_name}..."
-        self._invoke_async(cmd_name, arguments, revision, surface_result=surface_result)
+        self.status_line = f"Dispatching /{_slash_public_path(cmd_desc)}..."
+        self._invoke_async(cmd_desc.name, arguments, revision, surface_result=surface_result, display_name=_slash_public_path(cmd_desc))
 
     def _render_frame(self) -> None:
         width = self.terminal.width
@@ -1935,12 +2023,13 @@ def run_tui(
     border: Literal["lines", "box", "borderless"] = "lines",
     footer: Literal["full", "compact", "off"] = "full",
     show_session: bool = False,
+    banner: BannerConfig | None = _DEFAULT_BANNER,
 ) -> int:
     """Launch the generic TUI connected to a running core."""
     from voidcode.bootstrap import open_session_client
 
     with open_session_client(server_url=server_url, token=token) as client:
-        app = CoreTuiApp(client, session_id=session_id, border=border, footer=footer, show_session=show_session)
+        app = CoreTuiApp(client, session_id=session_id, border=border, footer=footer, show_session=show_session, banner=banner)
         return app.run()
 
 
@@ -1952,6 +2041,7 @@ def run_embedded_tui(
     border: Literal["lines", "box", "borderless"] = "lines",
     footer: Literal["full", "compact", "off"] = "full",
     show_session: bool = False,
+    banner: BannerConfig | None = _DEFAULT_BANNER,
 ) -> int:
     """Launch the TUI against an in-process core: no socket, no HTTP framing."""
     import signal
@@ -1969,6 +2059,7 @@ def run_embedded_tui(
             footer=footer,
             show_session=show_session,
             workspace_dir=workspace_path,
+            banner=banner,
         )
         active = app
 

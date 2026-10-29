@@ -1555,3 +1555,280 @@ def test_rejected_run_preserves_prompt_and_stops_spinner() -> None:
     assert app.composer.value == "keep this prompt"
     assert not app._run_active
     assert not any("Run failed" in row for row in terminal.committed)
+
+
+def test_spaced_slash_matches_longest_path_and_invokes_dotted_id() -> None:
+    """`/goal set x` reaches goal.set with the verbatim tail; `/goal` alone reaches goal."""
+    import time
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    catalog = [
+        CommandDescriptor(name="goal", owner="p", description="g", argument_schema={"type": "object", "properties": {}}, effects=(ToolEffect.READ,)),
+        CommandDescriptor(
+            name="goal.set",
+            owner="p",
+            description="gs",
+            argument_schema={"type": "object", "properties": {"objective": {"type": "string"}}, "required": ["objective"]},
+            effects=(ToolEffect.WRITE,),
+        ),
+    ]
+    terminal = _StubTerminal()
+    client = _CommandClient(catalog=catalog, results={})
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+
+    app._dispatch_slash_command("/goal set my objective here")
+    deadline = time.monotonic() + 5
+    while not client.invoked and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [(name, args, rev) for _, name, args, rev in client.invoked] == [("goal.set", {"objective": "my objective here"}, "rev-1")]
+    assert app.status_line == "Dispatching /goal set..."
+
+    client.invoked.clear()
+    app._dispatch_slash_command("/goal")
+    deadline = time.monotonic() + 5
+    while not client.invoked and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [(name, args) for _, name, args, _ in client.invoked] == [("goal", {})]
+
+
+def test_dotted_legacy_slash_makes_no_mutation() -> None:
+    """`/goal.set x` is refused as unknown; nothing is invoked and no parent runs instead."""
+    import time
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    catalog = [
+        CommandDescriptor(name="goal", owner="p", description="g", argument_schema={"type": "object", "properties": {}}, effects=(ToolEffect.READ,)),
+        CommandDescriptor(
+            name="goal.set",
+            owner="p",
+            description="gs",
+            argument_schema={"type": "object", "properties": {"objective": {"type": "string"}}, "required": ["objective"]},
+            effects=(ToolEffect.WRITE,),
+        ),
+    ]
+    terminal = _StubTerminal()
+    client = _CommandClient(catalog=catalog, results={})
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+
+    app._dispatch_slash_command("/goal.set oops")
+    time.sleep(0.2)
+    app._drain_events()
+    assert client.invoked == []
+    assert any("Unknown command" in row for row in terminal.committed), terminal.committed
+
+
+def test_spaced_slash_preserves_json_tail_and_refuses_non_object() -> None:
+    """JSON with spaces/dots reaches the command intact; a non-object tail is refused without invoke."""
+    import time
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    catalog = [
+        CommandDescriptor(
+            name="workflow.run",
+            owner="p",
+            description="w",
+            argument_schema={"type": "object", "properties": {"workflow": {"type": "string"}, "task": {}}, "required": ["workflow"]},
+            effects=(ToolEffect.EXECUTE,),
+            client_syntax="/workflow run",
+        ),
+    ]
+    terminal = _StubTerminal()
+    client = _CommandClient(catalog=catalog, results={})
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+
+    app._dispatch_slash_command('/workflow   run\t {"workflow": "a.b", "task": "x  y"}')
+    deadline = time.monotonic() + 5
+    while not client.invoked and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [args for _, _, args, _ in client.invoked] == [{"workflow": "a.b", "task": "x  y"}]
+
+    client.invoked.clear()
+    app._dispatch_slash_command("/workflow run [1, 2]")
+    time.sleep(0.2)
+    app._drain_events()
+    assert client.invoked == []
+    assert any("JSON object" in row for row in terminal.committed), terminal.committed
+
+
+def test_ambiguous_public_path_fails_without_invoke() -> None:
+    """Two descriptors projecting onto one public path refuse visibly; neither runs."""
+    import time
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    catalog = [
+        CommandDescriptor(
+            name="foo.bar", owner="p", description="1", argument_schema={"type": "object", "properties": {}}, effects=(ToolEffect.READ,)
+        ),
+        CommandDescriptor(
+            name="other",
+            owner="p",
+            description="2",
+            argument_schema={"type": "object", "properties": {}},
+            effects=(ToolEffect.READ,),
+            client_syntax="/foo bar",
+        ),
+    ]
+    terminal = _StubTerminal()
+    client = _CommandClient(catalog=catalog, results={})
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+
+    app._dispatch_slash_command("/foo bar")
+    time.sleep(0.2)
+    app._drain_events()
+    assert client.invoked == []
+    assert any("Unknown command" in row for row in terminal.committed), terminal.committed
+
+
+def test_dotted_syntax_hint_normalizes_to_spaced_path() -> None:
+    """An explicit `/foo.bar` hint projects to `/foo bar`; the dotted UI form stays rejected."""
+    import time
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    catalog = [
+        CommandDescriptor(
+            name="other",
+            owner="p",
+            description="2",
+            argument_schema={"type": "object", "properties": {}},
+            effects=(ToolEffect.READ,),
+            client_syntax="/foo.bar",
+        ),
+    ]
+    terminal = _StubTerminal()
+    client = _CommandClient(catalog=catalog, results={})
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+
+    app._dispatch_slash_command("/foo bar")
+    deadline = time.monotonic() + 5
+    while not client.invoked and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [name for _, name, _, _ in client.invoked] == ["other"]
+
+    client.invoked.clear()
+    app._dispatch_slash_command("/foo.bar")
+    time.sleep(0.2)
+    app._drain_events()
+    assert client.invoked == []
+    assert any("Unknown command" in row for row in terminal.committed), terminal.committed
+
+
+def test_shell_syntax_stays_reachable_as_slash_and_help_lists_spaced_names() -> None:
+    """`!`-syntax commands keep their derived `/shell` path; help lists spaced names only."""
+    import time
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    catalog = [
+        CommandDescriptor(
+            name="shell",
+            owner="p",
+            description="Run a shell command locally (the `!` escape).",
+            argument_schema={"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+            effects=(ToolEffect.EXECUTE,),
+            client_syntax="!",
+        ),
+        CommandDescriptor(
+            name="goal.set", owner="p", description="gs", argument_schema={"type": "object", "properties": {}}, effects=(ToolEffect.READ,)
+        ),
+    ]
+    terminal = _StubTerminal()
+    client = _CommandClient(catalog=catalog, results={})
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+
+    app._dispatch_slash_command("/shell echo hi")
+    deadline = time.monotonic() + 5
+    while not client.invoked and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [(name, args) for _, name, args, _ in client.invoked] == [("shell", {"command": "echo hi"})]
+
+    terminal.committed.clear()
+    app._dispatch_slash_command("/tui help")
+    assert any("/goal set" in row for row in terminal.committed), terminal.committed
+    assert not any("goal.set" in row for row in terminal.committed), terminal.committed
+
+
+def test_welcome_shows_once_on_empty_session_only() -> None:
+    """The welcome mark commits once per empty visit; resumed sessions and banner=None stay quiet."""
+    from rich.text import Text
+
+    from voidcode.config import BannerConfig
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal, banner=BannerConfig(text="◆", colors=("cyan",)))
+    app._maybe_welcome()
+    assert [Text.from_ansi(row).plain.strip() for row in terminal.committed] == ["◆"]
+    app._maybe_welcome()
+    assert [Text.from_ansi(row).plain.strip() for row in terminal.committed] == ["◆"]
+
+    resumed_terminal = _StubTerminal()
+    resumed = CoreTuiApp(_CommandClient(), session_id="s1", terminal=resumed_terminal)
+    resumed._session_cursors["s1"] = 3
+    resumed._maybe_welcome()
+    assert resumed_terminal.committed == []
+
+    class _ResumedClient(_CommandClient):
+        def get_session(self, session_id: str) -> SessionRow:
+            row = super().get_session(session_id)
+            return SessionRow(
+                session_id=row.session_id,
+                workspace=row.workspace,
+                status=row.status,
+                active_revision_id=row.active_revision_id,
+                run_id=row.run_id,
+                turn=row.turn,
+                last_event_sequence=2,
+            )
+
+    durable_terminal = _StubTerminal()
+    durable = CoreTuiApp(_ResumedClient(), session_id="s1", terminal=durable_terminal)
+    durable._maybe_welcome()
+    assert durable_terminal.committed == []
+
+    off_terminal = _StubTerminal()
+    off = CoreTuiApp(_CommandClient(), session_id="s1", terminal=off_terminal, banner=None)
+    off._maybe_welcome()
+    assert off_terminal.committed == []
+
+
+def test_welcome_rows_clip_center_and_sample_colors() -> None:
+    from rich.color import ColorSystem
+    from rich.style import Style
+    from rich.text import Text
+
+    from voidcode.config import BannerConfig
+    from voidcode.tui.styles import Styles
+    from voidcode.tui.term import visible_width
+    from voidcode.tui.terminal_app import _banner_rows
+
+    styles = Styles(None)
+    rows = _banner_rows(BannerConfig(text="◆\n  界\x07", colors=("red",)), styles, width=20)
+    assert rows[1].index("界") - rows[0].index("◆") == 2
+    assert all(visible_width(row) <= 20 for row in rows)
+    assert "\x07" not in "".join(rows)
+    assert abs(rows[0].index("◆") - (20 - max(visible_width(row) for row in rows))) <= 1
+
+    separated = _banner_rows(BannerConfig(text="◆\n\n  ◆", colors=("red",)), styles, width=20)
+    assert len(separated) == 3 and separated[1].strip() == ""
+    assert separated[2].index("◆") - separated[0].index("◆") == 2
+
+    colored = _banner_rows(
+        BannerConfig(text="◆\n  ◆", colors=("#010203", "#405060", "#a0b0c0")),
+        Styles(ColorSystem.TRUECOLOR),
+        width=20,
+    )
+    for row, expected in zip(colored, [(1, 2, 3), (160, 176, 192)], strict=True):
+        style = Text.from_ansi(row).spans[0].style
+        assert isinstance(style, Style) and style.color is not None
+        assert style.color.get_truecolor() == expected
+
+    narrow = _banner_rows(BannerConfig(text="界" * 8, colors=("red",)), styles, width=5)
+    assert narrow == ["界界"]
+    assert _banner_rows(BannerConfig(), styles, width=0) == []
+    assert _banner_rows(None, styles, width=80) == []
+    assert _banner_rows(BannerConfig(text="  \n \n", colors=("red",)), styles, width=80) == []

@@ -1401,7 +1401,7 @@ class WorkflowRunCommand:
         },
         effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN, ToolEffect.SESSION}),
         busy_gate=False,
-        client_syntax="/workflow.run",
+        client_syntax="/workflow run",
     )
 
     def __init__(self, workflows: Mapping[str, str] = _NO_CONFIG) -> None:
@@ -1441,7 +1441,7 @@ class WorkflowStatusCommand:
         },
         effects=frozenset({ToolEffect.READ}),
         busy_gate=False,
-        client_syntax="/workflow.status",
+        client_syntax="/workflow status",
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -1571,7 +1571,7 @@ class WorkflowPauseCommand:
         },
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
-        client_syntax="/workflow.pause",
+        client_syntax="/workflow pause",
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
@@ -1612,7 +1612,7 @@ class WorkflowResumeCommand:
         },
         effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN, ToolEffect.SESSION}),
         busy_gate=False,
-        client_syntax="/workflow.resume",
+        client_syntax="/workflow resume",
     )
 
     def __init__(self, workflows: Mapping[str, str] = _NO_CONFIG) -> None:
@@ -1669,7 +1669,7 @@ class WorkflowCancelCommand:
         },
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
-        client_syntax="/workflow.cancel",
+        client_syntax="/workflow cancel",
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:

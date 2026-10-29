@@ -488,3 +488,67 @@ def test_prepared_approval_target_ignores_later_source_edits(tmp_path: Path) -> 
         write_reload_plugin(source, tool_output="v3")
         assert core.resume(session.session_id, approval_request_id=str(approval_payload["request_id"]), decision="allow").status == "completed"
         assert core.revision_id == pinned
+
+
+def test_environment_provider_discovery_requires_reload_not_restart(tmp_path, monkeypatch) -> None:
+    from voidcode.bootstrap import bundled_sources
+    from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
+
+    for row in PROVIDER_TABLE:
+        for variable in row.env_vars:
+            monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "first-environment-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-environment-key")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with _server([_turn(output="before"), _turn(output="restarted"), _turn(output="reloaded")]) as server:
+        (workspace / "voidcode.json").write_text(
+            json.dumps(
+                {
+                    "model": {"model": "deepseek/a-model"},
+                    "providers": {"deepseek": {"base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
+                    "plugins": {name: {"enabled": name == "providers"} for name in bundled_sources()},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with open_core(workspace, state_dir=tmp_path / "state") as core:
+            session = core.create_session("environment-provider")
+            assert core.run("before", session_id=session.session_id).status == "completed"
+            shown = core.invoke_command(session.session_id, "model", {}, expected_revision=core.command_catalog().revision_id)
+            assert shown.status == "ok" and shown.output is not None
+            assert "openrouter" in shown.output
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "changed-environment-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "new-environment-provider")
+        with open_core(workspace, state_dir=tmp_path / "state") as core:
+            assert core.run("after restart", session_id=session.session_id).status == "completed"
+            shown = core.invoke_command(session.session_id, "model", {}, expected_revision=core.command_catalog().revision_id)
+            assert shown.status == "ok" and shown.output is not None
+            assert "openai" not in shown.output
+            reloaded = core.invoke_command(session.session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
+            assert reloaded.status == "ok", reloaded.error
+            assert core.run("after reload", session_id=session.session_id).status == "completed"
+            shown = core.invoke_command(session.session_id, "model", {}, expected_revision=core.command_catalog().revision_id)
+            assert shown.status == "ok" and shown.output is not None
+            assert "openai" in shown.output
+            public = json.dumps([json_wire_object(event.payload) for event in core.store.events(session.session_id)])
+            assert "first-environment-key" not in public
+            assert "changed-environment-key" not in public
+            assert "router-environment-key" not in public
+        assert [headers["authorization"] for headers in server.request_headers] == [
+            "Bearer " + key for key in ("first-environment-key", "first-environment-key", "changed-environment-key")
+        ]
+
+
+def test_environment_credentials_do_not_enable_disabled_provider_capabilities(tmp_path, monkeypatch) -> None:
+    from voidcode.bootstrap import bundled_sources
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "disabled-provider-key")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "voidcode.json").write_text(json.dumps({"plugins": {name: {"enabled": False} for name in bundled_sources()}}), encoding="utf-8")
+    with open_core(workspace, state_dir=tmp_path / "state") as core:
+        session = core.create_session("without-providers")
+        assert "model" not in {command.name for command in core.command_catalog().commands}
+    with open_core(workspace, state_dir=tmp_path / "state") as core:
+        assert core.session(session.session_id).session_id == session.session_id

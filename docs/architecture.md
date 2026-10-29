@@ -119,11 +119,11 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `mcp` | `mcp` tool and `/mcp` inventory |
 | `providers` | turn providers for OpenAI-compatible, Anthropic, and Google families, plus `/model` and `/providers` panels |
 | `session_info` | `/context`, `/usage`, `/export`, `/copy` |
-| `todo` | `todo` tool, `/todo`, `/todo.clear` |
-| `plan` | `/plan`, `/plan.off`, `/plan.status` collaboration mode |
+| `todo` | `todo` tool, `/todo`, `/todo clear` |
+| `plan` | `/plan`, `/plan off`, `/plan status` collaboration mode |
 | `skills` | `skill` tool and `/skills` |
 | `review` | `/review` |
-| `delegation` | `task`, `task_batch` (agent-facing delegation) plus `/agents`, `/agents.show` profiles |
+| `delegation` | `task`, `task_batch` (agent-facing delegation) plus `/agents`, `/agents show` profiles |
 | `btw` | `/btw` side question |
 | `cron` | `cron_create`, `cron_delete`, `cron_list`, `/loop` |
 | `compaction` | `/compact` context compaction |
@@ -131,7 +131,7 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `user_shell` | `/shell` user shell escape |
 | `effectiveness` | `/effectiveness` session-scoped metrics |
 | `goal` | thread goal tools and `/goal*` commands |
-| `workflows` | `workflow_run` tool, `/workflow.*` commands, scripted child-session graphs |
+| `workflows` | `workflow_run` tool, `/workflow <run\|status\|pause\|resume\|cancel>` commands, scripted child-session graphs |
 
 Which ids are admitted by default is decided in `bootstrap.py` (`BUNDLED_PLUGIN_IDS`); any additional id needs an explicit `plugins.<id>.path`.
 

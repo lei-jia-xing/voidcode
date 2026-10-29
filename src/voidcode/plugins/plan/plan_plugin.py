@@ -4,7 +4,7 @@ Ports the legacy plan-mode mechanism (``collaboration_mode`` in
 ``src/voidcode/runtime/permissions/policy.py`` plus ``PLAN_MODE_INSTRUCTION`` from
 ``src/voidcode/runtime/context/window.py``) onto the core's owner-scoped overlay primitive:
 - ``plan`` tightens the session with a read-only overlay, records the mode in
-  this plugin's own session state and contributes the verbatim plan instruction
+  this plugin's own session state and contributes the plan instruction
   to the provider context.
 - ``plan.off`` revokes exactly this owner's overlay and stops the contribution. A read-only
   policy frozen by the user (core config or another owner) is never affected: overlays can
@@ -33,18 +33,17 @@ from voidcode.sdk.tools import ToolEffect
 SCHEMA_VERSION = 1
 _STATE_KEYS: frozenset[str] = frozenset({"schema_version", "active"})
 
-#: Verbatim legacy plan-mode instruction (``runtime/context/window.py:PLAN_MODE_INSTRUCTION``).
 PLAN_MODE_INSTRUCTION = (
     "Plan mode is active. You are in a persistent conversational planning state. "
     "Explore, analyze, and formulate a clear, actionable plan. "
     "File modification and command execution that alters state are forbidden; read-only exploration and inspection are allowed. "
     "Deliver a structured, actionable implementation plan in your response. "
-    "The user can exit plan mode at any time using /plan.off."
+    "The user can exit plan mode at any time using /plan off."
 )
 
 ENABLED_OUTPUT = (
     "Plan mode enabled. File modification and command execution that alters state are forbidden; "
-    "read-only exploration and inspection are allowed. Use /plan.off to exit."
+    "read-only exploration and inspection are allowed. Use /plan off to exit."
 )
 DISABLED_OUTPUT = "Plan mode disabled."
 
