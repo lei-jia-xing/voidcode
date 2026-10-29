@@ -98,10 +98,10 @@ def _icon(value: object) -> Icon | None:
     if value is None:
         return None
     icon = _mapping(value)
-    glyph, fallback = icon.get("glyph"), icon.get("fallback")
-    if not isinstance(glyph, str) or not isinstance(fallback, str):
-        raise ValueError("tool icon requires glyph and fallback strings")
-    return Icon(glyph=glyph, fallback=fallback)
+    glyph = icon.get("glyph")
+    if not isinstance(glyph, str):
+        raise ValueError("tool icon requires a glyph string")
+    return Icon(glyph=glyph)
 
 
 def context_records(events: Sequence[StoredEvent]) -> tuple[ContextRecord, ...]:

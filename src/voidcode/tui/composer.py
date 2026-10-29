@@ -592,7 +592,7 @@ class Composer:
 
     def _input_row(self, gutter: str, content: str, layout_width: int, width: int) -> str:
         frame = _FRAMES[self._style]
-        vertical = symbol("boxRound.vertical") or "|"
+        vertical = symbol("boxRound.vertical")
         pad = " " * max(0, layout_width - visible_width(content))
         parts = []
         if frame.sides or frame.sidebar:
@@ -609,7 +609,7 @@ class Composer:
         return clamp_row("".join(parts), width)
 
     def _horizontal_rule(self, *, corners: bool = False, overlay: str = "") -> str:
-        horizontal = symbol("boxRound.horizontal") or "-"
+        horizontal = symbol("boxRound.horizontal")
         top_left = symbol("boxRound.topLeft")
         top_right = symbol("boxRound.topRight")
         inner_width = max(0, self._width - 2 if corners else self._width)
@@ -624,7 +624,7 @@ class Composer:
             return None
         frame = _FRAMES[self._style]
         width = self.status_width()
-        vertical = symbol("boxRound.vertical") or "|"
+        vertical = symbol("boxRound.vertical")
         row = clamp_row(status, width)
         if frame.status_dock == "band":
             row += " " * max(0, width - visible_width(row))
@@ -640,7 +640,7 @@ class Composer:
         frame = _FRAMES[self._style]
         status_row = self._status_row(status)
         padded = self._padding == "normal"
-        vertical = symbol("boxRound.vertical") or "|"
+        vertical = symbol("boxRound.vertical")
         padding_row = self._styles.fg("border", vertical + " " * max(0, self._width - 2) + vertical) if frame.sides else ""
         output: list[str] = []
         if frame.top_rule:
@@ -660,9 +660,7 @@ class Composer:
                 clamp_row(
                     self._styles.fg(
                         "border",
-                        symbol("boxRound.bottomLeft")
-                        + (symbol("boxRound.horizontal") or "-") * max(0, self._width - 2)
-                        + symbol("boxRound.bottomRight"),
+                        symbol("boxRound.bottomLeft") + symbol("boxRound.horizontal") * max(0, self._width - 2) + symbol("boxRound.bottomRight"),
                     ),
                     self._width,
                 )

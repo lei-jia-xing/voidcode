@@ -227,4 +227,4 @@ def test_tool_icon_absence_stays_generic_and_malformed_icon_fails_visibly():
     assert isinstance(old.content, TranscriptTool)
     assert old.content.icon is None
     with pytest.raises(ValueError):
-        transcript_entry(_event(11, "core.tool_completed", {"call": call, "result": result, "batch_sequence": 4, "icon": {"glyph": "x"}}))
+        transcript_entry(_event(11, "core.tool_completed", {"call": call, "result": result, "batch_sequence": 4, "icon": {"glyph": 1}}))

@@ -47,7 +47,6 @@ class TuiConfig(BaseModel):
     border: Literal["box", "borderless"] = "box"
     footer: Literal["full", "compact", "off"] = "full"
     show_session: bool = False
-    icons: Literal["glyph", "ascii"] = "glyph"
 
 
 class PolicyConfig(BaseModel):

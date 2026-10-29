@@ -260,7 +260,7 @@ def encode_transcript_content(content: TranscriptContent) -> dict[str, object]:
                 "interrupted": content.interrupted,
                 "batch_sequence": content.batch_sequence,
                 "deferred": content.deferred,
-                "icon": {"glyph": content.icon.glyph, "fallback": content.icon.fallback} if content.icon is not None else None,
+                "icon": {"glyph": content.icon.glyph} if content.icon is not None else None,
             },
         }
     if isinstance(content, TranscriptDispatch):

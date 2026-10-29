@@ -153,7 +153,7 @@ def _progress_sink(context: ToolContext) -> Callable[[str, bytes], None] | None:
 class ShellExecTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="shell_exec",
-        icon=Icon(glyph="⌁", fallback="$"),
+        icon=Icon(glyph="⌁"),
         description="Execute a command inside the current workspace.",
         input_schema=ShellExecArgs.model_json_schema(),
         effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),

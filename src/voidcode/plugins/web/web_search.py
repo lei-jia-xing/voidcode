@@ -379,7 +379,7 @@ PROVIDERS: tuple[SearchProvider, ...] = (
 class WebSearchTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="web_search",
-        icon=Icon(glyph="⌕", fallback="W"),
+        icon=Icon(glyph="⌕"),
         description="Search the web for information. Returns search results with titles, URLs, and snippets.",
         input_schema={
             "type": "object",

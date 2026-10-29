@@ -690,7 +690,7 @@ class ReadTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="read",
-        icon=Icon(glyph="⛁", fallback="R"),
+        icon=Icon(glyph="⛁"),
         description="Read a file or a resource URI.",
         input_schema=ReadArgs.model_json_schema(),
         effects=frozenset({ToolEffect.READ}),

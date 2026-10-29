@@ -3,6 +3,9 @@
 Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
+### Glyph-only tool icons (BREAKING)
+- Tool icons are one Unicode glyph (`Icon(glyph)`); the ASCII `fallback` field, TUI `--icons` flag, `tui.icons` config key, and web `iconStyle` prop / `?icons=ascii` param are removed with no aliases. Strict ingress rejects the old shapes; clients render the recorded glyph (`None` = generic mark).
+- The TUI is Unicode-only chrome: rounded box borders, a Unicode prompt, and a Braille working spinner (proven under a real PTY).
 
 ### WebSocket JSON-RPC transport (BREAKING)
 - Remote business communication now uses JSON-RPC 2.0 on `/api/rpc` with subprotocol `voidcode.rpc.v1`; business HTTP routes and SSE are removed. HTTP remains for static assets, health, and the generated contract document.

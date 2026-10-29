@@ -221,23 +221,19 @@ applied cursor or hot-reconnecting. SDK `StreamEvent.from_payload` +
 
 ## Tool Icons
 
-Each tool declares its own display identity (`Icon(glyph, fallback)` on
+Each tool declares its own display identity (`Icon(glyph)` on
 `ToolDefinition`; `None` means generic). The core snapshots the birth icon
-as an `icon` key (`{glyph, fallback} | null`) on the `core.tool_intent`
+as an `icon` key (`{glyph} | null`) on the `core.tool_intent`
 `core.tool_completed`/`core.tool_interrupted` payloads, and projects it to
 `TranscriptTool.icon` (`TranscriptToolWire.icon` on the wire, same
-optional value). Clients render the recorded value — `glyph` in glyph
-mode, `fallback` in ascii mode, generic mark when absent — and never map
-tool names to glyphs or re-resolve history from the live catalog. Modes
-are explicit per client (`glyph | ascii`, default `glyph`): the TUI takes
-`--icons glyph|ascii` (non-UTF8 output may force ascii as an encoding
-limit, never a font heuristic); the web client takes an `iconStyle` prop
-or `?icons=ascii` query param. No font detection is promised: UTF-8
-proves bytes travel, not that the font has the codepoint.
+optional value). Clients render the recorded glyph — generic mark when
+absent — and never map tool names to glyphs or re-resolve history from the
+live catalog. No font detection is promised: UTF-8 proves bytes travel, not
+that the font has the codepoint.
 
 ## Web Client
 
-The built bundle is served by the core at `/` (an exact file when present, otherwise `index.html`, so client-side routes survive a reload). During frontend development, Vite serves the app on `127.0.0.1:5173` and proxies `/api` to the core (`VITE_BACKEND_URL`, default `http://127.0.0.1:8765`). The `?icons=ascii` query param selects ASCII tool icons (default glyph), mirroring the `iconStyle` prop.
+The built bundle is served by the core at `/` (an exact file when present, otherwise `index.html`, so client-side routes survive a reload). During frontend development, Vite serves the app on `127.0.0.1:5173` and proxies `/api` to the core (`VITE_BACKEND_URL`, default `http://127.0.0.1:8765`).
 
 The core app (`frontend/src/core/`) renders the same catalog and views with pure components in `frontend/src/core/views/`; markdown goes through `react-markdown` + `remark-gfm` and never evaluates raw HTML. Each view applies its own `style` as a validated inline `style` prop via the one shared converter (`componentStyle.ts`): color/border/background only, scoped to that component, no global CSS, no classnames from data, no separate UI protocol. Every response, view render, form draft, and SSE frame is bound to the session that issued it, and revision binding follows the HTTP rules above.
 

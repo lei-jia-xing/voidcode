@@ -307,7 +307,7 @@ class CronCreateTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="cron_create",
-        icon=Icon(glyph="◷", fallback="C"),
+        icon=Icon(glyph="◷"),
         description=CRON_CREATE_DESCRIPTION,
         input_schema={
             "type": "object",
@@ -375,7 +375,7 @@ class CronDeleteTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="cron_delete",
-        icon=Icon(glyph="◷", fallback="C"),
+        icon=Icon(glyph="◷"),
         description=CRON_DELETE_DESCRIPTION,
         input_schema={
             "type": "object",
@@ -416,7 +416,7 @@ class CronListTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="cron_list",
-        icon=Icon(glyph="◷", fallback="C"),
+        icon=Icon(glyph="◷"),
         description=CRON_LIST_DESCRIPTION,
         input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),

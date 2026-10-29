@@ -79,7 +79,7 @@ class TallyAddTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="tally_add",
-        icon=Icon(glyph="∑", fallback="+"),
+        icon=Icon(glyph="∑"),
         description="Add a delta to this session's tally counter.",
         input_schema={
             "type": "object",

@@ -405,13 +405,6 @@ def _detect_color_system(is_tty: bool) -> ColorSystem | None:
     return ColorSystem.STANDARD
 
 
-def _detect_unicode() -> bool:
-    if os.name == "nt":
-        return True
-    encoding = (getattr(sys.stdout, "encoding", "") or "").lower()
-    return "utf" in encoding
-
-
 class TerminalCapabilityError(RuntimeError):
     """The requested native terminal behavior cannot be queried safely."""
 
@@ -431,14 +424,12 @@ class Terminal:
         is_tty: bool = False,
         size: tuple[int, int] = _DEFAULT_SIZE,
         color_system: ColorSystem | None = None,
-        unicode_ok: bool = True,
     ) -> None:
         self._input_fd = input_fd
         self._output_fd = output_fd
         self._is_tty = is_tty
         self._size = size
         self._color_system = color_system
-        self._unicode_ok = unicode_ok
         self._lock = threading.RLock()
         self._painted: list[str] = []
         self._painted_width = 0
@@ -485,7 +476,6 @@ class Terminal:
             is_tty=output_is_tty,
             size=_detect_size(output_fd if output_is_tty else None),
             color_system=_detect_color_system(output_is_tty),
-            unicode_ok=_detect_unicode(),
         )
         try:
             if output_is_tty:
@@ -521,11 +511,6 @@ class Terminal:
     def color_system(self) -> ColorSystem | None:
         """Detected colour depth; ``None`` means "no colour"."""
         return self._color_system
-
-    @property
-    def unicode_ok(self) -> bool:
-        """Whether the output encoding can carry non-ASCII glyphs."""
-        return self._unicode_ok
 
     @property
     def eof(self) -> bool:

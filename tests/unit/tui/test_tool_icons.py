@@ -21,46 +21,42 @@ def _plain(rows: list[str]) -> list[str]:
     return [PLAIN.sub("", row) for row in rows]
 
 
-def test_glyph_mode_renders_declared_glyph_ascii_mode_renders_fallback() -> None:
-    icon = Icon(glyph="\u276f", fallback=">")
-    assert render_icon(icon, "glyph") == "\u276f"
-    assert render_icon(icon, "ascii") == ">"
+def test_renders_declared_glyph() -> None:
+    icon = Icon(glyph="\u276f")
+    assert render_icon(icon) == "\u276f"
     # Distinct meanings, not pinned pixels: None -> a generic mark, empty -> nothing.
-    assert render_icon(None, "glyph") == render_icon(None, "ascii") != ""
-    assert render_icon(Icon(glyph="", fallback=""), "glyph") == ""
-    assert render_icon(Icon(glyph="", fallback=""), "ascii") == ""
+    assert render_icon(None) != ""
+    assert render_icon(Icon(glyph="")) == ""
 
 
 def test_builtin_looking_name_with_custom_icon_is_not_guessed() -> None:
     """A tool named like a builtin still renders exactly its declared icon."""
-    icon = Icon(glyph="\u754c", fallback="ZZ")
+    icon = Icon(glyph="\u754c")
     rows = render_tool_call("read", {}, 60, Styles(ColorSystem.STANDARD), icon=icon)
     assert "\u754c" in _plain(rows)[0]
 
 
 def test_icon_control_bytes_and_markup_are_visible_never_executed() -> None:
-    icon = Icon(glyph="x\x1b[31m", fallback="y")
-    assert render_icon(icon, "glyph") == "x\\x1b[31m"
+    icon = Icon(glyph="x\x1b[31m")
+    assert render_icon(icon) == "x\\x1b[31m"
     rows = render_tool_call("tool", {}, 60, Styles(ColorSystem.STANDARD), icon=icon)
     joined = "".join(rows)
     assert "\x1b[31m" not in joined
     assert "x\\x1b[31m" in PLAIN.sub("", joined)
-    markup = render_tool_call("tool", {}, 60, Styles(ColorSystem.STANDARD), icon=Icon(glyph="[red]x[/red]", fallback="m"))
+    markup = render_tool_call("tool", {}, 60, Styles(ColorSystem.STANDARD), icon=Icon(glyph="[red]x[/red]"))
     assert "[red]x[/red]" in _plain(markup)[0]  # plain Text, never Rich markup
 
 
 def test_wide_glyph_and_zwj_cluster_stay_whole_at_narrow_width() -> None:
     styles = Styles(ColorSystem.STANDARD)
     for mark in (_WIDE, _CLUSTER):
-        rows = render_tool_call("tool", {}, 16, styles, icon=Icon(glyph=mark, fallback="ab"), icon_style="glyph")
+        rows = render_tool_call("tool", {}, 16, styles, icon=Icon(glyph=mark))
         plain = _plain(rows)
         assert mark in plain[0], f"{mark!r} split or dropped at width 16"
         assert all(visible_width(row) <= 16 for row in plain)
-    rows = render_tool_call("tool", {}, 16, styles, icon=Icon(glyph=_WIDE, fallback="ab"), icon_style="ascii")
-    assert "ab" in _plain(rows)[0]
 
 
-def _icon_app(mode: str):
+def _icon_app():
     """App + rows with the shared stub client/terminal."""
     from voidcode.core.events import EventType  # noqa: F401
     from voidcode.sdk.client import CommandCatalog
@@ -70,7 +66,6 @@ def _icon_app(mode: str):
         width = 100
         eof = False
         color_system = None
-        unicode_ok = True
 
         def __init__(self) -> None:
             self.committed: list[str] = []
@@ -86,7 +81,7 @@ def _icon_app(mode: str):
         def command_catalog(self) -> CommandCatalog:
             return CommandCatalog(revision_id="rev-1", commands=())
 
-    return CoreTuiApp(_StubClient(), session_id="s1", terminal=_StubTerminal(), icon_style=mode)  # type: ignore[arg-type]
+    return CoreTuiApp(_StubClient(), session_id="s1", terminal=_StubTerminal())  # type: ignore[arg-type]
 
 
 def _stream_event(sequence: int, event_type: str, payload: dict, content=None):
@@ -112,7 +107,7 @@ def test_intent_header_then_result_renders_once_with_owned_icon() -> None:
     from voidcode.sdk.tools import TextOutput, ToolCall, ToolSuccess
     from voidcode.sdk.transcript import TranscriptTool
 
-    app = _icon_app("glyph")
+    app = _icon_app()
     rows: list[str] = []
     app._handle_stream_event(
         _stream_event(
@@ -122,7 +117,7 @@ def test_intent_header_then_result_renders_once_with_owned_icon() -> None:
                 "invocation_id": "iv-1",
                 "batch_sequence": 4,
                 "call": {"tool_name": "read", "arguments": {}, "tool_call_id": "call-9"},
-                "icon": {"glyph": "\u2211", "fallback": "+"},
+                "icon": {"glyph": "\u2211"},
             },
         ),
         rows,
@@ -152,7 +147,7 @@ def test_same_call_id_across_batches_never_leaks_icon() -> None:
     from voidcode.sdk.tools import TextOutput, ToolCall, ToolSuccess
     from voidcode.sdk.transcript import TranscriptTool
 
-    app = _icon_app("glyph")
+    app = _icon_app()
     rows: list[str] = []
     for seq, invocation, glyph in ((5, "iv-1", "\u2211"), (9, "iv-2", "\u754c")):
         app._handle_stream_event(
@@ -163,7 +158,7 @@ def test_same_call_id_across_batches_never_leaks_icon() -> None:
                     "invocation_id": invocation,
                     "batch_sequence": seq - 1,
                     "call": {"tool_name": "read", "arguments": {}, "tool_call_id": "call-9"},
-                    "icon": {"glyph": glyph, "fallback": "+"},
+                    "icon": {"glyph": glyph},
                 },
             ),
             rows,
@@ -196,7 +191,7 @@ def test_settled_result_without_intent_emits_recorded_icon_header_first() -> Non
     from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolSuccess
     from voidcode.sdk.transcript import TranscriptTool
 
-    app = _icon_app("ascii")
+    app = _icon_app()
     rows: list[str] = []
     app._handle_stream_event(
         _stream_event(
@@ -209,13 +204,13 @@ def test_settled_result_without_intent_emits_recorded_icon_header_first() -> Non
                 interrupted=False,
                 batch_sequence=4,
                 deferred=False,
-                icon=Icon(glyph="\u2211", fallback="+"),
+                icon=Icon(glyph="\u2211"),
             ),
         ),
         rows,
     )
     plain = _plain(rows)
-    header_at = next(i for i, row in enumerate(plain) if "+" in row and "read" in row)
+    header_at = next(i for i, row in enumerate(plain) if "\u2211" in row and "read" in row)
     body_at = next(i for i, row in enumerate(plain) if "body" in row)
     assert header_at < body_at
 
@@ -231,17 +226,17 @@ def test_settled_result_without_intent_emits_recorded_icon_header_first() -> Non
                 interrupted=True,
                 batch_sequence=4,
                 deferred=False,
-                icon=Icon(glyph="\u754c", fallback="Z"),
+                icon=Icon(glyph="\u754c"),
             ),
         ),
         failing,
     )
     failing_plain = _plain(failing)
-    header_at = next(i for i, row in enumerate(failing_plain) if "Z" in row)
+    header_at = next(i for i, row in enumerate(failing_plain) if "\u754c" in row)
     body_at = next(i for i, row in enumerate(failing_plain) if "stop" in row)
     assert header_at < body_at
 
-    with pytest.raises(ValueError, match="glyph and fallback"):
+    with pytest.raises(ValueError, match="glyph string"):
         app._handle_stream_event(
             _stream_event(8, "core.tool_intent", {"invocation_id": "iv-x", "call": {"tool_name": "t", "arguments": {}}, "icon": {"glyph": 1}}),
             [],

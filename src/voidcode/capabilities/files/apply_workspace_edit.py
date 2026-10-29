@@ -110,7 +110,7 @@ def _query_document_state(services: PluginServices, path: Path, *, tool_name: st
 class ApplyWorkspaceEditTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="apply_workspace_edit",
-        icon=Icon(glyph="✎", fallback="E"),
+        icon=Icon(glyph="✎"),
         description="Apply validated LSP text edits with document-version checks; runtime approval governs filesystem access.",
         input_schema=_WorkspaceEditArgs.model_json_schema(),
         effects=frozenset({ToolEffect.WRITE}),

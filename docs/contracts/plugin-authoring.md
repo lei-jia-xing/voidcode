@@ -49,12 +49,11 @@ same public seam, so an author hits no ceiling they do not also hit.
 
 Each tool declares `effects` (`read`, `write`, `execute`, `network`,
 `spawn`, `session`), an `input_schema`, `replay_policy`,
-`path_argument_keys`, and optionally `icon` (`Icon(glyph, fallback)` from
+`path_argument_keys`, and optionally `icon` (`Icon(glyph)` from
 `voidcode.sdk.icons`). The icon is the tool's own display identity: `glyph`
-is the preferred mark (plain Unicode text, NerdFont PUA allowed), `fallback`
-is the explicit printable-ASCII rendering for ascii mode (empty allowed,
-meaning "render nothing"). Omit `icon` and clients show their generic tool
-mark. The core snapshots the birth icon into the tool intent/result events
+is the mark clients render (plain Unicode text, NerdFont PUA allowed; empty
+means "render nothing"). Omit `icon` and clients show their generic tool mark.
+The core snapshots the birth icon into the tool intent/result events
 and `TranscriptTool.icon`; history keeps that value across reloads and
 removals, never re-resolving from the live catalog. Icons never enter
 provider function schemas. The core validates the model's

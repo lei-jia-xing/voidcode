@@ -26,16 +26,11 @@ import { PluginViewRenderer } from "./views/PluginViewRenderer";
 export interface CoreAppProps {
   baseUrl?: string;
   token?: string;
-  iconStyle?: "glyph" | "ascii";
 }
 
 /** Tool birth icon from the recorded transcript value; absent means generic. */
-function toolIconText(
-  icon: Icon | null | undefined,
-  style: "glyph" | "ascii",
-  generic: string,
-): string {
-  const pick = style === "ascii" ? icon?.fallback : icon?.glyph;
+function toolIconText(icon: Icon | null | undefined, generic: string): string {
+  const pick = icon?.glyph;
   return typeof pick === "string" ? pick : generic;
 }
 
@@ -91,21 +86,13 @@ interface PendingConfirmationEntry {
   revisionId: string;
 }
 
-export const CoreApp: React.FC<CoreAppProps> = ({
-  baseUrl = "",
-  token,
-  iconStyle,
-}) => {
+export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
   const searchParams =
     typeof window !== "undefined"
       ? new URLSearchParams(window.location.search)
       : null;
   const effectiveBaseUrl = baseUrl || searchParams?.get("server") || "";
   const effectiveToken = token || searchParams?.get("token") || undefined;
-  const iconParam = searchParams?.get("icons");
-  const effectiveIconStyle =
-    iconStyle ??
-    (iconParam === "ascii" || iconParam === "glyph" ? iconParam : "glyph");
 
   const client = useMemo(
     () => new CoreClient(effectiveBaseUrl, effectiveToken),
@@ -1360,8 +1347,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({
                         : "text-emerald-400 bg-emerald-950/20 border-emerald-900/50"
                     }`}
                   >
-                    {failed ? "✖" : "✔"}{" "}
-                    {toolIconText(tool.icon, effectiveIconStyle, "▷")}{" "}
+                    {failed ? "✖" : "✔"} {toolIconText(tool.icon, "▷")}{" "}
                     {t("core.toolLabel")} [{toolName}]:{" "}
                     {failed ? (errorMsg ?? text) : text}
                     {cueKey && (

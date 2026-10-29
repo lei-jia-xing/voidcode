@@ -54,23 +54,24 @@ def color_system_name(system: ColorSystem | None) -> ColorSystemName | None:
     return None if system is None else COLOR_SYSTEM_NAMES.get(system, "truecolor")
 
 
-#: Glyphs actually rendered (ported omp ``theme/symbols.ts`` ASCII subset;
+#: Glyphs actually rendered (ported omp ``theme/symbols.ts``;
 #: attribution in ``LICENSE.oh-my-pi``). Dead presets/overrides removed.
 SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "nav.cursor": ">",
-        "boxRound.topLeft": "+",
-        "boxRound.topRight": "+",
-        "boxRound.bottomLeft": "+",
-        "boxRound.bottomRight": "+",
-        "boxRound.horizontal": "-",
-        "boxRound.vertical": "|",
+        "nav.cursor": "❯",
+        "boxRound.topLeft": "╭",
+        "boxRound.topRight": "╮",
+        "boxRound.bottomLeft": "╰",
+        "boxRound.bottomRight": "╯",
+        "boxRound.horizontal": "─",
+        "boxRound.vertical": "│",
     }
 )
-#: ASCII spinner (ported omp ``SPINNER_FRAMES``); the only animation advanced.
-SPINNER_FRAMES: Final[tuple[str, ...]] = ("|", "/", "-", "\\")
+#: Braille spinner; the only animation advanced.
+SPINNER_FRAMES: Final[tuple[str, ...]] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 #: Single generic tool glyph. Tools declare their own icon (SDK contract owns
-TOOL_ICON: Final[str] = ">_"
+#: the mark).
+TOOL_ICON: Final[str] = "⬡"
 
 
 def symbol(key: str) -> str:
@@ -78,10 +79,9 @@ def symbol(key: str) -> str:
     return SYMBOLS.get(key, "")
 
 
-def render_icon(icon: Icon | None, icon_style: str) -> str:
-    """One tool icon for ``icon_style`` (``glyph``|``ascii``), control-free.
+def render_icon(icon: Icon | None) -> str:
+    """One tool icon: the declared glyph, control-free.
 
-    Declared icon: ``glyph`` in glyph mode, ``fallback`` in ascii mode.
     ``None`` icon: the generic placeholder. Empty strings render nothing.
     Never Rich/SGR markup: callers print the result as plain ``Text``.
     """
@@ -89,8 +89,7 @@ def render_icon(icon: Icon | None, icon_style: str) -> str:
         return TOOL_ICON
     from .term import escape_terminal_controls
 
-    text = icon.glyph if icon_style != "ascii" else icon.fallback
-    return escape_terminal_controls(text)
+    return escape_terminal_controls(icon.glyph)
 
 
 def _sgr(color: Color | None, *, background: bool, color_system: ColorSystem | None) -> str:

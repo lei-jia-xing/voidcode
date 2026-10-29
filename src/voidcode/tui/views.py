@@ -66,13 +66,11 @@ def render_assistant_markdown(text: str, width: int, styles: Styles | None = Non
     return render_markdown(MarkdownViewData(content=text), width, styles)
 
 
-def render_tool_call(
-    name: str, arguments: object, width: int, styles: Styles | None = None, icon: Icon | None = None, icon_style: str = "glyph"
-) -> list[str]:
+def render_tool_call(name: str, arguments: object, width: int, styles: Styles | None = None, icon: Icon | None = None) -> list[str]:
     """One tool-call header plus its pretty JSON arguments, never one raw line."""
     resolved = _styles_arg(styles)
     pretty = json.dumps(json_wire_value(arguments), indent=2, ensure_ascii=False, default=str)
-    glyph = render_icon(icon, icon_style)
+    glyph = render_icon(icon)
     header = Text.assemble(
         ((f"{glyph} " if glyph else ""), resolved.style("warning")),
         (f"> Tool call {escape_terminal_controls(name)}", resolved.style("warning", bold=True)),
@@ -374,9 +372,9 @@ class InteractiveApproval:
             return path, old, new
         return None
 
-    def render_rows(self, width: int, styles: Styles | None = None, *, icon_style: str = "glyph") -> list[str]:
+    def render_rows(self, width: int, styles: Styles | None = None) -> list[str]:
         resolved = _styles_arg(styles)
-        glyph = render_icon(self.icon, icon_style)
+        glyph = render_icon(self.icon)
         header = Text.assemble(
             ((f"{glyph} " if glyph else ""), resolved.style("warning")),
             ("Tool approval required", resolved.style("warning", bold=True)),

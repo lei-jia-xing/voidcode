@@ -88,7 +88,7 @@ class McpTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="mcp",
-        icon=Icon(glyph="⎔", fallback="M"),
+        icon=Icon(glyph="⎔"),
         description=(
             "Call a tool exposed by a configured MCP server: pass the server name, the remote tool name, and its arguments object. "
             "MCP servers are discovered dynamically, so never assume a remote tool is available, read-only, idempotent, "

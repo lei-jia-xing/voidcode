@@ -118,7 +118,7 @@ class LspTool:
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="lsp",
-        icon=Icon(glyph="λ", fallback="L"),
+        icon=Icon(glyph="λ"),
         description="LSP client for basic code intelligence lookups.",
         input_schema={
             "type": "object",

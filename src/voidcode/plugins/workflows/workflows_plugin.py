@@ -1287,7 +1287,7 @@ _WORKFLOW_RUN_DESCRIPTION = (
 class WorkflowRunTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="workflow_run",
-        icon=Icon(glyph="⤴", fallback="W"),
+        icon=Icon(glyph="⤴"),
         description=_WORKFLOW_RUN_DESCRIPTION,
         input_schema={
             "type": "object",

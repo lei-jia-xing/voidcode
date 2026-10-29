@@ -477,7 +477,7 @@ def _external_failure(*, tool_name: str, process_id: str, record: _ProcessRecord
 class BackgroundProcessTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="background_process",
-        icon=Icon(glyph="◷", fallback="B"),
+        icon=Icon(glyph="◷"),
         description=(
             "Manage a long-running background process. Use op=start to launch, ps to list the current workspace processes, "
             "logs to read bounded output, send to write stdin, or stop to terminate a process. "

@@ -421,7 +421,7 @@ class SkillTool:
     # description, so the catalog is not shipped twice on every provider request.
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="skill",
-        icon=Icon(glyph="✦", fallback="K"),
+        icon=Icon(glyph="✦"),
         description=SKILL_DESCRIPTION,
         input_schema={
             "type": "object",

@@ -259,7 +259,7 @@ def _run_preview_replace(
 class AstGrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="ast_grep",
-        icon=Icon(glyph="⌕", fallback="A"),
+        icon=Icon(glyph="⌕"),
         description=(
             "Structural code search and rewrite with ast-grep. Search and preview are read operations; replace mutates files and requires approval."
         ),

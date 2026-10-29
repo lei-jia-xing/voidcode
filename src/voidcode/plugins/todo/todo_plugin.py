@@ -991,7 +991,7 @@ def _load_state(services: PluginServices) -> tuple[TodoState, int]:
 class TodoTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="todo",
-        icon=Icon(glyph="☑", fallback="T"),
+        icon=Icon(glyph="☑"),
         description=TODO_DESCRIPTION,
         input_schema={
             "type": "object",

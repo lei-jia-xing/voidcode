@@ -116,7 +116,7 @@ class GrepResultBody:
 class GrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="grep",
-        icon=Icon(glyph="⌕", fallback="S"),
+        icon=Icon(glyph="⌕"),
         description=(
             "Search workspace files. Pattern is literal by default; set regex=true to use regular expressions, "
             "and ignore_case=true for case-insensitive matching."

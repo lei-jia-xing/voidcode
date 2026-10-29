@@ -51,7 +51,7 @@ function toolTranscript(
   opts: {
     status?: "ok" | "error";
     error?: string | null;
-    icon?: { glyph: string; fallback: string } | null;
+    icon?: { glyph: string } | null;
     interrupted?: boolean;
     execution?: {
       cancellation_signalled: boolean;
@@ -465,7 +465,7 @@ describe("gate preservation across upgrade_pending", () => {
 });
 
 describe("tool birth icons", () => {
-  it("renders the recorded glyph in glyph mode and fallback in ascii mode", async () => {
+  it("renders the recorded glyph", async () => {
     const head = JSON.stringify({
       session: { session_id: SESSION },
       events: [
@@ -480,10 +480,10 @@ describe("tool birth icons", () => {
               tool_name: "read",
               output: { type: "text", text: "contents" },
             },
-            icon: { glyph: "⛁", fallback: "R" },
+            icon: { glyph: "⛁" },
           },
           toolTranscript(3, "read", "contents", {
-            icon: { glyph: "⛁", fallback: "R" },
+            icon: { glyph: "⛁" },
           }),
         ),
       ],
@@ -529,15 +529,6 @@ describe("tool birth icons", () => {
     });
     expect(screen.getByTestId("event-3")).toHaveTextContent("Tool [read]");
     unmount();
-
-    const { unmount: unmount2 } = render(
-      <CoreApp baseUrl="" iconStyle="ascii" />,
-    );
-    await waitFor(() => {
-      expect(screen.getByTestId("event-3")).toHaveTextContent("R");
-    });
-    expect(screen.getByTestId("event-3")).not.toHaveTextContent("⛁");
-    unmount2();
   });
 
   it("falls back to the generic mark when history carries no icon", async () => {

@@ -87,7 +87,7 @@ class GlobResultBody:
 class GlobTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="glob",
-        icon=Icon(glyph="❋", fallback="G"),
+        icon=Icon(glyph="❋"),
         description="Find files matching a glob pattern.",
         input_schema={
             "type": "object",

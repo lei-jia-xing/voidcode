@@ -49,7 +49,7 @@ def _hash_file(path: Path) -> str:
 class WriteTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="write",
-        icon=Icon(glyph="✚", fallback="W"),
+        icon=Icon(glyph="✚"),
         description="Write a UTF-8 text file inside the current workspace.",
         input_schema={
             "type": "object",

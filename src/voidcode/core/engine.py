@@ -303,7 +303,7 @@ _CORE_TOOL_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffect, 
             "additionalProperties": False,
         },
         (ToolEffect.EXECUTE,),
-        Icon(glyph="\u21bb", fallback="R"),
+        Icon(glyph="↻"),
     ),
 )
 CORE_TOOL_NAMES = frozenset(name for name, _d, _s, _e, _i in _CORE_TOOL_SPECS)
@@ -4308,7 +4308,7 @@ class Core:
                             "effects": sorted(effect.value for effect in definition.effects),
                             "semantics": [],
                             "replay_policy": definition.effective_replay_policy,
-                            "icon": {"glyph": definition.icon.glyph, "fallback": definition.icon.fallback} if definition.icon is not None else None,
+                            "icon": {"glyph": definition.icon.glyph} if definition.icon is not None else None,
                             "logical_turn": execution.cursor.logical_turn,
                             "depth": cursor.deferred_depth,
                         },
@@ -4529,9 +4529,7 @@ class Core:
             "call": encode_tool_call(call),
             "result": encode_tool_result(result),
             "fact_metadata": metadata,
-            "icon": declaration.get("icon")
-            if intent is not None
-            else ({"glyph": definition.icon.glyph, "fallback": definition.icon.fallback} if definition and definition.icon else None),
+            "icon": declaration.get("icon") if intent is not None else ({"glyph": definition.icon.glyph} if definition and definition.icon else None),
             "logical_turn": execution.cursor.logical_turn,
         }
         if deferred:

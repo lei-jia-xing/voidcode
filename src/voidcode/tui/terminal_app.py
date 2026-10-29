@@ -172,7 +172,6 @@ def _content_rows(
     width: int,
     styles: Styles,
     *,
-    icon_style: str = "glyph",
     include_tool_header: bool = True,
 ) -> list[str]:
     """Render one typed transcript content into settled rows."""
@@ -204,7 +203,6 @@ def _content_rows(
                     width,
                     styles,
                     icon=content.icon,
-                    icon_style=icon_style,
                 )
             )
         rows.extend(_tool_result_rows(name, content.result, width, styles, interrupted=content.interrupted))
@@ -276,13 +274,10 @@ def _tool_icon(raw: object) -> Icon | None:
         return None
     if not isinstance(raw, Mapping):
         raise ValueError(f"tool icon must be an object or null, got {type(raw).__name__}")
-    glyph, fallback = raw.get("glyph"), raw.get("fallback")
-    if not isinstance(glyph, str) or not isinstance(fallback, str):
-        raise ValueError("tool icon requires glyph and fallback strings")
-    extra = set(raw) - {"glyph", "fallback"}
-    if extra:
-        raise ValueError(f"unknown tool icon keys: {sorted(extra)}")
-    return Icon(glyph=glyph, fallback=fallback)
+    glyph = raw.get("glyph")
+    if not isinstance(glyph, str):
+        raise ValueError("tool icon requires a glyph string")
+    return Icon(glyph=glyph)
 
 
 def _notice_row(text: object, tone: str, styles: Styles) -> str:
@@ -359,7 +354,6 @@ class CoreTuiApp:
         *,
         session_id: str | None = None,
         terminal: Terminal | None = None,
-        icon_style: Literal["glyph", "ascii"] = "glyph",
         border: Literal["box", "borderless"] = "box",
         footer: Literal["full", "compact", "off"] = "full",
         show_session: bool = False,
@@ -367,11 +361,6 @@ class CoreTuiApp:
     ) -> None:
         self.client = client
         self.terminal = terminal or Terminal.open()
-        if icon_style not in ("glyph", "ascii"):
-            raise ValueError("icon_style must be 'glyph' or 'ascii'")
-        # Non-UTF8 output cannot encode the glyph bytes: ascii mode is an
-        # encoding limit, never a font heuristic.
-        self.icon_style: Literal["glyph", "ascii"] = "ascii" if getattr(self.terminal, "unicode_ok", True) is False else icon_style
         if border not in ("box", "borderless"):
             raise ValueError("border must be 'box' or 'borderless'")
         if footer not in ("full", "compact", "off"):
@@ -798,9 +787,7 @@ class CoreTuiApp:
                 if isinstance(invocation, str) and invocation:
                     include_header = invocation not in self._tool_headers
                     self._tool_headers.discard(invocation)
-            rows.extend(
-                _content_rows(entry.content, self.terminal.width, self.styles, icon_style=self.icon_style, include_tool_header=include_header)
-            )
+            rows.extend(_content_rows(entry.content, self.terminal.width, self.styles, include_tool_header=include_header))
         if etype == EventType.TOOL_INTENT:
             invocation = payload.get("invocation_id")
             raw_call = payload.get("call")
@@ -816,7 +803,6 @@ class CoreTuiApp:
                             self.terminal.width,
                             self.styles,
                             icon=icon,
-                            icon_style=self.icon_style,
                         )
                     )
         elif etype == EventType.PROVIDER_PROGRESS:
@@ -1863,7 +1849,7 @@ class CoreTuiApp:
         notice_rows = (notice,) if notice else ()
         footer_rows = tuple(row for row in (*context_row, *notice_rows) if row)
         if self.pending_approval is not None:
-            rows = self.pending_approval.render_rows(width, self.styles, icon_style=self.icon_style)
+            rows = self.pending_approval.render_rows(width, self.styles)
             frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *footer_rows), cursor=None)
             self.terminal.paint_frame(frame)
         elif self.active_overlay is not None:
@@ -1888,7 +1874,6 @@ def run_tui(
     *,
     token: str | None = None,
     session_id: str | None = None,
-    icon_style: Literal["glyph", "ascii"] = "glyph",
     border: Literal["box", "borderless"] = "box",
     footer: Literal["full", "compact", "off"] = "full",
     show_session: bool = False,
@@ -1897,7 +1882,7 @@ def run_tui(
     from voidcode.bootstrap import open_session_client
 
     with open_session_client(server_url=server_url, token=token) as client:
-        app = CoreTuiApp(client, session_id=session_id, icon_style=icon_style, border=border, footer=footer, show_session=show_session)
+        app = CoreTuiApp(client, session_id=session_id, border=border, footer=footer, show_session=show_session)
         return app.run()
 
 
@@ -1906,7 +1891,6 @@ def run_embedded_tui(
     state_dir: object,
     *,
     session_id: str | None = None,
-    icon_style: Literal["glyph", "ascii"] = "glyph",
     border: Literal["box", "borderless"] = "box",
     footer: Literal["full", "compact", "off"] = "full",
     show_session: bool = False,
@@ -1923,7 +1907,6 @@ def run_embedded_tui(
         app = CoreTuiApp(
             client,
             session_id=session_id,
-            icon_style=icon_style,
             border=border,
             footer=footer,
             show_session=show_session,

@@ -576,14 +576,12 @@ export interface components {
         };
         /**
          * Icon
-         * @description One tool's display identity: preferred glyph + printable-ASCII fallback.
+         * @description One tool's display identity: its preferred glyph.
          *
-         *     Both fields are required and tool-owned. Empty string is a real value
+         *     The field is required and tool-owned. Empty string is a real value
          *     (render nothing), distinct from a missing icon (client generic).
          */
         Icon: {
-            /** Fallback */
-            fallback: string;
             /** Glyph */
             glyph: string;
         };
