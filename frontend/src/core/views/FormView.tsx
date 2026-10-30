@@ -9,6 +9,7 @@ import type { CoreClient } from "../../lib/core/client";
 import { componentFg, componentStyle } from "./componentStyle";
 
 export interface FormViewProps {
+  title?: string;
   data: Omit<FormViewData, "load_action" | "initial_values"> & {
     load_action?: string | null;
     initial_values?: Record<string, unknown>;
@@ -82,6 +83,16 @@ function coerce(
   const type = field.field_type || "text";
   const name = field.label || field.name;
 
+  if (
+    field.options != null &&
+    raw !== undefined &&
+    raw !== null &&
+    raw !== "" &&
+    !field.options.some((option) => option.id === raw)
+  ) {
+    return { error: t("core.formMustBeChoice", { field: name }) };
+  }
+
   if (type === "boolean") {
     if (typeof raw === "boolean") return { value: raw };
     // Untouched (or blank select) is not a value: the caller decides whether it
@@ -139,6 +150,7 @@ function coerce(
 }
 
 export const FormView: React.FC<FormViewProps> = ({
+  title,
   data,
   sessionId,
   revisionId,
@@ -167,13 +179,22 @@ export const FormView: React.FC<FormViewProps> = ({
   // The same form instance can be re-pointed at a different action (a goal that
   // did not exist becomes editable): re-seed from the new descriptor's initial
   // values, keeping only what the user actually drafted.
-  const descriptorKey = `${sessionId}::${revisionId}::${data.action}::${fields.map((f) => f.name).join(",")}`;
+  const fixedArgsKey = JSON.stringify(data.arguments || {});
+  const lastFixedArgsRef = useRef(fixedArgsKey);
+  const descriptorKey = `${sessionId}::${revisionId}::${data.action}::${fields.map((f) => f.name).join(",")}::${fixedArgsKey}`;
   const lastDescriptorRef = useRef<string>("");
   useEffect(() => {
     if (lastDescriptorRef.current === descriptorKey) {
       return;
     }
     lastDescriptorRef.current = descriptorKey;
+    if (lastFixedArgsRef.current !== fixedArgsKey) {
+      lastFixedArgsRef.current = fixedArgsKey;
+      dirtyRef.current = {};
+      setDirtyFields({});
+      setValidationError(null);
+      setLoadError(null);
+    }
     const seeded = (data.initial_values ?? {}) as Record<string, unknown>;
     setFormValues((prev) => {
       const next: Record<string, unknown> = {};
@@ -186,14 +207,14 @@ export const FormView: React.FC<FormViewProps> = ({
       }
       return next;
     });
-  }, [descriptorKey, fields, data.initial_values]);
+  }, [descriptorKey, fields, data.initial_values, fixedArgsKey]);
 
   const attemptedRef = useRef<Record<string, true>>({});
   const loadAction = data.load_action ?? null;
   // The revision is part of the identity: an activation commit that re-renders
   // this form under a new generation reads its prefill under that generation,
   // never under the one the fields were first displayed with.
-  const loadKey = `${sessionId}::${revisionId}::${loadAction ?? ""}::${data.action}`;
+  const loadKey = `${sessionId}::${revisionId}::${loadAction ?? ""}::${data.action}::${fixedArgsKey}`;
 
   useEffect(() => {
     if (!loadAction || attemptedRef.current[loadKey]) {
@@ -292,7 +313,7 @@ export const FormView: React.FC<FormViewProps> = ({
     event.preventDefault();
     setValidationError(null);
 
-    const args: Record<string, unknown> = {};
+    const args: Record<string, unknown> = { ...data.arguments };
     for (const field of fields) {
       // Absent (never loaded, never typed) is different from present-and-blank
       // (the user cleared it): only the latter may clear a nullable value.
@@ -340,7 +361,7 @@ export const FormView: React.FC<FormViewProps> = ({
           style={fg}
           className="font-semibold text-neutral-300 uppercase tracking-wider text-xs"
         >
-          {t("core.formTitle", { action: data.action })}
+          {title || t("core.formTitle", { action: data.action })}
         </div>
         {loading && (
           <span
@@ -395,7 +416,23 @@ export const FormView: React.FC<FormViewProps> = ({
                 )}
               </label>
 
-              {type === "boolean" ? (
+              {field.options != null ? (
+                <select
+                  id={`form-field-${field.name}`}
+                  data-testid={`form-input-${field.name}`}
+                  value={typeof value === "string" ? value : ""}
+                  disabled={disabled}
+                  onChange={(e) => handleChange(field.name, e.target.value)}
+                  className="w-full px-3 py-1.5 rounded bg-neutral-800 border border-neutral-700 text-neutral-100 text-sm"
+                >
+                  <option value="">{t("core.formUnset")}</option>
+                  {field.options.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              ) : type === "boolean" ? (
                 <select
                   id={`form-field-${field.name}`}
                   data-testid={`form-input-${field.name}`}

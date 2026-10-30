@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from .commands import CommandCatalog, CommandResult
+from .commands import CommandCatalog, CommandInputSnapshot, CommandResult
 from .hooks import StopCause
 from .json_values import json_wire_object, own_json_object
 from .limits import CLIENT_PROMPT_MAX_BYTES
@@ -491,6 +491,8 @@ class SessionClient(Protocol):
     def run(self, session_id: str, spec: RunSpec) -> RunResult: ...
 
     def resume(self, session_id: str, spec: ResumeSpec | None = None) -> RunResult: ...
+
+    def command_input(self, session_id: str, name: str, expected_revision: str) -> CommandInputSnapshot: ...
 
     def invoke_command(
         self,

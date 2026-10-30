@@ -7,6 +7,7 @@ import type { components } from "./generated/api";
 export type Schemas = components["schemas"];
 
 export type CommandDescriptor = Schemas["CommandDescriptor"];
+export type CommandInputSnapshot = Schemas["CommandInputSnapshot"];
 export type CommandResult = Schemas["CommandResult"];
 export type HealthStatus = Schemas["HealthStatus"];
 export type SessionRow = Schemas["SessionRow"];

@@ -15,6 +15,7 @@ from uuid import uuid4
 from voidcode.sdk.commands import (
     CommandDefinition,
     CommandInvocation,
+    CommandPresentation,
     CommandResult,
     ConfirmationRequest,
 )
@@ -880,6 +881,26 @@ class UpdateGoalTool:
 # --- Commands ---
 
 
+def _goal_presentation(goal: GoalState) -> CommandPresentation:
+    objective = goal.objective[:1800]
+    if len(goal.objective) > len(objective) or goal.objective_file_ref is not None:
+        objective += "\n\nObjective preview; open Edit goal to load the full objective."
+    lines = [
+        f"Status: {goal.status}",
+        objective,
+        f"Token budget: {goal.token_budget if goal.token_budget is not None else 'Unbounded'}",
+        f"Tokens used: {goal.tokens_used if goal.tokens_used is not None else 'Unknown'}",
+        f"Remaining tokens: {goal.remaining_tokens if goal.remaining_tokens is not None else 'Unknown'}",
+    ]
+    actions: list[dict[str, object]] = [{"label": "Edit goal", "action": "goal.edit", "prepare_input": True}]
+    if goal.status in {"active", "blocked", "usage-limited", "budget-limited"}:
+        actions.append({"label": "Pause goal", "action": "goal.pause"})
+    if goal.status in {"paused", "blocked", "usage-limited", "budget-limited"}:
+        actions.append({"label": "Resume goal", "action": "goal.resume"})
+    actions.append({"label": "Clear goal", "action": "goal.clear"})
+    return CommandPresentation(title="Current goal", view_type="markdown", data={"content": "\n\n".join(lines), "actions": actions})
+
+
 class GoalCommand:
     """Read-only query to inspect current goal status."""
 
@@ -892,13 +913,15 @@ class GoalCommand:
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
-        _ = invocation
         state_data, _ = services.get_state("session")
         if not state_data:
+            form = GoalFormView().render(invocation.context.session_id, services)
+            presentation = CommandPresentation(title=form.title, view_type="form", data=form.data)
             return CommandResult(
                 status="ok",
                 output="No active goal",
                 data={"goal": None, "remaining_tokens": None},
+                presentation=presentation,
             )
         goal = GoalState.from_dict(state_data)
         if goal is None:
@@ -910,6 +933,7 @@ class GoalCommand:
             status="ok",
             output=f"Goal ({goal.status}): {goal.objective}",
             data={"goal": goal.to_dict(), "remaining_tokens": goal.remaining_tokens},
+            presentation=_goal_presentation(goal),
         )
 
 
@@ -918,6 +942,7 @@ class GoalSetCommand:
 
     definition = CommandDefinition(
         name="goal.set",
+        text_argument="objective",
         description="Create a new goal or replace existing goal.",
         argument_schema={
             "type": "object",
@@ -931,6 +956,20 @@ class GoalSetCommand:
         effects=frozenset({ToolEffect.WRITE, ToolEffect.SESSION}),
         busy_gate=False,
     )
+
+    def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
+        _ = (invocation, services)
+        return CommandPresentation(
+            title="Set goal",
+            view_type="form",
+            data={
+                "action": self.definition.name,
+                "fields": [
+                    {"name": "objective", "label": "Objective", "field_type": "multiline"},
+                    {"name": "token_budget", "label": "Token budget", "field_type": "integer", "required": False},
+                ],
+            },
+        )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         state_data, version = services.get_state("session")
@@ -1014,6 +1053,7 @@ class GoalSetCommand:
             status="ok",
             output=f"Goal created: {new_goal.objective}",
             data={"goal": new_goal.to_dict(), "remaining_tokens": new_goal.remaining_tokens},
+            presentation=_goal_presentation(new_goal),
         )
 
 
@@ -1022,6 +1062,7 @@ class GoalEditCommand:
 
     definition = CommandDefinition(
         name="goal.edit",
+        text_argument="objective",
         description="Edit current goal objective or token budget.",
         argument_schema={
             "type": "object",
@@ -1034,6 +1075,13 @@ class GoalEditCommand:
         effects=frozenset({ToolEffect.WRITE, ToolEffect.SESSION}),
         busy_gate=False,
     )
+
+    def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
+        state, _ = services.get_state("session")
+        if not state:
+            return CommandPresentation(title="Edit goal", view_type="notice", data={"message": "No active goal. Use /goal set to create one."})
+        view = GoalFormView().render(invocation.context.session_id, services)
+        return CommandPresentation(title=view.title, view_type="form", data=view.data)
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         state_data, version = services.get_state("session")
@@ -1060,6 +1108,7 @@ class GoalEditCommand:
                 status="ok",
                 output=f"Goal edit form ({goal.status})",
                 data={"goal": goal.to_dict(), "initial_values": init_vals, "load_action": load_action},
+                presentation=self.prepare_input(invocation, services),
             )
 
         now = int(time.time() * 1000)
@@ -1131,6 +1180,7 @@ class GoalEditCommand:
             status="ok",
             output=f"Goal edited: {updated_goal.objective}",
             data={"goal": updated_goal.to_dict(), "remaining_tokens": updated_goal.remaining_tokens},
+            presentation=_goal_presentation(updated_goal),
         )
 
 
@@ -1172,7 +1222,7 @@ class GoalPauseCommand:
         services.cancel_continuations()
         services.replace_state(paused_goal.to_dict(), expected_version=version)
         services.stage_event("goal_paused", {"goal_id": goal.goal_id})
-        return CommandResult(status="ok", output="Goal paused", data={"goal": paused_goal.to_dict()})
+        return CommandResult(status="ok", output="Goal paused", data={"goal": paused_goal.to_dict()}, presentation=_goal_presentation(paused_goal))
 
 
 class GoalResumeCommand:
@@ -1251,6 +1301,7 @@ class GoalResumeCommand:
             status="ok",
             output=f"Goal resumed: {resumed_goal.objective}",
             data={"goal": resumed_goal.to_dict(), "remaining_tokens": resumed_goal.remaining_tokens},
+            presentation=_goal_presentation(resumed_goal),
         )
 
 
@@ -1269,7 +1320,9 @@ class GoalClearCommand:
         _ = invocation
         state_data, version = services.get_state("session")
         if not state_data:
-            return CommandResult(status="ok", output="No goal to clear", data={"cleared": True})
+            return CommandResult(
+                status="ok", output="No goal to clear", data={"cleared": True}, presentation=GoalSetCommand().prepare_input(invocation, services)
+            )
         goal = GoalState.from_dict(state_data)
         goal_id = goal.goal_id if goal is not None else ""
 
@@ -1277,7 +1330,9 @@ class GoalClearCommand:
         services.cancel_continuations()
         services.replace_state({}, expected_version=version)
         services.stage_event("goal_cleared", {"goal_id": goal_id})
-        return CommandResult(status="ok", output="Goal cleared", data={"cleared": True})
+        return CommandResult(
+            status="ok", output="Goal cleared", data={"cleared": True}, presentation=GoalSetCommand().prepare_input(invocation, services)
+        )
 
 
 class GoalLoadObjectiveCommand:
@@ -1285,6 +1340,7 @@ class GoalLoadObjectiveCommand:
 
     definition = CommandDefinition(
         name="goal.load_objective",
+        slash_visible=False,
         description="Retrieve full objective text for large goals.",
         argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),

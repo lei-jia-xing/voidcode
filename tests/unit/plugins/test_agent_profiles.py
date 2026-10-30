@@ -119,6 +119,27 @@ def test_agent_commands_report_actual_definition(tmp_path, monkeypatch):
     assert "model_preference" not in shown.data and "prompt_materialization" not in shown.data
     listed = AgentsCommand().invoke(CommandInvocation(context, "agents", {}), None)
     assert listed.status == "ok" and "helper" in listed.output
+    assert listed.presentation.view_type == "choices"
+    assert listed.presentation.data["action"] == "agents.show"
+    assert any(option["id"] == "helper" for option in listed.presentation.data["options"])
+    assert shown.presentation.view_type == "markdown"
+    assert shown.presentation.data["content"] == shown.output
     unknown = AgentShowCommand().invoke(CommandInvocation(context, "agents.show", {"name": "missing"}), None)
     assert unknown.status == "error"
     assert [tool.definition.name for tool in create_plugin({}).tools] == ["task", "task_batch"]
+
+
+def test_agent_input_discovers_names_without_executing_show(tmp_path, monkeypatch):
+    from voidcode.sdk.views import FormViewData, validate_form_submission
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "user"))
+    _write(project_agent_dir(tmp_path), "custom.md", _document())
+    context = ToolContext(tmp_path, "session", "run", "invocation", "revision", "user")
+    command = AgentShowCommand()
+    presentation = command.prepare_input(CommandInvocation(context, "agents.show"), None)
+    form = FormViewData.from_payload(presentation.data)
+    assert form.action == "agents.show"
+    assert any(option.id == "helper" for option in form.fields[0].options)
+    args = validate_form_submission(form, {"name": "helper"})
+    shown = command.invoke(CommandInvocation(context, form.action, args), None)
+    assert shown.output == "Help locally."

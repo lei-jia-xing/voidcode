@@ -64,9 +64,26 @@ class NoticeViewData:
 
 
 @dataclass(frozen=True, slots=True)
+class ViewAction:
+    """An explicit command action from a live, revision-bound presentation."""
+
+    label: str
+    action: str
+    arguments: Mapping[str, object] = field(default_factory=dict)
+    prepare_input: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.label.strip() or not self.action.strip():
+            raise ValueError("view action label and command must be non-empty")
+        if self.prepare_input and self.arguments:
+            raise ValueError("input preparation actions cannot carry invocation arguments")
+
+
+@dataclass(frozen=True, slots=True)
 class MarkdownViewData:
     content: str
     style: ComponentStyle | None = None
+    actions: tuple[ViewAction, ...] = ()
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> MarkdownViewData:
@@ -128,6 +145,15 @@ class FormField:
     label: str
     field_type: FormFieldType = "text"
     required: bool = True
+    #: None permits free text; an explicit option list restricts text to those ids.
+    options: tuple[ChoiceOption, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.options is not None:
+            object.__setattr__(self, "options", tuple(self.options))
+            ids = [option.id for option in self.options]
+            if self.field_type != "text" or any(not identifier for identifier in ids) or len(set(ids)) != len(ids):
+                raise ValueError("form options require a text field with unique non-empty ids")
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +163,13 @@ class FormViewData:
     initial_values: Mapping[str, object] = field(default_factory=dict)
     load_action: str | None = None
     style: ComponentStyle | None = None
+    #: Fixed action arguments (e.g. a state revision), never editable form fields.
+    arguments: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        names = [item.name for item in self.fields]
+        if len(names) != len(set(names)) or any(name in self.arguments for name in names):
+            raise ValueError("form fields must be unique and cannot shadow fixed arguments")
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> FormViewData:
@@ -349,11 +382,15 @@ def validate_form_submission(
     (the user cleared it): only the latter may clear a nullable value. Extra
     keys beyond the declared fields (load_action metadata) are ignored.
     """
-    arguments: dict[str, object] = {}
+    arguments = json_wire_object(view.arguments)
     for form_field in view.fields:
         name = form_field.name
         label = form_field.label or name
         raw = values.get(name)
+
+        if form_field.options is not None and raw not in (None, ""):
+            if not isinstance(raw, str) or raw not in {option.id for option in form_field.options}:
+                raise ValueError(f"Field '{label}' must be one of the available choices.")
 
         # Absent (never loaded, never typed) is not the same as present-but-blank
         # (the user cleared it): only the latter may clear a nullable value.

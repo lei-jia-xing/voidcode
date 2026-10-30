@@ -5,7 +5,7 @@ Call tools exposed by configured MCP servers through one stable tool.
 ## Surface
 
 - Tool `mcp` with `server`, `tool`, and optional `arguments` object (validated against the discovered input schema). Effects `WRITE` + `NETWORK`, never replayed: MCP calls are treated as mutating and network-capable, so they may require approval.
-- Command `/mcp` (no arguments): lists configured servers and their known tools without connecting.
+- Command `/mcp`: selects a configured server without connecting. `/mcp <server>` opens cached status, startup errors, and paged tool details, including enabled/disabled state and reasons. Structured arguments accept `server` and a non-negative tool `offset`; pages contain at most ten tools and preview long metadata. Unknown discovery stays distinct from a known empty tool list. Configuration changes require `/core reload`.
 - Context contribution naming the configured servers and their known tools (bounded: 32 servers, 50 tools each, 4000 bytes).
 
 ## Configuration

@@ -358,6 +358,17 @@ export class CoreClient {
       max_steps: maxSteps,
     });
   }
+  async commandInput(
+    sessionId: string,
+    name: string,
+    expectedRevision: string,
+  ) {
+    return this.call("command.input", {
+      session_id: sessionId,
+      name,
+      expected_revision: expectedRevision,
+    });
+  }
   async invoke(
     sessionId: string,
     name: string,

@@ -331,7 +331,7 @@ def test_create_plugin_registers_declared_reader_and_command() -> None:
     plugin = create_plugin({"enabled": True})
     assert plugin.tools == ()
     assert [reader.scheme for reader in plugin.resource_readers] == ["skill"]
-    assert [command.definition.name for command in plugin.commands] == ["skills"]
+    assert [command.definition.name for command in plugin.commands] == ["skills", "skills.show"]
 
 
 @pytest.mark.parametrize(
@@ -362,3 +362,65 @@ def test_catalog_escapes_skill_metadata_in_xml(tmp_path: Path) -> None:
     document = ElementTree.fromstring(catalog[catalog.index("<available_skills>") :])
     assert len(document.findall("skill")) == 1
     assert document.findtext("skill/description") == description
+
+
+def test_skill_browser_selects_disabled_metadata_and_pages_unicode_without_loss(tmp_path: Path) -> None:
+    import json
+
+    from voidcode.plugins.skills.skills_plugin import SkillShowCommand
+    from voidcode.sdk.views import ChoicesViewData, MarkdownViewData, choices_dispatch
+
+    body = "技能🙂" * 4000
+    _write_skill(tmp_path, name="long", description="Long guide", body=body)
+    config = SkillsConfig(enabled=True, rules=(SkillEnableRule(name="long", enabled=False),))
+    context = _context(tmp_path)
+    listed = SkillsCommand(config).invoke(CommandInvocation(context, "skills"), FakeServices())
+    action, arguments = choices_dispatch(ChoicesViewData.from_payload(listed.presentation.data), "long")
+    assert action == "skills.show"
+    result = SkillShowCommand(config).invoke(CommandInvocation(context, action, {**arguments, "limit": 500}), FakeServices())
+    assert result.status == "ok" and result.data["enabled"] is False
+    detail = MarkdownViewData.from_payload(result.presentation.data)
+    assert "Status: disabled" in detail.content and "SKILL.md" in detail.content
+    next_page = next(action for action in detail.actions if action.label == "Next page")
+    assert next_page.arguments["offset"] == 500
+    second = SkillShowCommand(config).invoke(CommandInvocation(context, next_page.action, next_page.arguments), FakeServices())
+    assert second.data["offset"] == 500 and second.data["next_offset"] == 1000
+    assert "Previous page" in [action.label for action in MarkdownViewData.from_payload(second.presentation.data).actions]
+    assert len(json.dumps(result.as_payload(), ensure_ascii=False).encode()) < 64 * 1024
+
+
+def test_skill_browser_reports_empty_disabled_and_bad_offsets(tmp_path: Path) -> None:
+    from voidcode.plugins.skills.skills_plugin import SkillShowCommand
+
+    context = _context(tmp_path)
+    assert SkillsCommand(SkillsConfig()).invoke(CommandInvocation(context, "skills"), FakeServices()).presentation.view_type == "notice"
+    command = SkillShowCommand(SkillsConfig(enabled=True))
+    assert command.prepare_input(CommandInvocation(context, "skills.show"), FakeServices()).view_type == "notice"
+    _write_skill(tmp_path, name="tiny", description="Tiny", body="hello")
+    result = command.invoke(CommandInvocation(context, "skills.show", {"name": "tiny", "offset": 999}), FakeServices())
+    assert result.status == "error" and "beyond" in result.error
+    missing = command.invoke(CommandInvocation(context, "skills.show", {"name": "missing"}), FakeServices())
+    assert missing.status == "error" and "Unknown skill" in missing.error
+
+
+def test_skill_browser_adapts_emoji_pages_to_serialized_view_limit(tmp_path: Path) -> None:
+    from voidcode.plugins.skills.skills_plugin import SkillShowCommand
+    from voidcode.sdk.views import MarkdownViewData
+
+    _write_skill(tmp_path, name="emoji", description="Guide", body="🙂" * 9000)
+    command = SkillShowCommand(SkillsConfig(enabled=True))
+    arguments = {"name": "emoji", "limit": 6000}
+    offset = 0
+    while True:
+        result = command.invoke(CommandInvocation(_context(tmp_path), "skills.show", arguments), FakeServices())
+        assert result.status == "ok"
+        assert result.data["offset"] == offset
+        detail = MarkdownViewData.from_payload(result.presentation.data)
+        next_page = next((action for action in detail.actions if action.label == "Next page"), None)
+        if next_page is None:
+            assert result.data["next_offset"] is None
+            break
+        assert offset < next_page.arguments["offset"] <= offset + 6000
+        offset = next_page.arguments["offset"]
+        arguments = dict(next_page.arguments)
+    assert offset > 0

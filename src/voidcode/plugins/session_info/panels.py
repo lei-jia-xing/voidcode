@@ -6,7 +6,7 @@ import json
 
 from markdown_it import MarkdownIt
 
-from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
 from voidcode.sdk.services import PluginServices, SessionUsageReport
@@ -20,7 +20,7 @@ _EXPORT_CHARS = 200_000
 
 
 _PANEL_DESCRIPTIONS: dict[str, str] = {
-    "context": "Show what the model context is made of, with measured and estimated sizes.",
+    "context": "Show committed context character sizes and measured session token usage.",
     "usage": "Show measured token usage, cost and the active budget for this session.",
     "export": "Export the session transcript as Markdown.",
     "copy": "List copyable blocks from the last assistant response.",
@@ -34,7 +34,11 @@ class SessionInfoCommand:
         self.definition = CommandDefinition(
             name=panel,
             description=_PANEL_DESCRIPTIONS[panel],
-            argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            argument_schema={
+                "type": "object",
+                "properties": {"offset": {"type": "integer", "minimum": 0}} if panel == "context" else {},
+                "additionalProperties": False,
+            },
         )
         self._panel = panel
 
@@ -47,7 +51,7 @@ class SessionInfoCommand:
         if self._panel == "context":
             if truncated:
                 return CommandResult(status="error", error="transcript scan limit reached; cannot identify the latest dispatched context")
-            return _context(entries, usage, truncated)
+            return _context(entries, usage, truncated, offset=invocation.arguments.get("offset", 0))
         if self._panel == "export":
             return _export(entries, usage, truncated, source_events)
         if self._panel == "copy":
@@ -71,7 +75,7 @@ def _read_transcript(services: PluginServices) -> tuple[tuple[TranscriptEntry, .
     return tuple(entries), True, scanned
 
 
-def _context(entries: tuple[TranscriptEntry, ...], usage: SessionUsageReport, truncated: bool) -> CommandResult:
+def _context(entries: tuple[TranscriptEntry, ...], usage: SessionUsageReport, truncated: bool, *, offset: object = 0) -> CommandResult:
     window = next(((entry.sequence, entry.content.window) for entry in reversed(entries) if isinstance(entry.content, TranscriptDispatch)), None)
     data: dict[str, object] = {
         "events_window_truncated": truncated,
@@ -84,10 +88,24 @@ def _context(entries: tuple[TranscriptEntry, ...], usage: SessionUsageReport, tr
         "total_characters": None,
         "segments": [],
     }
+    if type(offset) is not int or offset < 0:
+        return CommandResult(status="error", error="Context offset must be a non-negative integer.")
     lines = [f"measured input tokens: {usage.input_tokens} (cache read: {usage.cache_read_tokens})"]
     if window is None:
         lines.append("no dispatched provider request has been measured for this session yet")
-        return CommandResult(status="ok", output="\n".join(lines), data=data)
+        return CommandResult(
+            status="ok",
+            output="\n".join(lines),
+            data=data,
+            presentation=CommandPresentation(
+                title="Model context",
+                view_type="notice",
+                data={
+                    "message": "No committed provider dispatch is available yet. Run a prompt to inspect its context; "
+                    "context capacity and token pressure are unknown."
+                },
+            ),
+        )
 
     sequence, measured = window
     data.update(
@@ -113,7 +131,33 @@ def _context(entries: tuple[TranscriptEntry, ...], usage: SessionUsageReport, tr
         if segment.reasoning_characters:
             detail += f" reasoning={segment.reasoning_characters} chars"
         lines.append(f"{detail}: {segment.characters} chars")
-    return CommandResult(status="ok", output="\n".join(lines), data=data)
+    if offset > len(measured.segments):
+        return CommandResult(status="error", error="Context changed; reopen /context from the first segment.")
+    detail = [
+        f"Last committed dispatch: {sequence}",
+        f"Messages: {measured.message_characters} characters "
+        f"· Tool schemas: {measured.tool_schema_characters} characters · Tools: {measured.tool_count}",
+        "Character counts use core-side neutral encoding; provider token counts and context capacity cannot be inferred from them.",
+        f"Measured session input tokens (cumulative): {usage.input_tokens if usage.input_tokens is not None else 'Unknown'}",
+        f"Segments {offset}–{min(offset + 20, len(measured.segments))} of {len(measured.segments)}",
+    ]
+    for index, segment in enumerate(measured.segments[offset : offset + 20], start=offset):
+        detail.append(
+            f"- {index}: {segment.role} · {segment.characters} characters · {segment.reasoning_characters} reasoning characters"
+            + (f" · tool {segment.tool_name[:80]}" if segment.tool_name else "")
+            + f" · {segment.tool_calls} tool calls"
+        )
+    actions: list[dict[str, object]] = [{"label": "Refresh context", "action": "context"}, {"label": "Session usage", "action": "usage"}]
+    if offset:
+        actions.append({"label": "Previous segments", "action": "context", "arguments": {"offset": max(0, offset - 20)}})
+    if offset + 20 < len(measured.segments):
+        actions.append({"label": "Next segments", "action": "context", "arguments": {"offset": offset + 20}})
+    return CommandResult(
+        status="ok",
+        output="\n".join(lines),
+        data=data,
+        presentation=CommandPresentation(title="Model context", view_type="markdown", data={"content": "\n\n".join(detail), "actions": actions}),
+    )
 
 
 def _usage(services: PluginServices, usage: SessionUsageReport) -> CommandResult:
@@ -129,7 +173,40 @@ def _usage(services: PluginServices, usage: SessionUsageReport) -> CommandResult
     ]
     if budget is not None:
         lines.append(f"budget: {budget.as_payload()}")
-    return CommandResult(status="ok", output="\n".join(lines), data=data)
+    rows = [
+        {"label": label, "value": "Unknown" if value is None else str(value)}
+        for label, value in (
+            ("Turns", usage.turn_count),
+            ("Input tokens", usage.input_tokens),
+            ("Uncached input tokens", usage.uncached_input_tokens),
+            ("Cache-read tokens", usage.cache_read_tokens),
+            ("Output tokens", usage.output_tokens),
+            ("Cost (USD)", usage.total_cost_usd),
+            ("Elapsed seconds", usage.elapsed_seconds),
+            ("Usage coverage", "Incomplete or unknown" if usage.has_unknown_usage else "Reported"),
+        )
+    ]
+    if budget is None:
+        rows.append({"label": "Active budget", "value": "None"})
+    else:
+        rows.extend(
+            {"label": label, "value": "Unbounded" if value is None else str(value)}
+            for label, value in (
+                ("Budget owner", budget.owner),
+                ("Budget begins after sequence", budget.since_sequence),
+                ("Input token ceiling", budget.max_input_tokens),
+                ("Output token ceiling", budget.max_output_tokens),
+                ("Total token ceiling", budget.max_total_tokens),
+                ("Cost ceiling (USD)", budget.max_cost_usd),
+                ("Elapsed ceiling (seconds)", budget.max_elapsed_seconds),
+            )
+        )
+    return CommandResult(
+        status="ok",
+        output="\n".join(lines),
+        data=data,
+        presentation=CommandPresentation(title="Session usage", view_type="fields", data={"rows": rows}),
+    )
 
 
 def _export(entries: tuple[TranscriptEntry, ...], usage: SessionUsageReport, truncated: bool, source_events: int) -> CommandResult:

@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import ApprovalRequestedFact, ChildSpawnedFact, ContextProjectedFact, InvocationFinishedFact, PluginFact, RunRequestedFact
 from voidcode.sdk.services import PluginServices, SessionUsageReport
 from voidcode.sdk.tools import ToolEffect
@@ -366,7 +366,7 @@ class EffectivenessCommand:
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="effectiveness",
         description="Show aggregate tool-effectiveness metrics for this session.",
-        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        argument_schema={"type": "object", "properties": {"offset": {"type": "integer", "minimum": 0}}, "additionalProperties": False},
         effects=frozenset({ToolEffect.READ}),
         busy_gate=False,
     )
@@ -379,4 +379,52 @@ class EffectivenessCommand:
             facts=read_session_facts(services),
             usage=services.get_usage(),
         )
-        return CommandResult(status="ok", output=render_summary(report), data=report.to_payload())
+        offset = invocation.arguments.get("offset", 0)
+        count = max(len(report.tools), len(report.models))
+        if type(offset) is not int or not 0 <= offset <= count:
+            return CommandResult(status="error", error="Metrics changed; reopen /effectiveness from the first page.")
+
+        def measured(value: int | float | None) -> str:
+            return "Unknown" if value is None else str(value)
+
+        lines = [
+            f"# Session effectiveness\n\nTool calls: {report.tool_call_count} · Successes: {report.success_count} · Errors: {report.error_count}",
+            f"Success rate: {'Unknown (no calls)' if report.success_rate is None else _format_rate(report.success_rate)}",
+            f"Input tokens: {measured(report.input_tokens)} · Output tokens: {measured(report.output_tokens)}",
+            f"Cache-read tokens: {measured(report.cache_read_tokens)} · Uncached input: {measured(report.uncached_input_tokens)}",
+            f"Cache hit rate: {'Unknown' if report.cache_hit_rate is None else _format_rate(report.cache_hit_rate)}"
+            f" · Cost (USD): {measured(report.cost_usd)}",
+            "Usage coverage: incomplete or unknown" if report.has_unknown_usage else "Usage coverage: reported",
+            f"Repeated reads: {report.repeated_read_count} · Follow-up reads: {report.followup_read_count}",
+            f"Compactions: {report.compaction_count} · Approvals: {report.approval_request_count} · Delegated tasks: {report.delegated_task_count}",
+        ]
+        if not report.tools:
+            lines.append("No persisted tool calls for this session.")
+        for tool in report.tools[offset : offset + 10]:
+            lines.append(
+                f"## {tool.tool[:100]}\nCalls: {tool.calls} · Successes: {tool.successes} · Errors: {tool.errors} "
+                f"· Unknown results: {tool.unknown_results}\n"
+                f"Retries after error: {tool.retries_after_error} · Truncated: {tool.truncated_results} · Partial: {tool.partial_results}"
+            )
+            for kind, occurrences in list(tool.error_kinds.items())[:3]:
+                lines.append(f"- {kind[:40]}: {occurrences}")
+            if len(tool.error_kinds) > 3:
+                lines.append(f"Showing 3 of {len(tool.error_kinds)} error categories; full categories remain in structured command data.")
+        for model in report.models[offset : offset + 10]:
+            lines.append(
+                f"Model {model.model[:100]}: {model.edit_calls} edits · {model.edit_errors} errors "
+                f"· {model.edit_ambiguous_match_count} ambiguous matches"
+            )
+        actions: list[dict[str, object]] = [{"label": "Refresh metrics", "action": "effectiveness"}]
+        if offset:
+            actions.append({"label": "Previous metrics", "action": "effectiveness", "arguments": {"offset": max(0, offset - 10)}})
+        if offset + 10 < count:
+            actions.append({"label": "Next metrics", "action": "effectiveness", "arguments": {"offset": offset + 10}})
+        return CommandResult(
+            status="ok",
+            output=render_summary(report),
+            data=report.to_payload(),
+            presentation=CommandPresentation(
+                title="Session effectiveness", view_type="markdown", data={"content": "\n\n".join(lines), "actions": actions}
+            ),
+        )

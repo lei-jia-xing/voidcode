@@ -33,7 +33,7 @@ from voidcode.sdk.views import (
 
 from .keys import Key
 from .styles import Styles, markdown_theme, render_icon, resolve_component, syntax_theme
-from .term import escape_terminal_controls, render_lines
+from .term import clamp_row, escape_terminal_controls, render_lines
 
 
 def _styles_arg(styles: Styles | None) -> Styles:
@@ -238,10 +238,62 @@ def render_status(data: StatusViewData, width: int, styles: Styles | None = None
     return render_lines(text, width, theme=markdown_theme(), color_system=resolved.color_system)
 
 
+class InteractiveMarkdown:
+    """A scrollable detail with explicit actions; never mounted from history replay."""
+
+    def __init__(self, data: MarkdownViewData, *, revision_id: str, title: str) -> None:
+        self.view = data
+        self.revision_id = revision_id
+        self.title = title
+        self.selected_index = 0
+        self.scroll = 0
+        self._max_scroll = 0
+
+    @property
+    def action(self) -> str:
+        return self.view.actions[self.selected_index].action
+
+    def handle_key(self, key: Key) -> dict[str, Any] | None:
+        if key.name == "esc":
+            return {"cancel": True}
+        if key.name in ("up", "down", "pageUp", "pageDown", "home", "end"):
+            delta = {"up": -1, "down": 1, "pageUp": -8, "pageDown": 8, "home": -self._max_scroll, "end": self._max_scroll}[key.name]
+            self.scroll = min(self._max_scroll, max(0, self.scroll + delta))
+        elif self.view.actions and key.name in ("tab", "right", "shift+tab", "left"):
+            self.selected_index = (self.selected_index + (-1 if key.name in ("shift+tab", "left") else 1)) % len(self.view.actions)
+        elif self.view.actions and key.name == "enter":
+            action = self.view.actions[self.selected_index]
+            return {"action": action.action, "arguments": dict(action.arguments), "prepare_input": action.prepare_input}
+        return None
+
+    def render_rows(self, width: int, styles: Styles | None = None, *, max_rows: int = 22) -> list[str]:
+        resolved = _styles_arg(styles)
+        body = render_markdown(self.view, max(1, width - 4), resolved)
+        action_rows = min(3, max(1, max_rows - 5))
+        body_rows = max(1, max_rows - action_rows - 4)
+        self._max_scroll = max(0, len(body) - body_rows)
+        self.scroll = min(self.scroll, self._max_scroll)
+        text = Text(clamp_row("↑/↓ scroll · Tab action · Enter · Esc", max(1, width - 4)) + "\n", style=resolved.style("text"))
+        text.append_text(Text.from_ansi("\n".join(body[self.scroll : self.scroll + body_rows])))
+        indicator = f"Lines {self.scroll + 1}–{min(self.scroll + body_rows, len(body))}/{len(body)}"
+        text.append("\n" + clamp_row(indicator, max(1, width - 4)), style=resolved.style("text"))
+        start = max(0, self.selected_index - action_rows + 1)
+        for index, action in enumerate(self.view.actions[start : start + action_rows], start=start):
+            selected = index == self.selected_index
+            text.append(
+                "\n" + clamp_row(f"{'❯' if selected else ' '} {escape_terminal_controls(action.label)}", max(1, width - 4)),
+                style=resolved.style("accent" if selected else "text", bold=selected),
+            )
+        return render_lines(
+            Panel(text, title=escape_terminal_controls(self.title), expand=True), width, theme=markdown_theme(), color_system=resolved.color_system
+        )
+
+
 class InteractiveChoices:
     """Interactive selector for ChoicesView."""
 
-    def __init__(self, data: ChoicesViewData, *, revision_id: str = "") -> None:
+    def __init__(self, data: ChoicesViewData, *, revision_id: str = "", title: str = "Choose an option") -> None:
+        self.title = title
         self.view = data
         #: The revision of the envelope that rendered these options; the
         #: selection is dispatched under exactly that generation.
@@ -287,7 +339,7 @@ class InteractiveChoices:
                 text.append(f"   [{i + 1}] {label}\n", style=resolved.style(tone_slot or "text", color=fg, background=bg))
         panel = Panel(
             text,
-            title=f"Action: {escape_terminal_controls(self.view.action)}",
+            title=escape_terminal_controls(self.title),
             border_style=resolved.style(tone_slot or "warning", color=fg, background=bg),
             expand=True,
         )
@@ -443,7 +495,10 @@ class InteractiveApproval:
 class InteractiveForm:
     """Interactive Form View supporting text, multiline, integer, number, boolean."""
 
-    def __init__(self, data: FormViewData, *, action_schema: Mapping[str, Any] | None = None, revision_id: str = "") -> None:
+    def __init__(
+        self, data: FormViewData, *, action_schema: Mapping[str, Any] | None = None, revision_id: str = "", title: str = "Command input"
+    ) -> None:
+        self.title = title
         self.view = data
         #: The revision of the views envelope that rendered this form: the
         #: read prefill and the submit both travel under it.
@@ -502,6 +557,23 @@ class InteractiveForm:
         ftype = current_field.field_type
         val = self.values.get(name, "")
 
+        if current_field.options is not None:
+            options = [option.id for option in current_field.options]
+            if options and key.name in ("left", "right", "space"):
+                index = options.index(val) if val in options else (-1 if key.name != "left" else 0)
+                self.values[name] = options[(index + (-1 if key.name == "left" else 1)) % len(options)]
+                self.dirty_fields.add(name)
+                return None
+            if key.name != "enter":
+                if key.text:
+                    match = next((option.id for option in current_field.options if option.label.casefold().startswith(key.text.casefold())), None)
+                    if match is None:
+                        match = next((option for option in options if option.casefold().startswith(key.text.casefold())), None)
+                    if match is not None:
+                        self.values[name] = match
+                        self.dirty_fields.add(name)
+                return None
+
         if ftype == "boolean":
             if key.name in ("space", "enter"):
                 # Tri-state cycle: unset -> true -> false -> unset.
@@ -555,7 +627,7 @@ class InteractiveForm:
             text.append(f"[error] Validation: {escape_terminal_controls(self.validation_error)}\n", style=resolved.style("error", bold=True))
 
         text.append(
-            f"Form: {escape_terminal_controls(self.view.action)} (Enter/Tab next, Ctrl+S submit, Esc cancel)\n\n",
+            "Enter/Tab next · Ctrl+S submit · Esc cancel\n\n",
             style=resolved.style(tone_slot or "dim", color=fg, background=bg),
         )
         for i, field in enumerate(self.view.fields):
@@ -572,9 +644,12 @@ class InteractiveForm:
                 label_style = resolved.style(tone_slot or "accent", color=fg, background=bg, bold=True)
             else:
                 label_style = resolved.style(tone_slot or "text", color=fg, background=bg)
-            text.append(f"{prefix}{label}{req_mark} [{ftype}]: ", style=label_style)
+            text.append(f"{prefix}{label}{req_mark}: ", style=label_style)
 
-            if ftype == "boolean":
+            if field.options is not None:
+                selected = next((option.label for option in field.options if option.id == raw), "(unset)")
+                text.append(escape_terminal_controls(selected) + " (←/→ select)\n", style=resolved.style("text"))
+            elif ftype == "boolean":
                 if raw is True:
                     bool_str = "[X] True"
                 elif raw is False:
@@ -603,7 +678,7 @@ class InteractiveForm:
 
         panel = Panel(
             text,
-            title=f"Form: {escape_terminal_controls(self.view.action)}",
+            title=escape_terminal_controls(self.title),
             border_style=resolved.style(tone_slot or "accent", color=fg, background=bg),
             expand=True,
         )

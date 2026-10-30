@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import ClassVar, Literal, TypedDict
 
-from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact, RunFinishedFact, RunRequestedFact
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
@@ -22,6 +24,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
     is_read_tier,
 )
+from voidcode.sdk.views import MAX_VIEW_DATA_BYTES
 
 SCHEMA_VERSION = 2
 OWN_TOOL_NAMES: frozenset[str] = frozenset({"todo"})
@@ -987,6 +990,29 @@ def _load_state(services: PluginServices) -> tuple[TodoState, int]:
     return TodoState.from_payload(state_data), version
 
 
+@dataclass(frozen=True, slots=True)
+class _TodoChange:
+    state: TodoState
+    original: list[TodoPhase]
+    mutated: bool
+
+
+def _apply_and_store(args: _TodoArgs, services: PluginServices, *, expected_revision: int | None = None) -> _TodoChange:
+    """One mutation path for model tools and interactive user commands."""
+    state, version = _load_state(services)
+    if expected_revision is not None and state.revision != expected_revision:
+        raise ValueError("Todo list changed while this editor was open; reopen /todo before updating")
+    phases = [deepcopy(phase) for phase in state.phases]
+    original = deepcopy(phases)
+    _apply(args, phases)
+    mutated = phases != original
+    updated = replace(state, revision=state.revision + int(mutated), phases=tuple(phases))
+    if mutated:
+        services.replace_state(updated.to_payload(), expected_version=version)
+        services.stage_event("todo_updated", todo_event_payload(phases=phases, revision=updated.revision))
+    return _TodoChange(state=updated, original=original, mutated=mutated)
+
+
 class TodoTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="todo",
@@ -1031,32 +1057,20 @@ class TodoTool:
         context.require_session_id()
         try:
             args = _parse_args(call.arguments)
-            state, version = _load_state(services)
-            phases: list[TodoPhase] = [deepcopy(phase) for phase in state.phases]
-            original = deepcopy(phases)
-            _apply(args, phases)
+            change = _apply_and_store(args, services)
         except ValueError as exc:
             message = str(exc)
             return ToolFailure(tool_name=self.definition.name, error=message, output=TextOutput(text=message))
 
-        mutated = phases != original
-        revision = state.revision
-        if mutated:
-            revision += 1
-            services.replace_state(
-                replace(state, revision=revision, phases=tuple(phases)).to_payload(),
-                expected_version=version,
-            )
-            services.stage_event("todo_updated", todo_event_payload(phases=phases, revision=revision))
-
+        phases = list(change.state.phases)
         return ToolSuccess(
             tool_name=self.definition.name,
-            output=TextOutput(_render(phases, args.op, original=original)),
+            output=TextOutput(_render(phases, args.op, original=change.original)),
             body=TodoResultBody(
                 phases=tuple(phases),
                 summary=todo_summary(phases),
                 op=args.op,
-                mutated=mutated,
+                mutated=change.mutated,
             ),
         )
 
@@ -1068,18 +1082,244 @@ class TodoStatusCommand:
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="todo",
         description="Show the current todo list.",
-        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        argument_schema={
+            "type": "object",
+            "properties": {"offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 10}},
+            "additionalProperties": False,
+        },
         effects=frozenset({ToolEffect.READ}),
         busy_gate=False,
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
-        _ = invocation
+        offset, limit = invocation.arguments.get("offset", 0), invocation.arguments.get("limit", 10)
+        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 10:
+            return CommandResult(status="error", error="offset must be non-negative and limit must be between 1 and 10")
         state, _ = _load_state(services)
+        if offset > state.summary["total"]:
+            return CommandResult(status="error", error="Todo offset is beyond the end of the list")
         return CommandResult(
             status="ok",
             output=_render_table(state.phases),
             data={"phases": phases_payload(state.phases), "summary": dict(state.summary), "revision": state.revision},
+            presentation=_todo_presentation(state, offset=offset, limit=limit),
+        )
+
+
+def _task_id(task: TodoTask) -> str:
+    return hashlib.sha256(task["content"].encode("utf-8")).hexdigest()
+
+
+def _task_from_id(state: TodoState, identifier: object) -> TodoTask:
+    if not isinstance(identifier, str):
+        raise ValueError("Choose a todo task")
+    task = next((task for phase in state.phases for task in phase["tasks"] if _task_id(task) == identifier), None)
+    if task is None:
+        raise ValueError("Todo task is no longer available; reopen /todo")
+    return task
+
+
+def _todo_presentation(state: TodoState, *, offset: int = 0, limit: int = 10) -> CommandPresentation:
+    tasks = [(phase["name"], task) for phase in state.phases for task in phase["tasks"]]
+    count = min(limit, max(0, len(tasks) - offset))
+    while True:
+        selected = tasks[offset : offset + count]
+        lines = [f"Tasks {offset}–{offset + len(selected)} of {len(tasks)}", ""]
+        for phase, task in selected:
+            blocker = f" — {task['blocker'][:120]}" if task.get("blocker") else ""
+            preview = task["content"][:400] + ("…" if len(task["content"]) > 400 else "")
+            lines.append(f"- **{phase[:80]}** · [{task['status']}] {preview}{blocker}")
+        if not tasks:
+            lines.append("Todo list is empty. Add tasks to start planning.")
+        actions: list[dict[str, object]] = [{"label": "Add tasks", "action": "todo.add", "prepare_input": True}]
+        if offset:
+            actions.append({"label": "Previous tasks", "action": "todo", "arguments": {"offset": max(0, offset - (count or limit)), "limit": limit}})
+        if offset + count < len(tasks):
+            actions.append({"label": "Next tasks", "action": "todo", "arguments": {"offset": offset + count, "limit": limit}})
+        actions.extend(
+            {"label": f"Edit: {task['content'][:80]}", "action": "todo.edit", "arguments": {"task_id": _task_id(task)}} for _phase, task in selected
+        )
+        data = {"content": "\n".join(lines), "actions": actions}
+        if len(json.dumps(data).encode("utf-8")) <= MAX_VIEW_DATA_BYTES - 4096:
+            return CommandPresentation(title="Todo list", view_type="markdown", data=data)
+        if count <= 1:
+            raise ValueError("Todo detail exceeds the view limit")
+        count = max(1, count // 2)
+
+
+def _task_operations(task: TodoTask) -> list[dict[str, str]]:
+    if task["status"] in _TERMINAL_STATUSES:
+        return [{"id": "rm", "label": "Remove task"}]
+    options = [{"id": "done", "label": "Mark completed"}, {"id": "drop", "label": "Abandon task"}, {"id": "rm", "label": "Remove task"}]
+    if task["status"] == "blocked":
+        options.insert(0, {"id": "unblock", "label": "Unblock task"})
+    else:
+        options.insert(0, {"id": "block", "label": "Block task"})
+        if task["status"] != "in_progress":
+            options.insert(0, {"id": "start", "label": "Start task"})
+    return options
+
+
+class TodoEditCommand:
+    definition: ClassVar[CommandDefinition] = CommandDefinition(
+        name="todo.edit",
+        description="Choose a task operation without changing the todo list.",
+        text_argument="task",
+        argument_schema={
+            "type": "object",
+            "properties": {"task": {"type": "string", "minLength": 1}, "task_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+            "oneOf": [{"required": ["task"]}, {"required": ["task_id"]}],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.READ}),
+    )
+
+    def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
+        _ = invocation
+        state, _ = _load_state(services)
+        tasks = [task for phase in state.phases for task in phase["tasks"]]
+        if not tasks:
+            return _todo_presentation(state)
+        return CommandPresentation(
+            title="Choose todo task",
+            view_type="form",
+            data={
+                "action": self.definition.name,
+                "fields": [
+                    {
+                        "name": "task_id",
+                        "label": f"Task ({min(len(tasks), 100)} of {len(tasks)})",
+                        "options": [{"id": _task_id(task), "label": f"{task['content'][:160]} [{task['status']}]"} for task in tasks[:100]],
+                    }
+                ],
+            },
+        )
+
+    def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
+        try:
+            state, _ = _load_state(services)
+            if "task_id" in invocation.arguments:
+                task = _task_from_id(state, invocation.arguments["task_id"])
+            else:
+                raw = invocation.arguments.get("task")
+                if not isinstance(raw, str) or not raw.strip():
+                    raise ValueError("todo.edit requires a task name")
+                task = _target_tasks(list(state.phases), task=raw.strip(), phase=None, required=True)[0]
+        except ValueError as exc:
+            return CommandResult(status="error", error=str(exc))
+        return CommandResult(
+            status="ok",
+            output=f"{task['content']} [{task['status']}]",
+            presentation=CommandPresentation(
+                title=f"Edit task: {task['content'][:120]} [{task['status']}]",
+                view_type="form",
+                data={
+                    "action": "todo.update",
+                    "arguments": {"task_id": _task_id(task), "expected_revision": state.revision},
+                    "fields": [
+                        {"name": "op", "label": "Operation", "options": _task_operations(task)},
+                        {"name": "reason", "label": "Block reason (optional)", "field_type": "multiline", "required": False},
+                    ],
+                },
+            ),
+        )
+
+
+class TodoUpdateCommand:
+    definition: ClassVar[CommandDefinition] = CommandDefinition(
+        name="todo.update",
+        slash_visible=False,
+        description="Apply a selected todo operation under its displayed list revision.",
+        argument_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "op": {"type": "string", "enum": ["start", "done", "drop", "block", "unblock", "rm"]},
+                "reason": {"type": "string"},
+                "expected_revision": {"type": "integer", "minimum": 0},
+            },
+            "required": ["task_id", "op", "expected_revision"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.SESSION}),
+    )
+
+    def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
+        revision = invocation.arguments.get("expected_revision")
+        if type(revision) is not int or revision < 0:
+            return CommandResult(status="error", error="todo.update requires the displayed todo revision")
+        if invocation.arguments.get("op") not in ("start", "done", "drop", "block", "unblock", "rm"):
+            return CommandResult(status="error", error="Choose a valid task operation")
+        try:
+            state, _ = _load_state(services)
+            task = _task_from_id(state, invocation.arguments.get("task_id"))
+            args = _parse_args({**invocation.arguments, "task": task["content"]})
+            change = _apply_and_store(args, services, expected_revision=revision)
+        except ValueError as exc:
+            return CommandResult(status="error", error=str(exc))
+        return CommandResult(
+            status="ok",
+            output=_render(list(change.state.phases), args.op, original=change.original),
+            data={"revision": change.state.revision, "mutated": change.mutated},
+            presentation=_todo_presentation(change.state),
+        )
+
+
+class TodoAddCommand:
+    definition: ClassVar[CommandDefinition] = CommandDefinition(
+        name="todo.add",
+        description="Add tasks to a phase, one task per line.",
+        argument_schema={
+            "type": "object",
+            "properties": {
+                "phase": {"type": "string", "minLength": 1},
+                "items": {"type": "string", "minLength": 1},
+                "expected_revision": {"type": "integer", "minimum": 0},
+            },
+            "required": ["phase", "items", "expected_revision"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.SESSION}),
+    )
+
+    def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
+        _ = invocation
+        state, _ = _load_state(services)
+        return CommandPresentation(
+            title="Add todo tasks",
+            view_type="form",
+            data={
+                "action": self.definition.name,
+                "arguments": {"expected_revision": state.revision},
+                "initial_values": {"phase": state.phases[-1]["name"] if state.phases else "Tasks"},
+                "fields": [{"name": "phase", "label": "Phase"}, {"name": "items", "label": "Tasks (one per line)", "field_type": "multiline"}],
+            },
+        )
+
+    def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
+        phase, items, revision = invocation.arguments.get("phase"), invocation.arguments.get("items"), invocation.arguments.get("expected_revision")
+        if (
+            not isinstance(phase, str)
+            or not phase.strip()
+            or not isinstance(items, str)
+            or not items.strip()
+            or type(revision) is not int
+            or revision < 0
+        ):
+            return CommandResult(status="error", error="Provide a phase, tasks and the displayed todo revision")
+        try:
+            change = _apply_and_store(
+                _TodoArgs(op="append", phase=phase, items=tuple(line for line in items.splitlines() if line.strip())),
+                services,
+                expected_revision=revision,
+            )
+        except ValueError as exc:
+            return CommandResult(status="error", error=str(exc))
+        return CommandResult(
+            status="ok",
+            output=_render(list(change.state.phases), "append", original=change.original),
+            data={"revision": change.state.revision},
+            presentation=_todo_presentation(change.state),
         )
 
 
@@ -1096,11 +1336,13 @@ class TodoClearCommand:
         _ = invocation
         state, version = _load_state(services)
         if not state.phases:
-            return CommandResult(status="ok", output="No todo list to clear.", data={"cleared": False})
+            return CommandResult(status="ok", output="No todo list to clear.", data={"cleared": False}, presentation=_todo_presentation(state))
         revision = state.revision + 1
         services.replace_state(TodoState(revision=revision).to_payload(), expected_version=version)
         services.stage_event("todo_cleared", todo_event_payload(phases=(), revision=revision))
-        return CommandResult(status="ok", output="Todo list cleared.", data={"cleared": True})
+        return CommandResult(
+            status="ok", output="Todo list cleared.", data={"cleared": True}, presentation=_todo_presentation(TodoState(revision=revision))
+        )
 
 
 # --- Context ---

@@ -33,6 +33,7 @@ from ..sdk.codec import (
 from ..sdk.commands import (
     CommandCatalog,
     CommandDescriptor,
+    CommandInputSnapshot,
     CommandResult,
 )
 from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
@@ -1567,6 +1568,24 @@ class Core:
             {"name": name, "result": outcome.result.as_payload(), "observed_changes": changes, "cancelled": outcome.cancelled},
         )
 
+    def command_input(self, session_id: str, name: str, *, expected_revision: str) -> CommandInputSnapshot:
+        """Render optional plugin-owned input; never execute the command to discover values."""
+        self._ensure_open()
+        session = self.session(session_id)
+        with self._dispatch("command_input") as snapshot:
+            if expected_revision != snapshot.revision_id:
+                raise ValueError("displayed catalog revision is stale; refresh the catalog")
+            context = ToolContext(
+                workspace=self.workspace,
+                session_id=session_id,
+                run_id=session.run_id or "",
+                invocation_id=uuid4().hex,
+                revision_id=snapshot.revision_id,
+                actor="user",
+            )
+            presentation = snapshot.plugin_runtime.prepare_command_input(name, context=context)
+            return CommandInputSnapshot(revision_id=snapshot.revision_id, presentation=presentation)
+
     def invoke_command(
         self,
         session_id: str,
@@ -1646,6 +1665,8 @@ class Core:
                 if isinstance(commands, list):
                     for command in commands:
                         if isinstance(command, Mapping):
+                            if command.get("slash_visible", True) is False:
+                                continue
                             syntax = command.get("client_syntax")
                             stripped = syntax[1:].strip().replace(".", " ") if isinstance(syntax, str) and syntax.startswith("/") else ""
                             shown = stripped if stripped else str(command.get("name", "")).replace(".", " ")
@@ -2359,6 +2380,7 @@ class Core:
                 revision_id=target_revision_id,
                 store=self.store,
                 usage_callback=self._get_session_usage,
+                budget_callback=self._get_owner_budget,
                 spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify, owner, key: self.spawn_child(
                     parent,
                     prompt,

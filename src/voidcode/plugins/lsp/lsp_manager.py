@@ -279,6 +279,7 @@ class ManagedLspManager:
     def __init__(self, config: RuntimeLspConfig) -> None:
         self._configuration = LspConfigState.from_runtime_config(config)
         self._server_states: dict[str, LspServerState] = {name: LspServerState(name=name) for name in self._configuration.servers}
+        self._lifecycle_lock = threading.RLock()
         self._running_servers: dict[tuple[str, str], _RunningLspServer] = {}
         self._leased_servers: dict[tuple[str, str], _LspServerLease] = {}
         self._converter = lsp_converters.get_converter()
@@ -473,15 +474,38 @@ class ManagedLspManager:
         )
 
     def shutdown(self) -> None:
-        # Host retirement already stopped every service process in this generation;
-        # shutdown here only forgets local entries, never touches the host.
-        for key in tuple(self._running_servers):
-            self._running_servers.pop(key, None)
-            lease = self._leased_servers.pop(key, None)
-            if lease is not None:
-                _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
+        with self._lifecycle_lock:
+            # Host retirement already stopped every service process in this generation;
+            # shutdown here only forgets local entries, never touches the host.
+            for key in tuple(self._running_servers):
+                self._running_servers.pop(key, None)
+                lease = self._leased_servers.pop(key, None)
+                if lease is not None:
+                    _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
 
     def _ensure_running(
+        self,
+        services: PluginServices,
+        *,
+        server_name: str,
+        server_config: ResolvedLspServerConfig,
+        workspace_root: Path,
+        session_id: str,
+        abort_signal: ProviderAbortSignal | None,
+    ) -> tuple[_RunningLspServer, _LspRegistryKey]:
+        # One local entry owns exactly one registry lease, including concurrent
+        # first use. The registry lock alone cannot protect our local handoff.
+        with self._lifecycle_lock:
+            return self._ensure_running_locked(
+                services,
+                server_name=server_name,
+                server_config=server_config,
+                workspace_root=workspace_root,
+                session_id=session_id,
+                abort_signal=abort_signal,
+            )
+
+    def _ensure_running_locked(
         self,
         services: PluginServices,
         *,
@@ -575,6 +599,9 @@ class ManagedLspManager:
 
     def _forget_dead_entry(self, local_key: tuple[str, str], lease_key: _LspRegistryKey, process_id: str) -> None:
         """Drop a local entry whose service id the host no longer supervises for this session."""
+        current = self._running_servers.get(local_key)
+        if current is None or current.process_id != process_id:
+            return
         self._running_servers.pop(local_key, None)
         lease = self._leased_servers.pop(local_key, None)
         _SESSION_SCOPED_LSP_REGISTRY.invalidate(key=lease_key, process_id=process_id)
@@ -582,6 +609,12 @@ class ManagedLspManager:
             _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
 
     def _cancel_own_server(self, services: PluginServices, lease_key: _LspRegistryKey, running_server: _RunningLspServer, *, error: str) -> bool:
+        with self._lifecycle_lock:
+            return self._cancel_own_server_locked(services, lease_key, running_server, error=error)
+
+    def _cancel_own_server_locked(
+        self, services: PluginServices, lease_key: _LspRegistryKey, running_server: _RunningLspServer, *, error: str
+    ) -> bool:
         """Stop a failing/cancelled server's tree and forget it; races surface as the next error."""
         process_id = running_server.process_id
         try:
@@ -592,7 +625,10 @@ class ManagedLspManager:
             running_server.documents.clear()
             running_server.initialized = False
             running_server.stdout_cursor = 0
-        self._forget_dead_entry((lease_key.session_id, lease_key.server_name), lease_key, process_id)
+        local_key = (lease_key.session_id, lease_key.server_name)
+        if self._running_servers.get(local_key) is not running_server:
+            return stopped
+        self._forget_dead_entry(local_key, lease_key, process_id)
         self._server_states[lease_key.server_name] = LspServerState(
             name=lease_key.server_name,
             status="failed",

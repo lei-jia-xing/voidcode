@@ -78,6 +78,9 @@ class CommandDescriptor:
     busy_gate: bool = False
     #: Declarative client syntax prefix, when the command declares one.
     client_syntax: str | None = None
+    has_input: bool = False
+    slash_visible: bool = True
+    text_argument: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
@@ -91,6 +94,9 @@ class CommandDescriptor:
             "effects": [e.value for e in self.effects],
             "busy_gate": self.busy_gate,
             "client_syntax": self.client_syntax,
+            "has_input": self.has_input,
+            "slash_visible": self.slash_visible,
+            "text_argument": self.text_argument,
         }
 
     @staticmethod
@@ -126,6 +132,46 @@ class CommandCatalog:
 
 
 @dataclass(frozen=True, slots=True)
+class CommandPresentation:
+    """Bounded command UI, mounted only from a direct receipt, never replay."""
+
+    title: str
+    view_type: Literal["notice", "markdown", "fields", "choices", "form", "diff", "status"]
+    data: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.title, str) or not self.title.strip():
+            raise ValueError("command presentation title must be non-empty")
+        if self.view_type == "confirmation":
+            raise ValueError("command presentations cannot carry confirmations")
+        from .views import validate_view_data
+
+        object.__setattr__(self, "data", validate_view_data(self.view_type, self.data))
+
+    def as_payload(self) -> dict[str, object]:
+        return {"title": self.title, "view_type": self.view_type, "data": json_wire_object(self.data)}
+
+
+@dataclass(frozen=True, slots=True)
+class CommandInputSnapshot:
+    """Read-only prepared input bound to the generation that produced it."""
+
+    revision_id: str
+    presentation: CommandPresentation
+
+    def __post_init__(self) -> None:
+        if not self.revision_id:
+            raise ValueError("command input requires its captured revision")
+
+    def as_payload(self) -> dict[str, object]:
+        return {"revision_id": self.revision_id, "presentation": self.presentation.as_payload()}
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> CommandInputSnapshot:
+        return _decode_command(_INPUT_ADAPTER, payload, "command input")
+
+
+@dataclass(frozen=True, slots=True)
 class CommandResult:
     """Outcome of a command invocation, returning data, error, or confirmation request."""
 
@@ -134,8 +180,11 @@ class CommandResult:
     error: str | None = None
     data: Mapping[str, object] | None = None
     confirmation: ConfirmationRequest | None = None
+    presentation: CommandPresentation | None = None
 
     def __post_init__(self) -> None:
+        if self.presentation is not None and self.status != "ok":
+            raise ValueError("only successful commands may carry a presentation")
         if self.status == "pending_confirmation":
             if self.confirmation is None:
                 raise ValueError("CommandResult with status 'pending_confirmation' requires a confirmation request")
@@ -157,6 +206,7 @@ class CommandResult:
             "error": self.error,
             "data": None if self.data is None else json_wire_object(self.data),
             "confirmation": None if self.confirmation is None else self.confirmation.as_payload(),
+            "presentation": None if self.presentation is None else self.presentation.as_payload(),
         }
 
     @staticmethod
@@ -168,6 +218,7 @@ _CONFIRMATION_REQUEST_ADAPTER: TypeAdapter[ConfirmationRequest] = TypeAdapter(Co
 _DESCRIPTOR_ADAPTER: TypeAdapter[CommandDescriptor] = TypeAdapter(CommandDescriptor)
 _CATALOG_ADAPTER: TypeAdapter[CommandCatalog] = TypeAdapter(CommandCatalog)
 _RESULT_ADAPTER: TypeAdapter[CommandResult] = TypeAdapter(CommandResult)
+_INPUT_ADAPTER: TypeAdapter[CommandInputSnapshot] = TypeAdapter(CommandInputSnapshot)
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +244,10 @@ class CommandDefinition:
     busy_gate: bool = False
     #: Declarative client syntax prefix (clients route it; the core never parses it).
     client_syntax: str | None = None
+    #: Optional string property receiving natural slash trailing text.
+    text_argument: str | None = None
+    #: Internal UI action helpers remain callable but need not appear in slash discovery.
+    slash_visible: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
@@ -210,13 +265,23 @@ class Command(Protocol):
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult: ...
 
 
+@runtime_checkable
+class CommandInput(Protocol):
+    """Optional command input preparation, called with strictly read-only services."""
+
+    def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation: ...
+
+
 __all__ = [
     "Command",
     "CommandCatalog",
     "CommandDefinition",
     "CommandDescriptor",
     "CommandInvocation",
+    "CommandInput",
+    "CommandInputSnapshot",
     "CommandResult",
+    "CommandPresentation",
     "ConfirmationRequest",
     "ConfirmationUIType",
 ]

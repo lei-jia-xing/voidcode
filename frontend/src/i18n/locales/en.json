@@ -88,5 +88,7 @@
   "core.upgradeFenced": "Core upgrade in progress ({{stage}}): dispatch paused",
   "core.upgradeActive": "Core upgrade: {{stage}}",
   "core.revisionAdopted": "Core revision adopted: {{revision}} — catalog and views refreshed",
-  "core.formTitle": "Form: {{action}}"
+  "core.formTitle": "Form: {{action}}",
+  "core.commandInputRevisionChanged": "Command input changed revision; refresh the command catalog.",
+  "core.formMustBeChoice": "{{field}} must be one of the available choices."
 }

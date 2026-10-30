@@ -18,3 +18,10 @@ Takes no plugin config; `create_plugin` ignores it. See [configuration](../../..
 ## Behavior and limits
 
 - Panels read the calling session's committed events (at most 2000, in pages of 200) and measured usage through SDK services only — never mutate state, never touch storage directly. (The core still persists a `COMMAND_COMPLETED` receipt for each panel invocation.)
+
+Context presentations page through twenty segments using an optional `offset`.
+They distinguish neutral-encoding character counts from cumulative session token
+usage; context capacity and pressure remain unknown without measured metadata.
+Usage fields preserve unknown and zero separately and label budget ceilings with
+their owner and starting sequence. Reading panels does not mutate plugin state.
+Factory config accepts only the injected `providers` map; other fields are errors.

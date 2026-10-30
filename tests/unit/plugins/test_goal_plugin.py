@@ -1260,3 +1260,30 @@ def test_usage_window_updates_share_truthful_lifetime_metrics(
         assert state["status"] == ("budget-limited" if known_total else "usage-limited")
         assert len(services.staged_events) == 1
         assert len(services.cancelled_continuations) == 1
+
+
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        ("active", {"goal.edit", "goal.pause", "goal.clear"}),
+        ("paused", {"goal.edit", "goal.resume", "goal.clear"}),
+        ("blocked", {"goal.edit", "goal.pause", "goal.resume", "goal.clear"}),
+        ("budget-limited", {"goal.edit", "goal.pause", "goal.resume", "goal.clear"}),
+        ("complete", {"goal.edit", "goal.clear"}),
+    ],
+)
+def test_goal_details_offer_applicable_actions_without_mutation(tmp_path: Path, status: GoalStatus, expected: set[str]):
+    from voidcode.plugins.goal.goal_plugin import GoalCommand
+    from voidcode.sdk.views import MarkdownViewData
+
+    services = FakeServices()
+    goal = GoalState(goal_id="g1", status=status, objective="🙂" * 7000, created_at=1, updated_at=1)
+    services.replace_state(goal.to_dict(), expected_version=0)
+    before = services.get_state("session")
+    result = GoalCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal"), services)
+    detail = MarkdownViewData.from_payload(result.presentation.data)
+    assert {action.action for action in detail.actions} == expected
+    assert next(action for action in detail.actions if action.action == "goal.edit").prepare_input
+    assert "Unknown" in detail.content
+    assert "Objective preview" in detail.content
+    assert services.get_state("session") == before

@@ -638,6 +638,15 @@ def test_compact_command_reports_accounting_and_noops_on_a_second_call() -> None
     assert first.data["covered_bytes"] == services.row["covered_bytes"]
     assert first.data["dropped_bytes"] == services.row["dropped_bytes"]
     assert first.data["summary_kind"] == "model"
+    from voidcode.sdk.views import FieldsViewData
+
+    assert first.presentation.view_type == "fields"
+    rows = {row.label: row.value for row in FieldsViewData.from_payload(first.presentation.data).rows}
+    assert rows["Result"] == "Compacted"
+    assert rows["First covered event"] == "1"
+    assert rows["Last covered event"] == "8"
+    assert rows["Covered bytes"] == str(services.row["covered_bytes"])
+    assert rows["Summary source"] == "model"
     assert (
         first.output
         == f"Compacted events 1-8: {services.row['covered_bytes']} bytes covered -> {services.row['dropped_bytes']} dropped (model summary)."
@@ -653,6 +662,9 @@ def test_compact_command_reports_accounting_and_noops_on_a_second_call() -> None
     assert second.data["dropped_bytes"] == services.row["dropped_bytes"]
     assert "Nothing new to compact" in (second.output or "")
     assert len(services.projections) == 1
+    rows = {row.label: row.value for row in FieldsViewData.from_payload(second.presentation.data).rows}
+    assert rows["Result"] == "Nothing new to compact"
+    assert rows["Covered bytes"] == str(services.row["covered_bytes"])
 
 
 def test_compact_command_size_guard_and_empty_session_are_visible() -> None:
@@ -665,6 +677,11 @@ def test_compact_command_size_guard_and_empty_session_are_visible() -> None:
     empty = command.invoke(invocation, FakeServices(()))
     assert empty.status == "ok"
     assert empty.data == {"noop": True, "reason": "no_events"}
+    from voidcode.sdk.views import FieldsViewData
+
+    rows = {row.label: row.value for row in FieldsViewData.from_payload(empty.presentation.data).rows}
+    assert rows["Covered bytes"] == "Unknown"
+    assert rows["Measured input tokens"] == "Unknown"
 
 
 def test_compact_command_declares_a_busy_gated_session_effect() -> None:

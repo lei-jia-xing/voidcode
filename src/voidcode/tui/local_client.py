@@ -28,6 +28,7 @@ from voidcode.sdk.client import (
     StreamCancellation,
     ViewsSnapshot,
 )
+from voidcode.sdk.commands import CommandInputSnapshot
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage
 from voidcode.transport.projection import (
     FOLLOW_POLL_SECONDS,
@@ -153,13 +154,7 @@ class CoreLocalClient:
             raise self._refusal(exc) from None
         return RunResult.from_payload(result.as_payload())
 
-    def invoke_command(
-        self,
-        session_id: str,
-        name: str,
-        arguments: Mapping[str, object] | None = None,
-        expected_revision: str = "",
-    ) -> CommandResult:
+    def _validate_command_request(self, session_id: str, name: str, expected_revision: str) -> None:
         self._validated(session_id)
         if not name or "/" in name or "\0" in name or len(name) > 128:
             raise CoreClientError(
@@ -169,6 +164,22 @@ class CoreLocalClient:
             )
         if not expected_revision:
             raise CoreClientError("expected_revision must be the revision the client displayed", status_code=400, code="invalid_params")
+
+    def command_input(self, session_id: str, name: str, expected_revision: str) -> CommandInputSnapshot:
+        self._validate_command_request(session_id, name, expected_revision)
+        try:
+            return self._core.command_input(session_id, name, expected_revision=expected_revision)
+        except Exception as exc:
+            raise self._refusal(exc) from None
+
+    def invoke_command(
+        self,
+        session_id: str,
+        name: str,
+        arguments: Mapping[str, object] | None = None,
+        expected_revision: str = "",
+    ) -> CommandResult:
+        self._validate_command_request(session_id, name, expected_revision)
         try:
             return self._core.invoke_command(session_id, name, dict(arguments or {}), expected_revision=expected_revision)
         except Exception as exc:

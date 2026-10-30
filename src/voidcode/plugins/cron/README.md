@@ -7,7 +7,7 @@ Scheduled prompts as session policy over the core's durable wakeup seam: create 
 - Tool `cron_create` (`SESSION`, never replayed): `schedule` + `prompt` (both required non-empty strings). Returns the schedule id (`sched-…`) and human cadence.
 - Tool `cron_delete` (`SESSION`, never replayed): `id` cancels one schedule and disarms its wakeup.
 - Tool `cron_list` (`READ`, safe): lists this session's schedules with recomputed `next_fire_at` (exact for `at`/`once`, within one tick otherwise), `enabled`, and `expires_at`.
-- Command `/loop` (`SESSION`, `client_syntax="/loop"`): `input` is raw `/loop` text (`[interval] <prompt>`, default interval `10m`); creates an `every <interval>` schedule and fires it immediately (`next_fire_at: now`). Bare `/loop` returns usage.
+- Command `/loop` (`SESSION`, `client_syntax="/loop"`): `input` is raw `/loop` text (`[interval] <prompt>`, default interval `10m`); creates an `every <interval>` schedule and fires it immediately (`next_fire_at: now`). Bare slash `/loop` prepares a multiline interval/prompt editor without scheduling; explicit empty CLI/RPC invocation returns usage. Creation presents Browse/Cancel actions. `/loop list` reads paged session schedules with creation and cancellation controls; `/loop delete <id>` cancels a pending wakeup and removes the schedule using the same implementation as `cron_delete`. Already claimed runs are not cancelled by deleting their schedule.
 
 Schedule grammar: `every <N><s|m|h|d>`, `at <ISO-8601>`, `once`, or `cron <min> <hour> <day> <month> <dow>` (five-field croniter syntax, names like `JAN`/`MON` allowed; six/seven-field refused). Calendar expressions follow host local time.
 

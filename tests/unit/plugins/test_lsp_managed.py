@@ -554,3 +554,72 @@ def test_server_requests_receive_errors_without_confusing_client_responses(harne
     replies = [entry["reply"] for entry in _echo_methods(record) if entry["method"] == "__client_reply__"]
     expected_id = 1 if id_kind == "same" else 900 if id_kind == "different" else "server-id"
     assert replies == [{"jsonrpc": "2.0", "id": expected_id, "error": {"code": -32601, "message": "Method not found"}}]
+
+
+def test_concurrent_first_use_owns_one_registry_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from types import SimpleNamespace
+
+    from voidcode.plugins.lsp import lsp_manager as module
+
+    registry = module._SessionScopedLspRegistry()
+    monkeypatch.setattr(module, "_SESSION_SCOPED_LSP_REGISTRY", registry)
+    manager = build_lsp_manager(_config(tmp_path / "record.jsonl"))
+    server_config = manager.configuration.resolve("echo")
+    server = SimpleNamespace(workspace_root=tmp_path, process_id="test-process", config=server_config)
+    monkeypatch.setattr(manager, "_start_running_server", lambda *args, **kwargs: server)
+    monkeypatch.setattr(manager, "_service_answers", lambda *args: True)
+    acquired = Event()
+    release_first = Event()
+    second_acquire = Event()
+    acquire = registry.acquire
+    calls = []
+
+    def held_acquire(**kwargs):
+        calls.append(kwargs["key"])
+        result = acquire(**kwargs)
+        if len(calls) == 1:
+            acquired.set()
+            assert release_first.wait(5)
+        else:
+            second_acquire.set()
+        return result
+
+    monkeypatch.setattr(registry, "acquire", held_acquire)
+
+    def ensure():
+        return manager._ensure_running(
+            None, server_name="echo", server_config=server_config, workspace_root=tmp_path, session_id="session", abort_signal=None
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(ensure)
+        assert acquired.wait(5)
+        second = pool.submit(ensure)
+        # Hold the first lease before its local handoff. A registry-only lock
+        # permits a second acquire here, leaking one ref when the local map wins.
+        second_acquire.wait(0.2)
+        release_first.set()
+        assert first.result(5)[0] is second.result(5)[0]
+    assert len(calls) == 1
+    assert next(iter(registry._entries.values())).ref_count == 1
+    manager.shutdown()
+    assert registry._entries == {}
+
+
+def test_late_server_failure_preserves_new_local_entry(tmp_path: Path) -> None:
+    from threading import Lock
+    from types import SimpleNamespace
+
+    from voidcode.plugins.lsp.lsp_manager import _LspRegistryKey
+
+    manager = build_lsp_manager(_config(tmp_path / "record.jsonl"))
+    old = SimpleNamespace(process_id="old", request_lock=Lock(), documents={}, initialized=True, stdout_cursor=0)
+    new = SimpleNamespace(process_id="new")
+    manager._running_servers[("session", "echo")] = new
+    before = manager.current_state()
+    services = SimpleNamespace(cancel_process=lambda process_id: process_id == "old")
+    assert manager._cancel_own_server(services, _LspRegistryKey("session", "echo", tmp_path), old, error="old failure")
+    assert manager._running_servers[("session", "echo")] is new
+    assert manager.current_state() == before

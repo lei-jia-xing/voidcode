@@ -14,7 +14,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from voidcode.core.engine import Core
 from voidcode.sdk.client import CancelReceipt, RunResult, SessionRow
-from voidcode.sdk.commands import CommandCatalog, CommandResult
+from voidcode.sdk.commands import CommandCatalog, CommandInputSnapshot, CommandResult
 from voidcode.sdk.rpc import (
     RPC_EVENT_WINDOW,
     RPC_MAX_MESSAGE_BYTES,
@@ -55,6 +55,11 @@ METHODS: dict[str, RpcMethod] = {
         m.ResumeRequest,
         RunResult,
         lambda c, p: c.resume(p.session_id, approval_request_id=p.approval_request_id, decision=p.decision, max_steps=p.max_steps).as_payload(),
+    ),
+    "command.input": RpcMethod(
+        m.CommandInputRequest,
+        CommandInputSnapshot,
+        lambda c, p: c.command_input(p.session_id, p.name, expected_revision=p.expected_revision).as_payload(),
     ),
     "command.invoke": RpcMethod(
         m.InvokeRequest,

@@ -533,7 +533,7 @@ def test_plugin_registers_tools_loop_command_and_observer() -> None:
     plugin = create_plugin(None)
 
     assert [tool.definition.name for tool in plugin.tools] == ["cron_create", "cron_delete", "cron_list"]
-    assert [command.definition.name for command in plugin.commands] == ["loop"]
+    assert [command.definition.name for command in plugin.commands] == ["loop", "loop.list", "loop.delete"]
     assert plugin.observer is cron_observer
     assert plugin.context is None
     assert plugin.providers == ()
@@ -573,3 +573,77 @@ def test_cron_identity_follows_its_admitted_owner(services: FakeServices, tmp_pa
     services.events.append(replace(_fired_event(sequence=5, run_id="run-9", schedule_id="sched-1"), owner=services.owner))
     cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
     assert len(services.wakeups) == 1
+
+
+def test_loop_preparation_does_not_schedule_and_shows_default_interval(services: FakeServices, tmp_path: Path) -> None:
+    from voidcode.plugins.cron.loop_command import DEFAULT_INTERVAL
+    from voidcode.sdk.views import FormViewData, validate_form_submission
+
+    before = services.get_state()
+    prepared = CronLoopCommand().prepare_input(CommandInvocation(_context(tmp_path), "loop"), services)
+    form = FormViewData.from_payload(prepared.data)
+    assert DEFAULT_INTERVAL in form.fields[0].label
+    assert services.get_state() == before
+    assert validate_form_submission(form, {"input": "5m check the deploy"}) == {"input": "5m check the deploy"}
+
+
+def test_loop_receipt_can_cancel_its_schedule_and_return_empty_browser(services: FakeServices, tmp_path: Path) -> None:
+    from voidcode.plugins.cron.cron_plugin import CronDeleteCommand
+    from voidcode.sdk.views import MarkdownViewData
+
+    created = _invoke_loop(services, tmp_path, {"input": "5m check deployment"})
+    detail = MarkdownViewData.from_payload(created.presentation.data)
+    cancel = next(action for action in detail.actions if action.action == "loop.delete")
+    assert len(services.wakeups) == 1
+    result = CronDeleteCommand().invoke(CommandInvocation(_context(tmp_path), cancel.action, cancel.arguments), services)
+    assert result.status == "ok"
+    assert services.pending() == {}
+    assert all(record["status"] == "cancelled" for record in services.wakeups.values())
+    empty = MarkdownViewData.from_payload(result.presentation.data)
+    assert "No scheduled prompts" in empty.content
+    assert empty.actions[0].prepare_input
+    assert CronDeleteCommand().invoke(CommandInvocation(_context(tmp_path), cancel.action, cancel.arguments), services).status == "error"
+
+
+def test_loop_browser_pages_without_mutation(services: FakeServices, tmp_path: Path) -> None:
+    from voidcode.plugins.cron.cron_plugin import CronListCommand
+    from voidcode.sdk.views import MarkdownViewData
+
+    for index in range(12):
+        _invoke_loop(services, tmp_path, {"input": f"5m check {index}"})
+    before = services.get_state("session")
+    listed = CronListCommand().invoke(CommandInvocation(_context(tmp_path), "loop.list"), services)
+    view = MarkdownViewData.from_payload(listed.presentation.data)
+    assert len([action for action in view.actions if action.action == "loop.delete"]) == 10
+    next_page = next(action for action in view.actions if action.label == "Next schedules")
+    page = CronListCommand().invoke(CommandInvocation(_context(tmp_path), next_page.action, next_page.arguments), services)
+    assert len([action for action in MarkdownViewData.from_payload(page.presentation.data).actions if action.action == "loop.delete"]) == 2
+    assert services.get_state("session") == before
+    assert len(services.wakeups) == 12
+
+
+def test_loop_and_tool_share_schedule_capacity_guard(services: FakeServices, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cron_plugin, "MAX_SCHEDULES_PER_WORKSPACE", 1)
+    assert _invoke_loop(services, tmp_path, {"input": "5m first"}).status == "ok"
+    before = services.get_state("session")
+    pending = services.pending().copy()
+    refused = _invoke_loop(services, tmp_path, {"input": "5m second"})
+    assert refused.status == "error" and "schedule limit reached" in refused.error
+    refused_tool = _invoke_tool(CronCreateTool(), services, tmp_path, {"schedule": "every 5m", "prompt": "third"})
+    assert isinstance(refused_tool, ToolFailure)
+    assert refused_tool.error == refused.error
+    assert services.get_state("session") == before
+    assert services.pending() == pending
+
+
+def test_cron_factory_and_state_reject_coercion() -> None:
+    assert create_plugin({"providers": {}}).commands
+    with pytest.raises(ValueError, match="cron config does not support field: enabled"):
+        create_plugin({"enabled": True})
+    for version in (True, 1.0, "1"):
+        with pytest.raises(ValueError, match="schema_version"):
+            CronState.from_payload({"schema_version": version, "schedules": {}, "cursor_sequence": 0})
+    payload = _schedule_payload(schedule_id="bad", schedule_text="every 5m", kind="every", expires_at=None)
+    payload["schedules"]["bad"]["kind"] = []
+    with pytest.raises(ValueError, match="kind must be one of"):
+        CronState.from_payload(payload)

@@ -250,3 +250,62 @@ Common refusals and their fixes:
 | `hook leases cannot ...` | hook tried to stage/start work | move the write to a tool/command/observer |
 | `declares observed_facts but provides no observer` | metadata/callback mismatch | wire both or neither |
 | `invalid observed fact kind` | typo in `observed_facts` | use usage/invocation_finished/run_finished |
+
+### Interactive command results
+
+A successful `CommandResult` may include a `CommandPresentation(title, view_type,
+data)` using the same bounded, validated view data as plugin views. Use `choices`
+for selectable lists, `form` for editing, and `markdown`/`fields`/`status` for
+readable details. Keep `output` as the human receipt for CLI/history consumers.
+Presentations cannot carry confirmations: governed confirmation still uses
+`ConfirmationRequest` and its durable request id.
+
+TUI and web mount interactive presentations only from a direct command reply,
+bound to the revision used for that invocation. Historical events retain the
+presentation as a fact but must never reopen an interactive dialog on replay.
+An unavailable or stale action is a visible failure, never an automatic retry
+under a new revision. Rendering a form does not execute its action; submission
+uses the normal command validation, effects, and confirmation path.
+
+### Prepare command input without executing it
+
+A command may implement the optional SDK `CommandInput` protocol:
+`prepare_input(invocation, services) -> CommandPresentation`. The admitted catalog
+sets `has_input` from this capability. Bare slash input requests `command.input`
+and mounts the returned presentation; explicit arguments continue directly to
+normal invocation. CLI/RPC `command.invoke` still requires valid arguments.
+
+Preparation runs under a fresh read-only lease with the caller's workspace,
+session, and captured revision. It cannot stage state, events, continuations,
+processes, or other service mutations. It produces no command-completed event.
+A form/choices presentation must target the preparing command itself. A missing
+capability, malformed result, handler error, and an empty candidate set remain
+distinct: return a notice explaining an empty set, and let failures surface.
+Every presentation remains bounded by the existing view-data byte limit.
+
+Text form fields may declare `options` as a sequence of `ChoiceOption(id, label)`.
+`None` means free text; an explicit option list restricts the submitted value to
+one of its ids. Required fields still require a selection, optional untouched
+fields remain absent, and labels never become submitted values. TUI supports
+Left/Right/Space selection and web uses a native select. The final action still
+passes through the command schema, effects, busy policy, and confirmation gate.
+
+A `CommandDefinition.text_argument` may name a declared string property. Clients
+map natural slash trailing text to that property, including when the command has
+additional optional fields. A tail beginning with `{` is parsed as a structured
+JSON object. Admission rejects undeclared/non-string text targets. Neither this
+metadata nor input preparation changes canonical command IDs or structured RPC
+arguments. Examples: `/goal set Ship the command UI`, `/review Focus on races`,
+and `/workflow run review`; bare forms provide guided optional arguments.
+
+Markdown details may declare `actions` as `ViewAction(label, action, arguments)`.
+Clients show these controls only for live presentations. Set `prepare_input=True`
+to open the target command's declared input without invoking it; preparation
+actions cannot carry invocation arguments. Normal actions retain the producing
+revision and pass through governed command invocation.
+
+Forms may provide fixed `arguments` alongside editable fields, for identifiers
+and concurrency tokens. Field names cannot shadow those arguments. Submission
+merges validated fields into the fixed arguments; identifiers are not editors.
+Use `slash_visible=False` for implementation helpers that should remain callable
+through forms but should not appear in slash discovery or human help.

@@ -36,6 +36,7 @@ from voidcode.sdk.client import (
     ViewsSnapshot,
     parse_session_frame,
 )
+from voidcode.sdk.commands import CommandInputSnapshot
 from voidcode.sdk.rpc import RPC_MAX_MESSAGE_BYTES, RPC_QUEUE_MESSAGES, RPC_SUBPROTOCOL, RpcFailure, RpcNotification, RpcSuccess
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage, decode_context_history, decode_transcript_page
 
@@ -234,6 +235,18 @@ class CoreRpcClient:
                     "approval_request_id": active.approval_request_id,
                     "decision": active.decision,
                     "max_steps": active.max_steps,
+                },
+            )
+        )
+
+    def command_input(self, session_id: str, name: str, expected_revision: str) -> CommandInputSnapshot:
+        return CommandInputSnapshot.from_payload(
+            self._call(
+                "command.input",
+                {
+                    "session_id": session_id,
+                    "name": name,
+                    "expected_revision": expected_revision,
                 },
             )
         )

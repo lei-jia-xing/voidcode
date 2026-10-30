@@ -502,4 +502,4 @@ def test_context_contribution_keeps_rules_when_skills_are_disabled(tmp_path: Pat
     assert plugin.observer is skills_observer
     assert plugin.tools == ()
     assert [reader.scheme for reader in plugin.resource_readers] == ["skill"]
-    assert [command.definition.name for command in plugin.commands] == ["skills"]
+    assert [command.definition.name for command in plugin.commands] == ["skills", "skills.show"]

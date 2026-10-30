@@ -214,6 +214,10 @@ class CoreTransportApp(FastAPI):
             schemas[name] = schema
         schemas["PluginViewData"] = {"oneOf": [{"$ref": f"#/components/schemas/{cls.__name__}"} for cls in view_classes]}
         schemas["PluginViewDescriptor"]["properties"]["data"] = {"$ref": "#/components/schemas/PluginViewData"}
+        schemas["CommandPresentationData"] = {
+            "oneOf": [{"$ref": f"#/components/schemas/{cls.__name__}"} for cls in view_classes if cls is not ConfirmationViewData]
+        }
+        schemas["CommandPresentation"]["properties"]["data"] = {"$ref": "#/components/schemas/CommandPresentationData"}
         doc["x-rpc-methods"] = {
             name: {
                 "params": {"$ref": f"#/components/schemas/{params.__name__}"},

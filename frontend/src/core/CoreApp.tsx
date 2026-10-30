@@ -11,6 +11,7 @@ import { CoreClient, CoreApiError } from "../lib/core/client";
 import type { CommandCatalog } from "../lib/core/client";
 import type {
   HealthStatus,
+  FormField,
   Icon,
   PluginViewDescriptor,
   SessionRow,
@@ -56,6 +57,16 @@ function slashPathOf(descriptor: {
       ? syntax.slice(1).trim()
       : "";
   return (prefix || descriptor.name).replace(/\./g, " ");
+}
+
+/** Human argument hints derived from the admitted schema. */
+function argumentHints(schema: Record<string, unknown> | undefined): string {
+  const properties = schema?.properties;
+  if (!properties || typeof properties !== "object") return "";
+  const required = Array.isArray(schema?.required) ? schema.required : [];
+  return Object.keys(properties)
+    .map((name) => (required.includes(name) ? `<${name}>` : `[${name}]`))
+    .join(" ");
 }
 
 /** Public slash path for display: the catalog's preferred spelling when the
@@ -175,6 +186,16 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     revisionId: string;
     views: PluginViewDescriptor[];
   }>({ sessionId: "", epoch: -1, clientKey: "", revisionId: "", views: [] });
+  const [commandView, setCommandView] = useState<{
+    sessionId: string;
+    epoch: number;
+    clientKey: string;
+    revisionId: string;
+    descriptor: PluginViewDescriptor;
+  } | null>(null);
+  const commandViewRequestRef = useRef(0);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [completionDismissed, setCompletionDismissed] = useState(false);
   // Pending confirmations are a typed UI envelope per request (ui_type +
   // validated ui_data), never parsed product data: the client only renders the
   // declared view kind. They are held by request id in request order, so a
@@ -1029,12 +1050,63 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     }
   };
 
+  const prepareCommandInput = async (cmd: string, revisionId: string) => {
+    if (!activeSessionId) return;
+    const descriptor = catalog.commands.find((entry) => entry.name === cmd);
+    if (!descriptor?.has_input || catalog.revisionId !== revisionId) {
+      setStatusMessage(t("core.commandInputRevisionChanged"));
+      return;
+    }
+    const serial = ++commandViewRequestRef.current;
+    const issueSession = activeSessionId;
+    const epoch = epochRef.current;
+    const clientKey = renderedClientKey;
+    try {
+      const snapshot = await client.commandInput(issueSession, cmd, revisionId);
+      if (
+        !isCurrent(issueSession, epoch, clientKey) ||
+        serial !== commandViewRequestRef.current
+      )
+        return;
+      if (snapshot.revision_id !== revisionId)
+        throw new Error(t("core.commandInputRevisionChanged"));
+      setCommandView({
+        sessionId: issueSession,
+        epoch,
+        clientKey,
+        revisionId,
+        descriptor: {
+          owner: descriptor.owner,
+          name: cmd,
+          ...snapshot.presentation,
+        },
+      });
+    } catch (err) {
+      if (
+        isCurrent(issueSession, epoch, clientKey) &&
+        serial === commandViewRequestRef.current
+      ) {
+        setStatusMessage(
+          t("core.statusInvokeFailed", {
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+    }
+  };
+
   const handleViewAction = async (
     actionName: string,
     args: Record<string, unknown>,
     revisionId: string,
+    prepareInput = false,
   ) => {
+    if (prepareInput) {
+      await prepareCommandInput(actionName, revisionId);
+      return;
+    }
     if (!activeSessionId) return;
+    const interactionSerial = ++commandViewRequestRef.current;
     const issueSession = activeSessionId;
     const epoch = epochRef.current;
     const clientKey = renderedClientKey;
@@ -1053,7 +1125,9 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
         return; // session or epoch changed while the command ran: drop the reply
       }
       setStatusMessage(
-        t("core.statusInvoked", { name: displayName, status: res.status }),
+        res.status === "error"
+          ? t("core.statusInvokeFailed", { message: res.error || res.status })
+          : t("core.statusInvoked", { name: displayName, status: res.status }),
       );
       if (res.status === "pending_confirmation" && res.confirmation) {
         const confirmation = res.confirmation;
@@ -1072,6 +1146,27 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
             revisionId,
           });
         }
+      }
+      if (
+        res.status === "ok" &&
+        commandViewRequestRef.current === interactionSerial
+      ) {
+        const presentation = res.presentation;
+        setCommandView(
+          presentation
+            ? {
+                sessionId: issueSession,
+                epoch,
+                clientKey,
+                revisionId,
+                descriptor: {
+                  owner: "command",
+                  name: actionName,
+                  ...presentation,
+                },
+              }
+            : null,
+        );
       }
       refreshViews(issueSession, epoch, clientKey);
     } catch (err: unknown) {
@@ -1143,6 +1238,11 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
       }
       const argStr = rest.trim();
 
+      if (!argStr && descriptor.has_input) {
+        await prepareCommandInput(cmd, catalog.revisionId);
+        return;
+      }
+
       const schema = descriptor.argument_schema ?? {};
       const properties =
         schema.properties !== null && typeof schema.properties === "object"
@@ -1153,8 +1253,58 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
         : [];
 
       let parsedArgs: Record<string, unknown>;
+      if (
+        !argStr &&
+        required.length > 0 &&
+        Object.keys(properties).length > 0
+      ) {
+        const types = {
+          string: "text",
+          integer: "integer",
+          number: "number",
+          boolean: "boolean",
+        } as const;
+        if (
+          Object.values(properties).every(
+            (spec) =>
+              spec &&
+              typeof spec === "object" &&
+              spec.type &&
+              spec.type in types,
+          )
+        ) {
+          const fields: FormField[] = Object.entries(properties).map(
+            ([name, spec]) => ({
+              name,
+              label: name,
+              required: required.includes(name),
+              field_type: types[spec.type as keyof typeof types],
+            }),
+          );
+          commandViewRequestRef.current += 1;
+          setCommandView({
+            sessionId: activeSessionId,
+            epoch: epochRef.current,
+            clientKey: renderedClientKey,
+            revisionId: catalog.revisionId,
+            descriptor: {
+              owner: descriptor.owner,
+              name: descriptor.name,
+              title: descriptor.description,
+              view_type: "form",
+              data: { fields, action: cmd, initial_values: {} },
+            },
+          });
+          return;
+        }
+      }
       if (!argStr) {
         parsedArgs = {};
+      } else if (
+        descriptor.text_argument &&
+        !argStr.trimStart().startsWith("{")
+      ) {
+        parsedArgs = { [descriptor.text_argument]: argStr };
       } else if (
         Object.keys(properties).length === 1 &&
         required.length === 1 &&
@@ -1224,19 +1374,41 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     }
   };
 
+  const slashCommands = useMemo(
+    () => catalog.commands.filter((entry) => entry.slash_visible !== false),
+    [catalog],
+  );
+
   // Autocomplete hints
   const slashSuggestions = useMemo(() => {
-    if (!promptInput.startsWith("/")) {
+    if (
+      completionDismissed ||
+      !promptInput.startsWith("/") ||
+      promptInput.includes("\n")
+    ) {
       return [];
     }
     const query = promptInput.slice(1).toLowerCase();
     const builtins = ["help", "cancel", "views", "new"];
-    const fromCatalog = catalog.commands.map(slashPathOf);
+    const fromCatalog = slashCommands.map(slashPathOf);
     const all = Array.from(new Set([...builtins, ...fromCatalog]));
-    return all.filter(
-      (name) => name !== "" && name.toLowerCase().startsWith(query),
-    );
-  }, [promptInput, catalog]);
+    const split = query.lastIndexOf(" ");
+    const base = split < 0 ? "" : query.slice(0, split + 1);
+    const partial = query.slice(split + 1);
+    return Array.from(
+      new Set(
+        all
+          .filter(
+            (name) =>
+              name.toLowerCase().startsWith(base) &&
+              name.slice(base.length).toLowerCase().startsWith(partial),
+          )
+          .map((name) => base + name.slice(base.length).split(" ")[0]),
+      ),
+    )
+      .filter(Boolean)
+      .sort();
+  }, [promptInput, slashCommands, completionDismissed]);
 
   return (
     <div
@@ -1455,9 +1627,10 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                   <div
                     key={ev.sequence}
                     data-testid={`event-${ev.sequence}`}
-                    className={`text-xs font-mono px-3 py-1.5 rounded border max-w-2xl ${tone}`}
+                    className={`text-xs font-mono whitespace-pre-wrap break-words px-3 py-1.5 rounded border max-w-2xl ${tone}`}
                   >
-                    ✔ {t("core.commandLabel")} /
+                    {status === "ok" ? "✔" : status === "error" ? "✖" : "…"}{" "}
+                    {t("core.commandLabel")} /
                     {name === null
                       ? t("core.unknownLabel")
                       : displaySlashPath(catalog.commands, name)}{" "}
@@ -1567,6 +1740,45 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
           )}
         </div>
 
+        {commandView &&
+          commandView.sessionId === activeSessionId &&
+          commandView.epoch === scope.epoch &&
+          commandView.clientKey === renderedClientKey &&
+          commandView.revisionId === catalog.revisionId && (
+            <section
+              data-testid="command-presentation"
+              className="border-t border-neutral-700 p-4 max-h-80 overflow-y-auto"
+            >
+              <div className="flex justify-between items-center">
+                <h2 className="font-semibold">
+                  {commandView.descriptor.title}
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => {
+                    commandViewRequestRef.current += 1;
+                    setCommandView(null);
+                  }}
+                >
+                  {t("core.cancel")}
+                </button>
+              </div>
+              <PluginViewRenderer
+                descriptor={commandView.descriptor}
+                sessionId={activeSessionId}
+                revisionId={commandView.revisionId}
+                client={client}
+                catalog={catalog.commands}
+                onAction={handleViewAction}
+                onCancel={() => {
+                  commandViewRequestRef.current += 1;
+                  setCommandView(null);
+                }}
+                disabled={isRunning}
+              />
+            </section>
+          )}
+
         {/* Native tool approval banner (core permission gate) */}
         {pendingApproval && (
           <div
@@ -1636,14 +1848,36 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
               data-testid="slash-suggestions"
               className="absolute bottom-full mb-1 left-3 bg-neutral-900 border border-neutral-700 rounded-md shadow-xl py-1 w-64 max-h-48 overflow-y-auto z-50 text-xs"
             >
-              {slashSuggestions.map((cmd) => (
+              {slashSuggestions.map((cmd, index) => (
                 <button
                   key={cmd}
                   type="button"
-                  onClick={() => setPromptInput(`/${cmd} `)}
-                  className="w-full text-left px-3 py-1.5 hover:bg-neutral-800 text-neutral-200 font-mono"
+                  onClick={() => {
+                    setPromptInput(`/${cmd} `);
+                    setSuggestionIndex(0);
+                  }}
+                  className={`w-full text-left px-3 py-1.5 hover:bg-neutral-800 text-neutral-200 font-mono ${index === suggestionIndex % slashSuggestions.length ? "bg-neutral-700" : ""}`}
                 >
                   /{cmd}
+                  {slashCommands.some((entry) =>
+                    slashPathOf(entry).startsWith(cmd + " "),
+                  )
+                    ? " ›"
+                    : ""}
+                  <span className="ml-3 text-neutral-200">
+                    {argumentHints(
+                      catalog.commands.find(
+                        (entry) => slashPathOf(entry) === cmd,
+                      )?.argument_schema,
+                    )}
+                  </span>
+                  <span className="ml-3 font-sans text-neutral-300">
+                    {
+                      catalog.commands.find(
+                        (entry) => slashPathOf(entry) === cmd,
+                      )?.description
+                    }
+                  </span>
                 </button>
               ))}
             </div>
@@ -1655,7 +1889,52 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
               type="text"
               value={promptInput}
               disabled={isRunning || !activeSessionId}
-              onChange={(e) => setPromptInput(e.target.value)}
+              onChange={(e) => {
+                commandViewRequestRef.current += 1;
+                setPromptInput(e.target.value);
+                setSuggestionIndex(0);
+                setCompletionDismissed(false);
+              }}
+              onKeyDown={(e) => {
+                if (
+                  !slashSuggestions.length ||
+                  e.currentTarget.selectionStart !== promptInput.length ||
+                  e.currentTarget.selectionEnd !== promptInput.length
+                )
+                  return;
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setCompletionDismissed(true);
+                } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSuggestionIndex(
+                    (index) =>
+                      (index +
+                        (e.key === "ArrowDown" ? 1 : -1) +
+                        slashSuggestions.length) %
+                      slashSuggestions.length,
+                  );
+                } else if (e.key === "Tab" || e.key === "Enter") {
+                  const selected =
+                    slashSuggestions[suggestionIndex % slashSuggestions.length];
+                  const exact = promptInput === `/${selected}`;
+                  const executable =
+                    slashCommands.some(
+                      (entry) => slashPathOf(entry) === selected,
+                    ) || ["help", "cancel", "views", "new"].includes(selected);
+                  if (e.key === "Tab" || !exact || !executable) {
+                    e.preventDefault();
+                    const children = slashCommands.some((entry) =>
+                      slashPathOf(entry).startsWith(selected + " "),
+                    );
+                    setPromptInput(
+                      `/${selected}${children || e.key === "Tab" ? " " : ""}`,
+                    );
+                    setSuggestionIndex(0);
+                    setCompletionDismissed(!children);
+                  }
+                }
+              }}
               placeholder={t("core.promptPlaceholder")}
               className="flex-1 px-4 py-2.5 rounded-lg bg-neutral-800 border border-neutral-700 text-sm text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-cyan-500"
             />

@@ -21,11 +21,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 from uuid import uuid4
 
 from voidcode.capabilities.agent_queries import AGENT_DEFINITIONS, AgentDefinitionRequest, apply_agent_profile
-from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult, ConfirmationRequest
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult, ConfirmationRequest
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, json_wire_value, own_json_value
@@ -1387,6 +1387,7 @@ def _start_run(
 class WorkflowRunCommand:
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="workflow.run",
+        text_argument="workflow",
         description="Start a configured workflow script in the background; returns a stable run receipt.",
         argument_schema={
             "type": "object",
@@ -1405,6 +1406,16 @@ class WorkflowRunCommand:
     def __init__(self, workflows: Mapping[str, str] = _NO_CONFIG) -> None:
         self._workflows = workflows
 
+    def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
+        if not self._workflows:
+            return CommandPresentation(
+                title="Run workflow",
+                view_type="notice",
+                data={"message": "No workflows are configured. Add a workflow script to voidcode.json and reload configuration."},
+            )
+        view = WorkflowRunFormView(self._workflows).render(invocation.context.session_id, services)
+        return CommandPresentation(title=view.title, view_type="form", data=view.data)
+
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         try:
             workflow, task = _parse_run_arguments(invocation.arguments)
@@ -1420,10 +1431,56 @@ class WorkflowRunCommand:
             status="ok",
             output=f"workflow '{started.workflow}' started as run {started.run_id}",
             data={"run_id": started.run_id, "action_id": started.action_id, "workflow": started.workflow, "status": "running"},
+            presentation=_run_receipt(started.run_id, "running"),
         )
 
 
-class WorkflowStatusCommand:
+def _run_receipt(run_id: str, status: str) -> CommandPresentation:
+    return CommandPresentation(
+        title="Workflow run",
+        view_type="markdown",
+        data={
+            "content": f"Run {run_id} · {status}",
+            "actions": [{"label": "View run details", "action": "workflow.status", "arguments": {"run_id": run_id}}],
+        },
+    )
+
+
+class _WorkflowRunInput:
+    definition: ClassVar[CommandDefinition]
+
+    def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
+        _ = invocation
+        state = WorkflowState.from_payload(services.get_state("session")[0])
+        action = self.definition.name
+        runs = sorted(state.runs.values(), key=lambda run: run.updated_at, reverse=True)
+        if action != "workflow.status":
+            runs = [run for run in runs if run.status not in _TERMINAL_RUN]
+        if action == "workflow.pause":
+            runs = [run for run in runs if run.status != "paused"]
+        if action == "workflow.resume":
+            runs = [run for run in runs if run.status != "running"]
+        if not runs:
+            return CommandPresentation(title="Workflow runs", view_type="notice", data={"message": "No matching workflow runs."})
+        return CommandPresentation(
+            title=self.definition.description,
+            view_type="form",
+            data={
+                "action": action,
+                "fields": [
+                    {
+                        "name": "run_id",
+                        "label": f"Workflow run (latest {min(len(runs), STATUS_NODE_LIMIT)} of {len(runs)})"
+                        if len(runs) > STATUS_NODE_LIMIT
+                        else "Workflow run",
+                        "options": [{"id": run.run_id, "label": f"{run.workflow} · {run.status} · {run.run_id}"} for run in runs[:STATUS_NODE_LIMIT]],
+                    }
+                ],
+            },
+        )
+
+
+class WorkflowStatusCommand(_WorkflowRunInput):
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="workflow.status",
         description="Read one workflow run's graph and bounded node results.",
@@ -1431,6 +1488,7 @@ class WorkflowStatusCommand:
             "type": "object",
             "properties": {
                 "run_id": {"type": "string", "description": "Workflow run id."},
+                "node_offset": {"type": "integer", "minimum": 0, "description": "First node in the interactive graph page."},
                 "result_key": {"type": "string", "description": "Optional node key whose result page to read."},
                 "result_offset": {"type": "integer", "minimum": 0, "description": "Byte offset into the node result."},
             },
@@ -1507,7 +1565,64 @@ class WorkflowStatusCommand:
             data["driver"] = None if action is None else action.as_payload()
             if action is not None:
                 lines.append(f"driver: {action.status}" + (f" error={action.error}" if action.error else ""))
-        return CommandResult(status="ok", output="\n".join(lines), data=data)
+        node_offset = invocation.arguments.get("node_offset", 0)
+        if type(node_offset) is not int or not 0 <= node_offset <= len(run.nodes):
+            return CommandResult(status="error", error="Node offset is beyond the graph; reopen workflow status.")
+        actions: list[dict[str, object]] = [{"label": "Refresh status", "action": "workflow.status", "arguments": {"run_id": raw}}]
+        if run.status not in _TERMINAL_RUN:
+            if run.status != "paused":
+                actions.append({"label": "Pause run", "action": "workflow.pause", "arguments": {"run_id": raw}})
+            if run.status != "running":
+                actions.append({"label": "Resume run", "action": "workflow.resume", "arguments": {"run_id": raw}})
+            actions.append({"label": "Cancel run", "action": "workflow.cancel", "arguments": {"run_id": raw}})
+        if result_key is not None:
+            result = cast(dict[str, Any], data["result"])
+            content = (
+                f"Node {result_key[:100]} · {node.status}\n\n"
+                f"Bytes {result_offset}–{result['next_offset']} of {result['total_bytes']}\n\n{result['text']}"
+            )
+            if result_offset:
+                actions.append(
+                    {
+                        "label": "First result page",
+                        "action": "workflow.status",
+                        "arguments": {"run_id": raw, "result_key": result_key, "result_offset": 0},
+                    }
+                )
+            if result["next_offset"] < result["total_bytes"]:
+                actions.append(
+                    {
+                        "label": "Next result page",
+                        "action": "workflow.status",
+                        "arguments": {"run_id": raw, "result_key": result_key, "result_offset": result["next_offset"]},
+                    }
+                )
+        else:
+            detail = [f"Workflow: {run.workflow[:100]} · {run.status}"]
+            if run.error:
+                detail.append(f"Error: {run.error[:500]}")
+            detail.append(f"Nodes {node_offset}–{min(node_offset + 10, len(run.nodes))} of {len(run.nodes)}")
+            for graph_node in run.nodes[node_offset : node_offset + 10]:
+                detail.append(f"- {graph_node.key[:80]} · {graph_node.status}" + (f" · {graph_node.error[:120]}" if graph_node.error else ""))
+                actions.append(
+                    {"label": f"Read: {graph_node.key[:60]}", "action": "workflow.status", "arguments": {"run_id": raw, "result_key": graph_node.key}}
+                )
+            if node_offset:
+                actions.append(
+                    {"label": "Previous nodes", "action": "workflow.status", "arguments": {"run_id": raw, "node_offset": max(0, node_offset - 10)}}
+                )
+            if node_offset + 10 < len(run.nodes):
+                actions.append({"label": "Next nodes", "action": "workflow.status", "arguments": {"run_id": raw, "node_offset": node_offset + 10}})
+            if "run_result" in data:
+                run_result = cast(dict[str, Any], data["run_result"])
+                detail.append(f"Run summary preview ({run_result['total_bytes']} total bytes):\n{run_result['text'][:1000]}")
+            content = "\n\n".join(detail)
+        return CommandResult(
+            status="ok",
+            output="\n".join(lines),
+            data=data,
+            presentation=CommandPresentation(title="Workflow run", view_type="markdown", data={"content": content, "actions": actions}),
+        )
 
 
 def _run_result_page(services: PluginServices, run: WorkflowRun, offset: int) -> tuple[str, int]:
@@ -1557,7 +1672,7 @@ def _utf8_page(raw: bytes, offset: int) -> str:
     return raw[offset:cut].decode("utf-8")
 
 
-class WorkflowPauseCommand:
+class WorkflowPauseCommand(_WorkflowRunInput):
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="workflow.pause",
         description="Park a workflow driver; running children keep running.",
@@ -1595,10 +1710,12 @@ class WorkflowPauseCommand:
             services.replace_state(state.with_run(run.with_status("paused", None)).to_payload(), version, "session")
         except (ValueError, RuntimeError) as exc:
             return CommandResult(status="error", error=f"workflow run '{raw}' failed to pause: {exc}")
-        return CommandResult(status="ok", output=f"run {raw} paused", data={"run_id": raw, "status": "paused"})
+        return CommandResult(
+            status="ok", output=f"run {raw} paused", data={"run_id": raw, "status": "paused"}, presentation=_run_receipt(raw, "paused")
+        )
 
 
-class WorkflowResumeCommand:
+class WorkflowResumeCommand(_WorkflowRunInput):
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="workflow.resume",
         description="Resume a paused or parked run with the same script, input, and node keys.",
@@ -1652,10 +1769,15 @@ class WorkflowResumeCommand:
             services.replace_state(state.with_run(run).to_payload(), version, "session")
         except (ValueError, RuntimeError) as exc:
             return CommandResult(status="error", error=f"workflow run '{raw}' failed to resume: {exc}")
-        return CommandResult(status="ok", output=f"run {raw} resumed", data={"run_id": raw, "action_id": action_id, "status": "running"})
+        return CommandResult(
+            status="ok",
+            output=f"run {raw} resumed",
+            data={"run_id": raw, "action_id": action_id, "status": "running"},
+            presentation=_run_receipt(raw, "running"),
+        )
 
 
-class WorkflowCancelCommand:
+class WorkflowCancelCommand(_WorkflowRunInput):
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="workflow.cancel",
         description="Stop a workflow driver and every child it owns; no new node is accepted afterward.",
@@ -1744,7 +1866,12 @@ class WorkflowCancelCommand:
             services.replace_state(state.with_run(run).to_payload(), version, "session")
         except (ValueError, RuntimeError) as exc:
             return CommandResult(status="error", error=f"workflow run '{raw}' failed to cancel: {exc}")
-        return CommandResult(status="ok", output=f"run {raw} cancelled ({len(stopped)} stopped)", data={"run_id": raw, "status": "cancelled"})
+        return CommandResult(
+            status="ok",
+            output=f"run {raw} cancelled ({len(stopped)} stopped)",
+            data={"run_id": raw, "status": "cancelled"},
+            presentation=_run_receipt(raw, "cancelled"),
+        )
 
 
 # --- View ---
@@ -1788,7 +1915,13 @@ class WorkflowRunFormView:
             view_type="form",
             data={
                 "fields": [
-                    {"name": "workflow", "label": "Workflow", "field_type": "text", "required": True},
+                    {
+                        "name": "workflow",
+                        "label": "Workflow",
+                        "field_type": "text",
+                        "required": True,
+                        "options": [{"id": name, "label": name} for name in names],
+                    },
                     {"name": "task", "label": "Task", "field_type": "multiline", "required": False},
                 ],
                 "action": "workflow.run",

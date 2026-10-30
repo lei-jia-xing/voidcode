@@ -37,6 +37,7 @@ export interface PluginViewRendererProps {
     action: string,
     args: Record<string, unknown>,
     revisionId: string,
+    prepareInput?: boolean,
   ) => void;
   onConfirm?: (
     requestId: string,
@@ -65,12 +66,21 @@ export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
     case "notice":
       return <NoticeView data={data as NoticeViewData} />;
     case "markdown":
-      return <MarkdownView data={data as MarkdownViewData} />;
+      return (
+        <MarkdownView
+          data={data as MarkdownViewData}
+          disabled={disabled}
+          onAction={(action, args, prepareInput) =>
+            onAction(action, args, revisionId, prepareInput)
+          }
+        />
+      );
     case "fields":
       return <FieldsView data={data as FieldsViewData} />;
     case "choices":
       return (
         <ChoicesView
+          title={descriptor.title}
           data={data as ChoicesViewData}
           onSelect={(action, args) => onAction(action, args, revisionId)}
           disabled={disabled}
@@ -89,6 +99,7 @@ export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
     case "form":
       return (
         <FormView
+          title={descriptor.title}
           data={data as unknown as FormViewData}
           sessionId={sessionId}
           revisionId={revisionId}

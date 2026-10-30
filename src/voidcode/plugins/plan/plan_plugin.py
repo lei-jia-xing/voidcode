@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 
-from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import ContextContribution
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
@@ -63,7 +63,7 @@ class PlanState:
         missing = sorted(_STATE_KEYS - raw.keys())
         if missing:
             raise ValueError("plan state is missing field(s): " + ", ".join(missing))
-        if raw["schema_version"] != SCHEMA_VERSION:
+        if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"plan state schema_version must be {SCHEMA_VERSION}, got {raw['schema_version']!r}")
         active = raw["active"]
         if not isinstance(active, bool):
@@ -77,6 +77,14 @@ class PlanState:
 def _load(services: PluginServices) -> tuple[PlanState, int]:
     state_data, version = services.get_state("session")
     return PlanState.from_payload(state_data), version
+
+
+def _mode_action(active: bool) -> CommandPresentation:
+    return CommandPresentation(
+        title="Plan mode active · Submit to leave plan mode" if active else "Default mode · Submit to enter plan mode",
+        view_type="form",
+        data={"fields": [], "action": "plan.off" if active else "plan"},
+    )
 
 
 class PlanCommand:
@@ -95,11 +103,11 @@ class PlanCommand:
         state, version = _load(services)
         services.set_overlay(tier="read-only")
         if state.active:
-            return CommandResult(status="ok", output=ENABLED_OUTPUT, data={"active": True, "changed": False})
+            return CommandResult(status="ok", output=ENABLED_OUTPUT, data={"active": True, "changed": False}, presentation=_mode_action(True))
         updated = PlanState(active=True)
         services.replace_state(updated.to_payload(), expected_version=version)
         services.stage_event("plan_mode_enabled", {})
-        return CommandResult(status="ok", output=ENABLED_OUTPUT, data={"active": True, "changed": True})
+        return CommandResult(status="ok", output=ENABLED_OUTPUT, data={"active": True, "changed": True}, presentation=_mode_action(True))
 
 
 class PlanOffCommand:
@@ -118,10 +126,10 @@ class PlanOffCommand:
         state, version = _load(services)
         cleared = services.clear_overlay()
         if not state.active:
-            return CommandResult(status="ok", output=DISABLED_OUTPUT, data={"active": False, "changed": cleared})
+            return CommandResult(status="ok", output=DISABLED_OUTPUT, data={"active": False, "changed": cleared}, presentation=_mode_action(False))
         services.replace_state(PlanState(active=False).to_payload(), expected_version=version)
         services.stage_event("plan_mode_disabled", {})
-        return CommandResult(status="ok", output=DISABLED_OUTPUT, data={"active": False, "changed": True})
+        return CommandResult(status="ok", output=DISABLED_OUTPUT, data={"active": False, "changed": True}, presentation=_mode_action(False))
 
 
 class PlanStatusCommand:
@@ -140,6 +148,7 @@ class PlanStatusCommand:
             status="ok",
             output="Mode: plan" if state.active else "Mode: default",
             data={"active": state.active},
+            presentation=_mode_action(state.active),
         )
 
 

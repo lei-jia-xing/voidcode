@@ -30,3 +30,13 @@ Names are non-empty strings; paths are workspace-relative `.py` files without `.
 - Run states: `running`, `paused`, `parked`, `completed`, `failed`, `cancelled`. Approval waits and recoverable interruptions park honestly; pause parks the driver; any real failure marks the run failed *and* fails the action, so `--wait-background` exits nonzero with the recorded error. Steering commands re-read state after slow RPCs, and a terminal run is never overwritten by a late driver outcome.
 - Resume re-executes the module top level and `run(ctx, task)`; only keyed `ctx.agent` nodes dedupe through their durable fingerprints — arbitrary script I/O has no exactly-once guarantee. Cancel is cooperative: it aborts at `ctx` boundaries, accepts no new nodes afterwards, and cancels owned children, but cannot force-terminate arbitrarily blocked script Python or host I/O.
 - Disabling parks live (`running`/`paused`) runs as `parked`; children stay core-owned for resume after re-enable.
+
+### Interactive run status
+
+Bare status/pause/resume/cancel commands prepare applicable run selectors without
+starting work. Status presentations show ten nodes per page, per-node result
+navigation and applicable lifecycle actions. Result offsets use the existing
+UTF-8 byte paging contract; Next uses the returned offset, and later pages offer
+return to the first page. Run summaries in the interactive graph are explicitly
+labelled previews. CLI/RPC structured status data and governed cancellation
+confirmation retain their existing semantics.

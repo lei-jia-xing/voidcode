@@ -921,3 +921,93 @@ describe("ComponentStyle", () => {
     expect(screen.getByText("v")).not.toHaveAttribute("style");
   });
 });
+
+it("binds detail actions to the displayed revision and distinguishes input preparation", () => {
+  const action = vi.fn();
+  render(
+    <PluginViewRenderer
+      descriptor={{
+        owner: "skills",
+        name: "show",
+        title: "Guide",
+        view_type: "markdown",
+        data: {
+          content: "Page one",
+          actions: [
+            {
+              label: "Next page",
+              action: "skills.show",
+              arguments: { name: "guide", offset: 100 },
+            },
+            {
+              label: "Choose skill",
+              action: "skills.show",
+              prepare_input: true,
+            },
+          ],
+        },
+      }}
+      sessionId="s"
+      revisionId="shown-revision"
+      client={{} as CoreClient}
+      catalog={[]}
+      onAction={action}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+  expect(action).toHaveBeenLastCalledWith(
+    "skills.show",
+    { name: "guide", offset: 100 },
+    "shown-revision",
+    false,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Choose skill" }));
+  expect(action).toHaveBeenLastCalledWith(
+    "skills.show",
+    {},
+    "shown-revision",
+    true,
+  );
+});
+
+it("keeps fixed form arguments out of editable fields and resets drafts for a new target", async () => {
+  const submit = vi.fn();
+  const props = {
+    sessionId: "s",
+    revisionId: "r",
+    client: {} as CoreClient,
+    catalog: [],
+    onSubmit: submit,
+  };
+  const data = {
+    action: "todo.update",
+    arguments: { task_id: "first", expected_revision: 1 },
+    fields: [
+      {
+        name: "op",
+        label: "Operation",
+        options: [{ id: "done", label: "Complete" }],
+      },
+    ],
+  };
+  const h = render(<FormView {...props} data={data} />);
+  fireEvent.change(screen.getByTestId("form-input-op"), {
+    target: { value: "done" },
+  });
+  fireEvent.click(screen.getByTestId("form-submit-btn"));
+  expect(submit).toHaveBeenLastCalledWith("todo.update", {
+    task_id: "first",
+    expected_revision: 1,
+    op: "done",
+  });
+  expect(screen.queryByTestId("form-input-task_id")).toBeNull();
+  h.rerender(
+    <FormView
+      {...props}
+      data={{ ...data, arguments: { task_id: "second", expected_revision: 2 } }}
+    />,
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("form-input-op")).toHaveValue(""),
+  );
+});

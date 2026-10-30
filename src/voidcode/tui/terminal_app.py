@@ -60,6 +60,7 @@ from voidcode.sdk.transcript import (
 )
 from voidcode.sdk.views import (
     ConfirmationViewData,
+    MarkdownViewData,
     PluginViewDescriptor,
     is_read_only_load,
     parse_view_data,
@@ -75,6 +76,7 @@ from .views import (
     InteractiveChoices,
     InteractiveConfirmation,
     InteractiveForm,
+    InteractiveMarkdown,
     render_assistant_markdown,
     render_plugin_view,
     render_thinking,
@@ -192,7 +194,7 @@ def _slash_display(name: str) -> str:
     return name.replace(".", " ")
 
 
-def _command_result_rows(name: str, result: CommandResult, styles: Styles) -> list[str]:
+def _command_result_rows(name: str, result: CommandResult, styles: Styles, width: int = 80) -> list[str]:
     """Render direct receipts and durable command results consistently."""
     label = _safe(_slash_display(name) or "command")
     text = _command_result_text(result)
@@ -201,6 +203,13 @@ def _command_result_rows(name: str, result: CommandResult, styles: Styles) -> li
     if result.status == "pending_confirmation":
         return [styles.fg("warning", f"Confirmation required: /{label}")]
     if result.status == "ok":
+        presentation = result.presentation
+        if presentation is not None and presentation.view_type not in ("choices", "form"):
+            return render_plugin_view(
+                PluginViewDescriptor(owner="command", name=name, title=presentation.title, view_type=presentation.view_type, data=presentation.data),
+                width,
+                styles,
+            )
         return escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True).split("\n") if text else []
     return _prefixed_rows(f"Warning: /{label} ({result.status or 'unknown'}):", text, styles, slot="warning")
 
@@ -438,7 +447,8 @@ class CoreTuiApp:
         #: a held Enter/click while one is outstanding is ignored, never a
         #: second thread. Cleared on response, decided fact, or error.
         self._in_flight: set[str] = set()
-        self.active_overlay: InteractiveChoices | InteractiveConfirmation | InteractiveForm | None = None
+        self._interaction_serial = 0
+        self.active_overlay: InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveMarkdown | None = None
         # Native tool approval (core permission gate) is not a plugin Action
         # confirmation: it resumes the parked run with its own request id.
         self.pending_approval: InteractiveApproval | None = None
@@ -688,7 +698,31 @@ class CoreTuiApp:
                     self.status_line = ""
                 receipt = frame.get("result")
                 if isinstance(receipt, CommandResult):
-                    rows_to_commit.extend(_command_result_rows(raw_name, receipt, self.styles))
+                    rows_to_commit.extend(_command_result_rows(raw_name, receipt, self.styles, self.terminal.width))
+            elif kind == "command_input_ready":
+                if frame.get("serial") != self._interaction_serial or frame.get("revision_id") != self.catalog_revision:
+                    continue
+                if self.status_line.startswith("Loading /"):
+                    self.status_line = ""
+                if self.composer.value or self.active_overlay is not None or self.pending_approval is not None:
+                    continue
+                if self.upgrade is not None and self.upgrade.fenced:
+                    continue
+                error = frame.get("error")
+                view = frame.get("view")
+                if error:
+                    rows_to_commit.append(self.styles.fg("error", f"Command input unavailable: {_safe(error)}"))
+                elif isinstance(view, PluginViewDescriptor):
+                    if not self._mount_interactive_view(view, self.catalog_revision):
+                        rows_to_commit.extend(render_plugin_view(view, self.terminal.width, self.styles))
+            elif kind == "command_presentation":
+                if frame.get("serial") != self._interaction_serial:
+                    continue
+                view = frame.get("view")
+                revision = str(frame.get("revision_id", ""))
+                if isinstance(view, PluginViewDescriptor) and revision == self.catalog_revision:
+                    if self.pending_approval is None and self.active_overlay is None:
+                        self._mount_interactive_view(view, revision)
             elif kind == "approval_accepted":
                 # The server accepted this exact request: close the gate it
                 # matches, or nothing when a newer request already replaced it.
@@ -755,9 +789,10 @@ class CoreTuiApp:
                 revision = str(frame.get("revision_id", ""))
                 if (
                     submit_key
-                    and isinstance(overlay, (InteractiveChoices, InteractiveForm))
+                    and isinstance(overlay, (InteractiveChoices, InteractiveForm, InteractiveMarkdown))
                     and submit_key == f"invoke:{action}@{revision}"
                     and overlay.revision_id == revision
+                    and overlay is frame.get("overlay")
                 ):
                     self.active_overlay = None
                     self._present_queued_confirmation()
@@ -890,7 +925,7 @@ class CoreTuiApp:
             raw_result = payload.get("result")
             raw_name = str(payload.get("name") or "command")
             if isinstance(raw_result, Mapping):
-                rows.extend(_command_result_rows(raw_name, CommandResult.from_payload(raw_result), self.styles))
+                rows.extend(_command_result_rows(raw_name, CommandResult.from_payload(raw_result), self.styles, self.terminal.width))
         elif etype == EventType.ACTIVATION_COMMITTED:
             # The displayed generation changed: the command catalog is
             # refetched and anything captured under the previous revision is
@@ -1162,6 +1197,7 @@ class CoreTuiApp:
             return
 
         if outcome.get("cancel"):
+            self._interaction_serial += 1
             self.active_overlay = None
             self.status_line = ""
             self._present_queued_confirmation()
@@ -1169,10 +1205,18 @@ class CoreTuiApp:
 
         if isinstance(self.active_overlay, InteractiveConfirmation):
             self._resolve_confirmation(str(outcome.get("decision", "deny")))
-        elif isinstance(self.active_overlay, (InteractiveChoices, InteractiveForm)):
+        elif isinstance(self.active_overlay, (InteractiveChoices, InteractiveForm, InteractiveMarkdown)):
             action = str(outcome.get("action", ""))
             arguments = outcome.get("arguments", {})
             revision = self.active_overlay.revision_id
+            if outcome.get("prepare_input"):
+                descriptor = next((item for item in self._catalog() if item.name == action), None)
+                if revision != self.catalog_revision or descriptor is None or not descriptor.has_input:
+                    self.status_line = "Command input unavailable; refresh the catalog"
+                    return
+                self.active_overlay = None
+                self._prepare_command_input_async(descriptor)
+                return
             # The overlay (with its typed inputs) stays mounted until the
             # server accepts: a late 503 must not lose the user's draft. The
             # in-flight marker stops a held Enter from spawning a second call.
@@ -1257,6 +1301,9 @@ class CoreTuiApp:
         answers too would duplicate settled rows. ``surface_result`` comes from
         catalog metadata (owner plus effects), never a client command list.
         """
+        self._interaction_serial += 1
+        serial = self._interaction_serial
+        submitted_overlay = self.active_overlay
         shown = display_name if display_name else _slash_display(name)
         session_id, generation = self.session_id, self._generation
 
@@ -1321,14 +1368,30 @@ class CoreTuiApp:
             # receipt has no other display path.
             receipt = res if surface_result and status == "ok" else None
             finish(status, receipt)
-            # Accepted (any non-exception outcome): the submitting overlay may
-            # close now, but only if it is still the one that submitted.
+            # Failed validation leaves the editor and draft mounted for correction.
+            # Only an accepted action may close the overlay that submitted it.
             if submit_key is not None:
                 self.event_queue.put(
                     {
-                        "kind": "invoke_accepted",
+                        "kind": "decision_done" if status == "error" else "invoke_accepted",
+                        "overlay": submitted_overlay,
                         "request_id": submit_key,
                         "action": name,
+                        "revision_id": revision,
+                        "session_id": session_id,
+                        "generation": generation,
+                    }
+                )
+
+            if res.status == "ok" and res.presentation is not None:
+                presentation = res.presentation
+                self.event_queue.put(
+                    {
+                        "kind": "command_presentation",
+                        "serial": serial,
+                        "view": PluginViewDescriptor(
+                            owner="command", name=name, title=presentation.title, view_type=presentation.view_type, data=presentation.data
+                        ),
                         "revision_id": revision,
                         "session_id": session_id,
                         "generation": generation,
@@ -1445,7 +1508,21 @@ class CoreTuiApp:
         threading.Thread(target=worker, daemon=True, name="CoreReconcile").start()
 
     def _handle_composer_key(self, key: Any) -> None:
+        if self.status_line.startswith("Loading /"):
+            self.status_line = ""
+        self._interaction_serial += 1
         name = key.name
+        if name in ("enter", "tab") and self.composer.completion:
+            selected = self.composer.completion[self.composer.completion_index]
+            paths = [f"/{_slash_public_path(entry)}" for entry in self.catalog_cache if entry.slash_visible]
+            paths.extend(
+                f"/tui {control}" for control in ("help", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit")
+            )
+            is_group = selected not in paths
+            if is_group or (name == "tab" and any(path.startswith(selected + " ") for path in paths)):
+                self.composer.set_text(selected + " ")
+                self._sync_slash_completion()
+                return
         if name == "enter" and self.composer.completion and self.composer.value == self.composer.completion[self.composer.completion_index]:
             self.composer.set_completion(())
         elif name in ("enter", "tab", "up", "down", "escape") and (self.composer.completion or name in ("tab", "up", "down", "escape")):
@@ -1485,6 +1562,22 @@ class CoreTuiApp:
         index = self.composer.completion_index
         selected = previous[index] if previous and 0 <= index < len(previous) else None
         self.composer.set_completion(candidates, index=candidates.index(selected) if selected in candidates else 0)
+        descriptions: dict[str, str] = {}
+        for entry in self.catalog_cache:
+            path = f"/{_slash_public_path(entry)}"
+            properties = entry.argument_schema.get("properties", {})
+            required = entry.argument_schema.get("required", ())
+            properties = properties if isinstance(properties, Mapping) else {}
+            required = required if isinstance(required, (tuple, list)) else ()
+            hints = " ".join(f"<{name}>" if name in required else f"[{name}]" for name in properties)
+            descriptions[path] = f"{hints} — {entry.description}" if hints else entry.description
+        self.composer.completion_descriptions = descriptions
+        self.composer.completion_groups = {
+            candidate
+            for candidate in candidates
+            if any(f"/{_slash_public_path(entry)}".startswith(candidate + " ") for entry in self.catalog_cache if entry.slash_visible)
+            or candidate == "/tui"
+        }
 
     def _completion_candidates(self) -> list[str]:
         """Slash-command paths matching the draft prefix (catalog + /tui controls)."""
@@ -1492,11 +1585,12 @@ class CoreTuiApp:
         if not draft.startswith("/") or "\n" in draft or self.composer.cursor != len(draft):
             return []
         prefix = draft[1:].lstrip()
-        names = [_slash_public_path(entry) for entry in self.catalog_cache]
+        names = [_slash_public_path(entry) for entry in self.catalog_cache if entry.slash_visible]
         names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit"))
-        if " " in prefix.rstrip(" ") and f"/{prefix.rstrip(' ')}" in (f"/{name}" for name in names):
-            return []
-        return sorted(f"/{name}" for name in names if name and name.startswith(prefix))
+        parent, _, partial = prefix.rpartition(" ")
+        base = f"{parent} " if parent else ""
+        candidates = {base + name[len(base) :].split(" ", 1)[0] for name in names if name.startswith(base) and name[len(base) :].startswith(partial)}
+        return sorted(f"/{name}" for name in candidates if name and name != parent)
 
     def _dispatch_user_prompt(self, prompt: str) -> None:
         # No optimistic commit: the durable core.user_message event is the one
@@ -1847,6 +1941,7 @@ class CoreTuiApp:
         the one path allowed to mount one; true approval and confirmation gates
         are restored separately from their durable events.
         """
+        self._interaction_serial += 1
         try:
             snapshot = self.client.views(self.session_id)
         except Exception as exc:
@@ -1861,34 +1956,35 @@ class CoreTuiApp:
             self.terminal.commit_rows([self.styles.fg("warning", "No plugin views available for this session.")])
             return
         for v in descriptors:
-            vtype = v.view_type
-            if vtype in ("choices", "form", "confirmation"):
-                # The overlay carries the revision of this very envelope, so
-                # the action it dispatches can never be relabelled later.
-                data = parse_view_data(v.view_type, v.data)
-                if vtype == "choices":
-                    from voidcode.sdk.views import ChoicesViewData
-
-                    assert isinstance(data, ChoicesViewData)
-                    self.active_overlay = InteractiveChoices(data, revision_id=views_revision)
-                elif vtype == "form":
-                    from voidcode.sdk.views import FormViewData
-
-                    assert isinstance(data, FormViewData)
-                    form = InteractiveForm(
-                        data,
-                        action_schema=self._action_schema(data.action),
-                        revision_id=views_revision,
-                    )
-                    self._maybe_load_form_data(form)
-                    self.active_overlay = form
-                elif vtype == "confirmation":
-                    assert isinstance(data, ConfirmationViewData)
-                    self.active_overlay = InteractiveConfirmation(data, revision_id=views_revision)
+            if self._mount_interactive_view(v, views_revision):
                 return
             # Non-interactive view: render rows and commit
             rows = render_plugin_view(v, self.terminal.width, self.styles)
             self.terminal.commit_rows(rows)
+
+    def _mount_interactive_view(self, view: PluginViewDescriptor, revision: str) -> bool:
+        """Mount an explicitly requested view with its captured revision."""
+        data = parse_view_data(view.view_type, view.data)
+        if isinstance(data, MarkdownViewData) and data.actions:
+            self.active_overlay = InteractiveMarkdown(data, revision_id=revision, title=view.title)
+        elif view.view_type == "choices":
+            from voidcode.sdk.views import ChoicesViewData
+
+            assert isinstance(data, ChoicesViewData)
+            self.active_overlay = InteractiveChoices(data, revision_id=revision, title=view.title)
+        elif view.view_type == "form":
+            from voidcode.sdk.views import FormViewData
+
+            assert isinstance(data, FormViewData)
+            form = InteractiveForm(data, action_schema=self._action_schema(data.action), revision_id=revision, title=view.title)
+            self._maybe_load_form_data(form)
+            self.active_overlay = form
+        elif view.view_type == "confirmation":
+            assert isinstance(data, ConfirmationViewData)
+            self.active_overlay = InteractiveConfirmation(data, revision_id=revision)
+        else:
+            return False
+        return True
 
     def _maybe_load_form_data(self, form: InteractiveForm) -> None:
         """Run the declared load_action off the UI thread, exactly when it is read-only."""
@@ -1927,12 +2023,44 @@ class CoreTuiApp:
 
         threading.Thread(target=worker, daemon=True, name="CoreFormLoad").start()
 
+    def _prepare_command_input_async(self, descriptor: CommandDescriptor) -> None:
+        """Read optional plugin input off the UI thread without invoking its action."""
+        self._interaction_serial += 1
+        serial = self._interaction_serial
+        session_id, generation, revision = self.session_id, self._generation, self.catalog_revision
+        self.status_line = f"Loading /{_slash_public_path(descriptor)}..."
+
+        def worker() -> None:
+            frame: dict[str, Any] = {
+                "kind": "command_input_ready",
+                "serial": serial,
+                "revision_id": revision,
+                "session_id": session_id,
+                "generation": generation,
+            }
+            try:
+                snapshot = self.client.command_input(session_id, descriptor.name, revision)
+                if snapshot.revision_id != revision:
+                    raise ValueError("command input revision changed; refresh the catalog")
+                presentation = snapshot.presentation
+                frame["view"] = PluginViewDescriptor(
+                    owner=descriptor.owner, name=descriptor.name, title=presentation.title, view_type=presentation.view_type, data=presentation.data
+                )
+            except Exception as exc:
+                frame["error"] = str(exc)
+            self.event_queue.put(frame)
+
+        threading.Thread(target=worker, daemon=True, name="CoreCommandInput").start()
+
     def _dispatch_catalog_command(self, cmd_desc: CommandDescriptor | None, arg_str: str) -> None:
         if cmd_desc is None:
             self.terminal.commit_rows([f"{self.styles.fg('error', f'Unknown command: /{_safe(arg_str)}')} (try /help)"])
             return
         # The revision of the catalog this descriptor was read from.
         revision = self.catalog_revision
+        if not arg_str and cmd_desc.has_input:
+            self._prepare_command_input_async(cmd_desc)
+            return
         # Core read commands answer through the session client; plugin commands and run/resume
         # already project through durable events. Classify by contract metadata,
         # never by a client-side command name list.
@@ -1941,17 +2069,40 @@ class CoreTuiApp:
 
         schema = cmd_desc.argument_schema if isinstance(cmd_desc.argument_schema, Mapping) else {}
         properties = schema.get("properties") if isinstance(schema.get("properties"), Mapping) else {}
-        required = schema.get("required") if isinstance(schema.get("required"), list) else []
-        assert isinstance(properties, Mapping) and isinstance(required, list)
+        required = schema.get("required") if isinstance(schema.get("required"), (list, tuple)) else ()
+        assert isinstance(properties, Mapping) and isinstance(required, (list, tuple))
 
         arguments: dict[str, Any]
+        if not arg_str and required and properties:
+            from voidcode.sdk.views import FormField, FormFieldType, FormViewData
+
+            field_types: dict[str, FormFieldType] = {"string": "text", "integer": "integer", "number": "number", "boolean": "boolean"}
+            if all(isinstance(value, Mapping) and value.get("type") in field_types for value in properties.values()):
+                fields = tuple(
+                    FormField(
+                        name=name,
+                        label=str(spec.get("description") or name),
+                        field_type=field_types[spec["type"]],
+                        required=name in required,
+                    )
+                    for name, spec in properties.items()
+                )
+                self.active_overlay = InteractiveForm(
+                    FormViewData(fields=fields, action=cmd_desc.name),
+                    action_schema=schema,
+                    revision_id=revision,
+                    title=cmd_desc.description,
+                )
+                return
         if not arg_str:
             arguments = {}
+        elif cmd_desc.text_argument is not None and not arg_str.lstrip().startswith("{"):
+            arguments = {cmd_desc.text_argument: arg_str}
         elif (
             len(properties) == 1
             and len(required) == 1
             and required[0] in properties
-            and isinstance(properties[required[0]], dict)
+            and isinstance(properties[required[0]], Mapping)
             and properties[required[0]].get("type") == "string"
         ):
             # A single required string schema maps slash trailing text generically.
@@ -1981,7 +2132,7 @@ class CoreTuiApp:
         # Context row (server truth) plus a SEPARATE transient notice row.
         # footer=off hides the context row only: gates/errors always show.
         context = self._footer_context(width)
-        context_row = (self.styles.fg("dim", context) if context else "",)
+        context_row = (self.styles.fg("text", context) if context else "",)
         notice = self.styles.fg("dim", self.status_line) if self.status_line else ""
         quit_hint = self.styles.fg("dim", "Press Ctrl+C again to exit") if time.monotonic() - self._quit_armed_at < 1.5 else ""
         notice_rows = tuple(row for row in (notice, quit_hint) if row)
@@ -1991,7 +2142,11 @@ class CoreTuiApp:
             frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *footer_rows), cursor=None)
             self.terminal.paint_frame(frame)
         elif self.active_overlay is not None:
-            overlay_rows = self.active_overlay.render_rows(width, self.styles)
+            overlay_rows = (
+                self.active_overlay.render_rows(width, self.styles, max_rows=max(6, getattr(self.terminal, "height", 24) - len(footer_rows)))
+                if isinstance(self.active_overlay, InteractiveMarkdown)
+                else self.active_overlay.render_rows(width, self.styles)
+            )
             frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, *footer_rows), cursor=None)
             self.terminal.paint_frame(frame)
         else:

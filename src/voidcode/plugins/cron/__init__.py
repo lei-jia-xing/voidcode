@@ -4,15 +4,26 @@ from collections.abc import Mapping
 
 from voidcode.sdk.plugin import Plugin, StateSchema
 
-from .cron_plugin import SCHEMA_VERSION, CronCreateTool, CronDeleteTool, CronListTool, CronLoopCommand, cron_observer, prepare_cron_deactivation
+from .cron_plugin import (
+    SCHEMA_VERSION,
+    CronCreateTool,
+    CronDeleteCommand,
+    CronDeleteTool,
+    CronListCommand,
+    CronListTool,
+    CronLoopCommand,
+    cron_observer,
+    prepare_cron_deactivation,
+)
 
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
-    # The schedule policy is the ported legacy policy; there is no configuration surface.
-    _ = config
+    unknown = sorted(set(config or {}) - {"providers"})
+    if unknown:
+        raise ValueError(f"cron config does not support field: {unknown[0]}")
     return Plugin(
         tools=(CronCreateTool(), CronDeleteTool(), CronListTool()),
-        commands=(CronLoopCommand(),),
+        commands=(CronLoopCommand(), CronListCommand(), CronDeleteCommand()),
         observer=cron_observer,
         observed_facts=("run_finished",),
         state=StateSchema(

@@ -9,6 +9,7 @@ from .skills_plugin import (
     SkillReader,
     SkillsCommand,
     SkillsContextProvider,
+    SkillShowCommand,
     parse_skills_config,
     prepare_skills_deactivation,
     skills_observer,
@@ -19,7 +20,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     skills_config = parse_skills_config(config)
     return Plugin(
         resource_readers=(ResourceReader("skill", SkillReader(skills_config).read),),
-        commands=(SkillsCommand(skills_config),),
+        commands=(SkillsCommand(skills_config), SkillShowCommand(skills_config)),
         context=SkillsContextProvider(skills_config),
         observer=skills_observer,
         observed_facts=("invocation_finished",),

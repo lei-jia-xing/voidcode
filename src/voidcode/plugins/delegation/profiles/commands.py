@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from voidcode.capabilities.agent_queries import AgentDefinition
-from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
 
@@ -41,7 +41,22 @@ class AgentsCommand:
         agents = registry.list_agents()
         rows = [_agent_row(agent) for agent in agents]
         lines = [f"- {agent.name} — {agent.description} ({agent.source_scope}, readonly: {agent.readonly})" for agent in agents]
-        return CommandResult(status="ok", output="\n".join(lines) or "No agent profiles found.", data={"profiles": rows})
+        return CommandResult(
+            status="ok",
+            output="\n".join(lines) or "No agent profiles found.",
+            data={"profiles": rows},
+            presentation=CommandPresentation(
+                title="Agent profiles",
+                view_type="choices",
+                data={
+                    "options": [{"id": agent.name, "label": f"{agent.name} — {agent.description} ({agent.source_scope})"} for agent in agents],
+                    "action": "agents.show",
+                    "argument_name": "name",
+                },
+            )
+            if agents
+            else CommandPresentation(title="Agent profiles", view_type="notice", data={"message": "No agent profiles found."}),
+        )
 
 
 class AgentShowCommand:
@@ -57,6 +72,26 @@ class AgentShowCommand:
         effects=frozenset({ToolEffect.READ}),
         busy_gate=False,
     )
+
+    def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
+        _ = services
+        agents = load_agent_registry(invocation.context.require_workspace()).list_agents()
+        if not agents:
+            return CommandPresentation(title="Agent profiles", view_type="notice", data={"message": "No agent profiles found."})
+        return CommandPresentation(
+            title="Inspect agent profile",
+            view_type="form",
+            data={
+                "action": self.definition.name,
+                "fields": [
+                    {
+                        "name": "name",
+                        "label": "Agent profile",
+                        "options": [{"id": agent.name, "label": f"{agent.name} — {agent.description}"} for agent in agents],
+                    }
+                ],
+            },
+        )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         _ = services
@@ -78,6 +113,7 @@ class AgentShowCommand:
             status="ok",
             output=agent.prompt,
             data=data,
+            presentation=CommandPresentation(title=f"Agent: {agent.name}", view_type="markdown", data={"content": agent.prompt}),
         )
 
 

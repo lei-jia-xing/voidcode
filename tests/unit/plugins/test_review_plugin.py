@@ -447,3 +447,36 @@ def test_review_budget_counts_instructions_and_diff_in_utf8(tmp_path: Path, focu
     assert result.status == "error"
     assert "review prompt is too large" in (result.error or "")
     assert not services.spawn_calls
+
+
+def test_review_prepares_target_form_without_starting_work(tmp_path: Path) -> None:
+    from voidcode.sdk.views import FormViewData, validate_form_submission
+
+    class NoServices:
+        def __getattr__(self, name):
+            raise AssertionError(f"Preparation accessed {name}")
+
+    command = ReviewCommand()
+    presentation = command.prepare_input(_invocation(tmp_path, {}), NoServices())
+    form = FormViewData.from_payload(presentation.data)
+    assert form.action == "review"
+    assert form.initial_values == {"target": "uncommitted"}
+    assert {option.id for option in form.fields[0].options} == {"uncommitted", "base_branch", "commit", "custom"}
+    arguments = validate_form_submission(form, {"target": "base_branch", "branch": "main", "focus": "Check error handling"})
+    assert arguments == {"target": "base_branch", "branch": "main", "focus": "Check error handling"}
+    refused = command.invoke(_invocation(tmp_path, {"target": "base_branch"}), FakeServices())
+    assert refused.status == "error"
+    assert "requires a branch name" in refused.error
+
+
+def test_reviewer_focus_is_preserved_for_explicit_workspace_target(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "tracked.txt").write_text("changed\n")
+    prompt = build_review_prompt(workspace=repo, target=ReviewTarget(type="uncommitted"), focus="Check error handling")
+    assert "Reviewer focus: Check error handling" in prompt
+
+
+def test_review_factory_rejects_unsupported_config() -> None:
+    assert create_plugin({"providers": {}}).commands
+    with pytest.raises(ValueError, match="review config does not support field: max_steps"):
+        create_plugin({"max_steps": 8})

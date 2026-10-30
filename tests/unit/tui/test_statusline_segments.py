@@ -190,3 +190,18 @@ def test_borderless_composer_has_no_vertical_padding() -> None:
     assert len(terminal.frames[-1]) == 1
     assert terminal.frames[-1][0].strip() == ""
     assert app.composer.cursor_position == (0, 0)
+
+
+def test_footer_uses_terminal_default_foreground_at_standard_color_depth() -> None:
+    from rich.color import ColorSystem
+
+    from voidcode.tui.styles import Styles
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_StubClient(), session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    app.styles = Styles(ColorSystem.STANDARD)
+    app.upgrade = _health(model=_model(provider="local", model="test-model"))
+    app._render_frame()
+    row = next(row for row in terminal.frames[-1] if "local/test-model" in row)
+    assert "\x1b[39m" in row
+    assert "\x1b[90m" not in row

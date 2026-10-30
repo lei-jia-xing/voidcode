@@ -113,3 +113,102 @@ def test_encode_result_distinguishes_null_empty_and_rejects_other_objects() -> N
     assert _encode_result("null") == "null"
     with pytest.raises(ValueError):
         _encode_result(object())
+
+
+def test_workflow_input_is_a_configured_selector_and_task_editor(tmp_path):
+    from voidcode.plugins.workflows.workflows_plugin import WorkflowRunCommand
+    from voidcode.sdk.commands import CommandInvocation
+    from voidcode.sdk.invocation import ToolContext
+    from voidcode.sdk.views import FormViewData, validate_form_submission
+
+    context = ToolContext(tmp_path, "s", "r", "i", "v", "user")
+    command = WorkflowRunCommand({"review": "flows/review.py", "test": "flows/test.py"})
+    form = FormViewData.from_payload(command.prepare_input(CommandInvocation(context, "workflow.run"), None).data)
+    assert [option.id for option in form.fields[0].options] == ["review", "test"]
+    assert validate_form_submission(form, {"workflow": "test", "task": "Check changes"}) == {"workflow": "test", "task": "Check changes"}
+    assert WorkflowRunCommand().prepare_input(CommandInvocation(context, "workflow.run"), None).view_type == "notice"
+
+
+def test_workflow_run_inputs_filter_terminal_and_inapplicable_runs(tmp_path):
+    from voidcode.plugins.workflows.workflows_plugin import WorkflowPauseCommand, WorkflowResumeCommand, WorkflowStatusCommand
+    from voidcode.sdk.commands import CommandInvocation
+    from voidcode.sdk.invocation import ToolContext
+    from voidcode.sdk.views import FormViewData
+
+    runs = {
+        status: WorkflowRun(
+            run_id=status,
+            session_id="s",
+            workflow="review",
+            source_path="review.py",
+            source_sha256="a" * 64,
+            source_artifact="b" * 64,
+            task="t",
+            input_sha256="c" * 64,
+            status=status,
+        )
+        for status in ("running", "paused", "completed")
+    }
+
+    class Services:
+        def get_state(self, scope="session"):
+            return WorkflowState(runs=runs).to_payload(), 1
+
+    context = ToolContext(tmp_path, "s", "r", "i", "v", "user")
+    for command, expected in [(WorkflowStatusCommand(), set(runs)), (WorkflowPauseCommand(), {"running"}), (WorkflowResumeCommand(), {"paused"})]:
+        form = FormViewData.from_payload(command.prepare_input(CommandInvocation(context, command.definition.name), Services()).data)
+        assert {option.id for option in form.fields[0].options} == expected
+
+
+@pytest.mark.parametrize("status", ["running", "paused", "completed"])
+def test_workflow_details_page_nodes_and_utf8_results_without_mutation(tmp_path, status):
+    from voidcode.plugins.workflows.workflows_plugin import WorkflowStatusCommand
+    from voidcode.sdk.commands import CommandInvocation
+    from voidcode.sdk.invocation import ToolContext
+    from voidcode.sdk.views import MarkdownViewData
+
+    text = "任务🙂" * 2000
+    run = WorkflowRun(
+        run_id="run",
+        session_id="s",
+        workflow="review",
+        source_path="review.py",
+        source_sha256="a" * 64,
+        source_artifact="b" * 64,
+        task="t",
+        input_sha256="c" * 64,
+        status=status,
+        nodes=tuple(WorkflowNode(key=f"node-{index}", output=text) for index in range(12)),
+        result="summary",
+    )
+    state = WorkflowState(runs={"run": run}).to_payload()
+
+    class Services:
+        def get_state(self, scope="session"):
+            return state, 1
+
+    command = WorkflowStatusCommand()
+    context = ToolContext(tmp_path, "s", "r", "i", "v", "user")
+    result = command.invoke(CommandInvocation(context, "workflow.status", {"run_id": "run"}), Services())
+    view = MarkdownViewData.from_payload(result.presentation.data)
+    actions = {action.action for action in view.actions}
+    assert ("workflow.pause" in actions) == (status == "running")
+    assert ("workflow.resume" in actions) == (status == "paused")
+    assert ("workflow.cancel" in actions) == (status != "completed")
+    next_nodes = next(action for action in view.actions if action.label == "Next nodes")
+    later = command.invoke(CommandInvocation(context, next_nodes.action, next_nodes.arguments), Services())
+    assert "Nodes 10–12 of 12" in MarkdownViewData.from_payload(later.presentation.data).content
+    node_action = next(action for action in view.actions if action.label == "Read: node-0")
+    arguments = dict(node_action.arguments)
+    recovered = ""
+    while True:
+        detail = command.invoke(CommandInvocation(context, "workflow.status", arguments), Services())
+        page = MarkdownViewData.from_payload(detail.presentation.data)
+        recovered += detail.data["result"]["text"]
+        assert detail.data["result"]["text"] in page.content
+        next_page = next((action for action in page.actions if action.label == "Next result page"), None)
+        if next_page is None:
+            break
+        arguments = dict(next_page.arguments)
+    assert recovered == text
+    assert state == WorkflowState(runs={"run": run}).to_payload()

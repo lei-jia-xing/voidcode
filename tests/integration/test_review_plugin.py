@@ -318,3 +318,20 @@ def test_review_inherits_new_inspection_tools_without_widening_parent_scope(tmp_
         if restricted_parent:
             assert tools == ["inspect_repository"]
         assert "inspection complete" in json.dumps(server.requests[1]["messages"])
+
+
+def test_review_input_preparation_does_not_start_child_or_provider(tmp_path: Path) -> None:
+    from voidcode.sdk.views import FormViewData
+
+    with _loopback_server([]) as server:
+        core = _core(tmp_path, server)
+        session = core.create_session().session_id
+        catalog = core.command_catalog()
+        assert next(command for command in catalog.commands if command.name == "review").has_input
+        before = core.events_after(session)
+        prepared = core.command_input(session, "review", expected_revision=catalog.revision_id)
+        form = FormViewData.from_payload(prepared.presentation.data)
+        assert form.action == "review"
+        assert form.initial_values["target"] == "uncommitted"
+        assert core.events_after(session) == before
+        assert server.requests == []

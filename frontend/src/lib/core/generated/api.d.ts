@@ -185,11 +185,59 @@ export interface components {
              * @default []
              */
             effects?: components["schemas"]["ToolEffect"][];
+            /**
+             * Has Input
+             * @default false
+             */
+            has_input?: boolean;
             /** Name */
             name: string;
             /** Owner */
             owner: string;
+            /**
+             * Slash Visible
+             * @default true
+             */
+            slash_visible?: boolean;
+            /**
+             * Text Argument
+             * @default null
+             */
+            text_argument?: string | null;
         };
+        /** CommandInputRequest */
+        CommandInputRequest: {
+            /** Expected Revision */
+            expected_revision: string;
+            /** Name */
+            name: string;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
+         * CommandInputSnapshot
+         * @description Read-only prepared input bound to the generation that produced it.
+         */
+        CommandInputSnapshot: {
+            presentation: components["schemas"]["CommandPresentation"];
+            /** Revision Id */
+            revision_id: string;
+        };
+        /**
+         * CommandPresentation
+         * @description Bounded command UI, mounted only from a direct receipt, never replay.
+         */
+        CommandPresentation: {
+            data: components["schemas"]["CommandPresentationData"];
+            /** Title */
+            title: string;
+            /**
+             * View Type
+             * @enum {string}
+             */
+            view_type: "notice" | "markdown" | "fields" | "choices" | "form" | "diff" | "status";
+        };
+        CommandPresentationData: components["schemas"]["NoticeViewData"] | components["schemas"]["MarkdownViewData"] | components["schemas"]["FieldsViewData"] | components["schemas"]["ChoicesViewData"] | components["schemas"]["FormViewData"] | components["schemas"]["DiffViewData"] | components["schemas"]["StatusViewData"];
         /**
          * CommandResult
          * @description Outcome of a command invocation, returning data, error, or confirmation request.
@@ -214,6 +262,8 @@ export interface components {
              * @default null
              */
             output?: string | null;
+            /** @default null */
+            presentation?: components["schemas"]["CommandPresentation"] | null;
             /**
              * Status
              * @enum {string}
@@ -497,6 +547,11 @@ export interface components {
             /** Name */
             name: string;
             /**
+             * Options
+             * @default null
+             */
+            options?: components["schemas"]["ChoiceOption"][] | null;
+            /**
              * Required
              * @default true
              */
@@ -506,6 +561,10 @@ export interface components {
         FormViewData: {
             /** Action */
             action: string;
+            /** Arguments */
+            arguments?: {
+                [key: string]: unknown;
+            };
             /** Fields */
             fields: components["schemas"]["FormField"][];
             /** Initial Values */
@@ -608,6 +667,11 @@ export interface components {
         };
         /** MarkdownViewData */
         MarkdownViewData: {
+            /**
+             * Actions
+             * @default []
+             */
+            actions?: components["schemas"]["ViewAction"][];
             /** Content */
             content: string;
             /** @default null */
@@ -1486,6 +1550,25 @@ export interface components {
             until_sequence?: number | null;
         };
         /**
+         * ViewAction
+         * @description An explicit command action from a live, revision-bound presentation.
+         */
+        ViewAction: {
+            /** Action */
+            action: string;
+            /** Arguments */
+            arguments?: {
+                [key: string]: unknown;
+            };
+            /** Label */
+            label: string;
+            /**
+             * Prepare Input
+             * @default false
+             */
+            prepare_input?: boolean;
+        };
+        /**
          * ViewsSnapshot
          * @description Rendered views together with the capability revision of the snapshot that rendered them.
          *
@@ -1548,6 +1631,7 @@ export interface operations {
 export interface RpcMethods {
   "action.confirm": { params: components["schemas"]["ConfirmRequest"]; result: components["schemas"]["CommandResult"] };
   "command.catalog": { params: components["schemas"]["EmptyParams"]; result: components["schemas"]["CommandCatalog"] };
+  "command.input": { params: components["schemas"]["CommandInputRequest"]; result: components["schemas"]["CommandInputSnapshot"] };
   "command.invoke": { params: components["schemas"]["InvokeRequest"]; result: components["schemas"]["CommandResult"] };
   "connection.authenticate": { params: components["schemas"]["AuthenticateParams"]; result: components["schemas"]["AuthenticateReceipt"] };
   "session.ack": { params: components["schemas"]["AckParams"]; result: components["schemas"]["AckReceipt"] };

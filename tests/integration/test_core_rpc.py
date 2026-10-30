@@ -265,3 +265,38 @@ def test_subscription_credit_pauses_replay_without_blocking_other_calls(remote) 
             tail.append(notice["params"]["frame"]["event"])
         assert len(tail) == 10
         assert tail[0]["sequence"] == head["events"][-1]["sequence"] + 1
+
+
+def test_command_input_returns_dynamic_values_without_invoking(remote) -> None:
+    from voidcode.sdk.views import FormViewData
+
+    base, app, workspace = remote
+    path = workspace / "voidcode.json"
+    config = json.loads(path.read_text())
+    config["plugins"]["delegation"] = {"enabled": True}
+    config["plugins"]["workflows"] = {"enabled": True, "config": {"workflows": {"review": "flows/review.py"}}}
+    path.write_text(json.dumps(config))
+    client = CoreRpcClient(base, token=TOKEN)
+    try:
+        client.create_session("input")
+        catalog = client.command_catalog()
+        assert client.invoke_command("input", "core.reload", {}, catalog.revision_id).status == "ok"
+        catalog = client.command_catalog()
+        assert next(command for command in catalog.commands if command.name == "agents.show").has_input
+        before = client.get_session("input").last_event_sequence
+        prepared = client.command_input("input", "agents.show", catalog.revision_id)
+        assert prepared.revision_id == catalog.revision_id
+        form = FormViewData.from_payload(prepared.presentation.data)
+        assert any(option.id == "explore" for option in form.fields[0].options)
+        workflow = client.command_input("input", "workflow.run", catalog.revision_id)
+        workflow_form = FormViewData.from_payload(workflow.presentation.data)
+        assert [option.id for option in workflow_form.fields[0].options] == ["review"]
+        assert client.get_session("input").last_event_sequence == before
+        assert app._core is not None
+        assert app._core.store.plugin_state("workflows", "session", "input")[0] is None
+        with pytest.raises(CoreClientError, match="stale"):
+            client.command_input("input", "agents.show", "stale-revision")
+        shown = client.invoke_command("input", "agents.show", {"name": "explore"}, catalog.revision_id)
+        assert shown.status == "ok" and shown.presentation.view_type == "markdown"
+    finally:
+        client.close()

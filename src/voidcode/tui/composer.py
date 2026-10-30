@@ -273,6 +273,8 @@ class Composer:
         self._cursor_position: tuple[int, int] | None = None
         self._completion: tuple[str, ...] = ()
         self._completion_index = 0
+        self.completion_descriptions: dict[str, str] = {}
+        self.completion_groups: set[str] = set()
 
     @property
     def is_bash_mode(self) -> bool:
@@ -750,9 +752,11 @@ class Composer:
         start = max(0, self._completion_index - max(1, max_rows) + 1)
         for index in range(start, min(len(self._completion), start + max(1, max_rows))):
             candidate = self._completion[index]
-            label = escape_terminal_controls(candidate)
+            description = self.completion_descriptions.get(candidate, "")
+            group = " ›" if candidate in self.completion_groups else ""
+            label = escape_terminal_controls(candidate + group + (f" — {description}" if description else ""))
             if index == self._completion_index:
                 rows.append(self._styles.render("accent", f"{symbol('nav.cursor')} {label}", bold=True, reverse=True))
             else:
-                rows.append(self._styles.fg("dim", f"  {label}"))
+                rows.append(self._styles.fg("text", f"  {label}"))
         return [clamp_row(row, self._width) for row in rows]

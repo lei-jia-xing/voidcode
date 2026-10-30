@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal
 
-from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
 from voidcode.sdk.services import ChildOutcome, PluginServices
 from voidcode.sdk.tools import ToolEffect
@@ -115,6 +115,8 @@ def build_review_prompt(*, workspace: Path, target: ReviewTarget, focus: str | N
             f"Git diff for commit {target.sha}:\n{diff.diff}",
             "Provide prioritized, actionable findings in your final answer.",
         ]
+    if target.type != "custom" and instructions:
+        parts.append(f"Reviewer focus: {instructions}")
     prompt = "\n\n".join(parts)
     prompt_bytes = len(prompt.encode("utf-8"))
     if prompt_bytes > CHILD_PROMPT_MAX_BYTES:
@@ -188,6 +190,7 @@ def _outcome_result(target: ReviewTarget, child_id: str, outcome: ChildOutcome) 
 class ReviewCommand:
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="review",
+        text_argument="focus",
         description="Review current workspace changes with the governed review agent.",
         argument_schema={
             "type": "object",
@@ -205,6 +208,33 @@ class ReviewCommand:
         effects=frozenset({ToolEffect.READ, ToolEffect.SPAWN}),
         busy_gate=True,
     )
+
+    def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
+        _ = (invocation, services)
+        return CommandPresentation(
+            title="Review changes",
+            view_type="form",
+            data={
+                "action": self.definition.name,
+                "initial_values": {"target": "uncommitted"},
+                "fields": [
+                    {
+                        "name": "target",
+                        "label": "Changes to review",
+                        "field_type": "text",
+                        "options": [
+                            {"id": "uncommitted", "label": "Workspace changes (staged, unstaged and untracked)"},
+                            {"id": "base_branch", "label": "Changes against a base branch (branch required)"},
+                            {"id": "commit", "label": "One commit (commit SHA required)"},
+                            {"id": "custom", "label": "Workspace changes with custom instructions (focus required)"},
+                        ],
+                    },
+                    {"name": "branch", "label": "Base branch — required for branch comparison, e.g. main", "field_type": "text", "required": False},
+                    {"name": "sha", "label": "Commit SHA — required for one-commit review", "field_type": "text", "required": False},
+                    {"name": "focus", "label": "Reviewer focus — required for custom instructions", "field_type": "multiline", "required": False},
+                ],
+            },
+        )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         workspace = invocation.context.require_workspace()

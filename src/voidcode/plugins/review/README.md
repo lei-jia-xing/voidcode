@@ -5,11 +5,12 @@ Review workspace Git changes with a governed, read-only child agent.
 ## Surface
 
 - Command `/review` (effects `READ` + `SPAWN`, busy-gated). Optional arguments: `focus` (reviewer focus; alone it reviews as a custom target), `target` (`uncommitted` default | `base_branch` | `commit` | `custom`), `branch` (required for `base_branch`), `sha` (required for `commit`).
+- Bare `/review` in TUI/Web opens a target selector and focus editor without inspecting Git or starting a child. Branch/commit requirements appear in the form labels; explicit `/review <focus>` and structured CLI/RPC arguments retain direct invocation. Focus is included for every selected target. Submission follows normal validation and governance.
 - Stages a `review_started` event, joins the child (300s timeout), and returns the child's final findings or a typed error carrying `child_session_id` and `target_type`. Oversized prompts are refused with guidance to review incrementally.
 
 ## Configuration
 
-Takes no plugin config; `create_plugin` ignores it. See [configuration](../../../../docs/configuration.md) for global config.
+Takes no plugin options; only the injected `providers` map is accepted and ignored. Unknown fields are rejected. See [configuration](../../../../docs/configuration.md) for global config.
 
 ## Behavior and limits
 

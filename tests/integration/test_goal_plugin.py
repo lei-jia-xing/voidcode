@@ -195,3 +195,40 @@ def test_goal_autonomous_execution_and_completion(tmp_path: Path) -> None:
         assert res_after.data["goal"] is not None
         assert res_after.data["goal"]["status"] == "complete"
         assert res_after.data["goal"]["tokens_used"] == res_goal.data["goal"]["tokens_used"]
+
+
+def test_goal_command_opens_create_then_details_and_prepared_edit_without_mutating_on_read(tmp_path: Path) -> None:
+    from voidcode.sdk.views import FormViewData, MarkdownViewData, validate_form_submission
+
+    # Creating a goal schedules autonomous work. Supply a bounded completion
+    # whose measured usage exhausts this test goal rather than assuming no run.
+    reply = openai_response(
+        message={"role": "assistant", "content": "Goal work finished for this test."},
+        finish="stop",
+        usage={"prompt_tokens": 6000, "completion_tokens": 1, "total_tokens": 6001},
+    )
+    with _loopback_server([reply]) as server:
+        core = _core_with_loopback(tmp_path, server)
+        session = core.create_session().session_id
+        shown = _invoke(core, session, "goal", {})
+        assert shown.status == "ok" and shown.presentation.view_type == "form"
+        form = FormViewData.from_payload(shown.presentation.data)
+        assert form.action == "goal.set" and form.initial_values == {}
+        assert server.requests == []  # The read-only presentation did not run a model.
+        args = validate_form_submission(form, {"objective": "Improve command UX", "token_budget": "5000"})
+        assert _invoke(core, session, form.action, args).status == "ok"
+        shown = _invoke(core, session, "goal", {})
+        detail = MarkdownViewData.from_payload(shown.presentation.data)
+        edit_action = next(action for action in detail.actions if action.action == "goal.edit")
+        assert edit_action.prepare_input is True
+        prepared = core.command_input(session, edit_action.action, expected_revision=core.command_catalog().revision_id)
+        edit = FormViewData.from_payload(prepared.presentation.data)
+        assert edit.action == "goal.edit"
+        assert edit.initial_values["objective"] == "Improve command UX"
+        assert edit.initial_values["token_budget"] == 5000
+        committed = [
+            event for event in core.events_after(session) if event.event_type == "core.command_completed" and event.payload.get("name") == "goal"
+        ]
+        assert len(committed) == 2
+        result = CommandResult.from_payload(committed[-1].payload["result"])
+        assert result.presentation == shown.presentation

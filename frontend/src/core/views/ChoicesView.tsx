@@ -4,12 +4,14 @@ import type { ChoicesViewData } from "../../lib/core/types";
 import { componentFg, componentStyle } from "./componentStyle";
 
 export interface ChoicesViewProps {
+  title?: string;
   data: Omit<ChoicesViewData, "argument_name"> & { argument_name?: string };
   onSelect: (action: string, args: Record<string, unknown>) => void;
   disabled?: boolean;
 }
 
 export const ChoicesView: React.FC<ChoicesViewProps> = ({
+  title,
   data,
   onSelect,
   disabled = false,
@@ -34,7 +36,7 @@ export const ChoicesView: React.FC<ChoicesViewProps> = ({
         style={fg}
         className="text-xs font-semibold uppercase text-neutral-400 mb-3 tracking-wider"
       >
-        {t("core.choicesSelectFor", { action: data.action })}
+        {title || t("core.choicesSelectFor", { action: data.action })}
       </div>
       <div className="flex flex-col gap-2">
         {options.map((opt) => (

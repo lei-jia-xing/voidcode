@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from voidcode.sdk.commands import CommandCatalog, CommandDescriptor, CommandResult, ConfirmationRequest
+from voidcode.sdk.commands import CommandCatalog, CommandDescriptor, CommandPresentation, CommandResult, ConfirmationRequest
 from voidcode.sdk.tools import ToolEffect
 from voidcode.sdk.views import (
     ChoicesViewData,
@@ -180,3 +180,75 @@ def test_numeric_prefill_submits_unchanged_and_nullable_blank_clears() -> None:
         "action": "set_limits",
         "arguments": {"count": 3, "ratio": 0.5, "budget": None},
     }
+
+
+def test_command_presentation_is_bounded_validated_and_roundtrips() -> None:
+    options = [{"id": "explore", "label": "Explore"}]
+    presentation = CommandPresentation(
+        title="Profiles",
+        view_type="choices",
+        data={"options": options, "action": "agents.show", "argument_name": "name"},
+    )
+    options.clear()
+    result = CommandResult(status="ok", output="Profiles", presentation=presentation)
+    decoded = CommandResult.from_payload(result.as_payload())
+    assert decoded.presentation is not None
+    choices = ChoicesViewData.from_payload(decoded.presentation.data)
+    assert choices_dispatch(choices, "explore") == ("agents.show", {"name": "explore"})
+    with pytest.raises(ValueError, match="only successful"):
+        CommandResult(status="error", error="failed", presentation=presentation)
+    with pytest.raises(ValueError):
+        CommandPresentation(title="bad", view_type="choices", data={"options": []})
+    with pytest.raises(ValueError, match="bytes limit"):
+        CommandPresentation(title="large", view_type="markdown", data={"content": "x" * (64 * 1024)})
+    with pytest.raises(ValueError):
+        CommandResult.from_payload({"status": "ok", "presentation": {"title": "no", "view_type": "confirmation", "data": {}}})
+
+
+def test_form_options_are_immutable_and_reject_unknown_values() -> None:
+    form = FormViewData.from_payload({"action": "pick", "fields": [{"name": "target", "label": "Target", "options": [{"id": "a", "label": "A"}]}]})
+    assert validate_form_submission(form, {"target": "a"}) == {"target": "a"}
+    with pytest.raises(ValueError, match="available choices"):
+        validate_form_submission(form, {"target": "unknown"})
+    with pytest.raises(ValueError, match="required"):
+        validate_form_submission(form, {})
+    with pytest.raises(ValueError, match="unique"):
+        FormViewData.from_payload(
+            {"action": "pick", "fields": [{"name": "target", "label": "T", "options": [{"id": "a", "label": "A"}, {"id": "a", "label": "Again"}]}]}
+        )
+
+
+def test_direct_command_presentation_cannot_fake_a_confirmation() -> None:
+    with pytest.raises(ValueError, match="cannot carry confirmations"):
+        CommandPresentation(title="Invalid", view_type="confirmation", data={"request_id": "not-durable", "message": "Confirm?"})  # type: ignore[arg-type]
+
+
+def test_form_fixed_arguments_are_submitted_without_editable_shadow_fields() -> None:
+    form = FormViewData.from_payload(
+        {"action": "todo.update", "arguments": {"expected_revision": 7, "task_id": "opaque"}, "fields": [{"name": "op", "label": "Operation"}]}
+    )
+    assert validate_form_submission(form, {"op": "done", "expected_revision": 99}) == {"op": "done", "expected_revision": 7, "task_id": "opaque"}
+    with pytest.raises(ValueError, match="cannot shadow"):
+        FormViewData.from_payload({"action": "edit", "arguments": {"revision": 7}, "fields": [{"name": "revision", "label": "Revision"}]})
+
+
+def test_markdown_actions_validate_preparation_and_roundtrip() -> None:
+    from voidcode.sdk.views import MarkdownViewData
+
+    view = PluginViewDescriptor(
+        owner="p",
+        name="detail",
+        title="Detail",
+        view_type="markdown",
+        data={
+            "content": "Info",
+            "actions": [{"label": "Edit", "action": "edit", "prepare_input": True}, {"label": "Next", "action": "show", "arguments": {"offset": 20}}],
+        },
+    )
+    parsed = MarkdownViewData.from_payload(view.data)
+    assert parsed.actions[0].prepare_input is True and parsed.actions[1].arguments == {"offset": 20}
+    assert PluginViewDescriptor.from_payload(view.as_payload()) == view
+    with pytest.raises(ValueError, match="cannot carry"):
+        MarkdownViewData.from_payload(
+            {"content": "Bad", "actions": [{"label": "Edit", "action": "edit", "prepare_input": True, "arguments": {"id": 1}}]}
+        )

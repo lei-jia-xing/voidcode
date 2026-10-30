@@ -80,17 +80,17 @@ def test_no_match_closes_and_editing_reopens() -> None:
 def test_arrows_move_tab_accepts_and_esc_keeps_draft() -> None:
     app, _ = _app()
     _type(app, "/sh")
-    assert app.composer.completion == ("/shell", "/show", "/show more")
+    assert app.composer.completion == ("/shell", "/show")
     app._handle_composer_key(Key("down"))
     assert app.composer.completion_index == 1
     app._handle_composer_key(Key("up"))
     assert app.composer.completion_index == 0
     app._handle_composer_key(Key("down"))
     app._handle_composer_key(Key("tab"))
-    assert app.composer.value == "/show"
-    assert app.composer.completion == ()
+    assert app.composer.value == "/show "
+    assert app.composer.completion == ("/show more",)
     _type(app, "x")
-    assert app.composer.value == "/showx"
+    assert app.composer.value == "/show x"
     assert app.composer.completion == ()
     app.composer.clear()
     _type(app, "/sh")
@@ -102,7 +102,7 @@ def test_arrows_move_tab_accepts_and_esc_keeps_draft() -> None:
     assert app.composer.value == "/sh"
     app._handle_composer_key(Key("o", text="o"))
     assert app.composer.value == "/sho"
-    assert app.composer.completion == ("/show", "/show more")
+    assert app.composer.completion == ("/show",)
 
 
 def test_partial_enter_fills_without_running_exact_enter_submits() -> None:
@@ -130,9 +130,8 @@ def test_moved_highlight_enter_fills_instead_of_running_typed_exact() -> None:
     app, _ = _app()
     calls: list[str] = []
     app._dispatch_slash_command = lambda line: calls.append(line)  # type: ignore[method-assign]
-    _type(app, "/show")
-    assert app.composer.completion == ("/show", "/show more")
-    app._handle_composer_key(Key("down"))
+    _type(app, "/show ")
+    assert app.composer.completion == ("/show more",)
     app._handle_composer_key(Key("enter"))
     assert calls == []
     assert app.composer.value == "/show more"
@@ -181,7 +180,7 @@ def test_tui_subcommand_filters_and_cjk_plain_text_safe() -> None:
 def test_live_catalog_refresh_updates_open_menu_and_submit_history_intact() -> None:
     app, _ = _app()
     _type(app, "/sh")
-    assert app.composer.completion == ("/shell", "/show", "/show more")
+    assert app.composer.completion == ("/shell", "/show")
     app.catalog_cache = (CommandDescriptor(name="show", owner="core", description="show"),)
     app._sync_slash_completion()
     assert app.composer.completion == ("/show",)
@@ -209,3 +208,185 @@ def test_composer_popup_keys_use_arrows_and_unicode_mark() -> None:
     assert rows[0].startswith(symbol("nav.cursor"))
     assert composer.handle_key(Key("escape")).action == ComposerAction.NONE
     assert composer.completion == ()
+
+
+def test_root_groups_and_tab_enter_children_without_dispatch() -> None:
+    app, _ = _app()
+    _type(app, "/")
+    assert "/tui" in app.composer.completion
+    assert "/show more" not in app.composer.completion
+    app.composer.set_text("/show")
+    app._sync_slash_completion()
+    app._handle_composer_key(Key("tab"))
+    assert app.composer.value == "/show "
+    assert app.composer.completion == ("/show more",)
+    app.composer.set_text("/tui")
+    app._sync_slash_completion()
+    app._handle_composer_key(Key("enter"))
+    assert app.composer.value == "/tui "
+    assert len(app.composer.completion) == 10
+
+
+def test_required_arguments_open_revision_bound_form_without_invocation() -> None:
+    from voidcode.tui.views import InteractiveForm
+
+    app, _ = _app()
+    descriptor = CommandDescriptor(
+        name="goal.set",
+        owner="goal",
+        description="Create a goal",
+        argument_schema={
+            "type": "object",
+            "properties": {"objective": {"type": "string"}, "token_budget": {"type": "integer"}},
+            "required": ["objective"],
+            "additionalProperties": False,
+        },
+    )
+    app.catalog_revision = "shown-revision"
+    app._dispatch_catalog_command(descriptor, "")
+    assert isinstance(app.active_overlay, InteractiveForm)
+    assert app.active_overlay.revision_id == "shown-revision"
+    assert app.active_overlay.action == "goal.set"
+    assert [(field.name, field.required) for field in app.active_overlay.view.fields] == [("objective", True), ("token_budget", False)]
+    assert app.active_overlay.values == {}
+    assert app.active_overlay.handle_key(Key("ctrl+s")) is None
+    assert app.active_overlay.validation_error
+    app.active_overlay.handle_key(Key("paste", text="Ship the feature"))
+    assert app.active_overlay.handle_key(Key("ctrl+s")) == {"action": "goal.set", "arguments": {"objective": "Ship the feature"}}
+    app.active_overlay.handle_key(Key("tab"))
+    app.active_overlay.handle_key(Key("paste", text="2000"))
+    assert app.active_overlay.handle_key(Key("ctrl+s")) == {
+        "action": "goal.set",
+        "arguments": {"objective": "Ship the feature", "token_budget": 2000},
+    }
+
+
+def test_completion_rows_include_catalog_description() -> None:
+    app, _ = _app()
+    _type(app, "/he")
+    assert any("/help — help" in row for row in app.composer.completion_rows())
+
+
+def test_live_command_presentation_mounts_under_its_revision_only() -> None:
+    from voidcode.sdk.views import PluginViewDescriptor
+    from voidcode.tui.views import InteractiveChoices
+
+    app, _ = _app()
+    app.catalog_revision = "rev-1"
+    view = PluginViewDescriptor(
+        owner="delegation",
+        name="agents",
+        title="Profiles",
+        view_type="choices",
+        data={"options": [{"id": "explore", "label": "Explore"}], "action": "agents.show", "argument_name": "name"},
+    )
+    app.event_queue.put({"kind": "command_presentation", "view": view, "revision_id": "rev-old", "serial": app._interaction_serial})
+    app._drain_events()
+    assert app.active_overlay is None
+    app.event_queue.put({"kind": "command_presentation", "view": view, "revision_id": "rev-1", "serial": app._interaction_serial})
+    app._drain_events()
+    assert isinstance(app.active_overlay, InteractiveChoices)
+    assert app.active_overlay.revision_id == "rev-1"
+    assert app.active_overlay.handle_key(Key("enter")) == {"action": "agents.show", "arguments": {"name": "explore"}}
+
+
+def test_history_receipt_renders_passive_presentation_without_opening_interaction() -> None:
+    from voidcode.sdk.commands import CommandPresentation, CommandResult
+    from voidcode.tui.terminal_app import _command_result_rows
+
+    result = CommandResult(
+        status="ok",
+        output="fallback",
+        presentation=CommandPresentation(title="Profile", view_type="markdown", data={"content": "**Explore**\n\nRead the workspace."}),
+    )
+    text = "\n".join(_command_result_rows("agents.show", result, Styles(None), 40))
+    assert "Explore" in text and "Read the workspace." in text
+    assert "**" not in text and "fallback" not in text
+
+
+def test_prepared_input_uses_dynamic_options_without_invoking_until_submit() -> None:
+    from threading import Event
+
+    from voidcode.sdk.commands import CommandInputSnapshot, CommandPresentation, CommandResult
+    from voidcode.tui.views import InteractiveForm
+
+    called = Event()
+
+    class Client(_StubClient):
+        def __init__(self):
+            self.invoked = []
+
+        def command_input(self, session_id, name, expected_revision):
+            assert (session_id, name, expected_revision) == ("s1", "agents.show", "rev-1")
+            return CommandInputSnapshot(
+                revision_id="rev-1",
+                presentation=CommandPresentation(
+                    title="Select agent",
+                    view_type="form",
+                    data={
+                        "action": "agents.show",
+                        "fields": [
+                            {
+                                "name": "name",
+                                "label": "Agent",
+                                "options": [{"id": "explore", "label": "Explore"}, {"id": "review", "label": "Review"}],
+                            }
+                        ],
+                    },
+                ),
+            )
+
+        def invoke_command(self, session_id, name, arguments, expected_revision):
+            self.invoked.append((name, arguments, expected_revision))
+            called.set()
+            return CommandResult(status="ok")
+
+    app, _ = _app()
+    app.client = client = Client()
+    app.catalog_revision = "rev-1"
+    descriptor = CommandDescriptor(name="agents.show", owner="delegation", description="Inspect", has_input=True)
+    app._dispatch_catalog_command(descriptor, "")
+    frame = app.event_queue.get(timeout=2)
+    assert client.invoked == []
+    app.event_queue.put(frame)
+    app._drain_events()
+    assert isinstance(app.active_overlay, InteractiveForm)
+    app._handle_overlay_key(Key("right"))
+    app._handle_overlay_key(Key("right"))
+    app._handle_overlay_key(Key("ctrl+s"))
+    assert called.wait(timeout=2)
+    assert client.invoked == [("agents.show", {"name": "review"}, "rev-1")]
+
+
+def test_natural_multi_field_arguments_preserve_text_and_explicit_json() -> None:
+    app, _ = _app()
+    calls = []
+    app._invoke_async = lambda name, arguments, revision, **kwargs: calls.append((name, arguments))
+    descriptor = CommandDescriptor(
+        name="goal.set",
+        owner="goal",
+        description="Set",
+        text_argument="objective",
+        argument_schema={
+            "type": "object",
+            "properties": {"objective": {"type": "string"}, "token_budget": {"type": "integer"}},
+            "required": ["objective"],
+        },
+    )
+    app._dispatch_catalog_command(descriptor, "Ship it")
+    app._dispatch_catalog_command(descriptor, '{"objective":"With budget","token_budget":2000}')
+    assert calls == [("goal.set", {"objective": "Ship it"}), ("goal.set", {"objective": "With budget", "token_budget": 2000})]
+
+
+def test_internal_command_helpers_do_not_create_discovery_namespaces() -> None:
+    app, _ = _app()
+    app.catalog_cache = (
+        CommandDescriptor(name="help", owner="core", description="Help"),
+        CommandDescriptor(name="internal.only", owner="plugin", description="Helper", slash_visible=False),
+    )
+    _type(app, "/")
+    assert "/internal" not in app.composer.completion
+    calls = []
+    app._invoke_async = lambda name, arguments, revision, **kwargs: calls.append(name)
+    app._dispatch_slash_command("/internal only")
+    assert calls == ["internal.only"]

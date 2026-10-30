@@ -321,3 +321,63 @@ def test_context_does_not_describe_a_truncated_history_as_latest(tmp_path: Path)
     result = _result(tmp_path, "context", Capped())
     assert result.status == "error"
     assert "cannot identify the latest dispatched context" in result.error
+
+
+def test_usage_presentation_distinguishes_unknown_from_zero_and_budget(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from voidcode.sdk.views import FieldsViewData
+
+    class Services(_FakeServices):
+        def get_usage(self, **kwargs):
+            return replace(_USAGE, input_tokens=None, total_cost_usd=None, output_tokens=0, has_unknown_usage=True)
+
+    result = _result(tmp_path, "usage", Services())
+    rows = {row.label: row.value for row in FieldsViewData.from_payload(result.presentation.data).rows}
+    assert rows["Input tokens"] == "Unknown"
+    assert rows["Output tokens"] == "0"
+    assert rows["Cost (USD)"] == "Unknown"
+    assert rows["Usage coverage"] == "Incomplete or unknown"
+
+
+def test_context_presentation_labels_character_counts_and_cumulative_usage(tmp_path: Path) -> None:
+    from voidcode.sdk.views import MarkdownViewData
+
+    result = _result(tmp_path, "context", _FakeServices(events=(*_EVENTS, _WINDOW_EVENT)))
+    view = MarkdownViewData.from_payload(result.presentation.data)
+    assert "core-side neutral encoding" in view.content
+    assert "cumulative" in view.content
+    assert "Segments 0–2 of 2" in view.content
+    assert {action.action for action in view.actions} == {"context", "usage"}
+    assert _result(tmp_path, "context").presentation.view_type == "notice"
+
+
+def test_context_segment_navigation_covers_all_segments():
+    from dataclasses import replace
+
+    from voidcode.plugins.session_info.panels import _context
+    from voidcode.sdk.views import MarkdownViewData
+
+    window = RequestWindow.from_payload(_WINDOW_EVENT.payload["request_window"])
+    window = replace(window, segments=window.segments * 23)
+    entries = (TranscriptEntry(5, "run", "rev", "core", TranscriptDispatch("provider", "model", window)),)
+    offset = 0
+    ranges = []
+    while True:
+        result = _context(entries, _USAGE, False, offset=offset)
+        view = MarkdownViewData.from_payload(result.presentation.data)
+        ranges.append(next(line for line in view.content.splitlines() if line.startswith("Segments ")))
+        next_page = next((action for action in view.actions if action.label == "Next segments"), None)
+        if next_page is None:
+            break
+        offset = next_page.arguments["offset"]
+    assert ranges == ["Segments 0–20 of 46", "Segments 20–40 of 46", "Segments 40–46 of 46"]
+    assert _context(entries, _USAGE, False, offset=47).status == "error"
+
+
+def test_session_info_factory_rejects_unknown_fields():
+    import pytest
+
+    assert create_plugin({"providers": {}}).commands
+    with pytest.raises(ValueError, match="session_info config does not support field: extra"):
+        create_plugin({"extra": True})

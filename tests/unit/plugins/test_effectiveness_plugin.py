@@ -159,3 +159,41 @@ def test_empty_and_unknown_usage_are_truthful_and_plugin_is_read_only():
     plugin = create_plugin()
     assert len(plugin.commands) == 1
     assert not plugin.tools
+
+
+def test_effectiveness_command_pages_readable_metrics_and_preserves_unknown(tmp_path):
+    from voidcode.plugins.effectiveness.effectiveness_plugin import EffectivenessCommand
+    from voidcode.sdk.commands import CommandInvocation
+    from voidcode.sdk.invocation import ToolContext
+    from voidcode.sdk.views import MarkdownViewData
+
+    facts = tuple(outcome(index + 1, tool=f"tool-{index}") for index in range(12))
+
+    class Services:
+        def read_facts(self, *, after_sequence, limit):
+            return FactPage(facts, 12, False)
+
+        def get_usage(self):
+            return replace(usage(), input_tokens=None, total_cost_usd=None, has_unknown_usage=True)
+
+    context = ToolContext(tmp_path, "session", "run", "inv", "rev", "user")
+    command = EffectivenessCommand()
+    first = command.invoke(CommandInvocation(context, "effectiveness"), Services())
+    view = MarkdownViewData.from_payload(first.presentation.data)
+    assert "Input tokens: Unknown" in view.content
+    assert "Cost (USD): Unknown" in view.content
+    assert "incomplete or unknown" in view.content
+    assert view.content.count("## tool-") == 10
+    action = next(action for action in view.actions if action.label == "Next metrics")
+    second = command.invoke(CommandInvocation(context, action.action, action.arguments), Services())
+    assert MarkdownViewData.from_payload(second.presentation.data).content.count("## tool-") == 2
+    assert second.data["provider_usage"]["input_tokens"] is None
+    assert len(first.data["tools"]) == 12
+
+
+def test_effectiveness_factory_rejects_unsupported_config():
+    import pytest
+
+    assert create_plugin({"providers": {}}).commands
+    with pytest.raises(ValueError, match="effectiveness config does not support field: enabled"):
+        create_plugin({"enabled": True})

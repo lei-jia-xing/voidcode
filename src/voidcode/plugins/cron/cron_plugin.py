@@ -41,7 +41,7 @@ from dataclasses import dataclass, field, replace
 from typing import ClassVar, Final, Literal, cast
 from uuid import uuid4
 
-from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import PluginFact, RunFinishedFact, WakeupFiredFact
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
@@ -56,7 +56,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from .loop_command import USAGE_MESSAGE, loop_confirmation_message, parse_loop_command
+from .loop_command import DEFAULT_INTERVAL, USAGE_MESSAGE, loop_confirmation_message, parse_loop_command
 from .schedule_expr import ScheduleExpr, human_schedule, next_fire_after, parse_schedule
 
 SCHEMA_VERSION: Final[int] = 1
@@ -114,7 +114,7 @@ class ScheduleEntry:
         if missing:
             raise ValueError(f"cron schedule '{schedule_id}' is missing field(s): " + ", ".join(missing))
         raw_kind = raw["kind"]
-        if raw_kind not in _KINDS:
+        if not isinstance(raw_kind, str) or raw_kind not in _KINDS:
             raise ValueError(f"cron schedule '{schedule_id}' kind must be one of {sorted(_KINDS)}, got {raw_kind!r}")
         kind = cast(ScheduleKind, raw_kind)
         enabled = raw["enabled"]
@@ -157,7 +157,7 @@ class CronState:
         missing = sorted(_STATE_KEYS - raw.keys())
         if missing:
             raise ValueError("cron state is missing field(s): " + ", ".join(missing))
-        if raw["schema_version"] != SCHEMA_VERSION:
+        if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"cron state schema_version must be {SCHEMA_VERSION}, got {raw['schema_version']!r}")
         cursor = raw["cursor_sequence"]
         if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0:
@@ -270,6 +270,10 @@ def _create(
     due_at_ms: int,
 ) -> tuple[str, ScheduleEntry]:
     """Arm the first fire and persist the schedule; returns its id and stored entry."""
+    if len(state.schedules) >= MAX_SCHEDULES_PER_WORKSPACE:
+        raise ValueError(
+            f"Session schedule limit reached (maximum {MAX_SCHEDULES_PER_WORKSPACE} jobs). Delete an existing job before scheduling a new one."
+        )
     schedule_id = f"sched-{uuid4().hex}"
     entry = ScheduleEntry(
         schedule_text=schedule_text,
@@ -342,31 +346,39 @@ class CronCreateTool:
         schedule_text = raw_schedule.strip()
         prompt = raw_prompt.strip()
         state, version = _load_state(services)
-        if len(state.schedules) >= MAX_SCHEDULES_PER_WORKSPACE:
-            return _failure(
-                self.definition.name,
-                f"Workspace schedule limit reached (maximum {MAX_SCHEDULES_PER_WORKSPACE} jobs). Delete an existing job before scheduling a new one.",
-            )
         try:
             expr = parse_schedule(schedule_text)
         except ValueError as exc:
             return _failure(self.definition.name, str(exc))
         now_ms = _clock_ms()
         first_fire_ms = next_fire_after(expr, now_ms // 1000) * 1000
-        schedule_id, _entry = _create(
-            services,
-            state=state,
-            version=version,
-            expr=expr,
-            schedule_text=schedule_text,
-            prompt=prompt,
-            now_ms=now_ms,
-            due_at_ms=first_fire_ms,
-        )
+        try:
+            schedule_id, _entry = _create(
+                services,
+                state=state,
+                version=version,
+                expr=expr,
+                schedule_text=schedule_text,
+                prompt=prompt,
+                now_ms=now_ms,
+                due_at_ms=first_fire_ms,
+            )
+        except ValueError as exc:
+            return _failure(self.definition.name, str(exc))
         return ToolSuccess(
             tool_name=self.definition.name,
             output=TextOutput(json.dumps({"id": schedule_id, "human_schedule": human_schedule(expr)}, indent=2)),
         )
+
+
+def _delete_schedule(services: PluginServices, schedule_id: str) -> None:
+    state, version = _load_state(services)
+    entry = state.schedules.get(schedule_id)
+    if entry is None:
+        raise ValueError(f"Schedule '{schedule_id}' not found.")
+    schedules = {key: value for key, value in state.schedules.items() if key != schedule_id}
+    _write_state(services, replace(state, schedules=schedules), expected_version=version)
+    _disarm(services, entry.wakeup_id)
 
 
 class CronDeleteTool:
@@ -397,13 +409,10 @@ class CronDeleteTool:
         if not isinstance(raw_id, str) or not raw_id.strip():
             return _failure(self.definition.name, "Schedule id must be a non-empty string.")
         schedule_id = raw_id.strip()
-        state, version = _load_state(services)
-        entry = state.schedules.get(schedule_id)
-        if entry is None:
-            return _failure(self.definition.name, f"Schedule '{schedule_id}' not found.")
-        schedules = {key: value for key, value in state.schedules.items() if key != schedule_id}
-        _write_state(services, replace(state, schedules=schedules), expected_version=version)
-        _disarm(services, entry.wakeup_id)
+        try:
+            _delete_schedule(services, schedule_id)
+        except ValueError as exc:
+            return _failure(self.definition.name, str(exc))
         return ToolSuccess(
             tool_name=self.definition.name,
             output=TextOutput(json.dumps({"id": schedule_id}, indent=2)),
@@ -467,6 +476,7 @@ class CronLoopCommand:
 
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="loop",
+        text_argument="input",
         description="Run a prompt or slash command on a recurring interval, firing it immediately.",
         argument_schema={
             "type": "object",
@@ -480,11 +490,29 @@ class CronLoopCommand:
         client_syntax="/loop",
     )
 
+    def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
+        _ = (invocation, services)
+        return CommandPresentation(
+            title="Schedule a repeating prompt",
+            view_type="form",
+            data={
+                "action": self.definition.name,
+                "fields": [
+                    {
+                        "name": "input",
+                        "label": f"[interval] prompt — e.g. 5m check the deploy; default {DEFAULT_INTERVAL}",
+                        "field_type": "multiline",
+                        "required": True,
+                    }
+                ],
+            },
+        )
+
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         raw_input = invocation.arguments.get("input")
         interval, prompt = parse_loop_command(raw_input if isinstance(raw_input, str) else "")
         if interval is None or prompt is None:
-            return CommandResult(status="ok", output=USAGE_MESSAGE, data={"is_usage": True})
+            return CommandResult(status="ok", output=USAGE_MESSAGE, data={"is_usage": True}, presentation=self.prepare_input(invocation, services))
         schedule_text = f"every {interval}"
         try:
             expr = parse_schedule(schedule_text)
@@ -492,16 +520,19 @@ class CronLoopCommand:
             return CommandResult(status="error", error=str(exc))
         state, version = _load_state(services)
         now_ms = _clock_ms()
-        schedule_id, _entry = _create(
-            services,
-            state=state,
-            version=version,
-            expr=expr,
-            schedule_text=schedule_text,
-            prompt=prompt,
-            now_ms=now_ms,
-            due_at_ms=now_ms,
-        )
+        try:
+            schedule_id, _entry = _create(
+                services,
+                state=state,
+                version=version,
+                expr=expr,
+                schedule_text=schedule_text,
+                prompt=prompt,
+                now_ms=now_ms,
+                due_at_ms=now_ms,
+            )
+        except ValueError as exc:
+            return CommandResult(status="error", error=str(exc))
         summary = _LoopSummary(id=schedule_id, prompt=prompt, human_schedule=human_schedule(expr))
         return CommandResult(
             status="ok",
@@ -515,7 +546,81 @@ class CronLoopCommand:
                 "next_fire_at": now_ms,
                 "is_usage": False,
             },
+            presentation=CommandPresentation(
+                title="Repeating prompt created",
+                view_type="markdown",
+                data={
+                    "content": f"{summary.human_schedule}\n\n{prompt[:1800]}\n\nSchedule ID: {schedule_id}",
+                    "actions": [
+                        {"label": "Browse schedules", "action": "loop.list"},
+                        {"label": "Cancel this schedule", "action": "loop.delete", "arguments": {"id": schedule_id}},
+                    ],
+                },
+            ),
         )
+
+
+class CronListCommand:
+    definition: ClassVar[CommandDefinition] = CommandDefinition(
+        name="loop.list",
+        description="Browse this session's scheduled prompts.",
+        argument_schema={"type": "object", "properties": {"offset": {"type": "integer", "minimum": 0}}, "additionalProperties": False},
+        effects=frozenset({ToolEffect.READ}),
+        busy_gate=False,
+    )
+
+    def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
+        state, _ = _load_state(services)
+        entries = list(state.schedules.items())
+        offset = invocation.arguments.get("offset", 0)
+        if type(offset) is not int or not 0 <= offset <= len(entries):
+            return CommandResult(status="error", error="Schedule list changed; reopen /loop list.")
+        lines = [f"Schedules {offset}–{min(offset + 10, len(entries))} of {len(entries)}"]
+        actions: list[dict[str, object]] = [{"label": "Create repeating prompt", "action": "loop", "prepare_input": True}]
+        if not entries:
+            lines.append("No scheduled prompts. Create one to begin.")
+        for identifier, entry in entries[offset : offset + 10]:
+            lines.append(f"{identifier} · {'enabled' if entry.enabled else 'disabled'} · {entry.schedule_text[:100]}\n{entry.prompt[:200]}")
+            actions.append({"label": f"Cancel: {entry.prompt[:40]}", "action": "loop.delete", "arguments": {"id": identifier}})
+        if offset:
+            actions.append({"label": "Previous schedules", "action": "loop.list", "arguments": {"offset": max(0, offset - 10)}})
+        if offset + 10 < len(entries):
+            actions.append({"label": "Next schedules", "action": "loop.list", "arguments": {"offset": offset + 10}})
+        return CommandResult(
+            status="ok",
+            output="\n\n".join(lines),
+            data={"total": len(entries)},
+            presentation=CommandPresentation(
+                title="Scheduled prompts", view_type="markdown", data={"content": "\n\n".join(lines), "actions": actions}
+            ),
+        )
+
+
+class CronDeleteCommand:
+    definition: ClassVar[CommandDefinition] = CommandDefinition(
+        name="loop.delete",
+        description="Cancel a scheduled prompt by ID.",
+        text_argument="id",
+        argument_schema={
+            "type": "object",
+            "properties": {"id": {"type": "string", "minLength": 1}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.SESSION}),
+        busy_gate=False,
+    )
+
+    def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
+        identifier = invocation.arguments.get("id")
+        if not isinstance(identifier, str) or not identifier.strip():
+            return CommandResult(status="error", error="Choose a schedule from /loop list.")
+        try:
+            _delete_schedule(services, identifier.strip())
+        except ValueError as exc:
+            return CommandResult(status="error", error=str(exc))
+        listed = CronListCommand().invoke(CommandInvocation(invocation.context, "loop.list"), services)
+        return CommandResult(status="ok", output=f"Schedule {identifier} cancelled.", data={"id": identifier}, presentation=listed.presentation)
 
 
 # --- Observation: the terminal reschedule that prevents overlap and replay ---

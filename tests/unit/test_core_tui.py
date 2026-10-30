@@ -1832,3 +1832,154 @@ def test_welcome_rows_clip_center_and_sample_colors() -> None:
     assert _banner_rows(BannerConfig(), styles, width=0) == []
     assert _banner_rows(None, styles, width=80) == []
     assert _banner_rows(BannerConfig(text="  \n \n", colors=("red",)), styles, width=80) == []
+
+
+def test_command_validation_failure_preserves_form_draft_for_correction() -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    client = _CommandClient(results={"goal.set": CommandResult(status="error", error="budget must be positive")})
+    terminal = _StubTerminal()
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    form = InteractiveForm(FormViewData(fields=(FormField(name="objective", label="Objective"),), action="goal.set"), revision_id="rev-1")
+    form.values["objective"] = "Keep this draft"
+    app.active_overlay = form
+    app._handle_overlay_key(Key("ctrl+s"))
+    _drain_until(app, terminal, "budget must be positive")
+    assert app.active_overlay is form
+    assert form.values["objective"] == "Keep this draft"
+    assert "invoke:goal.set@rev-1" not in app._in_flight
+
+
+def test_command_choices_open_only_on_live_reply_and_dispatch_displayed_revision() -> None:
+    import time
+
+    from voidcode.sdk.commands import CommandPresentation
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    result = CommandResult(
+        status="ok",
+        output="Explore",
+        presentation=CommandPresentation(
+            title="Profiles",
+            view_type="choices",
+            data={"options": [{"id": "explore", "label": "Explore"}], "action": "agents.show", "argument_name": "name"},
+        ),
+    )
+    client = _CommandClient(results={"agents": result})
+    terminal = _StubTerminal()
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    app.catalog_revision = "rev-1"
+    rows: list[str] = []
+    app._handle_stream_event(_event(1, "core.command_completed", name="agents", result=result.as_payload()), rows)
+    assert app.active_overlay is None
+    assert rows == ["Explore"]
+    app._invoke_async("agents", {}, "rev-1")
+    deadline = time.monotonic() + 5
+    while not isinstance(app.active_overlay, InteractiveChoices) and time.monotonic() < deadline:
+        app._drain_events()
+        time.sleep(0.01)
+    assert isinstance(app.active_overlay, InteractiveChoices)
+    app._handle_overlay_key(Key("enter"))
+    deadline = time.monotonic() + 5
+    while len(client.invoked) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client.invoked[-1] == ("s1", "agents.show", {"name": "explore"}, "rev-1")
+
+
+def test_late_command_reply_never_closes_or_reopens_an_editor_after_cancel() -> None:
+    from threading import Event
+
+    from voidcode.sdk.commands import CommandPresentation
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    started, release = Event(), Event()
+
+    class DelayedClient(_CommandClient):
+        def invoke_command(self, *args, **kwargs):
+            started.set()
+            assert release.wait(timeout=3)
+            return CommandResult(
+                status="ok",
+                presentation=CommandPresentation(
+                    title="Late editor", view_type="form", data={"action": "edit", "fields": [{"name": "text", "label": "Text"}]}
+                ),
+            )
+
+    app = CoreTuiApp(DelayedClient(), session_id="s1", terminal=_StubTerminal())  # type: ignore[arg-type]
+    app.catalog_revision = "rev-1"
+    old = InteractiveForm(FormViewData(fields=(FormField(name="text", label="Text"),), action="edit"), revision_id="rev-1")
+    old.values["text"] = "Old"
+    app.active_overlay = old
+    app._handle_overlay_key(Key("ctrl+s"))
+    assert started.wait(timeout=2)
+    app._handle_overlay_key(Key("esc"))
+    newer = InteractiveForm(old.view, revision_id="rev-1")
+    newer.values["text"] = "New draft"
+    app.active_overlay = newer
+    release.set()
+    frames = []
+    while True:
+        frame = app.event_queue.get(timeout=3)
+        frames.append(frame)
+        if frame["kind"] == "command_presentation":
+            break
+    for frame in frames:
+        app.event_queue.put(frame)
+    app._drain_events()
+    assert app.active_overlay is newer
+    assert newer.values["text"] == "New draft"
+
+
+def test_markdown_detail_scrolls_with_decoded_keys_and_bounds_action_rows() -> None:
+    from voidcode.sdk.views import MarkdownViewData
+    from voidcode.tui.keys import KeyDecoder
+    from voidcode.tui.styles import Styles
+    from voidcode.tui.term import visible_width
+    from voidcode.tui.views import InteractiveMarkdown
+
+    data = MarkdownViewData.from_payload(
+        {
+            "content": "\n\n".join(f"Detail line {index}" for index in range(50)),
+            "actions": [
+                {"label": "Next page " * 20, "action": "skills.show", "arguments": {"name": "guide", "offset": 100}},
+                {"label": "Choose skill", "action": "skills.show", "prepare_input": True},
+            ],
+        }
+    )
+    overlay = InteractiveMarkdown(data, revision_id="shown-revision", title="Guide")
+    for width, height in [(80, 20), (40, 12), (20, 6)]:
+        rows = overlay.render_rows(width, Styles(None), max_rows=height)
+        assert len(rows) <= height
+        assert all(visible_width(row) <= width for row in rows)
+    for key in KeyDecoder().feed(b"\x1b[6~"):
+        overlay.handle_key(key)
+    assert overlay.scroll > 0
+    overlay.handle_key(Key("home"))
+    assert overlay.scroll == 0
+    assert overlay.handle_key(Key("enter")) == {"action": "skills.show", "arguments": {"name": "guide", "offset": 100}, "prepare_input": False}
+    overlay.handle_key(Key("tab"))
+    assert overlay.handle_key(Key("enter")) == {"action": "skills.show", "arguments": {}, "prepare_input": True}
+    assert overlay.handle_key(Key("esc")) == {"cancel": True}
+
+
+def test_markdown_action_history_is_passive_but_explicit_presentation_opens_detail() -> None:
+    from voidcode.sdk.commands import CommandPresentation
+    from voidcode.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.views import InteractiveMarkdown
+
+    presentation = CommandPresentation(
+        title="Details",
+        view_type="markdown",
+        data={"content": "Task status", "actions": [{"label": "Update task", "action": "todo.edit", "arguments": {"task": "one"}}]},
+    )
+    app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=_StubTerminal())  # type: ignore[arg-type]
+    rows = []
+    app._handle_stream_event(
+        _event(1, "core.command_completed", name="todo", result=CommandResult(status="ok", presentation=presentation).as_payload()), rows
+    )
+    assert app.active_overlay is None
+    assert "Task status" in "\n".join(rows)
+    view = PluginViewDescriptor(owner="todo", name="todo", title="Details", view_type="markdown", data=presentation.data)
+    assert app._mount_interactive_view(view, "shown-revision")
+    assert isinstance(app.active_overlay, InteractiveMarkdown)
+    assert app.active_overlay.revision_id == "shown-revision"

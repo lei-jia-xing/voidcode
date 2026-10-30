@@ -63,6 +63,7 @@ execute concurrently, so a long run never blocks session cancellation.
 | `session.show` | `session_id`, optional `events` → durable state. |
 | `session.run` | `session_id`, `prompt`, optional `max_steps` → run result. |
 | `session.resume` | `session_id`, optional paired `approval_request_id`/`decision`, `max_steps` → run result. |
+| `command.input` | `session_id`, `name`, `expected_revision` → read-only prepared input with its captured revision. |
 | `command.invoke` | `session_id`, `name`, `arguments`, `expected_revision` → command result. |
 | `action.confirm` | `session_id`, `request_id`, `decision`, `expected_revision` → command result. |
 | `session.views` | `session_id` → views with `revision_id`. |
@@ -182,12 +183,15 @@ A request id from one gate is never sent to the other endpoint. Both are project
   stay out of the chat view but remain in recorded history and model context.
   Explicit plugin notices and decision gates remain visible.
 - Startup, connect, reconnect, session switch, and capability activation never fetch or display optional plugin views: the TUI reconciles health, the catalog, durable session state, and the event-projected decision gates only. `/tui views [name]` explicitly fetches a revision-bound views envelope and displays passive content inline and borderless — passive field values wrap rather than ellipsize (deliberate plugin-level previews/limits still apply) — or an interactive form/choices/confirmation as a framed dialog. The two decision gates above remain event-projected and are never closed or denied by a refresh.
-- The default composer uses two horizontal rules with no vertical padding, prompt marker, or placeholder. Input grows with its content. `tui.border` also accepts `box` and `borderless`; `--no-border` selects borderless. The footer context uses dim text.
+- The default composer uses two horizontal rules with no vertical padding, prompt marker, or placeholder. Input grows with its content. `tui.border` also accepts `box` and `borderless`; `--no-border` selects borderless. The footer context uses the terminal default foreground for readability.
 - Footer context row (server truth only): `workspace · provider/model · effort` (`no model` when unset; the effort segment hides when `reasoning_effort` is null — unknown, unset, non-reasoning, and numeric-budget configs show no marker). No run-state and no session id by default (`--show-session` adds the short id). The composer top border carries `<spinner> working` while a run is active (animating on the render tick; clean when idle); gates, errors, and transient notices render on a separate row below that `footer=off` never hides. Idle chrome carries no Attached/Created banners; explicit `/status`, `/show`, and `/tui sessions` keep diagnostics and ids.
 - Typing `/` opens command suggestions automatically; edits filter the current
-  catalog plus `/tui` controls, without requests per keystroke. Up/Down selects,
+  catalog plus `/tui` controls, one namespace level at a time, without requests per keystroke. Command entries include their descriptions. Up/Down selects,
   Tab or Enter fills a partial command, and Enter submits an exact selected
-  command. Esc closes the popup without cancelling the run. Command arguments
+  command. Tab on a parent enters its subcommands; Enter on a namespace without
+  its own command does the same. Bare commands with required scalar arguments
+  open a revision-bound form in the TUI; explicit arguments retain their existing
+  parsing. Esc closes the popup without cancelling the run. Command arguments
   and ordinary multiline text do not trigger name completion. Catalog refreshes
   update an open popup; dispatch still uses the displayed revision. Overlays
   capture their rendered revision; Esc on confirmation submits an explicit deny.
@@ -268,3 +272,32 @@ errors remain visible and stop the reader; reconnection never resends mutations.
 Tool intent uses the declared icon and name, followed by at most two physical rows of compact JSON arguments. Successful results show at most eight physical rows, without a redundant success header. Omitted rows are labeled explicitly and `/show {"events":true}` exposes the recorded arguments/results. Tool errors remain complete; source partial/truncated bounds remain visible separately from the display preview. Streaming prose shares settled markdown geometry, without an extra spinner prefix. Completion popups follow selection in a six-row window; input space is reserved on short terminals.
 Empty successful tool results add no `Done` row. Tool failures keep their complete
 details without repeating the tool name already present in the compact header.
+
+### Command presentations
+
+Successful direct command receipts may carry a bounded `presentation` using
+existing declarative view kinds. Interactive choices and forms mount under the
+invocation's captured revision, session, and transport scope. Historical replay
+renders the receipt (or passive presentation) without reopening interactions.
+A later receipt must not overwrite a pending approval, confirmation, or newer
+editor. Web command panels become unavailable on a session, transport, or
+revision change. Core command invocation and governed confirmation remain the
+only mutation paths; UI presentations never authorize an effect by themselves.
+
+### Prepared command input
+
+`command.input` takes `session_id`, `name`, and `expected_revision`, and returns
+`CommandInputSnapshot {revision_id, presentation}`. It is a read, not invocation:
+preparation runs under strictly read-only services and creates no command event.
+Only catalog commands advertising `has_input` support it. Both SessionClient
+implementations expose `command_input`; the web client exposes `commandInput`.
+
+A bare slash command uses this optional callback before schema-generated forms.
+The UI captures session/transport/generation and a request serial, refuses a
+mismatching returned revision, and ignores superseded replies. Editing another
+draft or closing/replacing an editor invalidates its outstanding presentation;
+a late accepted action may close only the exact editor instance that submitted.
+Loading failures are visible, and no prepare failure falls through to invocation.
+Explicit arguments use the existing command path. Catalog `text_argument`
+metadata allows natural trailing text for a declared string field while keeping
+explicit JSON objects available.

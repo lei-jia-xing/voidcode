@@ -11,9 +11,13 @@ Plan mode: a read-only exploration overlay plus the plan instruction.
 
 ## Configuration
 
-Takes no plugin config; `create_plugin` ignores it. See [configuration](../../../../docs/configuration.md) for global config.
+Takes no plugin options; the factory accepts only the injected `providers` map and rejects unknown fields. See [configuration](../../../../docs/configuration.md) for global config.
 
 ## Behavior and limits
 
 - Session-scoped state holds only `schema_version` and `active` (schema v1); entering/leaving stages `plan_mode_enabled`/`plan_mode_disabled` events.
 - Deactivation parks an active mode off: the activation transaction deletes this owner's overlay row, so keeping `active` would promise a restriction that no longer exists — the user re-enters explicitly.
+
+State ingress requires an integer schema version and a boolean active flag; missing
+or unknown fields fail visibly. Status presentations offer an explicit next-mode
+action, and reading status never enters or leaves plan mode.

@@ -11,5 +11,8 @@ from voidcode.sdk.plugin import Plugin
 from .panels import SessionInfoCommand
 
 
-def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
+def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
+    unknown = sorted(set(config or {}) - {"providers"})
+    if unknown:
+        raise ValueError(f"session_info config does not support field: {unknown[0]}")
     return Plugin(commands=tuple(SessionInfoCommand(panel) for panel in ("context", "usage", "export", "copy")))

@@ -8,9 +8,12 @@ from voidcode.sdk.plugin import Plugin, StateSchema
 from .todo_plugin import (
     SCHEMA_VERSION,
     TODO_STATUSES,
+    TodoAddCommand,
     TodoClearCommand,
+    TodoEditCommand,
     TodoStatusCommand,
     TodoTool,
+    TodoUpdateCommand,
     parse_todo_config,
     prepare_todo_deactivation,
     todo_context,
@@ -22,7 +25,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
     reminders = parse_todo_config(config)
     return Plugin(
         tools=(TodoTool(),),
-        commands=(TodoStatusCommand(), TodoClearCommand()),
+        commands=(TodoStatusCommand(), TodoClearCommand(), TodoAddCommand(), TodoEditCommand(), TodoUpdateCommand()),
         context=todo_context,
         observer=partial(todo_observer, config=reminders),
         observed_facts=("invocation_finished", "run_finished"),

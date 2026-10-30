@@ -535,7 +535,7 @@ def test_completion_reminder_incomplete_projection() -> None:
 def test_create_plugin_registers_tool_commands_and_context() -> None:
     plugin = create_plugin({})
     assert [tool.definition.name for tool in plugin.tools] == ["todo"]
-    assert [command.definition.name for command in plugin.commands] == ["todo", "todo.clear"]
+    assert [command.definition.name for command in plugin.commands] == ["todo", "todo.clear", "todo.add", "todo.edit", "todo.update"]
     assert plugin.context is todo_context
     assert plugin.observer is not None
 
@@ -831,3 +831,71 @@ def test_unknown_effect_is_not_silently_discarded_as_read_only(tmp_path: Path) -
         todo_observer(_invocation_fact("custom", effects=("read", "unknown-effect")), _context(tmp_path), services)
     assert services.get_state() == before
     assert not services.staged_continuations
+
+
+def test_todo_interactive_add_edit_update_preserves_invariants_and_rejects_stale_editor(tmp_path: Path) -> None:
+    from voidcode.plugins.todo.todo_plugin import TodoAddCommand, TodoEditCommand, TodoUpdateCommand
+    from voidcode.sdk.views import FormViewData, MarkdownViewData, validate_form_submission
+
+    services = FakeServices()
+    context = _context(tmp_path)
+    add = TodoAddCommand()
+    form = FormViewData.from_payload(add.prepare_input(CommandInvocation(context, "todo.add"), services).data)
+    assert form.arguments == {"expected_revision": 0}
+    assert "expected_revision" not in [field.name for field in form.fields]
+    args = validate_form_submission(form, {"phase": "Build", "items": "one\ntwo"})
+    created = add.invoke(CommandInvocation(context, "todo.add", args), services)
+    assert created.status == "ok"
+    assert [task["status"] for task in _stored(services).phases[0]["tasks"]] == ["in_progress", "pending"]
+    list_view = MarkdownViewData.from_payload(created.presentation.data)
+    edit_action = next(action for action in list_view.actions if action.label == "Edit: one")
+    assert len(edit_action.arguments["task_id"]) == 64
+    editor = TodoEditCommand().invoke(CommandInvocation(context, edit_action.action, edit_action.arguments), services)
+    assert editor.status == "ok"
+    edit_form = FormViewData.from_payload(editor.presentation.data)
+    update_args = validate_form_submission(edit_form, {"op": "done"})
+    updated = TodoUpdateCommand().invoke(CommandInvocation(context, "todo.update", update_args), services)
+    assert updated.status == "ok"
+    assert [task["status"] for task in _stored(services).phases[0]["tasks"]] == ["completed", "in_progress"]
+    before = services.get_state()
+    stale = TodoUpdateCommand().invoke(CommandInvocation(context, "todo.update", update_args), services)
+    assert stale.status == "error" and "changed" in stale.error
+    assert services.get_state() == before
+
+
+def test_todo_presentation_is_paged_and_keeps_large_task_ids_bounded(tmp_path: Path) -> None:
+    import json
+
+    from voidcode.sdk.views import MarkdownViewData
+
+    services = FakeServices()
+    _invoke(services, tmp_path, {"op": "init", "items": [f"{index}: " + "任务" * 1000 for index in range(25)]})
+    context = _context(tmp_path)
+    result = TodoStatusCommand().invoke(CommandInvocation(context, "todo"), services)
+    detail = MarkdownViewData.from_payload(result.presentation.data)
+    assert len([action for action in detail.actions if action.action == "todo.edit"]) == 10
+    assert "of 25" in detail.content
+    next_page = next(action for action in detail.actions if action.label == "Next tasks")
+    assert next_page.arguments == {"offset": 10, "limit": 10}
+    assert len(json.dumps(result.presentation.as_payload(), ensure_ascii=False).encode()) < 64 * 1024
+
+
+def test_todo_browser_emoji_pages_and_end_navigation(tmp_path: Path) -> None:
+    from voidcode.sdk.views import MarkdownViewData
+
+    services = FakeServices()
+    _invoke(services, tmp_path, {"op": "init", "phase": "🙂" * 80, "items": [f"{index}: " + "🙂" * 500 for index in range(25)]})
+    arguments = {}
+    seen = []
+    while True:
+        result = TodoStatusCommand().invoke(CommandInvocation(_context(tmp_path), "todo", arguments), services)
+        detail = MarkdownViewData.from_payload(result.presentation.data)
+        seen.extend(action.arguments["task_id"] for action in detail.actions if action.action == "todo.edit")
+        next_page = next((action for action in detail.actions if action.label == "Next tasks"), None)
+        if next_page is None:
+            break
+        arguments = dict(next_page.arguments)
+    assert len(seen) == len(set(seen)) == 25
+    end = TodoStatusCommand().invoke(CommandInvocation(_context(tmp_path), "todo", {"offset": 25}), services)
+    previous = next(action for action in MarkdownViewData.from_payload(end.presentation.data).actions if action.label == "Previous tasks")
+    assert previous.arguments["offset"] < 25

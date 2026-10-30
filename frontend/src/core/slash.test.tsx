@@ -1,4 +1,11 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+  act,
+} from "@testing-library/react";
 import { describe, it, expect, vi, afterEach, type Mock } from "vitest";
 import { CoreApp } from "./CoreApp";
 import "../i18n";
@@ -34,7 +41,11 @@ interface Harness {
   unmount: () => void;
 }
 
-async function mount(commands: unknown[]): Promise<Harness> {
+async function mount(
+  commands: unknown[],
+  invokeResult: object = { status: "ok", output: "done" },
+  inputResult: object = {},
+): Promise<Harness> {
   const invokes: Harness["invokes"] = [];
   const head = JSON.stringify({
     session: { session_id: SESSION },
@@ -45,9 +56,10 @@ async function mount(commands: unknown[]): Promise<Harness> {
       method: string,
       params: Record<string, unknown>,
     ): Promise<MockResponse> => {
+      if (method === "command.input") return jsonResponse(inputResult);
       if (method === "command.invoke") {
         invokes.push({ method, params });
-        return jsonResponse({ status: "ok", output: "done" });
+        return jsonResponse(invokeResult);
       }
       if (method === "command.catalog") {
         return jsonResponse({ revision_id: "rev-1", commands });
@@ -310,7 +322,8 @@ describe("spaced slash dispatch", () => {
     await waitFor(() => {
       expect(screen.getByTestId("slash-suggestions")).toBeVisible();
     });
-    expect(screen.getByTestId("slash-suggestions")).toHaveTextContent(
+    expect(screen.getByTestId("slash-suggestions")).toHaveTextContent("/goal");
+    expect(screen.getByTestId("slash-suggestions")).not.toHaveTextContent(
       "/goal pause",
     );
     expect(screen.getByTestId("slash-suggestions")).not.toHaveTextContent(
@@ -324,6 +337,406 @@ describe("spaced slash dispatch", () => {
         "/workflow status",
       );
     });
+    h.unmount();
+  });
+
+  it("groups parent commands and reveals described children after selection", async () => {
+    const h = await mount([
+      {
+        owner: "delegation",
+        name: "agents",
+        description: "List profiles",
+        argument_schema: { type: "object", properties: {} },
+      },
+      {
+        owner: "delegation",
+        name: "agents.show",
+        description: "Inspect a profile",
+        argument_schema: { type: "object", properties: {} },
+      },
+    ]);
+    fireEvent.change(screen.getByTestId("prompt-input"), {
+      target: { value: "/ag" },
+    });
+    const suggestions = await screen.findByTestId("slash-suggestions");
+    expect(suggestions).toHaveTextContent("List profiles");
+    expect(suggestions).not.toHaveTextContent("/agents show");
+    fireEvent.click(
+      screen.getByRole("button", { name: /agents.*List profiles/ }),
+    );
+    expect(screen.getByTestId("prompt-input")).toHaveValue("/agents ");
+    expect(screen.getByTestId("slash-suggestions")).toHaveTextContent(
+      "/agents show",
+    );
+    expect(screen.getByTestId("slash-suggestions")).toHaveTextContent(
+      "Inspect a profile",
+    );
+    h.unmount();
+  });
+
+  it("opens a required-argument form and submits typed values under the displayed revision", async () => {
+    const h = await mount([
+      {
+        owner: "goal",
+        name: "goal.set",
+        description: "Set goal",
+        argument_schema: {
+          type: "object",
+          properties: {
+            objective: { type: "string" },
+            token_budget: { type: "integer" },
+          },
+          required: ["objective"],
+        },
+      },
+    ]);
+    await submitSlash(h, "/goal set");
+    expect(await screen.findByTestId("command-presentation")).toBeVisible();
+    expect(h.invokes).toHaveLength(0);
+    fireEvent.change(screen.getByTestId("form-input-objective"), {
+      target: { value: "Ship it" },
+    });
+    fireEvent.change(screen.getByTestId("form-input-token_budget"), {
+      target: { value: "3000" },
+    });
+    fireEvent.click(screen.getByTestId("form-submit-btn"));
+    await waitFor(() => expect(h.invokes).toHaveLength(1));
+    expect(h.invokes[0].params).toMatchObject({
+      name: "goal.set",
+      arguments: { objective: "Ship it", token_budget: 3000 },
+      expected_revision: "rev-1",
+    });
+    h.unmount();
+  });
+
+  it("renders command choices and dispatches their action with the receipt revision", async () => {
+    const h = await mount(
+      [
+        { owner: "delegation", name: "agents", description: "Profiles" },
+        { owner: "delegation", name: "agents.show", description: "Inspect" },
+      ],
+      {
+        status: "ok",
+        output: "Profiles",
+        presentation: {
+          title: "Profiles",
+          view_type: "choices",
+          data: {
+            options: [{ id: "explore", label: "Explore" }],
+            action: "agents.show",
+            argument_name: "name",
+          },
+        },
+      },
+    );
+    await submitSlash(h, "/agents");
+    fireEvent.click(await screen.findByTestId("choice-option-explore"));
+    await waitFor(() => expect(h.invokes).toHaveLength(2));
+    expect(h.invokes[1].params).toMatchObject({
+      name: "agents.show",
+      arguments: { name: "explore" },
+      expected_revision: "rev-1",
+    });
+    h.unmount();
+  });
+
+  it("preserves the editor and shows the server validation error", async () => {
+    const h = await mount(
+      [
+        {
+          owner: "goal",
+          name: "goal.set",
+          description: "Set goal",
+          argument_schema: {
+            type: "object",
+            properties: { objective: { type: "string" } },
+            required: ["objective"],
+          },
+        },
+      ],
+      { status: "error", error: "Goal cannot be replaced" },
+    );
+    await submitSlash(h, "/goal set");
+    fireEvent.change(await screen.findByTestId("form-input-objective"), {
+      target: { value: "Keep my draft" },
+    });
+    fireEvent.click(screen.getByTestId("form-submit-btn"));
+    await waitFor(() =>
+      expect(screen.getByText(/Goal cannot be replaced/)).toBeVisible(),
+    );
+    expect(screen.getByTestId("form-input-objective")).toHaveValue(
+      "Keep my draft",
+    );
+    expect(screen.getByTestId("command-presentation")).toBeVisible();
+    h.unmount();
+  });
+
+  it("does not reopen a dismissed editor from a late command receipt", async () => {
+    const h = await mount([
+      {
+        owner: "goal",
+        name: "goal.set",
+        description: "Set goal",
+        argument_schema: {
+          type: "object",
+          properties: { objective: { type: "string" } },
+          required: ["objective"],
+        },
+      },
+    ]);
+    const original = h.rpcMock.getMockImplementation()!;
+    let reply: ((response: MockResponse) => void) | undefined;
+    h.rpcMock.mockImplementation(
+      (method: string, params: Record<string, unknown>) => {
+        if (method === "command.invoke")
+          return new Promise<MockResponse>((resolve) => {
+            reply = resolve;
+          });
+        return original(method, params);
+      },
+    );
+    await submitSlash(h, "/goal set");
+    fireEvent.change(await screen.findByTestId("form-input-objective"), {
+      target: { value: "Draft" },
+    });
+    fireEvent.click(screen.getByTestId("form-submit-btn"));
+    await waitFor(() => expect(reply).toBeDefined());
+    fireEvent.click(
+      within(screen.getByTestId("command-presentation")).getAllByRole(
+        "button",
+        { name: "Cancel" },
+      )[0],
+    );
+    expect(screen.queryByTestId("command-presentation")).toBeNull();
+    await act(async () => {
+      reply!(
+        jsonResponse({
+          status: "ok",
+          presentation: {
+            title: "Late",
+            view_type: "notice",
+            data: { message: "Late reply" },
+          },
+        }),
+      );
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("prompt-input")).not.toBeDisabled(),
+    );
+    expect(screen.queryByTestId("command-presentation")).toBeNull();
+    h.unmount();
+  });
+
+  it("prepares a dynamic selector without invoking and submits the selected value", async () => {
+    const h = await mount(
+      [
+        {
+          owner: "delegation",
+          name: "agents.show",
+          description: "Inspect profile",
+          has_input: true,
+        },
+      ],
+      { status: "ok", output: "Selected" },
+      {
+        revision_id: "rev-1",
+        presentation: {
+          title: "Choose agent",
+          view_type: "form",
+          data: {
+            action: "agents.show",
+            fields: [
+              {
+                name: "name",
+                label: "Agent",
+                options: [
+                  { id: "explore", label: "Explore workspace" },
+                  { id: "review", label: "Review changes" },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    );
+    await submitSlash(h, "/agents show");
+    expect(
+      await screen.findByRole("combobox", { name: /Agent/ }),
+    ).toBeVisible();
+    expect(h.invokes).toHaveLength(0);
+    expect(h.rpcMock).toHaveBeenCalledWith("command.input", {
+      session_id: SESSION,
+      name: "agents.show",
+      expected_revision: "rev-1",
+    });
+    fireEvent.change(screen.getByTestId("form-input-name"), {
+      target: { value: "review" },
+    });
+    fireEvent.click(screen.getByTestId("form-submit-btn"));
+    await waitFor(() => expect(h.invokes).toHaveLength(1));
+    expect(h.invokes[0].params).toMatchObject({
+      name: "agents.show",
+      arguments: { name: "review" },
+      expected_revision: "rev-1",
+    });
+    h.unmount();
+  });
+
+  it("rejects a prepared input returned under another revision", async () => {
+    const h = await mount(
+      [
+        {
+          owner: "w",
+          name: "workflow.run",
+          description: "Run",
+          has_input: true,
+        },
+      ],
+      { status: "ok" },
+      {
+        revision_id: "old-revision",
+        presentation: {
+          title: "Stale",
+          view_type: "notice",
+          data: { message: "Old" },
+        },
+      },
+    );
+    await submitSlash(h, "/workflow run");
+    await waitFor(() =>
+      expect(screen.getByText(/changed revision/)).toBeVisible(),
+    );
+    expect(screen.queryByTestId("command-presentation")).toBeNull();
+    expect(h.invokes).toHaveLength(0);
+    h.unmount();
+  });
+
+  it("passes declared natural text to one field and retains structured JSON arguments", async () => {
+    const h = await mount([
+      {
+        owner: "goal",
+        name: "goal.set",
+        description: "Set goal",
+        text_argument: "objective",
+        argument_schema: {
+          type: "object",
+          properties: {
+            objective: { type: "string" },
+            token_budget: { type: "integer" },
+          },
+          required: ["objective"],
+        },
+      },
+    ]);
+    await submitSlash(h, "/goal set Ship the command UI");
+    await waitFor(() => expect(h.invokes).toHaveLength(1));
+    expect(h.invokes[0].params.arguments).toEqual({
+      objective: "Ship the command UI",
+    });
+    await submitSlash(
+      h,
+      '/goal set {"objective":"Structured","token_budget":2000}',
+    );
+    await waitFor(() => expect(h.invokes).toHaveLength(2));
+    expect(h.invokes[1].params.arguments).toEqual({
+      objective: "Structured",
+      token_budget: 2000,
+    });
+    h.unmount();
+  });
+
+  it("opens an input action from details and submits fixed revision arguments", async () => {
+    const h = await mount(
+      [
+        { owner: "todo", name: "todo", description: "List tasks" },
+        {
+          owner: "todo",
+          name: "todo.add",
+          description: "Add tasks",
+          has_input: true,
+        },
+      ],
+      {
+        status: "ok",
+        presentation: {
+          title: "Todo list",
+          view_type: "markdown",
+          data: {
+            content: "Empty list",
+            actions: [
+              { label: "Add tasks", action: "todo.add", prepare_input: true },
+            ],
+          },
+        },
+      },
+      {
+        revision_id: "rev-1",
+        presentation: {
+          title: "Add tasks",
+          view_type: "form",
+          data: {
+            action: "todo.add",
+            arguments: { expected_revision: 7 },
+            fields: [
+              { name: "items", label: "Tasks", field_type: "multiline" },
+            ],
+          },
+        },
+      },
+    );
+    await submitSlash(h, "/todo");
+    fireEvent.click(await screen.findByRole("button", { name: "Add tasks" }));
+    const input = await screen.findByTestId("form-input-items");
+    expect(h.invokes).toHaveLength(1);
+    expect(screen.queryByTestId("form-input-expected_revision")).toBeNull();
+    fireEvent.change(input, { target: { value: "First\nSecond" } });
+    fireEvent.click(screen.getByTestId("form-submit-btn"));
+    await waitFor(() => expect(h.invokes).toHaveLength(2));
+    expect(h.invokes[1].params).toMatchObject({
+      name: "todo.add",
+      arguments: { items: "First\nSecond", expected_revision: 7 },
+      expected_revision: "rev-1",
+    });
+    h.unmount();
+  });
+
+  it("hides helper commands from discovery while preserving explicit invocation", async () => {
+    const h = await mount([
+      { owner: "p", name: "visible", description: "Visible" },
+      {
+        owner: "p",
+        name: "internal.only",
+        description: "Helper",
+        slash_visible: false,
+      },
+    ]);
+    fireEvent.change(screen.getByTestId("prompt-input"), {
+      target: { value: "/" },
+    });
+    expect(
+      await screen.findByTestId("slash-suggestions"),
+    ).not.toHaveTextContent("internal");
+    await submitSlash(h, "/internal only");
+    await waitFor(() => expect(h.invokes).toHaveLength(1));
+    expect(h.invokes[0].params.name).toBe("internal.only");
+    h.unmount();
+  });
+
+  it("uses keyboard completion to enter namespaces without dispatching", async () => {
+    const h = await mount([
+      { owner: "goal", name: "goal.pause", description: "Pause" },
+    ]);
+    const input = screen.getByTestId("prompt-input");
+    fireEvent.change(input, { target: { value: "/go" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveValue("/goal ");
+    expect(h.invokes).toHaveLength(0);
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(input).toHaveValue("/goal pause ");
+    fireEvent.change(input, { target: { value: "/goal" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByTestId("slash-suggestions")).toBeNull();
+    expect(input).toHaveValue("/goal");
     h.unmount();
   });
 

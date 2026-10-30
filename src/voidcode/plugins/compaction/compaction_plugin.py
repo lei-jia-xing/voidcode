@@ -28,7 +28,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import PluginFact, RunFinishedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
@@ -373,6 +373,26 @@ def _row_accounting(row: Mapping[str, object] | None) -> dict[str, object]:
     }
 
 
+def _compact_receipt(*, output: str, data: Mapping[str, object]) -> CommandResult:
+    rows = [{"label": "Result", "value": "Nothing new to compact" if data["noop"] else "Compacted"}]
+    labels = (
+        ("reason", "Reason"),
+        ("covered_from_sequence", "First covered event"),
+        ("covered_to_sequence", "Last covered event"),
+        ("covered_bytes", "Covered bytes"),
+        ("dropped_bytes", "Dropped bytes"),
+        ("summary_kind", "Summary source"),
+        ("measured_input_tokens", "Measured input tokens"),
+    )
+    rows.extend({"label": label, "value": "Unknown" if data.get(key) is None else str(data[key])} for key, label in labels)
+    return CommandResult(
+        status="ok",
+        output=output,
+        data=data,
+        presentation=CommandPresentation(title="Conversation compaction", view_type="fields", data={"rows": rows}),
+    )
+
+
 class CompactCommand:
     """``/compact``: project the covered prefix on demand and report the core's accounting."""
 
@@ -394,8 +414,7 @@ class CompactCommand:
         state, version = _load_state(services)
         events, reached_end = _read_window(services)
         if not events:
-            return CommandResult(
-                status="ok",
+            return _compact_receipt(
                 output="Nothing to compact: this session has no committed events.",
                 data={"noop": True, "reason": "no_events"},
             )
@@ -410,8 +429,7 @@ class CompactCommand:
             measured_input_tokens=measured_dispatch_input_tokens(events),
         )
         if outcome.status == "projected":
-            return CommandResult(
-                status="ok",
+            return _compact_receipt(
                 output=(
                     f"Compacted events {outcome.covered_from_sequence}-{outcome.covered_to_sequence}: "
                     f"{outcome.covered_bytes} bytes covered -> {outcome.dropped_bytes} dropped ({outcome.summary_kind} summary)."
@@ -420,13 +438,11 @@ class CompactCommand:
             )
         current = _row_accounting(services.window_projection())
         if current["covered_bytes"] is None:
-            return CommandResult(
-                status="ok",
+            return _compact_receipt(
                 output="Nothing new to compact: no coverable prefix remains.",
                 data={"noop": True, "reason": outcome.reason, **current, "summary_kind": None, "covered_events": None},
             )
-        return CommandResult(
-            status="ok",
+        return _compact_receipt(
             output=(
                 f"Nothing new to compact: the projection in force covers events {current['covered_from_sequence']}-"
                 f"{current['covered_to_sequence']} ({current['covered_bytes']} bytes -> {current['dropped_bytes']} dropped)."

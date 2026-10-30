@@ -36,7 +36,7 @@ import jsonschema
 from pydantic import TypeAdapter
 
 from voidcode.core.retry import retrying_turn
-from voidcode.sdk.commands import CommandDescriptor, CommandInvocation, CommandResult
+from voidcode.sdk.commands import CommandDescriptor, CommandInput, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import (
     ApprovalRequestedFact,
     ChildSpawnedFact,
@@ -380,6 +380,8 @@ class PluginRuntime:
                 raise ValueError(f"Command '{name}' in plugin {plugin_id} is a reserved command name or prefix")
             if name in seen_commands or name in self._commands:
                 raise ValueError(f"Plugin {plugin_id} registers duplicate command name: {name}")
+            if isinstance(command, CommandInput):
+                _check_arity(command.prepare_input, 2, f"Plugin {plugin_id} command {name} input preparation")
             seen_commands.add(name)
             self._commands[name] = (command, plugin_id)
 
@@ -458,6 +460,9 @@ class PluginRuntime:
                 effects=tuple(sorted(command.definition.effects, key=lambda effect: effect.value)),
                 busy_gate=command.definition.busy_gate,
                 client_syntax=command.definition.client_syntax,
+                has_input=isinstance(command, CommandInput),
+                slash_visible=command.definition.slash_visible,
+                text_argument=command.definition.text_argument,
             )
             for command, plugin_id in self._commands.values()
         )
@@ -465,6 +470,11 @@ class PluginRuntime:
         self._command_map_view: Mapping[str, CommandDescriptor] = MappingProxyType(self._command_map)
         self._command_validators = {}
         for desc in self._command_descs:
+            if desc.text_argument is not None:
+                properties = desc.argument_schema.get("properties", {})
+                prop = properties.get(desc.text_argument) if isinstance(properties, Mapping) else None
+                if not isinstance(prop, Mapping) or prop.get("type") != "string":
+                    raise ValueError(f"Command {desc.name} text_argument must name a declared string property")
             if desc.argument_schema:
                 schema_json = json_wire_object(desc.argument_schema)
                 try:
@@ -1148,6 +1158,25 @@ class PluginRuntime:
             staged = self._staged_changes(lease)
         self._revoke_lease(lease)
         return CommandInvocationOutcome(result, *staged, staged_observations=tuple(lease.staged_observations), cancelled=cancelled)
+
+    def prepare_command_input(self, name: str, *, context: ToolContext) -> CommandPresentation:
+        """Prepare input without invoking the command or granting mutation services."""
+        entry = self._commands.get(name)
+        if entry is None or not isinstance(entry[0], CommandInput):
+            raise ValueError(f"Command {name} has no interactive input")
+        command, owner = entry
+        lease = self._open_lease(
+            owner=owner, session_id=context.session_id, run_id=context.run_id, invocation_id=context.invocation_id, readonly=True, actor="user"
+        )
+        try:
+            presentation = command.prepare_input(CommandInvocation(context=context, name=name), RuntimeServices(self, lease))
+            if not isinstance(presentation, CommandPresentation):
+                raise ValueError(f"Command {name} returned malformed interactive input")
+            if presentation.view_type in ("choices", "form") and presentation.data.get("action") != name:
+                raise ValueError(f"Command {name} prepared input for a different command")
+            return presentation
+        finally:
+            self._revoke_lease(lease)
 
     def render_view(
         self,

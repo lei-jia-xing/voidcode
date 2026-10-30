@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
+from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import ContextContribution
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
@@ -28,7 +28,12 @@ class McpInventoryCommand:
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="mcp",
         description="List configured MCP servers and their known tools.",
-        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        argument_schema={
+            "type": "object",
+            "properties": {"server": {"type": "string", "minLength": 1}, "offset": {"type": "integer", "minimum": 0}},
+            "additionalProperties": False,
+        },
+        text_argument="server",
     )
 
     def __init__(self, manager: McpManager) -> None:
@@ -40,10 +45,63 @@ class McpInventoryCommand:
         state = self._manager.current_state()
         surface = self._manager.cached_surface(workspace=workspace)
         servers = _inventory_servers(state, surface)
+        selected = invocation.arguments.get("server")
+        if selected is not None:
+            server = next((row for row in servers if row["name"] == selected), None)
+            if server is None:
+                return CommandResult(status="error", error=f"Unknown MCP server: {selected}. Reopen /mcp to choose a configured server.")
+            offset = invocation.arguments.get("offset", 0)
+            tools = surface.servers.get(server["name"], ())
+            if type(offset) is not int or not 0 <= offset <= len(tools):
+                return CommandResult(status="error", error="Tool offset is beyond the cached inventory; reopen /mcp.")
+            known = server["tools_known"]
+            lines = [f"# {server['name'][:200]}", f"Status: {server['status']}", f"Tools: {'not discovered' if known is None else known}"]
+            if server["error"]:
+                lines.append(f"Error: {str(server['error'])[:1500]}")
+            for descriptor in tools[offset : offset + 10]:
+                tool = _tool_payload(descriptor)
+                status = "enabled" if tool["enabled"] else "disabled"
+                lines.append(f"- {str(tool['name'])[:120]} [{status}]: {str(tool['description'] or '')[:120]}")
+                if tool["disabled_reason"]:
+                    lines.append(f"  Reason: {str(tool['disabled_reason'])[:120]}")
+            actions: list[dict[str, object]] = [{"label": "Back to servers", "action": "mcp"}]
+            if offset:
+                actions.append({"label": "Previous tools", "action": "mcp", "arguments": {"server": selected, "offset": max(0, offset - 10)}})
+            if offset + 10 < len(tools):
+                actions.append({"label": "Next tools", "action": "mcp", "arguments": {"server": selected, "offset": offset + 10}})
+            if isinstance(known, int):
+                lines.append(f"Showing tools {offset}–{min(offset + 10, known)} of {known}.")
+            return CommandResult(
+                status="ok",
+                output="\n".join(lines),
+                data={"server": server},
+                presentation=CommandPresentation(
+                    title="MCP server details",
+                    view_type="markdown",
+                    data={"content": "\n\n".join(lines), "actions": actions},
+                ),
+            )
+        if not servers:
+            presentation = CommandPresentation(
+                title="MCP servers",
+                view_type="notice",
+                data={"message": "No MCP servers are configured. Configure servers in voidcode.json, then run /core reload."},
+            )
+        else:
+            presentation = CommandPresentation(
+                title="MCP servers",
+                view_type="choices",
+                data={
+                    "options": [{"id": row["name"], "label": f"{row['name'][:160]} · {row['status']}"} for row in servers],
+                    "action": "mcp",
+                    "argument_name": "server",
+                },
+            )
         return CommandResult(
             status="ok",
             output=_render_inventory(servers),
             data={"servers": servers},
+            presentation=presentation,
         )
 
 

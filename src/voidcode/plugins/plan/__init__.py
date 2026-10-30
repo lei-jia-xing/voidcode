@@ -7,7 +7,10 @@ from voidcode.sdk.plugin import Plugin, StateSchema
 from .plan_plugin import SCHEMA_VERSION, PlanCommand, PlanOffCommand, PlanStatusCommand, plan_context, prepare_plan_deactivation
 
 
-def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
+def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
+    unknown = sorted(set(config or {}) - {"providers"})
+    if unknown:
+        raise ValueError(f"plan config does not support field: {unknown[0]}")
     return Plugin(
         commands=(PlanCommand(), PlanOffCommand(), PlanStatusCommand()),
         context=plan_context,
