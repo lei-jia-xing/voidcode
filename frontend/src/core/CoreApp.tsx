@@ -119,6 +119,89 @@ function toolExecutionCueKey(
   return null;
 }
 
+function ToolResultCard({
+  evSequence,
+  tool,
+  t,
+}: {
+  evSequence: number;
+  tool: TranscriptTool;
+  t: (key: string) => string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const result = tool.result;
+  const toolName =
+    tool.call.tool_name ?? result.tool_name ?? t("core.unknownLabel");
+  const text = toolOutputText(result.output);
+  const failed = tool.interrupted === true || result.status === "error";
+  const errorMsg = result.error ?? null;
+  const cueKey = toolExecutionCueKey(result.execution);
+
+  const bounds = result.output?.bounds;
+  const isTruncated = Boolean(bounds?.truncated || bounds?.reference);
+  const fullText = result.output?.type === "text" ? result.output.text : text;
+  const refId =
+    typeof bounds?.reference === "string"
+      ? bounds.reference
+      : bounds?.reference?.sha256;
+
+  return (
+    <div
+      key={evSequence}
+      data-testid={`event-${evSequence}`}
+      className={`text-xs font-mono px-3 py-1.5 rounded border max-w-2xl ${
+        failed
+          ? "text-red-400 bg-red-950/20 border-red-900/50"
+          : "text-emerald-400 bg-emerald-950/20 border-emerald-900/50"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          {failed ? "✖" : "✔"} {toolIconText(tool.icon, "▷")}{" "}
+          {t("core.toolLabel")} [{toolName}]:{" "}
+          {failed ? (errorMsg ?? text) : text}
+          {cueKey && <span className="text-neutral-400"> ({t(cueKey)})</span>}
+          {isTruncated && (
+            <span
+              data-testid={`event-${evSequence}-truncated-tag`}
+              className="ml-1.5 px-1 py-0.5 rounded text-[10px] bg-amber-950/50 text-amber-400 border border-amber-800/50"
+            >
+              [truncated
+              {refId
+                ? `: ${refId.startsWith("artifact://") ? refId.slice(11, 19) : refId.slice(0, 8)}…`
+                : ""}
+              ]
+            </span>
+          )}
+        </div>
+        {isTruncated && (
+          <button
+            type="button"
+            data-testid={`event-${evSequence}-toggle-output`}
+            onClick={() => setExpanded((prev) => !prev)}
+            className="text-[11px] underline text-cyan-400 hover:text-cyan-300 ml-auto cursor-pointer focus:outline-none"
+          >
+            {expanded ? "Hide full output" : "View full output"}
+          </button>
+        )}
+      </div>
+      {isTruncated && expanded && (
+        <div
+          data-testid={`event-${evSequence}-full-output`}
+          className="mt-2 pt-2 border-t border-neutral-700/50 text-neutral-200 whitespace-pre-wrap break-words max-h-96 overflow-y-auto font-mono text-[11px] bg-neutral-900/60 p-2 rounded"
+        >
+          {refId && (
+            <div className="text-[10px] text-neutral-400 mb-1 select-all font-mono">
+              Artifact: {refId}
+            </div>
+          )}
+          {fullText}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Narrow one dynamic pending_approval object to its display fields. */
 function parkedApprovalOf(value: unknown): {
   requestId: string;
@@ -1812,34 +1895,13 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                 );
               }
               if (content?.kind === "tool") {
-                const tool: TranscriptTool = content.body;
-                const result = tool.result;
-                const toolName =
-                  tool.call.tool_name ??
-                  result.tool_name ??
-                  t("core.unknownLabel");
-                const text = toolOutputText(result.output);
-                const failed =
-                  tool.interrupted === true || result.status === "error";
-                const errorMsg = result.error ?? null;
-                const cueKey = toolExecutionCueKey(result.execution);
                 return (
-                  <div
+                  <ToolResultCard
                     key={ev.sequence}
-                    data-testid={`event-${ev.sequence}`}
-                    className={`text-xs font-mono px-3 py-1.5 rounded border max-w-2xl ${
-                      failed
-                        ? "text-red-400 bg-red-950/20 border-red-900/50"
-                        : "text-emerald-400 bg-emerald-950/20 border-emerald-900/50"
-                    }`}
-                  >
-                    {failed ? "✖" : "✔"} {toolIconText(tool.icon, "▷")}{" "}
-                    {t("core.toolLabel")} [{toolName}]:{" "}
-                    {failed ? (errorMsg ?? text) : text}
-                    {cueKey && (
-                      <span className="text-neutral-400"> ({t(cueKey)})</span>
-                    )}
-                  </div>
+                    evSequence={ev.sequence}
+                    tool={content.body}
+                    t={t}
+                  />
                 );
               }
               if (ev.type === "core.command_completed") {

@@ -129,6 +129,7 @@ def render_tool_result(
     output = result.get("output")
     body = ""
     suffix = ""
+    truncated_bound = False
     if isinstance(output, Mapping):
         output_type = str(output.get("type", ""))
         if output_type == "text":
@@ -139,6 +140,8 @@ def render_tool_result(
         bounds = output.get("bounds")
         if isinstance(bounds, Mapping):
             flags = [key for key in ("truncated", "partial") if bounds.get(key) is True]
+            if bounds.get("truncated") is True:
+                truncated_bound = True
             source = bounds.get("source")
             note = ", ".join([*flags, str(source)] if isinstance(source, str) and source else flags)
             if note:
@@ -164,7 +167,11 @@ def render_tool_result(
         )
         rows.extend(preview[:8])
         if len(preview) > 8:
-            rows.append(resolved.fg("dim", f'… {len(preview) - 8} more lines · /show {{"events":true}}'))
+            rows.append(resolved.fg("dim", f"… {len(preview) - 8} more lines · Ctrl+O / /tui output to expand"))
+        elif truncated_bound:
+            rows.append(resolved.fg("dim", "… output truncated · Ctrl+O / /tui output to expand"))
+    elif truncated_bound:
+        rows.append(resolved.fg("dim", "… output truncated · Ctrl+O / /tui output to expand"))
     if suffix:
         rows.append(resolved.fg("dim", suffix))
     return rows
@@ -242,7 +249,7 @@ def render_status(data: StatusViewData, width: int, styles: Styles | None = None
 class InteractiveMarkdown:
     """A scrollable detail with explicit actions; never mounted from history replay."""
 
-    def __init__(self, data: MarkdownViewData, *, revision_id: str, title: str) -> None:
+    def __init__(self, data: MarkdownViewData, *, revision_id: str = "", title: str) -> None:
         self.view = data
         self.revision_id = revision_id
         self.title = title

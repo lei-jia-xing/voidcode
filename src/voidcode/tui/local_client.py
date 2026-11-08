@@ -312,3 +312,14 @@ class CoreLocalClient:
         finally:
             if cancel is not None:
                 cancel.detach()
+
+    def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> Any:
+        from voidcode.sdk.services import ArtifactPage, ArtifactReference
+
+        data, total_bytes, eof, media_type = self._core._artifacts.read(sha256, offset=offset, limit=limit)
+        return ArtifactPage(
+            artifact=ArtifactReference(sha256, total_bytes, media_type),
+            offset=offset,
+            data=data,
+            eof=eof,
+        )

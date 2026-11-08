@@ -238,6 +238,7 @@ _RESERVED_SHORTCUTS: frozenset[str] = frozenset(
         "end",
         "pageup",
         "pagedown",
+        "ctrl+o",
         "ctrl+c",
         "ctrl+d",
         "ctrl+s",
@@ -606,6 +607,7 @@ class CoreTuiApp:
         self.latest_input_tokens: int | None = None
         self.cumulative_input_tokens: int = 0
         self.cumulative_output_tokens: int = 0
+        self._latest_truncated_artifact: tuple[str, str] | None = None
 
     def run(self) -> int:
         self.running = True
@@ -1162,6 +1164,7 @@ class CoreTuiApp:
                 if isinstance(invocation, str) and invocation:
                     include_header = invocation not in self._tool_headers
                     self._tool_headers.discard(invocation)
+                self._record_tool_artifact(entry.content)
             rows.extend(_content_rows(entry.content, self.terminal.width, self.styles, include_tool_header=include_header))
         if etype in (EventType.USER_MESSAGE, EventType.RUN_RESUMED):
             self._run_active = True
@@ -1185,6 +1188,9 @@ class CoreTuiApp:
                             icon=icon,
                         )
                     )
+        elif etype in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
+            if entry is None or not isinstance(entry.content, TranscriptTool):
+                self._record_tool_artifact(payload)
         elif etype == EventType.PROVIDER_PROGRESS:
             dispatch = payload.get("dispatch_id")
             delta = payload.get("text_delta")
@@ -1273,6 +1279,90 @@ class CoreTuiApp:
             self.latest_input_tokens = None
         if out_tok is not None:
             self.cumulative_output_tokens += out_tok
+
+    def _record_tool_artifact(self, target: Any) -> None:
+        tool_name = "tool"
+        output: Any = None
+        bounds: Any = None
+        if isinstance(target, TranscriptTool):
+            tool_name = target.call.tool_name or "tool"
+            output = target.result.output
+            bounds = getattr(output, "bounds", None)
+        elif isinstance(target, Mapping):
+            call = target.get("call")
+            if isinstance(call, Mapping):
+                tool_name = str(call.get("tool_name") or "tool")
+            res = target.get("result")
+            if isinstance(res, Mapping):
+                output = res.get("output")
+                if isinstance(output, Mapping):
+                    bounds = output.get("bounds")
+
+        if output is None:
+            return
+
+        is_truncated = False
+        ref = None
+        if bounds is not None:
+            if getattr(bounds, "truncated", False) or (isinstance(bounds, Mapping) and bounds.get("truncated")):
+                is_truncated = True
+            ref = getattr(bounds, "reference", None) if not isinstance(bounds, Mapping) else bounds.get("reference")
+            if ref:
+                is_truncated = True
+
+        raw_text = ""
+        if hasattr(output, "text") and isinstance(output.text, str):
+            raw_text = output.text
+        elif isinstance(output, Mapping) and "text" in output:
+            raw_text = str(output.get("text") or "")
+        elif hasattr(output, "presentation") and isinstance(output.presentation, str):
+            raw_text = output.presentation
+        elif isinstance(output, Mapping) and "presentation" in output:
+            raw_text = str(output.get("presentation") or "")
+
+        if not is_truncated and len(raw_text.splitlines()) > 8:
+            is_truncated = True
+
+        if not is_truncated:
+            return
+
+        content: str | None = None
+        artifact_id: str | None = None
+        if isinstance(ref, str):
+            artifact_id = ref[len("artifact://") :] if ref.startswith("artifact://") else ref
+        elif hasattr(ref, "sha256"):
+            artifact_id = ref.sha256
+        elif isinstance(ref, Mapping) and "sha256" in ref:
+            artifact_id = str(ref["sha256"])
+
+        reader = getattr(self.client, "read_artifact", None)
+        if artifact_id and callable(reader):
+            try:
+                page = reader(artifact_id)
+                if hasattr(page, "text"):
+                    content = page.text
+                elif isinstance(page, bytes):
+                    content = page.decode("utf-8", errors="replace")
+                elif isinstance(page, str):
+                    content = page
+            except Exception:
+                content = None
+
+        if content is None:
+            content = raw_text
+
+        self._latest_truncated_artifact = (tool_name, content)
+
+    def _show_truncated_output(self) -> None:
+        if self._latest_truncated_artifact is not None:
+            title, content = self._latest_truncated_artifact
+            self.active_overlay = InteractiveMarkdown(
+                MarkdownViewData(content=content),
+                revision_id=self._displayed_revision(),
+                title=f"Tool Output: {title}",
+            )
+        else:
+            self.terminal.commit_rows([self.styles.fg("warning", "No truncated tool output to expand.")])
 
     def _render_run_notice(self, status: str, detail: object, rows: list[str], *, stop_cause: object = None) -> None:
         if status == "failed":
@@ -1882,6 +1972,9 @@ class CoreTuiApp:
             claimants = ", ".join(f"/{_slash_display(entry)}" for entry in self._shortcut_conflicts[chord])
             self.terminal.commit_rows([self.styles.fg("warning", f"Shortcut {name} is claimed by {claimants}; no action bound")])
             return
+        if chord == "ctrl+o":
+            self._show_truncated_output()
+            return
         if name in ("enter", "tab") and self.composer.completion:
             selected = self.composer.completion[self.composer.completion_index]
             if selected in self._path_replacements:
@@ -1891,7 +1984,8 @@ class CoreTuiApp:
                 return
             paths = [f"/{_slash_public_path(entry)}" for entry in self.catalog_cache if entry.slash_visible]
             paths.extend(
-                f"/tui {control}" for control in ("help", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit")
+                f"/tui {control}"
+                for control in ("help", "output", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit")
             )
             is_group = selected not in paths
             if is_group or (name == "tab" and any(path.startswith(selected + " ") for path in paths)):
@@ -2097,7 +2191,9 @@ class CoreTuiApp:
             token_end += 1
 
         names = [_slash_public_path(entry) for entry in self.catalog_cache if entry.slash_visible]
-        names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit"))
+        names.extend(
+            f"tui {control}" for control in ("help", "output", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit")
+        )
         parent, _, partial = prefix.rpartition(" ")
         base = f"{parent} " if parent else ""
         candidates = {base + name[len(base) :].split(" ", 1)[0] for name in names if name.startswith(base) and name[len(base) :].startswith(partial)}
@@ -2230,6 +2326,9 @@ class CoreTuiApp:
         if cmd in ("help", "?"):
             self._show_help()
             return True
+        if cmd in ("output", "artifact"):
+            self._show_truncated_output()
+            return True
         if cmd == "sessions":
             self._show_sessions()
             return True
@@ -2292,6 +2391,7 @@ class CoreTuiApp:
         self.latest_input_tokens = None
         self.cumulative_input_tokens = 0
         self.cumulative_output_tokens = 0
+        self._latest_truncated_artifact = None
         # A new stream is about to start: its first frame reconciles.
         self._stream_ready = False
         self.status_line = ""
@@ -2313,6 +2413,7 @@ class CoreTuiApp:
         lines = [
             heading,
             "  /tui help              Show this help (always available)",
+            "  /tui output            View latest truncated tool output (or Ctrl+O)",
             "  /tui sessions          List available sessions",
             "  /tui session <id>      Switch active session",
             "  /tui new               Create new session",

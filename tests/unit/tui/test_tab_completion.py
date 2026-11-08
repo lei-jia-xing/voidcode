@@ -260,7 +260,8 @@ def test_tui_subcommand_filters_and_cjk_plain_text_safe() -> None:
     assert app.composer.completion == ()
     app.composer.clear()
     _type(app, "/tui ")
-    assert len(app.composer.completion) == 10
+    assert len(app.composer.completion) == 11
+    assert "/tui output" in app.composer.completion
     _type(app, "views ")
     assert app.composer.completion == ()
     app.composer.clear()
@@ -316,7 +317,8 @@ def test_root_groups_and_tab_enter_children_without_dispatch() -> None:
     app._sync_slash_completion()
     app._handle_composer_key(Key("enter"))
     assert app.composer.value == "/tui "
-    assert len(app.composer.completion) == 10
+    assert len(app.composer.completion) == 11
+    assert "/tui output" in app.composer.completion
 
 
 def test_required_arguments_open_revision_bound_form_without_invocation() -> None:

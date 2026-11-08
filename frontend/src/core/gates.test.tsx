@@ -58,6 +58,12 @@ function toolTranscript(
       execution_stopped: boolean;
       side_effect_state: "settled" | "unknown";
     } | null;
+    bounds?: {
+      truncated?: boolean;
+      partial?: boolean;
+      reference?: string | { sha256: string } | null;
+      source?: string | null;
+    } | null;
   } = {},
 ) {
   return {
@@ -76,7 +82,7 @@ function toolTranscript(
             type: "text",
             text,
             presentation: null,
-            bounds: { truncated: false, partial: false },
+            bounds: opts.bounds ?? { truncated: false, partial: false },
           },
           error: opts.error ?? null,
           body: null,
@@ -867,6 +873,98 @@ describe("canonical transcript cutover", () => {
     setTimeout(resolve, 1500);
     await promise;
     expect(connections).toBe(settledConnections);
+    unmount();
+  });
+
+  it("renders truncated tool output with indicator and toggles full output view", async () => {
+    const head = JSON.stringify({
+      session: { session_id: SESSION },
+      events: [
+        storedEvent(
+          1,
+          "core.tool_completed",
+          {
+            batch_sequence: 1,
+            call: { tool_name: "read", arguments: {} },
+            result: {
+              status: "ok",
+              tool_name: "read",
+              output: {
+                type: "text",
+                text: "full multi-line content line 1\nline 2\nline 3",
+                presentation: "preview 8 lines",
+                bounds: {
+                  truncated: true,
+                  reference: "artifact://1234567890abcdef",
+                },
+              },
+            },
+          },
+          toolTranscript(
+            1,
+            "read",
+            "full multi-line content line 1\nline 2\nline 3",
+            {
+              bounds: {
+                truncated: true,
+                reference: "artifact://1234567890abcdef",
+              },
+            },
+          ),
+        ),
+      ],
+    });
+    const rpcMock = vi.fn(async (method: string): Promise<MockResponse> => {
+      if (method === "command.catalog") {
+        return jsonResponse({ revision_id: "rev-1", commands: [] });
+      }
+      if (method === "session.views") {
+        return jsonResponse({ revision_id: "rev-1", views: [] });
+      }
+      if (method === "session.subscribe") {
+        return frameSource([head], []);
+      }
+      if (method === "health.get") {
+        return jsonResponse({
+          core_version: "0.1.0",
+          generation: 1,
+          fenced: false,
+          stage: "serving",
+          workspace: "/workspace",
+        });
+      }
+      if (method === "session.list") {
+        return jsonResponse({
+          sessions: [{ session_id: SESSION, last_event_sequence: 1 }],
+        });
+      }
+      return jsonResponse({});
+    });
+    installRpcPeer(rpcMock);
+    const { unmount } = render(<CoreApp baseUrl="" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("event-1")).toHaveTextContent("Tool [read]");
+    });
+    expect(screen.getByTestId("event-1-truncated-tag")).toHaveTextContent(
+      "[truncated",
+    );
+    const toggleBtn = screen.getByTestId("event-1-toggle-output");
+    expect(toggleBtn).toHaveTextContent("View full output");
+    expect(screen.queryByTestId("event-1-full-output")).toBeNull();
+
+    // Click to expand
+    fireEvent.click(toggleBtn);
+    expect(toggleBtn).toHaveTextContent("Hide full output");
+    const fullOutput = screen.getByTestId("event-1-full-output");
+    expect(fullOutput).toHaveTextContent("full multi-line content line 1");
+    expect(fullOutput).toHaveTextContent("artifact://1234567890abcdef");
+
+    // Click to collapse
+    fireEvent.click(toggleBtn);
+    expect(toggleBtn).toHaveTextContent("View full output");
+    expect(screen.queryByTestId("event-1-full-output")).toBeNull();
+
     unmount();
   });
 });

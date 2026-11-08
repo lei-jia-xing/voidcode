@@ -565,6 +565,17 @@ class _StubClient:
         remaining = [ev for ev in ordered if ev.sequence > nxt]
         return TranscriptPage(entries=entries, next_sequence=nxt, has_more=bool(remaining), source_events=consumed)
 
+    def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> Any:
+        from voidcode.sdk.services import ArtifactPage, ArtifactReference
+
+        data = getattr(self, "artifacts", {}).get(sha256, b"")
+        return ArtifactPage(
+            artifact=ArtifactReference(sha256, len(data)),
+            offset=offset,
+            data=data[offset : offset + limit],
+            eof=offset + limit >= len(data),
+        )
+
     async def events_stream(
         self,
         session_id: str,
@@ -2246,3 +2257,75 @@ def test_model_turn_updates_footer_context() -> None:
     assert "total" not in reset_ctx
     assert "ctx" not in reset_ctx
     assert "session" not in reset_ctx
+
+
+def test_truncated_tool_output_overlay_and_controls() -> None:
+    from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolSuccess
+    from voidcode.sdk.transcript import TranscriptTool
+    from voidcode.tui.keys import Key
+    from voidcode.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.views import InteractiveMarkdown
+
+    client = _CommandClient()
+    client.artifacts = {"deadbeef" * 8: b"full artifact content line 1\nline 2\nline 3"}
+    terminal = _StubTerminal()
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+
+    # 1. Initially no truncated output
+    app._run_local_control("output", "")
+    assert app.active_overlay is None
+    assert any("No truncated tool output" in row for row in terminal.committed)
+    terminal.committed.clear()
+
+    # 2. Receive a truncated tool result with artifact reference
+    tool_event = _event(
+        1,
+        "core.tool_completed",
+        content=TranscriptTool(
+            ToolCall(tool_name="shell_exec", arguments={"command": "cat big.txt"}),
+            ToolSuccess(
+                tool_name="shell_exec",
+                output=TextOutput(
+                    text="preview line 1\npreview line 2",
+                    bounds=OutputBounds(truncated=True, reference=f"artifact://{'deadbeef' * 8}"),
+                ),
+            ),
+            interrupted=False,
+            batch_sequence=1,
+            deferred=False,
+        ),
+    )
+    rows: list[str] = []
+    app._handle_stream_event(tool_event, rows)
+
+    # Assert latest artifact was stored and fetched via read_artifact
+    assert app._latest_truncated_artifact is not None
+    title, content = app._latest_truncated_artifact
+    assert title == "shell_exec"
+    assert "full artifact content" in content
+
+    # 3. Trigger Ctrl+O key
+    initial_committed = list(terminal.committed)
+    app._handle_composer_key(Key("ctrl+o"))
+    assert isinstance(app.active_overlay, InteractiveMarkdown)
+    assert app.active_overlay.title == "Tool Output: shell_exec"
+    assert app.active_overlay.view.content == content
+
+    # 4. Press Esc to close overlay: does not commit rows to append-only scrollback
+    app._handle_overlay_key(Key("esc"))
+    assert app.active_overlay is None
+    assert terminal.committed == initial_committed
+
+    # 5. Trigger via /tui output (slash command / local control)
+    assert app._run_local_control("output", "") is True
+    assert isinstance(app.active_overlay, InteractiveMarkdown)
+    app._handle_overlay_key(Key("esc"))
+    assert app.active_overlay is None
+    assert terminal.committed == initial_committed
+
+    # 6. Switching session clears latest truncated artifact
+    app._switch_session("s2")
+    assert app._latest_truncated_artifact is None
+    app._run_local_control("output", "")
+    assert app.active_overlay is None
+    assert any("No truncated tool output" in row for row in terminal.committed)
