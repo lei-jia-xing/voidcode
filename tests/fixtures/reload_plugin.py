@@ -496,8 +496,11 @@ class Block:
         from pathlib import Path
         marker = Path(context.workspace) / "block.started"
         marker.write_text(context.session_id, encoding="utf-8")
+        release = Path(context.workspace) / "block.release"
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
+            if release.is_file():
+                return ToolSuccess(call.tool_name, TextOutput("block released"))
             if context.abort_signal is not None and context.abort_signal.cancelled:
                 return ToolFailure(call.tool_name, "block cancelled")
             time.sleep(0.02)

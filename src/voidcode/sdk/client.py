@@ -190,7 +190,7 @@ class RunResult:
     session_id: str
     run_id: str
     revision_id: str
-    status: str
+    status: Literal["completed", "waiting", "failed", "interrupted", "queued"]
     output: str | None = None
     error: str | None = None
     pending_approval: Mapping[str, object] | None = None

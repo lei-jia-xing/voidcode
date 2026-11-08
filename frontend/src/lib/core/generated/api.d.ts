@@ -1063,8 +1063,11 @@ export interface components {
             run_id: string;
             /** Session Id */
             session_id: string;
-            /** Status */
-            status: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "completed" | "waiting" | "failed" | "interrupted" | "queued";
             /**
              * Stop Cause
              * @default null

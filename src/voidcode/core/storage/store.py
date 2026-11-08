@@ -3129,6 +3129,7 @@ class SqliteStore:
                     FROM continuations
                     WHERE session_id = ? AND status = 'pending'
                       AND source <> '@core/background'
+                      AND owner <> 'kernel'
                       AND (? IS NULL OR continuation_id = ?)
                       AND NOT (? AND owner = ? AND COALESCE(json_extract(payload_json, '$.kind'), '') = 'child_finished')
                     ORDER BY created_at ASC
@@ -3150,6 +3151,7 @@ class SqliteStore:
                         FROM continuations
                         WHERE session_id = ? AND status = 'claimed'
                           AND source <> '@core/background'
+                          AND owner <> 'kernel'
                           AND (? IS NULL OR continuation_id = ?)
                         ORDER BY created_at ASC
                         LIMIT 1
@@ -3585,4 +3587,46 @@ class SqliteStore:
                     role=str(row[12]),
                 )
                 for row in rows
+            )
+
+    def claim_pending_followup(self, session_id: str) -> tuple[str, str, int | None] | None:
+        """Atomically claim the oldest pending kernel follow-up continuation for a session."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                """
+                SELECT continuation_id, payload_json
+                FROM continuations
+                WHERE session_id = ? AND status = 'pending' AND owner = 'kernel' AND source = 'user_message'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            cid, payload_json = row
+            now = int(time.time() * 1000)
+            self._connection.execute(
+                "UPDATE continuations SET status = 'claimed', updated_at = ? WHERE continuation_id = ?",
+                (now, cid),
+            )
+            try:
+                payload = json.loads(payload_json)
+                prompt = str(payload.get("prompt", ""))
+                max_steps = payload.get("max_steps")
+                steps = int(max_steps) if isinstance(max_steps, int) else None
+                return cid, prompt, steps
+            except Exception:
+                return cid, "", None
+
+    def set_continuation_run_id(self, continuation_id: str, run_id: str) -> None:
+        """Record the active run_id for a claimed continuation."""
+        with self._lock:
+            self._check_open()
+            now = int(time.time() * 1000)
+            self._connection.execute(
+                "UPDATE continuations SET run_id = ?, updated_at = ? WHERE continuation_id = ?",
+                (run_id, now, continuation_id),
             )

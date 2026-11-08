@@ -1019,12 +1019,20 @@ class CoreTuiApp:
                     self._run_active = False
                     self._cancel_pending = False
                     self.status_line = ""
+                elif status == "queued":
+                    self.status_line = "Follow-up queued for when run yields · Esc to interrupt"
                 elif status in ("running", "waiting"):
                     self._run_active = True
                     self.status_line = ""
             elif kind == "cancel_done":
                 self._cancel_pending = False
                 self.status_line = ""
+            elif kind == "followup_queued":
+                self.status_line = "Follow-up queued for when run yields · Esc to interrupt"
+            elif kind == "followup_failed":
+                if not self.composer.value.strip():
+                    self.composer.set_text(str(frame.get("prompt") or ""))
+                self.status_line = f"Error: {frame.get('error')}"
             elif kind == "run_rejected":
                 self._run_active = False
                 self._cancel_pending = False
@@ -2215,9 +2223,52 @@ class CoreTuiApp:
             self.status_line = "Core is draining for an upgrade; retry after it restarts"
             return
         if self._run_active:
-            if not self.composer.value:
-                self.composer.set_text(prompt)
-            self.status_line = "Run in progress · Esc to interrupt"
+            session_id, generation = self.session_id, self._generation
+
+            def followup_worker() -> None:
+                try:
+                    res = self.client.run(session_id, RunSpec(prompt))
+                    if res.status == "queued":
+                        self.event_queue.put(
+                            {
+                                "kind": "followup_queued",
+                                "session_id": session_id,
+                                "generation": generation,
+                            }
+                        )
+                    elif res.status in ("failed", "interrupted") and res.error:
+                        self.event_queue.put(
+                            {
+                                "kind": "followup_failed",
+                                "prompt": prompt,
+                                "error": res.error,
+                                "session_id": session_id,
+                                "generation": generation,
+                            }
+                        )
+                    else:
+                        self.event_queue.put(
+                            {
+                                "kind": "run_status",
+                                "status": res.status,
+                                "error": res.error,
+                                "run_id": res.run_id,
+                                "session_id": session_id,
+                                "generation": generation,
+                            }
+                        )
+                except Exception as exc:
+                    self.event_queue.put(
+                        {
+                            "kind": "followup_failed",
+                            "prompt": prompt,
+                            "error": str(exc),
+                            "session_id": session_id,
+                            "generation": generation,
+                        }
+                    )
+
+            threading.Thread(target=followup_worker, daemon=True, name="CoreFollowup").start()
             return
         self.status_line = ""
         self._run_active = True

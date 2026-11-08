@@ -1570,14 +1570,41 @@ def test_system_context_is_hidden_without_replaying_visible_messages() -> None:
     assert app._session_cursors["s1"] == 2
 
 
-def test_busy_run_keeps_new_prompt_as_draft() -> None:
+def test_busy_run_queues_followup_and_shows_pending() -> None:
+    import time
+
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    class _QueuedClient(_CommandClient):
+        def run(self, session_id: str, spec: RunSpec) -> RunResult:
+            return RunResult(session_id=session_id, run_id="run-1", revision_id="rev-1", status="queued")
+
+    app = CoreTuiApp(_QueuedClient(), session_id="s1", terminal=_StubTerminal())
+    app._run_active = True
+    app._dispatch_user_prompt("next question")
+    assert app.composer.value == ""
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not app.status_line.startswith("Follow-up queued"):
+        app._drain_events()
+        time.sleep(0.01)
+    assert app.status_line == "Follow-up queued for when run yields · Esc to interrupt"
+    assert app.composer.value == ""
+
+
+def test_busy_run_failed_followup_restores_draft() -> None:
+    import time
+
     from voidcode.tui.terminal_app import CoreTuiApp
 
     app = CoreTuiApp(_RunClient(), session_id="s1", terminal=_StubTerminal())
     app._run_active = True
     app._dispatch_user_prompt("next question")
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not app.status_line.startswith("Error:"):
+        app._drain_events()
+        time.sleep(0.01)
     assert app.composer.value == "next question"
-    assert app.event_queue.empty()
+    assert "boom" in app.status_line
 
 
 def test_short_terminal_reserves_input_and_bounds_completion() -> None:

@@ -925,6 +925,7 @@ class Core:
                 signals = []
             for signal in signals:
                 signal.set_cancelled(True, reason=reason, stop_cause=cause)
+        self.store.cancel_pending_continuations(session_id, "kernel")
         # A bound call with no live abort for the bound run falls through to
         # the pinned parked settle; an unbound call keeps legacy behavior.
         settled = self._settle_parked_cancel(session_id, reason, cause, expected_run_id=bound, is_bound=is_bound) if abort is None else False
@@ -1032,6 +1033,8 @@ class Core:
     def cancel(self, reason: str = "user cancellation", *, cause: StopCause = "user_stop") -> None:
         self._abort.set_cancelled(True, reason=reason, stop_cause=cause)
         with self._aborts_lock:
+            for session_id in list(self._session_aborts.keys()):
+                self.store.cancel_pending_continuations(session_id, "kernel")
             for _, abort in self._session_aborts.values():
                 abort.set_cancelled(True, reason=reason, stop_cause=cause)
             for commands in self._command_aborts.values():
@@ -1073,6 +1076,13 @@ class Core:
         self._validate_steps(max_steps)
         if session_id is not None and (not isinstance(session_id, str) or not session_id or len(session_id) > 128 or "\0" in session_id):
             raise ValueError("session_id must be nonempty text within 128 characters without NUL")
+        if session_id is not None:
+            try:
+                active_sess = self.store.session(session_id)
+                if active_sess.status in ("running", "waiting"):
+                    return self._queue_followup(active_sess, prompt, max_steps)
+            except KeyError:
+                pass
         session_id = uuid4().hex if session_id is None else session_id
         with self._session_lock(session_id):
             self._ensure_open()
@@ -1086,6 +1096,8 @@ class Core:
                     session = self.store.session(session_id)
                 except KeyError:
                     session = self._create_session_row(session_id)
+                if session.status in ("running", "waiting"):
+                    return self._queue_followup(session, prompt, max_steps)
                 if not self._admits_fresh_work(session):
                     raise ValueError("unfinished session requires explicit resume")
                 self._check_session(session)
@@ -1128,6 +1140,80 @@ class Core:
                     self._session_aborts.pop(session_id, None)
         self._drive_pending(session_id, max_steps)
         return result
+
+    def _queue_followup(self, session: SessionRecord, prompt: str, max_steps: int) -> CoreResult:
+        cid = uuid4().hex
+        self.store.enqueue_continuation(
+            cid,
+            "kernel",
+            session.session_id,
+            "user_message",
+            session.run_id or "",
+            self.revision_id,
+            {"prompt": prompt, "max_steps": max_steps},
+            role="user",
+        )
+        return CoreResult(
+            session_id=session.session_id,
+            run_id=session.run_id or "",
+            revision_id=self.revision_id,
+            status="queued",
+        )
+
+    def _execute_user_followup(self, session_id: str, continuation_id: str, prompt: str, max_steps: int) -> CoreResult:
+        with self._session_lock(session_id):
+            self._ensure_open()
+            self._abort.set_cancelled(False)
+            abort = Cancellation()
+            run_abort_id = uuid4().hex
+            with self._aborts_lock:
+                self._session_aborts[session_id] = (run_abort_id, abort)
+            try:
+                session = self.store.session(session_id)
+                if not self._admits_fresh_work(session):
+                    self.store.complete_continuation(continuation_id, status="failed")
+                    return CoreResult(session_id, "", self.revision_id, "failed", error="session does not admit fresh work")
+                self._check_session(session)
+                root_id = uuid4().hex
+                self.store.ensure_root_budget(root_id, max_steps)
+                execution = _Execution(
+                    session,
+                    _Cursor(root_id=root_id, initial_root_budget=max_steps),
+                    list(self.store.events(session_id)),
+                    run_abort_id,
+                )
+                if session.status == "interrupted":
+                    previous = self.store.checkpoint(session_id)
+                    if previous is not None and isinstance(previous.payload, Mapping):
+                        execution.cursor = _Cursor.model_validate(json_wire_object(previous.payload))
+                        execution.cursor.step = 0
+                        execution.cursor.stop_cause = None
+                    if execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None:
+                        self._interrupt_batch(execution)
+                    execution.cursor = _Cursor(root_id=root_id, initial_root_budget=max_steps)
+                self._commit(
+                    execution,
+                    "running",
+                    "ready",
+                    EventDraft(EventType.USER_MESSAGE, "client", "user", {"content": prompt}),
+                    start_turn=True,
+                )
+                self.store.set_continuation_run_id(continuation_id, execution.run_id)
+                result = self._drive(execution, max_steps=max_steps)
+                status_str: Literal["completed", "failed", "cancelled"] = "completed"
+                if result.status in ("completed", "idle"):
+                    status_str = "completed"
+                elif result.status == "failed":
+                    status_str = "failed"
+                elif result.status == "interrupted":
+                    status_str = "cancelled"
+                elif result.status == "waiting":
+                    return result
+                self.store.complete_continuation(continuation_id, status=status_str)
+                return result
+            finally:
+                with self._aborts_lock:
+                    self._session_aborts.pop(session_id, None)
 
     def resume(
         self,
@@ -1259,6 +1345,13 @@ class Core:
         if not self.auto_drain:
             return
         for _ in range(max(1, limit)):
+            followup = self.store.claim_pending_followup(session_id)
+            if followup is not None:
+                cid, prompt, steps = followup
+                run_res = self._execute_user_followup(session_id, cid, prompt, steps or max_steps)
+                if run_res.status not in ("completed", "idle"):
+                    return
+                continue
             try:
                 results = self.drain_continuations(session_id, limit=1, max_steps=max_steps, _automatic=True)
             except StoreConflict:
@@ -4999,6 +5092,7 @@ class Core:
         if deliberate and (execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None):
             self._interrupt_batch(execution)
         checkpoint_kind = "terminal" if deliberate else "interrupted"
+        self.store.cancel_pending_continuations(execution.session.session_id, "kernel")
         stop_event = EventDraft(
             EventType.RUN_INTERRUPTED,
             "kernel",
