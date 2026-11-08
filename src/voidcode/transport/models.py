@@ -55,6 +55,7 @@ class ResumeRequest(SessionParams):
 
 class CommandInputRequest(SessionParams):
     name: str = Field(min_length=1, max_length=128, pattern=r"^[^/\x00]+$")
+    arguments: dict[str, Any] = Field(default_factory=dict)
     expected_revision: str = Field(min_length=1, max_length=128)
 
 

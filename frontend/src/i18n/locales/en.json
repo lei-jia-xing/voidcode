@@ -90,5 +90,11 @@
   "core.revisionAdopted": "Core revision adopted: {{revision}} — catalog and views refreshed",
   "core.formTitle": "Form: {{action}}",
   "core.commandInputRevisionChanged": "Command input changed revision; refresh the command catalog.",
-  "core.formMustBeChoice": "{{field}} must be one of the available choices."
+  "core.formMustBeChoice": "{{field}} must be one of the available choices.",
+  "core.choicesFilter": "Filter options...",
+  "core.choicesEmpty": "No options.",
+  "core.choicesNoMatch": "No matching options.",
+  "core.shortcutActions": "Actions",
+  "core.shortcutConflict": "Shortcut {{chord}} is claimed by {{names}}; no key bound",
+  "core.shortcutConflicted": "shortcut conflicted, button still available"
 }

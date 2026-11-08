@@ -19,9 +19,9 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
-from voidcode.plugins.delegation.profiles.builtin import EXPLORE_AGENT
+from voidcode.plugins.subagents.profiles.builtin import EXPLORE_AGENT
 
-_DELEGATION_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "delegation"
+_SUBAGENTS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
 _EXPLORE_PROMPT_BODY = EXPLORE_AGENT.prompt
 
@@ -50,9 +50,9 @@ def _close_created_cores() -> Iterator[None]:
 
 
 def _admitted_source(tmp_path: Path) -> Path:
-    """The real delegation plugin root, referenced by path."""
+    """The real subagents plugin root, referenced by path."""
     _ = tmp_path
-    return _DELEGATION_PLUGIN_ROOT
+    return _SUBAGENTS_PLUGIN_ROOT
 
 
 def _core(tmp_path: Path, server: OpenAILoopbackServer, *, minimal: bool = False) -> Core:
@@ -75,9 +75,9 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, minimal: bool = False
         "plugins": {
             # The bundled files plugin is not under test here and is rewritten by another P4 lane.
             "files": {"enabled": False},
-            # Explicitly out of the picture: this suite proves the delegation plugin alone.
+            # Explicitly out of the picture: this suite proves the subagents plugin alone.
             "todo": {"path": str(_TODO_PLUGIN_ROOT), "enabled": False},
-            "delegation": {"path": str(_admitted_source(tmp_path)), "enabled": True},
+            "subagents": {"path": str(_admitted_source(tmp_path)), "enabled": True},
         },
     }
     if minimal:
@@ -85,7 +85,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, minimal: bool = False
             **{name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS},
             "providers": {"enabled": True},
             "files": {"enabled": True},
-            "delegation": {"path": str(_admitted_source(tmp_path)), "enabled": True},
+            "subagents": {"path": str(_admitted_source(tmp_path)), "enabled": True},
         }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
@@ -182,7 +182,7 @@ def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> N
         assert finished[0].payload["output"] == "child answer: 12 doors"
 
         # The plugin's own session state records the child it started.
-        stored = core.store.plugin_state("delegation", "session", parent_id)
+        stored = core.store.plugin_state("subagents", "session", parent_id)
         assert stored is not None
         payload, version = stored
         assert payload is not None
@@ -244,7 +244,7 @@ def test_profile_child_inherits_parent_scope_or_uses_explicit_narrowing(tmp_path
         assert child.tool_allowlist == (tuple(scope) if scope is not None else core.session(parent_id).tool_allowlist)
         assert core.store.session_overlays(child_id) == ("read-only",), "a read-only profile keeps its stance"
 
-        stored = core.store.plugin_state("delegation", "session", parent_id)
+        stored = core.store.plugin_state("subagents", "session", parent_id)
         assert stored is not None
         payload, _version = stored
         children = payload["children"]
@@ -252,7 +252,7 @@ def test_profile_child_inherits_parent_scope_or_uses_explicit_narrowing(tmp_path
         assert children[child_id]["subagent_type"] == "explore"
 
 
-def test_standard_markdown_agent_applies_its_prompt_tools_and_turn_cap(tmp_path: Path) -> None:
+def test_standard_markdown_agent_applies_its_prompt_and_turn_cap(tmp_path: Path) -> None:
     replies = [
         openai_response(
             message={
@@ -270,14 +270,13 @@ def test_standard_markdown_agent_applies_its_prompt_tools_and_turn_cap(tmp_path:
         directory = core.workspace / ".claude" / "agents"
         directory.mkdir(parents=True)
         (directory / "different-filename.md").write_text(
-            "---\nname: inspector\ndescription: Inspect files\ntools: Read, Grep\nmodel: inherit\nmaxTurns: 1\n---\nInspect carefully.\n"
+            "---\nname: inspector\ndescription: Inspect files\nmodel: inherit\nmaxTurns: 1\n---\nInspect carefully.\n"
         )
         parent = core.create_session().session_id
         result = core.run("delegate inspection", session_id=parent)
         assert result.status == "completed", result.error
         child_id = next(event.payload["child_session_id"] for event in core.events_after(parent) if event.event_type == "core.child_spawned")
         child = core.session(child_id)
-        assert child.status == "completed" and child.tool_allowlist == ("grep", "read")
-        assert set(_tool_names(server.requests[1])) == {"grep", "read"}
+        assert child.status == "completed" and child.tool_allowlist is None
         assert any(message.get("content") == "Inspect carefully.\n\ninspect" for message in _messages(server.requests[1]))
         assert len(server.requests) == 3

@@ -63,7 +63,7 @@ execute concurrently, so a long run never blocks session cancellation.
 | `session.show` | `session_id`, optional `events` → durable state. |
 | `session.run` | `session_id`, `prompt`, optional `max_steps` → run result. |
 | `session.resume` | `session_id`, optional paired `approval_request_id`/`decision`, `max_steps` → run result. |
-| `command.input` | `session_id`, `name`, `expected_revision` → read-only prepared input with its captured revision. |
+| `command.input` | `session_id`, `name`, `expected_revision`, optional `arguments` → read-only prepared input with its captured revision. |
 | `command.invoke` | `session_id`, `name`, `arguments`, `expected_revision` → command result. |
 | `action.confirm` | `session_id`, `request_id`, `decision`, `expected_revision` → command result. |
 | `session.views` | `session_id` → views with `revision_id`. |
@@ -286,11 +286,27 @@ only mutation paths; UI presentations never authorize an effect by themselves.
 
 ### Prepared command input
 
-`command.input` takes `session_id`, `name`, and `expected_revision`, and returns
-`CommandInputSnapshot {revision_id, presentation}`. It is a read, not invocation:
-preparation runs under strictly read-only services and creates no command event.
-Only catalog commands advertising `has_input` support it. Both SessionClient
-implementations expose `command_input`; the web client exposes `commandInput`.
+`command.input` takes `session_id`, `name`, `expected_revision`, and optional
+`arguments` (default `{}`), and returns `CommandInputSnapshot {revision_id,
+presentation}`. It is a read, not invocation: preparation runs under strictly
+read-only services and creates no command event. Only catalog commands
+advertising `has_input` support it. Preparation validates supplied keys/types
+against the command schema with top-level `required` removed, so bare `{}` still
+opens required-field forms; unknown or wrongly typed arguments are rejected
+before the handler runs. Both SessionClient implementations expose
+`command_input(arguments=...)`; the web client exposes `commandInput`.
+
+`CommandPresentation` may carry advisory `refresh_after_ms` (250..60000): only
+presentations carrying it refresh, and only while their view is open. `Choices`
+data may set `prepare_input: true` so a selection routes back to `command.input`
+instead of invoking; markdown `ViewAction` may combine `prepare_input` with
+`arguments` for read-only navigation (Back/Next page/Refresh). Catalog
+descriptors may carry `default_shortcut` (canonical `modifier+...+base` chord,
+e.g. `alt+a`). The TUI binds non-reserved, uniquely claimed chords; a collision
+visibly disables the chord for every claimant. Chromium exposes accessible
+action buttons rather than taking browser/editor shortcuts; those buttons
+remain usable when their advisory chords conflict. Plugins declare catalog
+metadata, not raw keyboard callbacks or a separate keybinding registry.
 
 A bare slash command uses this optional callback before schema-generated forms.
 The UI captures session/transport/generation and a request serial, refuses a

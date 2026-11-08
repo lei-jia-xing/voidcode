@@ -44,9 +44,11 @@ from ..sdk.limits import CLIENT_PROMPT_MAX_BYTES
 from ..sdk.observed_effects import MAX_OBSERVED_CHANGES, ObservedChange
 from ..sdk.provider import ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
 from ..sdk.services import (
+    CancelSubtreeReceipt,
     ChildOutcome,
     ChildSendReceipt,
     ContinuationResult,
+    DescendantNode,
     PluginBudget,
     SessionUsageReport,
 )
@@ -222,6 +224,13 @@ class _BackgroundContext:
 
 class ActivationFenced(RuntimeError):
     """A dispatch or activation raced the activation fence; retry after it settles."""
+
+
+class _UnboundRun:
+    """Sentinel for the legacy unbound cancel path; distinct from a bound null run."""
+
+
+_UNBOUND_RUN = _UnboundRun()
 
 
 def _wire_object(value: object, what: str) -> Mapping[str, object]:
@@ -605,7 +614,7 @@ class Core:
         # in-transaction blocker check.
         self._session_locks: dict[str, Lock] = {}
         self._session_locks_guard = Lock()
-        self._session_aborts: dict[str, Cancellation] = {}
+        self._session_aborts: dict[str, tuple[str | None, Cancellation]] = {}
         self._command_aborts: dict[str, dict[str, Cancellation]] = {}
         self._aborts_lock = Lock()
         # Background action drivers: claimed-but-unsettled action ids this process drives.
@@ -641,6 +650,7 @@ class Core:
             self._lease_fd = lease
             state_dir.mkdir(parents=True, exist_ok=True)
             self.store = SqliteStore(state_dir / "voidcode.db")
+            self._delegation.attach_store(self.store)
             resources.callback(self.store.close)
             runtime = PluginRuntime(
                 plugins,
@@ -649,7 +659,7 @@ class Core:
                 store=self.store,
                 usage_callback=self._get_session_usage,
                 budget_callback=self._get_owner_budget,
-                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify, owner, key: self.spawn_child(
+                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify, owner, key, guard: self.spawn_child(
                     parent,
                     prompt,
                     label=label,
@@ -659,17 +669,23 @@ class Core:
                     notify_on_completion=notify,
                     owner=owner,
                     idempotency_key=key,
+                    admission_guard=guard,
                 ),
                 find_child_callback=self._delegation.find_keyed_child,
                 join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
-                send_child_callback=lambda parent, child, prompt, label, notify: self.send_child(
+                send_child_callback=lambda parent, child, prompt, label, notify, guard: self.send_child(
                     parent,
                     child,
                     prompt,
                     label=label,
                     notify_on_completion=notify,
+                    admission_guard=guard,
                 ).as_payload(),
                 cancel_child_callback=self.cancel_child,
+                list_descendants_callback=self.list_descendants,
+                cancel_subtree_callback=lambda bound, target, run, reason: self.cancel_descendant_subtree(
+                    bound, target, expected_run_id=run, reason=reason
+                ),
                 cancel_background_action_callback=self.cancel_background_action,
                 model_query_callback=self.governed_model_query,
                 progress_callback=self._report_progress,
@@ -868,23 +884,55 @@ class Core:
 
     def cancel_session(self, session_id: str, reason: str = "user cancellation", *, cause: StopCause = "user_stop") -> bool:
         """Signal the currently executing run and command invocations of one session."""
+        return self._cancel_session_run(session_id, reason, cause=cause, expected_run_id=_UNBOUND_RUN)
+
+    def _cancel_session_run(self, session_id: str, reason: str, *, cause: StopCause, expected_run_id: str | None | _UnboundRun) -> bool:
+        """Signal one session only when its live run matches ``expected_run_id``.
+
+        ``expected_run_id=None`` is a REAL binding (a reserved, never-started
+        run); the unbound public path passes the ``_UNBOUND_RUN`` sentinel.
+        Lock order is aborts -> store only; the target's long-held session
+        lock is never taken, so a blocked provider run stays signallable.
+        Signals fire only after the durable run and the live abort entry both
+        match the bound run under one aborts-lock critical section; a stale
+        request touches no signal, including beside-running commands.
+        """
         self._ensure_open()
         # Ownership first: a session id from another workspace sharing this
         # database may never be signalled or settled.
         self.session(session_id)
+        is_bound = expected_run_id is not _UNBOUND_RUN
+        bound = cast("str | None", None if not is_bound else expected_run_id)
         with self._aborts_lock:
-            abort = self._session_aborts.get(session_id)
+            if is_bound and (self.store.session(session_id).run_id or None) != bound:
+                return False
+            entry = self._session_aborts.get(session_id)
+            abort: Cancellation | None = None
+            if entry is not None:
+                entry_run, candidate = entry
+                if not is_bound or entry_run == bound:
+                    abort = candidate
+            if is_bound and entry is not None and abort is None:
+                # A live abort for a different run owns this session: touch
+                # nothing, including beside-running commands of the new run.
+                return False
             signals = list(self._command_aborts.get(session_id, {}).values())
             if abort is not None:
                 signals.append(abort)
+            elif is_bound:
+                # No live run abort: only parked settling is in scope; beside
+                # commands belong to no bound run and stay untouched.
+                signals = []
             for signal in signals:
                 signal.set_cancelled(True, reason=reason, stop_cause=cause)
-        # A command may be running beside a parked turn. With no active run
-        # owning its cursor, that turn must also settle on this explicit stop.
-        settled = self._settle_parked_cancel(session_id, reason, cause) if abort is None else False
+        # A bound call with no live abort for the bound run falls through to
+        # the pinned parked settle; an unbound call keeps legacy behavior.
+        settled = self._settle_parked_cancel(session_id, reason, cause, expected_run_id=bound, is_bound=is_bound) if abort is None else False
         return bool(signals) or settled
 
-    def _settle_parked_cancel(self, session_id: str, reason: str, cause: StopCause) -> bool:
+    def _settle_parked_cancel(
+        self, session_id: str, reason: str, cause: StopCause, *, expected_run_id: str | None = None, is_bound: bool = False
+    ) -> bool:
         """Settle parked work at its already-safe boundary.
 
         Parked work is an approval wait or a recoverable (non-terminal)
@@ -896,12 +944,18 @@ class Core:
         checkpoint, so no crash can leave a cancelled claim next to a resumable
         session or vice versa. The run lock is deliberately not taken: an
         unrelated run may be executing in another thread, and the store's CAS on
-        (sequence, run) is what keeps this settle atomic.
+        (sequence, run) is what keeps this settle atomic. A bound call pins the
+        whole settle (including the parked-batch reports) to the expected run
+        and never rebases onto a newer run.
         """
         session = self.session(session_id)
+        if is_bound and (session.run_id or None) != expected_run_id:
+            return False
         checkpoint = self.store.checkpoint(session_id)
         parked_run_id = self._parked_run_id(session, checkpoint)
         if parked_run_id is None:
+            return False
+        if is_bound and parked_run_id != expected_run_id:
             return False
         cursor = _Cursor()
         if checkpoint is not None and isinstance(checkpoint.payload, Mapping):
@@ -915,7 +969,9 @@ class Core:
         try:
             if cursor.batch_sequence is not None or cursor.deferred_sequence is not None:
                 # The parked batch is never replayed: report its members as interrupted first.
-                self._interrupt_batch(execution)
+                self._interrupt_batch(execution, pinned_run_id=expected_run_id if is_bound else None, enforce_pin=is_bound)
+            if is_bound and execution.run_id != expected_run_id:
+                return False
             self._commit(
                 execution,
                 "interrupted",
@@ -934,6 +990,8 @@ class Core:
                 staged_cancellations=(
                     (StagedCancellation(owner=parked_claim.owner, continuation_id=parked_claim.continuation_id),) if parked_claim is not None else ()
                 ),
+                pinned_run_id=expected_run_id if is_bound else None,
+                enforce_pin=is_bound,
             )
         except StoreConflict:
             # The parked session moved on under another writer; settling is moot.
@@ -974,11 +1032,11 @@ class Core:
     def cancel(self, reason: str = "user cancellation", *, cause: StopCause = "user_stop") -> None:
         self._abort.set_cancelled(True, reason=reason, stop_cause=cause)
         with self._aborts_lock:
-            for ab in self._session_aborts.values():
-                ab.set_cancelled(True, reason=reason, stop_cause=cause)
+            for _, abort in self._session_aborts.values():
+                abort.set_cancelled(True, reason=reason, stop_cause=cause)
             for commands in self._command_aborts.values():
-                for ab in commands.values():
-                    ab.set_cancelled(True, reason=reason, stop_cause=cause)
+                for abort in commands.values():
+                    abort.set_cancelled(True, reason=reason, stop_cause=cause)
 
     def close(self) -> None:
         self.cancel("core shutdown", cause="shutdown")
@@ -1020,8 +1078,9 @@ class Core:
             self._ensure_open()
             self._abort.set_cancelled(False)
             abort = Cancellation()
+            run_abort_id = uuid4().hex
             with self._aborts_lock:
-                self._session_aborts[session_id] = abort
+                self._session_aborts[session_id] = (run_abort_id, abort)
             try:
                 try:
                     session = self.store.session(session_id)
@@ -1036,7 +1095,7 @@ class Core:
                     session,
                     _Cursor(root_id=root_id, initial_root_budget=max_steps),
                     list(self.store.events(session_id)),
-                    uuid4().hex,
+                    run_abort_id,
                 )
                 if _refuse_reserved_cancelled and _reserved_cancelled(execution.events):
                     # A cancel claimed this reserved child before its first run started
@@ -1083,8 +1142,9 @@ class Core:
             self._ensure_open()
             self._abort.set_cancelled(False)
             abort = Cancellation()
+            run_abort_id = uuid4().hex
             with self._aborts_lock:
-                self._session_aborts[session_id] = abort
+                self._session_aborts[session_id] = (run_abort_id, abort)
             resumed_notice: tuple[str, str] | None = None
             try:
                 session = self.store.session(session_id)
@@ -1103,7 +1163,7 @@ class Core:
                     if not _is_parked_intervening(ev):
                         raise ValueError(f"Intervening event {ev.event_type} violates parked checkpoint prefix")
                 cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
-                execution = _Execution(session, cursor, list(self.store.events(session_id)), uuid4().hex)
+                execution = _Execution(session, cursor, list(self.store.events(session_id)), run_abort_id)
                 self._messages(execution, allow_pending=True)
                 if cursor.intent_sequence is not None:
                     intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
@@ -1200,7 +1260,7 @@ class Core:
             return
         for _ in range(max(1, limit)):
             try:
-                results = self.drain_continuations(session_id, limit=1, max_steps=max_steps)
+                results = self.drain_continuations(session_id, limit=1, max_steps=max_steps, _automatic=True)
             except StoreConflict:
                 # No pending or claimed continuation remains: the chain is done.
                 return
@@ -1228,7 +1288,7 @@ class Core:
             self.store.ensure_root_budget(root_id, 32)
             abort = Cancellation()
             with self._aborts_lock:
-                self._session_aborts[session_id] = abort
+                self._session_aborts[session_id] = (execution.run_id, abort)
             try:
                 self._commit(execution, "running", "ready")
                 self._drive(execution, max_steps=32)
@@ -1287,7 +1347,8 @@ class Core:
         if not any(self._cancels_claimed(cancellation, cursor.continuation_id, claim_owner) for cancellation in cancellations):
             return
         with self._aborts_lock:
-            active = self._session_aborts.get(session_id)
+            entry = self._session_aborts.get(session_id)
+            active = None if entry is None else entry[1]
         if active is not None and not active.cancelled:
             active.set_cancelled(True, reason=reason, stop_cause="owner_cancel")
             return
@@ -1568,7 +1629,9 @@ class Core:
             {"name": name, "result": outcome.result.as_payload(), "observed_changes": changes, "cancelled": outcome.cancelled},
         )
 
-    def command_input(self, session_id: str, name: str, *, expected_revision: str) -> CommandInputSnapshot:
+    def command_input(
+        self, session_id: str, name: str, *, expected_revision: str, arguments: Mapping[str, object] | None = None
+    ) -> CommandInputSnapshot:
         """Render optional plugin-owned input; never execute the command to discover values."""
         self._ensure_open()
         session = self.session(session_id)
@@ -1583,7 +1646,7 @@ class Core:
                 revision_id=snapshot.revision_id,
                 actor="user",
             )
-            presentation = snapshot.plugin_runtime.prepare_command_input(name, context=context)
+            presentation = snapshot.plugin_runtime.prepare_command_input(name, context=context, arguments=arguments)
             return CommandInputSnapshot(revision_id=snapshot.revision_id, presentation=presentation)
 
     def invoke_command(
@@ -1981,11 +2044,14 @@ class Core:
         limit: int = 10,
         max_steps: int = 32,
         continuation_id: str | None = None,
+        _automatic: bool = False,
     ) -> tuple[ContinuationResult, ...]:
         """Claim and execute pending continuations as governed runs with plugin provenance.
 
         `continuation_id` targets one exact durable message (used by startup recovery); a plain
         drain keeps the existing oldest-first behavior.
+        Automatic delivery leaves completion notices pending on interrupted sessions;
+        an explicit follow-up or drain is still new intent.
         """
         self._validate_steps(max_steps)
         results: list[ContinuationResult] = []
@@ -1996,7 +2062,7 @@ class Core:
             s = self.session(session_id)
             abort = Cancellation()
             with self._aborts_lock:
-                self._session_aborts[session_id] = abort
+                self._session_aborts[session_id] = (None, abort)
 
             try:
                 for _ in range(limit):
@@ -2020,6 +2086,8 @@ class Core:
                                 revision_id=self.revision_id,
                                 initial_root_budget=max_steps,
                                 continuation_id=continuation_id,
+                                caller_chain=self._delegation._chain_of(session_id),
+                                automatic=_automatic,
                             )
                         except StoreConflict:
                             break
@@ -2079,6 +2147,8 @@ class Core:
 
                     execution = _Execution(session_record, cursor, list(self.store.events(session_id)), run_id)
                     root_state = self.store.root_budget_state(cursor.root_id) if cursor.root_id else None
+                    with self._aborts_lock:
+                        self._session_aborts[session_id] = (run_id, abort)
                     if root_state is not None and root_state[1] >= root_state[0]:
                         run_res = self._stop(execution, "root action budget exhausted", stop_cause="limit_reached")
                     else:
@@ -2381,7 +2451,7 @@ class Core:
                 store=self.store,
                 usage_callback=self._get_session_usage,
                 budget_callback=self._get_owner_budget,
-                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify, owner, key: self.spawn_child(
+                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify, owner, key, guard: self.spawn_child(
                     parent,
                     prompt,
                     label=label,
@@ -2391,17 +2461,23 @@ class Core:
                     notify_on_completion=notify,
                     owner=owner,
                     idempotency_key=key,
+                    admission_guard=guard,
                 ),
                 find_child_callback=self._delegation.find_keyed_child,
                 join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
-                send_child_callback=lambda parent, child, prompt, label, notify: self.send_child(
+                send_child_callback=lambda parent, child, prompt, label, notify, guard: self.send_child(
                     parent,
                     child,
                     prompt,
                     label=label,
                     notify_on_completion=notify,
+                    admission_guard=guard,
                 ).as_payload(),
                 cancel_child_callback=self.cancel_child,
+                list_descendants_callback=self.list_descendants,
+                cancel_subtree_callback=lambda bound, target, run, reason: self.cancel_descendant_subtree(
+                    bound, target, expected_run_id=run, reason=reason
+                ),
                 cancel_background_action_callback=self.cancel_background_action,
                 model_query_callback=self.governed_model_query,
                 progress_callback=self._report_progress,
@@ -2454,6 +2530,7 @@ class Core:
         notify_on_completion: bool = False,
         owner: str = "",
         idempotency_key: str | None = None,
+        admission_guard: Callable[[], bool] | None = None,
     ) -> str:
         return self._delegation.spawn_child(
             parent_session_id,
@@ -2465,6 +2542,7 @@ class Core:
             notify_on_completion=notify_on_completion,
             owner=owner,
             idempotency_key=idempotency_key,
+            admission_guard=admission_guard,
         )
 
     def find_keyed_child(self, parent_session_id: str, owner: str, idempotency_key: str) -> str | None:
@@ -2482,6 +2560,7 @@ class Core:
         *,
         label: str = "",
         notify_on_completion: bool = True,
+        admission_guard: Callable[[], bool] | None = None,
     ) -> ChildSendReceipt:
         return self._delegation.send_child(
             parent_session_id,
@@ -2489,10 +2568,19 @@ class Core:
             prompt,
             label=label,
             notify_on_completion=notify_on_completion,
+            admission_guard=admission_guard,
         )
 
     def cancel_child(self, parent_session_id: str, child_id: str, reason: str = "owner cancellation") -> bool:
         return self._delegation.cancel_child(parent_session_id, child_id, reason=reason)
+
+    def list_descendants(self, session_id: str) -> tuple[DescendantNode, ...]:
+        return self._delegation.list_descendants(session_id)
+
+    def cancel_descendant_subtree(
+        self, bound_session_id: str, target_session_id: str, *, expected_run_id: str | None, reason: str = "owner cancellation"
+    ) -> CancelSubtreeReceipt:
+        return self._delegation.cancel_descendant_subtree(bound_session_id, target_session_id, expected_run_id=expected_run_id, reason=reason)
 
     def tick(self, now_ms: int | None = None) -> dict[str, object]:
         """Fire at most one due wakeup: claim it atomically with its run, then drive that run."""
@@ -2667,6 +2755,7 @@ class Core:
                 readonly=self._session_read_only(session_id),
                 actor="plugin",
                 internal_work=True,
+                abort_signal=signal,
             )
             services = RuntimeServices(runtime, lease)
             try:
@@ -3503,6 +3592,8 @@ class Core:
         reserve_root: bool = False,
         start_turn: bool = False,
         checkpoint_bindings: Sequence[tuple[str, str]] = (),
+        pinned_run_id: str | None = None,
+        enforce_pin: bool = False,
     ) -> tuple[StoredEvent, ...]:
         """Commit against the fresh session tip, validating any intervening parked events first.
 
@@ -3516,16 +3607,20 @@ class Core:
         plugin proposal is re-executed. Every other conflict is never replayed.
         """
         events = self._stamp_fact_owners(events)
+        if enforce_pin and execution.run_id != pinned_run_id:
+            raise StoreConflict(f"execution run {execution.run_id!r} does not match bound run {pinned_run_id!r}")
         for attempt in range(16):
             current = self.store.session(execution.session.session_id)
+            if enforce_pin and current.run_id != pinned_run_id:
+                raise StoreConflict(f"session run {current.run_id!r} does not match bound run {pinned_run_id!r}")
             self._reconcile_execution_events(
                 execution,
                 upto=current.last_event_sequence,
                 session=current,
                 parked=True,
             )
-            previous = current
             before = len(execution.events)
+            previous = current
             root_id = execution.cursor.root_id
             root_reservation: tuple[str, int] | None = None
             if reserve_root and root_id:
@@ -3637,6 +3732,8 @@ class Core:
         completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
         reserve_root: bool = False,
         checkpoint_bindings: Sequence[tuple[str, str]] = (),
+        pinned_run_id: str | None = None,
+        enforce_pin: bool = False,
     ) -> tuple[StoredEvent, ...]:
         known_before = len(execution.events)
         new_events = self._commit_staged_rebased(
@@ -3653,6 +3750,8 @@ class Core:
             completed_continuation_id=completed_continuation_id,
             completed_continuation_status=completed_continuation_status,
             start_turn=start_turn,
+            pinned_run_id=pinned_run_id,
+            enforce_pin=enforce_pin,
         )
         self._deliver_facts(execution, execution.events[known_before:], tolerate_conflicts=True)
         return new_events
@@ -3979,7 +4078,8 @@ class Core:
         while True:
             session_abort = None
             with self._aborts_lock:
-                session_abort = self._session_aborts.get(execution.session.session_id)
+                entry = self._session_aborts.get(execution.session.session_id)
+                session_abort = None if entry is None else entry[1]
             if (session_abort and session_abort.cancelled) or self._abort.cancelled:
                 cause = (session_abort.stop_cause if session_abort and session_abort.cancelled else "shutdown") or "user_stop"
                 reason = (session_abort.reason if session_abort and session_abort.cancelled else self._abort.reason) or "cancelled"
@@ -4362,7 +4462,8 @@ class Core:
 
             session_abort = None
             with self._aborts_lock:
-                session_abort = self._session_aborts.get(execution.session.session_id)
+                entry = self._session_aborts.get(execution.session.session_id)
+                session_abort = None if entry is None else entry[1]
             effective_abort = session_abort or self._abort
 
             if call.tool_name in self._snapshot.native_tools:
@@ -4477,6 +4578,8 @@ class Core:
         staged_cancels: tuple[StagedCancellation, ...] = (),
         staged_budget: PluginBudget | None | Literal["clear"] = None,
         staged_observations: tuple[ObservedChange, ...] = (),
+        pinned_run_id: str | None = None,
+        enforce_pin: bool = False,
     ) -> None:
         # Transparent backend merge: supervisor-observed changes join the tool's self-report
         # (success AND failure — a failed invocation may have committed a prefix). Deduped by
@@ -4604,9 +4707,11 @@ class Core:
             staged_continuations=staged_conts,
             staged_cancellations=staged_cancels,
             staged_budgets=tuple(staged_budget_updates),
+            pinned_run_id=pinned_run_id,
+            enforce_pin=enforce_pin,
         )
 
-    def _interrupt_batch(self, execution: _Execution) -> None:
+    def _interrupt_batch(self, execution: _Execution, *, pinned_run_id: str | None = None, enforce_pin: bool = False) -> None:
         first = execution.cursor.intent_sequence is not None
         execution.cursor.abandon_batch = True
         while execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None:
@@ -4616,7 +4721,9 @@ class Core:
                 if first
                 else "not executed: prior batch member was interrupted"
             )
-            self._report(execution, call, ToolFailure(call.tool_name, message), interrupted=True)
+            self._report(
+                execution, call, ToolFailure(call.tool_name, message), interrupted=True, pinned_run_id=pinned_run_id, enforce_pin=enforce_pin
+            )
             first = False
 
     def _messages(self, execution: _Execution, *, allow_pending: bool = False, completed_only: bool = False) -> tuple[ProviderMessage, ...]:
@@ -4799,6 +4906,7 @@ class Core:
                         session.session_id,
                         limit=1,
                         continuation_id=message.continuation_id,
+                        _automatic=True,
                     )
                 except Exception:
                     break
@@ -4849,7 +4957,7 @@ class Core:
                 budget = max(1, min(32, remaining))
             abort = Cancellation()
             with self._aborts_lock:
-                self._session_aborts[session_id] = abort
+                self._session_aborts[session_id] = (execution.run_id, abort)
             try:
                 self._drive(execution, max_steps=budget)
             finally:

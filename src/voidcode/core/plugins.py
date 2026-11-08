@@ -60,6 +60,7 @@ from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.observed_effects import ObservedChange
 from voidcode.sdk.plugin import Plugin, PluginQueryCaller, StateSchema
 from voidcode.sdk.provider import (
+    ProviderAbortSignal,
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTokenUsage,
@@ -69,6 +70,8 @@ from voidcode.sdk.provider import (
 )
 from voidcode.sdk.resources import ResourceContractError, ResourcePage, ResourceReadCaller, ResourceReadRequest, ResourceUnavailable
 from voidcode.sdk.services import (
+    CancelSubtreeReceipt,
+    DescendantNode,
     EventView,
     PluginBudget,
     QueryUnavailable,
@@ -156,6 +159,7 @@ class LeaseContext:
     staged_observations: list[ObservedChange] = field(default_factory=list)
     revoked: bool = False
     op_counter: int = 0
+    abort_signal: ProviderAbortSignal | None = None
 
     @property
     def internal_restricted(self) -> bool:
@@ -226,11 +230,14 @@ class PluginRuntime:
         store: SqliteStore | None = None,
         usage_callback: Callable[[str, int, int | None], SessionUsageReport] | None = None,
         budget_callback: Callable[[str, str], PluginBudget | None] | None = None,
-        spawn_child_callback: Callable[[str, str, str, int, tuple[str, ...] | None, bool, bool, str, str | None], str] | None = None,
+        spawn_child_callback: Callable[[str, str, str, int, tuple[str, ...] | None, bool, bool, str, str | None, Callable[[], bool]], str]
+        | None = None,
         find_child_callback: Callable[[str, str, str], str | None] | None = None,
         join_child_callback: Callable[[str, str, float], Mapping[str, object]] | None = None,
-        send_child_callback: Callable[[str, str, str, str, bool], Mapping[str, object]] | None = None,
+        send_child_callback: Callable[[str, str, str, str, bool, Callable[[], bool]], Mapping[str, object]] | None = None,
         cancel_child_callback: Callable[[str, str, str], bool] | None = None,
+        list_descendants_callback: Callable[[str], tuple[DescendantNode, ...]] | None = None,
+        cancel_subtree_callback: Callable[[str, str, str | None, str], CancelSubtreeReceipt] | None = None,
         cancel_background_action_callback: Callable[[str, str, str, str], bool] | None = None,
         model_query_callback: Callable[[str, str, str | None, int | None, bool], str] | None = None,
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
@@ -253,6 +260,8 @@ class PluginRuntime:
         self.join_child_callback = join_child_callback
         self.send_child_callback = send_child_callback
         self.cancel_child_callback = cancel_child_callback
+        self.list_descendants_callback = list_descendants_callback
+        self.cancel_subtree_callback = cancel_subtree_callback
         self.cancel_background_action_callback = cancel_background_action_callback
         self.model_query_callback = model_query_callback
         self.progress_callback = progress_callback
@@ -463,12 +472,14 @@ class PluginRuntime:
                 has_input=isinstance(command, CommandInput),
                 slash_visible=command.definition.slash_visible,
                 text_argument=command.definition.text_argument,
+                default_shortcut=command.definition.default_shortcut,
             )
             for command, plugin_id in self._commands.values()
         )
         self._command_map = {desc.name: desc for desc in self._command_descs}
         self._command_map_view: Mapping[str, CommandDescriptor] = MappingProxyType(self._command_map)
         self._command_validators = {}
+        self._command_prep_validators = {}
         for desc in self._command_descs:
             if desc.text_argument is not None:
                 properties = desc.argument_schema.get("properties", {})
@@ -482,8 +493,14 @@ class PluginRuntime:
                 except jsonschema.exceptions.SchemaError as err:
                     raise ValueError(f"Plugin {desc.owner} command {desc.name} has an invalid argument schema: {err.message}") from err
                 self._command_validators[desc.name] = jsonschema.Draft202012Validator(schema_json)
+                prep_schema = dict(schema_json)
+                # Preparation validates supplied keys/types only: invocation-required
+                # fields stay missing until the real submit, so bare forms keep opening.
+                prep_schema.pop("required", None)
+                self._command_prep_validators[desc.name] = jsonschema.Draft202012Validator(prep_schema)
             else:
                 self._command_validators[desc.name] = None
+                self._command_prep_validators[desc.name] = None
         self._view_names = tuple(self._views)
         self._view_owners = {name: plugin_id for name, (_, plugin_id) in self._views.items()}
         self._tool_map_view: Mapping[str, ToolDefinition] = MappingProxyType(self._tool_map)
@@ -617,6 +634,7 @@ class PluginRuntime:
         hook: bool = False,
         internal_work: bool = False,
         invocation_depth: int = 0,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> LeaseContext:
         lease = LeaseContext(
             token=uuid4().hex,
@@ -627,6 +645,7 @@ class PluginRuntime:
             revision_id=self.revision_id,
             invocation_id=invocation_id,
             readonly=readonly,
+            abort_signal=abort_signal,
             actor=actor,
             hook=hook,
             internal_work=internal_work,
@@ -674,6 +693,24 @@ class PluginRuntime:
                 event = threading.Event()
                 self._cancel_events[lease.token] = event
             return event
+
+    def admission_guard(self, lease: LeaseContext) -> Callable[[], bool]:
+        """A store-transaction-safe liveness check for the caller's own lease.
+
+        Captures the lease's own abort signal, cancel event, and revoked flag
+        reader — never a fresh lookup of the session's current registry entry,
+        so a stale token cannot borrow a newer run's signal and a fresh call
+        after cancellation passes normally. The guard touches only captured
+        in-memory state, so it is safe under the store lock (no aborts/store
+        lookup, no lock inversion).
+        """
+        signal = lease.abort_signal
+        event = self.cancel_event_for(lease)
+
+        def _admitted() -> bool:
+            return not (self._closed or lease.revoked or event.is_set() or (signal is not None and signal.cancelled))
+
+        return _admitted
 
     def claim_service(self, lease: LeaseContext, process_id: str) -> None:
         """Bind one live *service* id to this invocation so cancellation stops its tree."""
@@ -980,6 +1017,7 @@ class PluginRuntime:
             actor=context.actor,
             internal_work=(not readonly) or ToolEffect.SESSION in tool_definition.effects,
             invocation_depth=context.invocation_depth,
+            abort_signal=context.abort_signal,
         )
         services = RuntimeServices(self, lease)
         cancel_event = self.cancel_event_for(lease)
@@ -1126,6 +1164,7 @@ class PluginRuntime:
             readonly=readonly or (is_read_tier(cmd_definition.effects) and ToolEffect.EXECUTE not in cmd_definition.effects),
             actor=context.actor,
             internal_work=(not readonly) or ToolEffect.SESSION in cmd_definition.effects,
+            abort_signal=context.abort_signal,
         )
         services = RuntimeServices(self, lease)
         invocation = CommandInvocation(context=context, name=name, arguments=args)
@@ -1159,17 +1198,24 @@ class PluginRuntime:
         self._revoke_lease(lease)
         return CommandInvocationOutcome(result, *staged, staged_observations=tuple(lease.staged_observations), cancelled=cancelled)
 
-    def prepare_command_input(self, name: str, *, context: ToolContext) -> CommandPresentation:
+    def prepare_command_input(self, name: str, *, context: ToolContext, arguments: Mapping[str, object] | None = None) -> CommandPresentation:
         """Prepare input without invoking the command or granting mutation services."""
         entry = self._commands.get(name)
         if entry is None or not isinstance(entry[0], CommandInput):
             raise ValueError(f"Command {name} has no interactive input")
+        args = own_json_object(arguments or {})
+        prep_validator = self._command_prep_validators.get(name)
+        if prep_validator is not None:
+            try:
+                prep_validator.validate(json_wire_object(args))
+            except jsonschema.ValidationError as val_err:
+                raise ValueError(f"Command input for {name} failed schema: {val_err.message}") from val_err
         command, owner = entry
         lease = self._open_lease(
             owner=owner, session_id=context.session_id, run_id=context.run_id, invocation_id=context.invocation_id, readonly=True, actor="user"
         )
         try:
-            presentation = command.prepare_input(CommandInvocation(context=context, name=name), RuntimeServices(self, lease))
+            presentation = command.prepare_input(CommandInvocation(context=context, name=name, arguments=args), RuntimeServices(self, lease))
             if not isinstance(presentation, CommandPresentation):
                 raise ValueError(f"Command {name} returned malformed interactive input")
             if presentation.view_type in ("choices", "form") and presentation.data.get("action") != name:

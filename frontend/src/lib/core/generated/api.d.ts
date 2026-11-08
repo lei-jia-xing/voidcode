@@ -143,6 +143,11 @@ export interface components {
             argument_name?: string;
             /** Options */
             options: components["schemas"]["ChoiceOption"][];
+            /**
+             * Prepare Input
+             * @default false
+             */
+            prepare_input?: boolean;
             /** @default null */
             style?: components["schemas"]["ComponentStyle"] | null;
         };
@@ -178,6 +183,11 @@ export interface components {
              * @default null
              */
             client_syntax?: string | null;
+            /**
+             * Default Shortcut
+             * @default null
+             */
+            default_shortcut?: string | null;
             /** Description */
             description: string;
             /**
@@ -207,6 +217,10 @@ export interface components {
         };
         /** CommandInputRequest */
         CommandInputRequest: {
+            /** Arguments */
+            arguments?: {
+                [key: string]: unknown;
+            };
             /** Expected Revision */
             expected_revision: string;
             /** Name */
@@ -229,6 +243,11 @@ export interface components {
          */
         CommandPresentation: {
             data: components["schemas"]["CommandPresentationData"];
+            /**
+             * Refresh After Ms
+             * @default null
+             */
+            refresh_after_ms?: number | null;
             /** Title */
             title: string;
             /**

@@ -22,10 +22,7 @@
     "cron": {
       "enabled": false
     },
-    "delegation": {
-      "enabled": false
-    },
-    "effectiveness": {
+    "subagents": {
       "enabled": false
     },
     "exec": {

@@ -274,11 +274,11 @@ def test_live_command_presentation_mounts_under_its_revision_only() -> None:
     app, _ = _app()
     app.catalog_revision = "rev-1"
     view = PluginViewDescriptor(
-        owner="delegation",
-        name="agents",
+        owner="subagents",
+        name="test_view",
         title="Profiles",
         view_type="choices",
-        data={"options": [{"id": "explore", "label": "Explore"}], "action": "agents.show", "argument_name": "name"},
+        data={"options": [{"id": "explore", "label": "Explore"}], "action": "test.show", "argument_name": "name"},
     )
     app.event_queue.put({"kind": "command_presentation", "view": view, "revision_id": "rev-old", "serial": app._interaction_serial})
     app._drain_events()
@@ -287,7 +287,7 @@ def test_live_command_presentation_mounts_under_its_revision_only() -> None:
     app._drain_events()
     assert isinstance(app.active_overlay, InteractiveChoices)
     assert app.active_overlay.revision_id == "rev-1"
-    assert app.active_overlay.handle_key(Key("enter")) == {"action": "agents.show", "arguments": {"name": "explore"}}
+    assert app.active_overlay.handle_key(Key("enter")) == {"action": "test.show", "arguments": {"name": "explore"}, "prepare_input": False}
 
 
 def test_history_receipt_renders_passive_presentation_without_opening_interaction() -> None:
@@ -299,7 +299,7 @@ def test_history_receipt_renders_passive_presentation_without_opening_interactio
         output="fallback",
         presentation=CommandPresentation(title="Profile", view_type="markdown", data={"content": "**Explore**\n\nRead the workspace."}),
     )
-    text = "\n".join(_command_result_rows("agents.show", result, Styles(None), 40))
+    text = "\n".join(_command_result_rows("test.show", result, Styles(None), 40))
     assert "Explore" in text and "Read the workspace." in text
     assert "**" not in text and "fallback" not in text
 
@@ -316,15 +316,15 @@ def test_prepared_input_uses_dynamic_options_without_invoking_until_submit() -> 
         def __init__(self):
             self.invoked = []
 
-        def command_input(self, session_id, name, expected_revision):
-            assert (session_id, name, expected_revision) == ("s1", "agents.show", "rev-1")
+        def command_input(self, session_id, name, expected_revision, *, arguments=None):
+            assert (session_id, name, expected_revision) == ("s1", "test.input", "rev-1")
             return CommandInputSnapshot(
                 revision_id="rev-1",
                 presentation=CommandPresentation(
                     title="Select agent",
                     view_type="form",
                     data={
-                        "action": "agents.show",
+                        "action": "test.input",
                         "fields": [
                             {
                                 "name": "name",
@@ -344,7 +344,7 @@ def test_prepared_input_uses_dynamic_options_without_invoking_until_submit() -> 
     app, _ = _app()
     app.client = client = Client()
     app.catalog_revision = "rev-1"
-    descriptor = CommandDescriptor(name="agents.show", owner="delegation", description="Inspect", has_input=True)
+    descriptor = CommandDescriptor(name="test.input", owner="subagents", description="Inspect", has_input=True)
     app._dispatch_catalog_command(descriptor, "")
     frame = app.event_queue.get(timeout=2)
     assert client.invoked == []
@@ -355,7 +355,7 @@ def test_prepared_input_uses_dynamic_options_without_invoking_until_submit() -> 
     app._handle_overlay_key(Key("right"))
     app._handle_overlay_key(Key("ctrl+s"))
     assert called.wait(timeout=2)
-    assert client.invoked == [("agents.show", {"name": "review"}, "rev-1")]
+    assert client.invoked == [("test.input", {"name": "review"}, "rev-1")]
 
 
 def test_natural_multi_field_arguments_preserve_text_and_explicit_json() -> None:

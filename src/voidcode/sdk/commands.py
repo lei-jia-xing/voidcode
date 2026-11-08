@@ -23,6 +23,36 @@ def _decode_command[T](adapter: TypeAdapter[T], payload: Mapping[str, object], l
     return adapter.validate_json(json.dumps(json_wire_object(payload), allow_nan=False), strict=True, extra="forbid")
 
 
+_SHORTCUT_MODIFIERS: tuple[str, ...] = ("shift", "ctrl", "alt", "super")
+_SHORTCUT_MODIFIER_SET: frozenset[str] = frozenset(_SHORTCUT_MODIFIERS)
+#: Canonical default-shortcut chords stay short enough for every client keymap.
+_MAX_SHORTCUT_CHARS: int = 32
+
+
+def normalize_default_shortcut(value: str) -> str:
+    """Canonical ``modifier+...+base`` chord (Alt+A becomes ``alt+a``)."""
+    if not isinstance(value, str):
+        raise ValueError("default shortcut must be a string")
+    text = value.strip().lower()
+    if not text or len(text) > _MAX_SHORTCUT_CHARS:
+        raise ValueError(f"default shortcut must be 1..{_MAX_SHORTCUT_CHARS} printable characters")
+    parts = text.split("+")
+    if len(parts) < 2:
+        raise ValueError("default shortcut must carry at least one modifier (e.g. alt+a)")
+    *modifiers, base = parts
+    if not base or base in _SHORTCUT_MODIFIER_SET:
+        raise ValueError("default shortcut needs a non-modifier base key")
+    if any(modifier not in _SHORTCUT_MODIFIER_SET for modifier in modifiers):
+        raise ValueError("default shortcut modifiers must be ctrl, alt, shift, or super")
+    if len(set(modifiers)) != len(modifiers):
+        raise ValueError("default shortcut modifiers must not repeat")
+    for char in text:
+        if char != "+" and (ord(char) < 33 or ord(char) > 126):
+            raise ValueError("default shortcut must be printable without whitespace")
+    ordered = sorted(modifiers, key=_SHORTCUT_MODIFIERS.index)
+    return "+".join([*ordered, base])
+
+
 @dataclass(frozen=True, slots=True)
 class ConfirmationRequest:
     """Request for client/user confirmation before performing a governed command effect."""
@@ -81,9 +111,13 @@ class CommandDescriptor:
     has_input: bool = False
     slash_visible: bool = True
     text_argument: str | None = None
+    #: Canonical default key chord clients may bind (None means no default).
+    default_shortcut: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
+        if self.default_shortcut is not None:
+            object.__setattr__(self, "default_shortcut", normalize_default_shortcut(self.default_shortcut))
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -97,6 +131,7 @@ class CommandDescriptor:
             "has_input": self.has_input,
             "slash_visible": self.slash_visible,
             "text_argument": self.text_argument,
+            "default_shortcut": self.default_shortcut,
         }
 
     @staticmethod
@@ -138,18 +173,28 @@ class CommandPresentation:
     title: str
     view_type: Literal["notice", "markdown", "fields", "choices", "form", "diff", "status"]
     data: Mapping[str, object]
+    #: Advisory client refresh cadence in ms; only carrying views refresh, only while open.
+    refresh_after_ms: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.title, str) or not self.title.strip():
             raise ValueError("command presentation title must be non-empty")
         if self.view_type == "confirmation":
             raise ValueError("command presentations cannot carry confirmations")
+        if self.refresh_after_ms is not None:
+            if type(self.refresh_after_ms) is not int or not 250 <= self.refresh_after_ms <= 60000:
+                raise ValueError("refresh_after_ms must be an integer in 250..60000")
         from .views import validate_view_data
 
         object.__setattr__(self, "data", validate_view_data(self.view_type, self.data))
 
     def as_payload(self) -> dict[str, object]:
-        return {"title": self.title, "view_type": self.view_type, "data": json_wire_object(self.data)}
+        return {
+            "title": self.title,
+            "view_type": self.view_type,
+            "data": json_wire_object(self.data),
+            "refresh_after_ms": self.refresh_after_ms,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,11 +293,15 @@ class CommandDefinition:
     text_argument: str | None = None
     #: Internal UI action helpers remain callable but need not appear in slash discovery.
     slash_visible: bool = True
+    #: Canonical default key chord (e.g. "alt+a"); clients bind it unless reserved or conflicting.
+    default_shortcut: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
         if not isinstance(self.effects, frozenset):
             object.__setattr__(self, "effects", frozenset(self.effects))
+        if self.default_shortcut is not None:
+            object.__setattr__(self, "default_shortcut", normalize_default_shortcut(self.default_shortcut))
 
 
 @runtime_checkable
@@ -284,4 +333,5 @@ __all__ = [
     "CommandPresentation",
     "ConfirmationRequest",
     "ConfirmationUIType",
+    "normalize_default_shortcut",
 ]

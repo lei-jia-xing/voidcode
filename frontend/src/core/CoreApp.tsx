@@ -192,6 +192,13 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     clientKey: string;
     revisionId: string;
     descriptor: PluginViewDescriptor;
+    liveSource?: { action: string; args: Record<string, unknown> };
+    refreshAfterMs?: number | null;
+  } | null>(null);
+  const commandViewLiveRef = useRef<{
+    action: string;
+    args: Record<string, unknown>;
+    revisionId: string;
   } | null>(null);
   const commandViewRequestRef = useRef(0);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
@@ -274,6 +281,9 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     [],
   );
   const [isRunning, setIsRunning] = useState<boolean>(false);
+  // Command invocations in flight: separate from the authoritative root-run
+  // state above, so a monitor action can never reset the main run indicator.
+  const [commandInFlight, setCommandInFlight] = useState<boolean>(false);
   // The last health answer this scope accepted, mirrored in a ref so the
   // identity compare reads a stable snapshot instead of calling setState
   // inside another state updater (StrictMode may replay updaters).
@@ -770,6 +780,9 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     catalogRequestRef.current += 1;
     viewsRequestRef.current += 1;
     healthRequestRef.current += 1;
+    commandViewRequestRef.current += 1;
+    commandViewLiveRef.current = null;
+    setCommandView(null);
     setCatalog({ revisionId: "", commands: [] });
     setSessions([]);
     setEvents([]);
@@ -777,6 +790,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     resolvedConfirmationsRef.current.clear();
     setPendingConfirmations({});
     setIsRunning(false);
+    setCommandInFlight(false);
     upgradeRef.current = null;
     setUpgrade(null);
   }, [renderedClientKey]);
@@ -841,9 +855,13 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     lastSequenceRef.current = 0;
     terminalErrorRef.current = null;
     resolvedConfirmationsRef.current.clear();
+    commandViewRequestRef.current += 1;
+    commandViewLiveRef.current = null;
+    setCommandView(null);
     setPendingConfirmations({});
     setPendingApproval(null);
     setIsRunning(false);
+    setCommandInFlight(false);
     setStatusMessage(
       t("core.statusLoadingSession", { sessionId: activeSessionId }),
     );
@@ -1050,7 +1068,11 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     }
   };
 
-  const prepareCommandInput = async (cmd: string, revisionId: string) => {
+  const prepareCommandInput = async (
+    cmd: string,
+    revisionId: string,
+    args: Record<string, unknown> = {},
+  ) => {
     if (!activeSessionId) return;
     const descriptor = catalog.commands.find((entry) => entry.name === cmd);
     if (!descriptor?.has_input || catalog.revisionId !== revisionId) {
@@ -1062,7 +1084,12 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     const epoch = epochRef.current;
     const clientKey = renderedClientKey;
     try {
-      const snapshot = await client.commandInput(issueSession, cmd, revisionId);
+      const snapshot = await client.commandInput(
+        issueSession,
+        cmd,
+        revisionId,
+        args,
+      );
       if (
         !isCurrent(issueSession, epoch, clientKey) ||
         serial !== commandViewRequestRef.current
@@ -1070,6 +1097,25 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
         return;
       if (snapshot.revision_id !== revisionId)
         throw new Error(t("core.commandInputRevisionChanged"));
+      const presentation = snapshot.presentation as {
+        title: string;
+        view_type: PluginViewDescriptor["view_type"];
+        data: PluginViewDescriptor["data"];
+        refresh_after_ms?: number | null;
+      };
+      const refreshAfterMs =
+        typeof presentation.refresh_after_ms === "number"
+          ? presentation.refresh_after_ms
+          : null;
+      if (refreshAfterMs !== null) {
+        commandViewLiveRef.current = {
+          action: cmd,
+          args: { ...args },
+          revisionId,
+        };
+      } else {
+        commandViewLiveRef.current = null;
+      }
       setCommandView({
         sessionId: issueSession,
         epoch,
@@ -1078,8 +1124,15 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
         descriptor: {
           owner: descriptor.owner,
           name: cmd,
-          ...snapshot.presentation,
+          title: presentation.title,
+          view_type: presentation.view_type,
+          data: presentation.data,
         },
+        liveSource:
+          refreshAfterMs !== null
+            ? { action: cmd, args: { ...args } }
+            : undefined,
+        refreshAfterMs,
       });
     } catch (err) {
       if (
@@ -1102,7 +1155,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     prepareInput = false,
   ) => {
     if (prepareInput) {
-      await prepareCommandInput(actionName, revisionId);
+      await prepareCommandInput(actionName, revisionId, args);
       return;
     }
     if (!activeSessionId) return;
@@ -1110,8 +1163,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     const issueSession = activeSessionId;
     const epoch = epochRef.current;
     const clientKey = renderedClientKey;
-    runActivityRef.current += 1;
-    setIsRunning(true);
+    setCommandInFlight(true);
     const displayName = displaySlashPath(catalog.commands, actionName);
     setStatusMessage(t("core.statusInvoking", { name: displayName }));
     try {
@@ -1151,6 +1203,8 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
         res.status === "ok" &&
         commandViewRequestRef.current === interactionSerial
       ) {
+        // A direct invoke receipt replaces the view: it never inherits polling.
+        commandViewLiveRef.current = null;
         const presentation = res.presentation;
         setCommandView(
           presentation
@@ -1164,6 +1218,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                   name: actionName,
                   ...presentation,
                 },
+                refreshAfterMs: null,
               }
             : null,
         );
@@ -1181,7 +1236,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
       setStatusMessage(t("core.statusInvokeFailed", { message: msg }));
     } finally {
       if (isCurrent(issueSession, epoch, clientKey)) {
-        setIsRunning(false);
+        setCommandInFlight(false);
       }
     }
   };
@@ -1282,6 +1337,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
             }),
           );
           commandViewRequestRef.current += 1;
+          commandViewLiveRef.current = null;
           setCommandView({
             sessionId: activeSessionId,
             epoch: epochRef.current,
@@ -1294,6 +1350,7 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
               view_type: "form",
               data: { fields, action: cmd, initial_values: {} },
             },
+            refreshAfterMs: null,
           });
           return;
         }
@@ -1379,6 +1436,146 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
     [catalog],
   );
 
+  // Catalog-declared shortcut actions, computed once per catalog (never per
+  // render/keystroke). `actions` lists every declared shortcut command so all
+  // stay clickable as buttons; a chord with 2+ claimants binds no key and the
+  // conflict is shown, never silently first-wins. This round binds no browser
+  // keyboard chord: entry is buttons only.
+  const shortcutEntries = useMemo(() => {
+    const claimants = new Map<string, typeof catalog.commands>();
+    for (const entry of catalog.commands) {
+      const chord = entry.default_shortcut ?? null;
+      if (typeof chord !== "string" || !chord) continue;
+      const list = claimants.get(chord) ?? [];
+      list.push(entry);
+      claimants.set(chord, list);
+    }
+    const actions: Array<{
+      chord: string;
+      entry: (typeof catalog.commands)[number];
+      conflicted: boolean;
+    }> = [];
+    const conflicts: Array<{ chord: string; names: string[] }> = [];
+    for (const [chord, entries] of claimants) {
+      const conflicted = entries.length > 1;
+      for (const entry of entries) actions.push({ chord, entry, conflicted });
+      if (conflicted)
+        conflicts.push({ chord, names: entries.map((e) => e.name) });
+    }
+    actions.sort(
+      (a, b) =>
+        a.chord.localeCompare(b.chord) ||
+        a.entry.name.localeCompare(b.entry.name),
+    );
+    conflicts.sort((a, b) => a.chord.localeCompare(b.chord));
+    return { actions, conflicts };
+  }, [catalog]);
+
+  // Live command-input polling: only explicit refresh_after_ms on the open
+  // view enables it, and only while that view is mounted for this scope.
+  // Gates and command flights own the region while open, so the loop pauses
+  // while one is mounted: a refresh never steals focus or resets a draft.
+  // The loop never touches the interaction serial: navigation, prompt edits,
+  // and invokes must neither freeze it nor be invalidated by it. Staleness
+  // is the captured live-source identity (navigation/close replaces it) plus
+  // the scope guards every other read already uses.
+  useEffect(() => {
+    if (commandView === null) return;
+    if (
+      commandView.sessionId !== activeSessionId ||
+      commandView.epoch !== scope.epoch ||
+      commandView.clientKey !== renderedClientKey ||
+      commandView.revisionId !== catalog.revisionId
+    )
+      return;
+    if (typeof commandView.refreshAfterMs !== "number") return;
+    if (pendingApproval !== null || pendingConfirmation !== null) return;
+    if (commandInFlight) return;
+    if (
+      commandView.descriptor.view_type !== "choices" &&
+      commandView.descriptor.view_type !== "markdown"
+    )
+      return;
+    const live = commandViewLiveRef.current;
+    if (live === null) return;
+    const issueSession = activeSessionId;
+    const epoch = scope.epoch;
+    const clientKey = renderedClientKey;
+    const cadence = commandView.refreshAfterMs;
+    let cancelled = false;
+    let timer: number | undefined;
+    // A reply is current only while its captured source is still the live
+    // one: any navigation or close replaces the ref object and orphans it.
+    const isLiveReply = () =>
+      !cancelled &&
+      isCurrent(issueSession, epoch, clientKey) &&
+      commandViewLiveRef.current === live;
+    const readOnce = () => {
+      if (!isLiveReply()) return;
+      client
+        .commandInput(issueSession, live.action, live.revisionId, live.args)
+        .then((snapshot) => {
+          if (!isLiveReply()) return;
+          if (snapshot.revision_id !== live.revisionId) return;
+          const presentation = snapshot.presentation as {
+            title: string;
+            view_type: PluginViewDescriptor["view_type"];
+            data: PluginViewDescriptor["data"];
+            refresh_after_ms?: number | null;
+          };
+          const nextCadence =
+            typeof presentation.refresh_after_ms === "number"
+              ? presentation.refresh_after_ms
+              : cadence;
+          setCommandView((prev) =>
+            prev === null ||
+            prev.sessionId !== issueSession ||
+            prev.epoch !== epoch ||
+            prev.clientKey !== clientKey
+              ? prev
+              : {
+                  ...prev,
+                  descriptor: {
+                    ...prev.descriptor,
+                    title: presentation.title,
+                    view_type: presentation.view_type,
+                    data: presentation.data,
+                  },
+                  refreshAfterMs: nextCadence,
+                },
+          );
+          // Reschedule from the cadence the source carries: success and
+          // failure alike, so one bad read never freezes the panel.
+          if (isLiveReply()) timer = window.setTimeout(readOnce, nextCadence);
+        })
+        .catch((err) => {
+          if (!isLiveReply()) return;
+          setStatusMessage(
+            t("core.statusInvokeFailed", {
+              message: err instanceof Error ? err.message : String(err),
+            }),
+          );
+          if (isLiveReply()) timer = window.setTimeout(readOnce, cadence);
+        });
+    };
+    timer = window.setTimeout(readOnce, cadence);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    commandView,
+    activeSessionId,
+    scope.epoch,
+    renderedClientKey,
+    catalog.revisionId,
+    pendingApproval,
+    pendingConfirmation,
+    commandInFlight,
+    client,
+    isCurrent,
+    t,
+  ]);
   // Autocomplete hints
   const slashSuggestions = useMemo(() => {
     if (
@@ -1480,6 +1677,42 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                 {t("core.runningLabel")}
               </span>
             )}
+            {shortcutEntries.actions.map(({ chord, entry, conflicted }) => (
+              <button
+                key={entry.name}
+                data-testid={`shortcut-action-${entry.name}`}
+                type="button"
+                disabled={
+                  !activeSessionId ||
+                  pendingApproval !== null ||
+                  pendingConfirmation !== null
+                }
+                title={
+                  conflicted
+                    ? `${entry.description} (${t("core.shortcutConflicted")})`
+                    : `${entry.description} (${chord})`
+                }
+                aria-label={
+                  conflicted
+                    ? `${entry.description} (${t("core.shortcutConflicted")})`
+                    : `${entry.description} (${chord})`
+                }
+                onClick={() => {
+                  if (entry.has_input) {
+                    void prepareCommandInput(
+                      entry.name,
+                      catalog.revisionId,
+                      {},
+                    );
+                  } else {
+                    void handleViewAction(entry.name, {}, catalog.revisionId);
+                  }
+                }}
+                className="px-2.5 py-1 text-xs rounded border border-neutral-700 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300"
+              >
+                {entry.description}
+              </button>
+            ))}
             <button
               data-testid="cancel-btn"
               type="button"
@@ -1490,6 +1723,16 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
             </button>
           </div>
         </header>
+        {/* Shortcut conflicts: explicit, never silent first-wins. */}
+        {shortcutEntries.conflicts.map(({ chord, names }) => (
+          <div
+            key={chord}
+            data-testid={`shortcut-conflict-${chord}`}
+            className="px-4 py-1.5 bg-amber-950/60 border-b border-amber-800 text-[11px] text-amber-200 font-mono truncate"
+          >
+            {t("core.shortcutConflict", { chord, names: names.join(", ") })}
+          </div>
+        ))}
         {/* Controlled-upgrade banner: fence state and server identity */}
         {upgrade && (upgrade.fenced || upgrade.activeUpgrade) && (
           <div
@@ -1755,9 +1998,19 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                 </h2>
                 <button
                   type="button"
+                  data-testid="command-view-close"
                   onClick={() => {
                     commandViewRequestRef.current += 1;
+                    commandViewLiveRef.current = null;
                     setCommandView(null);
+                    // Return focus to the composer without touching its draft:
+                    // the value state is untouched, only the caret is restored.
+                    requestAnimationFrame(() => {
+                      const input = document.querySelector<HTMLInputElement>(
+                        '[data-testid="prompt-input"]',
+                      );
+                      input?.focus();
+                    });
                   }}
                 >
                   {t("core.cancel")}
@@ -1772,9 +2025,14 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                 onAction={handleViewAction}
                 onCancel={() => {
                   commandViewRequestRef.current += 1;
+                  commandViewLiveRef.current = null;
                   setCommandView(null);
                 }}
-                disabled={isRunning}
+                disabled={
+                  commandInFlight ||
+                  pendingApproval !== null ||
+                  pendingConfirmation !== null
+                }
               />
             </section>
           )}

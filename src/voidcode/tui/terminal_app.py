@@ -59,6 +59,8 @@ from voidcode.sdk.transcript import (
     TranscriptTool,
 )
 from voidcode.sdk.views import (
+    ChoiceOption,
+    ChoicesViewData,
     ConfirmationViewData,
     MarkdownViewData,
     PluginViewDescriptor,
@@ -212,6 +214,79 @@ def _command_result_rows(name: str, result: CommandResult, styles: Styles, width
             )
         return escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True).split("\n") if text else []
     return _prefixed_rows(f"Warning: /{label} ({result.status or 'unknown'}):", text, styles, slot="warning")
+
+
+#: App/editor keys a catalog shortcut may never claim; the client keeps them.
+#: Compared case-insensitively: catalog chords are lowercase (``alt+pageup``)
+#: while the decoder names keys like ``pageUp``.
+_RESERVED_SHORTCUTS: frozenset[str] = frozenset(
+    {
+        "escape",
+        "esc",
+        "enter",
+        "tab",
+        "shift+tab",
+        "space",
+        "backspace",
+        "delete",
+        "up",
+        "down",
+        "left",
+        "right",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "ctrl+c",
+        "ctrl+d",
+        "ctrl+s",
+        "ctrl+enter",
+        "shift+enter",
+        "ctrl+j",
+        "alt+enter",
+        "alt+left",
+        "alt+right",
+        "alt+b",
+        "alt+f",
+        "ctrl+left",
+        "ctrl+right",
+        "ctrl+w",
+        "alt+backspace",
+        "ctrl+backspace",
+        "alt+delete",
+        "alt+d",
+    }
+)
+
+
+def _normalize_chord(name: str) -> str:
+    """Case-insensitive chord form so ``alt+pageUp`` matches ``alt+pageup``."""
+    return name.strip().lower()
+
+
+def _shortcut_bindings(descriptors: tuple[CommandDescriptor, ...]) -> tuple[dict[str, CommandDescriptor], dict[str, tuple[str, ...]]]:
+    """Map one chord to one descriptor; a chord with 2+ claimants binds nobody.
+
+    Reserved app/editor keys never bind. Returns ``(bindings, conflicts)`` where
+    conflicts names every claimant so the client can say so explicitly.
+    """
+    claimants: dict[str, list[CommandDescriptor]] = {}
+    for descriptor in descriptors:
+        chord = descriptor.default_shortcut
+        if not chord:
+            continue
+        normalized = _normalize_chord(chord)
+        if normalized in _RESERVED_SHORTCUTS:
+            continue
+        claimants.setdefault(normalized, []).append(descriptor)
+    bindings: dict[str, CommandDescriptor] = {}
+    conflicts: dict[str, tuple[str, ...]] = {}
+    for chord, entries in claimants.items():
+        if len(entries) == 1:
+            bindings[chord] = entries[0]
+        else:
+            conflicts[chord] = tuple(entry.name for entry in entries)
+    return bindings, conflicts
 
 
 def _content_rows(
@@ -449,6 +524,19 @@ class CoreTuiApp:
         self._in_flight: set[str] = set()
         self._interaction_serial = 0
         self.active_overlay: InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveMarkdown | None = None
+        #: Chord -> descriptor for this catalog revision, rebuilt on every catalog load.
+        self._shortcut_bindings: dict[str, CommandDescriptor] = {}
+        #: Chord -> claimant names when 2+ descriptors claim one chord (binds nobody).
+        self._shortcut_conflicts: dict[str, tuple[str, ...]] = {}
+        #: Live read-only input source while a refreshable view is open; only this
+        #: explicit metadata enables polling: {name, arguments, revision, source}.
+        self._live_input: dict[str, Any] | None = None
+        #: Next monotonic deadline for the live-input refresh worker.
+        self._live_refresh_at: float = 0.0
+        #: Serial of the latest live refresh: stale replies never touch the view.
+        self._live_serial: int = 0
+        #: Retained live view while a confirmation overlays it: (overlay, live_input).
+        self._suspended_live: tuple[Any, dict[str, Any] | None] | None = None
         # Native tool approval (core permission gate) is not a plugin Action
         # confirmation: it resumes the parked run with its own request id.
         self.pending_approval: InteractiveApproval | None = None
@@ -542,16 +630,22 @@ class CoreTuiApp:
         if rows:
             self.terminal.commit_rows(rows)
 
+    def _cache_catalog(self, commands: tuple[CommandDescriptor, ...], revision: str) -> None:
+        """Store one catalog revision and rebuild its cached shortcut bindings."""
+        self.catalog_cache = commands
+        self.catalog_revision = revision
+        self._shortcut_bindings, self._shortcut_conflicts = _shortcut_bindings(commands)
+        if self.composer.completion:
+            self._sync_slash_completion()
+
     def _load_catalog(self) -> None:
         try:
             catalog = self.client.command_catalog()
-            self.catalog_cache = catalog.commands
-            self.catalog_revision = catalog.revision_id
-            if self.composer.completion:
-                self._sync_slash_completion()
+            self._cache_catalog(catalog.commands, catalog.revision_id)
         except Exception as exc:
             self.catalog_cache = ()
             self.catalog_revision = ""
+            self._shortcut_bindings, self._shortcut_conflicts = {}, {}
             self.status_line = f"Catalog load failed: {_safe(exc)}"
             raise RuntimeError(f"Failed to fetch command catalog from server: {exc}") from exc
 
@@ -615,9 +709,26 @@ class CoreTuiApp:
         while self.running:
             self._drain_events()
             self._process_input()
+            self._poll_live_input()
             self._render_frame()
             time.sleep(0.033)  # ~30 fps redraw loop
         return 0
+
+    def _poll_live_input(self) -> None:
+        """Fire one live refresh when its deadline passes and the view still owns focus."""
+        live = self._live_input
+        if live is None or self._live_refresh_at <= 0.0:
+            return
+        if time.monotonic() < self._live_refresh_at:
+            return
+        if self.pending_approval is not None or not isinstance(self.active_overlay, (InteractiveChoices, InteractiveMarkdown)):
+            return  # gate/editor owns focus: pause, keep the deadline so resume fires at once
+        if getattr(self.active_overlay, "revision_id", "") != str(live.get("revision", "")):
+            self._live_input = None
+            self._live_refresh_at = 0.0
+            return
+        self._live_refresh_at = time.monotonic() + 60.0  # rearmed by the reply; never stacks workers
+        self._refresh_live_input_async()
 
     def _live_stream_rows(self, width: int) -> list[str]:
         """Partial markdown of the in-flight dispatch for the live region, or nothing."""
@@ -702,19 +813,104 @@ class CoreTuiApp:
             elif kind == "command_input_ready":
                 if frame.get("serial") != self._interaction_serial or frame.get("revision_id") != self.catalog_revision:
                     continue
-                if self.status_line.startswith("Loading /"):
+                if self.status_line.startswith("Loading "):
                     self.status_line = ""
-                if self.composer.value or self.active_overlay is not None or self.pending_approval is not None:
+                # The composer draft is intentionally retained under an input
+                # view (Alt+A never clears it); the serial already invalidates a
+                # later edit, so only a gate/overlay blocks the mount.
+                if self.active_overlay is not None or self.pending_approval is not None:
                     continue
                 if self.upgrade is not None and self.upgrade.fenced:
                     continue
                 error = frame.get("error")
                 view = frame.get("view")
                 if error:
+                    self._live_input = None
+                    self._live_refresh_at = 0.0
                     rows_to_commit.append(self.styles.fg("error", f"Command input unavailable: {_safe(error)}"))
                 elif isinstance(view, PluginViewDescriptor):
-                    if not self._mount_interactive_view(view, self.catalog_revision):
+                    refresh_after_ms = frame.get("refresh_after_ms")
+                    if not isinstance(refresh_after_ms, int):
+                        refresh_after_ms = None
+                    if refresh_after_ms is not None:
+                        action = str(frame.get("action", "")) or view.name
+                        arguments = frame.get("arguments")
+                        if not self._mount_live_view(
+                            view,
+                            self.catalog_revision,
+                            name=action,
+                            arguments=arguments if isinstance(arguments, dict) else {},
+                            refresh_after_ms=refresh_after_ms,
+                        ):
+                            self._close_live_input()
+                            rows_to_commit.append(
+                                self.styles.fg("warning", f"Live view {action or 'unavailable'} returned an unsupported type; refresh paused")
+                            )
+                    elif not self._mount_interactive_view(view, self.catalog_revision):
                         rows_to_commit.extend(render_plugin_view(view, self.terminal.width, self.styles))
+            elif kind == "live_input_ready":
+                if frame.get("serial") != self._live_serial:
+                    continue
+                live = self._live_input
+                if live is None or not isinstance(self.active_overlay, (InteractiveChoices, InteractiveMarkdown)):
+                    continue
+                if live.get("source") is not self.active_overlay:
+                    continue
+                same_action = str(frame.get("action", "")) == str(live.get("name", ""))
+                same_args = dict(frame.get("arguments") or {}) == dict(live.get("arguments") or {})
+                if not (same_action and same_args):
+                    continue
+                revision = str(frame.get("revision_id", ""))
+                if revision != self.catalog_revision or revision != str(live.get("revision", "")):
+                    continue
+                error = frame.get("error")
+                view = frame.get("view")
+                refresh_after_ms = frame.get("refresh_after_ms")
+                if not isinstance(refresh_after_ms, int):
+                    refresh_after_ms = None
+                cadence = live.get("refresh_after_ms")
+                if not isinstance(cadence, int):
+                    cadence = refresh_after_ms
+                if error or not isinstance(view, PluginViewDescriptor):
+                    self.status_line = f"Refresh failed: {_safe(error or 'unavailable')} · reopen to retry"
+                    if isinstance(cadence, int):
+                        self._live_refresh_at = time.monotonic() + cadence / 1000.0
+                    continue
+                try:
+                    data = parse_view_data(view.view_type, view.data)
+                except Exception as exc:
+                    self.status_line = f"Refresh failed: {_safe(exc)} · reopen to retry"
+                    if isinstance(cadence, int):
+                        self._live_refresh_at = time.monotonic() + cadence / 1000.0
+                    continue
+                if view.view_type == "choices" and isinstance(self.active_overlay, InteractiveChoices):
+                    from voidcode.sdk.views import ChoicesViewData
+
+                    if not isinstance(data, ChoicesViewData):
+                        continue
+                    self.active_overlay.update_view(data)
+                    self.active_overlay.revision_id = revision
+                    self.active_overlay.title = view.title
+                elif view.view_type == "markdown" and isinstance(self.active_overlay, InteractiveMarkdown):
+                    if not isinstance(data, MarkdownViewData):
+                        continue
+                    previous_scroll = self.active_overlay.scroll
+                    self.active_overlay.view = data
+                    self.active_overlay.revision_id = revision
+                    self.active_overlay.title = view.title
+                    self.active_overlay.selected_index = min(self.active_overlay.selected_index, max(0, len(data.actions) - 1))
+                    self.active_overlay.scroll = previous_scroll
+                else:
+                    rows_to_commit.append(self.styles.fg("warning", f"Live view returned {view.view_type}; refresh paused until reopened"))
+                    self._close_live_input()
+                    continue
+                self._arm_live_input(
+                    name=str(live.get("name", "")),
+                    arguments=dict(live.get("arguments") or {}),
+                    revision=revision,
+                    refresh_after_ms=refresh_after_ms if refresh_after_ms is not None else cadence,
+                    source=self.active_overlay,
+                )
             elif kind == "command_presentation":
                 if frame.get("serial") != self._interaction_serial:
                     continue
@@ -794,6 +990,7 @@ class CoreTuiApp:
                     and overlay.revision_id == revision
                     and overlay is frame.get("overlay")
                 ):
+                    self._close_live_input()
                     self.active_overlay = None
                     self._present_queued_confirmation()
             elif kind == "form_load":
@@ -840,9 +1037,7 @@ class CoreTuiApp:
                     catalog = frame.get("catalog")
                     failures = frame.get("failures")
                     if isinstance(catalog, CommandCatalog):
-                        self.catalog_revision, self.catalog_cache = catalog.revision_id, catalog.commands
-                        if self.composer.completion:
-                            self._sync_slash_completion()
+                        self._cache_catalog(catalog.commands, catalog.revision_id)
                     status = frame.get("session_status")
                     if isinstance(status, str) and status:
                         self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
@@ -935,6 +1130,7 @@ class CoreTuiApp:
             overlay = self.active_overlay
             dropped = overlay is not None and getattr(overlay, "revision_id", "") != to_revision_id
             if dropped:
+                self._close_live_input()
                 self.active_overlay = None
             self._apply_gate_change(ActivationCommitted(to_revision_id))
             self._load_catalog()
@@ -1008,6 +1204,10 @@ class CoreTuiApp:
             self.pending_approval = None
             for queued_id in [i for i, q in self.queued_confirmations.items() if q.revision_id != change.to_revision_id]:
                 del self.queued_confirmations[queued_id]
+            if self._suspended_live is not None and getattr(self._suspended_live[0], "revision_id", "") != change.to_revision_id:
+                self._suspended_live = None
+                self._live_input = None
+                self._live_refresh_at = 0.0
             if before.approval is not None or len(before.confirmations) != len(after.confirmations):
                 self._present_queued_confirmation()
             return
@@ -1040,6 +1240,31 @@ class CoreTuiApp:
         self._cancel_pending = False
         self.status_line = ""
 
+    def _close_live_input(self) -> None:
+        """Stop polling; the open overlay (if any) is the caller's to clear."""
+        self._live_input = None
+        self._live_refresh_at = 0.0
+        self._live_serial += 1
+        self._suspended_live = None
+
+    def _restore_suspended_live(self) -> None:
+        """Bring back the live view a direct confirmation decision just closed."""
+        suspended = self._suspended_live
+        self._suspended_live = None
+        if suspended is None:
+            return
+        overlay, live = suspended
+        if self.active_overlay is not None or self.pending_approval is not None:
+            return
+        revision = getattr(overlay, "revision_id", "")
+        if not revision or revision != self.catalog_revision:
+            return
+        self.active_overlay = overlay
+        self._live_input = live
+        if live is not None:
+            self._live_refresh_at = time.monotonic()
+        self.status_line = ""
+
     def _show_or_queue_confirmation(self, overlay: InteractiveConfirmation) -> None:
         """Show one pending confirmation, or retain it until the live region frees.
 
@@ -1053,7 +1278,17 @@ class CoreTuiApp:
         current = self.active_overlay
         if isinstance(current, InteractiveConfirmation) and current.request_id == request_id:
             return
-        if self.active_overlay is None and self.pending_approval is None:
+        if current is None and self.pending_approval is None:
+            self.active_overlay = overlay
+            self.status_line = "Confirmation required"
+            return
+        if isinstance(current, (InteractiveChoices, InteractiveMarkdown)) and self._live_input is not None and self._suspended_live is None:
+            # A live view yields to its own cancel confirmation: the instance
+            # (filter/selection/scroll) is retained, polling pauses, and only a
+            # direct decision restores it — never a historical replay.
+            self._suspended_live = (current, self._live_input)
+            self._live_refresh_at = 0.0
+            self._live_serial += 1
             self.active_overlay = overlay
             self.status_line = "Confirmation required"
             return
@@ -1071,6 +1306,8 @@ class CoreTuiApp:
             self.active_overlay = overlay
             self.status_line = "Confirmation required"
             return
+        if self._suspended_live is not None:
+            self._restore_suspended_live()
 
     def _process_input(self) -> None:
         now = time.monotonic()
@@ -1198,6 +1435,7 @@ class CoreTuiApp:
 
         if outcome.get("cancel"):
             self._interaction_serial += 1
+            self._close_live_input()
             self.active_overlay = None
             self.status_line = ""
             self._present_queued_confirmation()
@@ -1208,14 +1446,23 @@ class CoreTuiApp:
         elif isinstance(self.active_overlay, (InteractiveChoices, InteractiveForm, InteractiveMarkdown)):
             action = str(outcome.get("action", ""))
             arguments = outcome.get("arguments", {})
+            if isinstance(self.active_overlay, InteractiveChoices) and action == "tui.switch_session":
+                self.active_overlay = None
+                target_id = str(arguments.get("session_id", "")) if isinstance(arguments, dict) else ""
+                if target_id and target_id != self.session_id:
+                    self._switch_session(target_id)
+                return
             revision = self.active_overlay.revision_id
             if outcome.get("prepare_input"):
                 descriptor = next((item for item in self._catalog() if item.name == action), None)
                 if revision != self.catalog_revision or descriptor is None or not descriptor.has_input:
                     self.status_line = "Command input unavailable; refresh the catalog"
                     return
+                live_arguments = arguments if isinstance(arguments, dict) else {}
+                if self._live_input is not None:
+                    self._live_input = {"name": action, "arguments": dict(live_arguments), "revision": revision, "source": self.active_overlay}
                 self.active_overlay = None
-                self._prepare_command_input_async(descriptor)
+                self._prepare_command_input_async(descriptor, arguments=live_arguments)
                 return
             # The overlay (with its typed inputs) stays mounted until the
             # server accepts: a late 503 must not lose the user's draft. The
@@ -1508,10 +1755,19 @@ class CoreTuiApp:
         threading.Thread(target=worker, daemon=True, name="CoreReconcile").start()
 
     def _handle_composer_key(self, key: Any) -> None:
-        if self.status_line.startswith("Loading /"):
+        if self.status_line.startswith("Loading "):
             self.status_line = ""
         self._interaction_serial += 1
         name = key.name
+        chord = _normalize_chord(name)
+        if chord in self._shortcut_bindings:
+            # A catalog chord: never through the composer, never as slash text.
+            self._dispatch_shortcut(self._shortcut_bindings[chord])
+            return
+        if chord in self._shortcut_conflicts:
+            claimants = ", ".join(f"/{_slash_display(entry)}" for entry in self._shortcut_conflicts[chord])
+            self.terminal.commit_rows([self.styles.fg("warning", f"Shortcut {name} is claimed by {claimants}; no action bound")])
+            return
         if name in ("enter", "tab") and self.composer.completion:
             selected = self.composer.completion[self.composer.completion_index]
             paths = [f"/{_slash_public_path(entry)}" for entry in self.catalog_cache if entry.slash_visible]
@@ -1769,8 +2025,8 @@ class CoreTuiApp:
             except queue.Empty:
                 break
         self.session_id = session_id
+        self._close_live_input()
         self.active_overlay = None
-        self.pending_approval = None
         self.queued_confirmations.clear()
         self._gates = GateState()
         self._tool_headers.clear()
@@ -1813,7 +2069,17 @@ class CoreTuiApp:
         if not self.catalog_cache:
             self._load_catalog()
         for c in self.catalog_cache:
+            if not c.slash_visible:
+                continue
             lines.append(f"  /{_slash_public_path(c):<16} {c.description}")
+        if self._shortcut_bindings or self._shortcut_conflicts:
+            lines.append(self.styles.render("accent", "=== Shortcuts ==="))
+            for chord in sorted(self._shortcut_bindings):
+                descriptor = self._shortcut_bindings[chord]
+                lines.append(f"  {chord:<18} {_safe(descriptor.description)}")
+            for chord in sorted(self._shortcut_conflicts):
+                claimants = ", ".join(f"/{_slash_display(entry)}" for entry in self._shortcut_conflicts[chord])
+                lines.append(f"  {chord:<18} conflicts: {claimants} (unbound)")
         self.terminal.commit_rows(lines)
 
     def _tui_model(self, arg: str) -> None:
@@ -1925,11 +2191,23 @@ class CoreTuiApp:
     def _show_sessions(self) -> None:
         try:
             sess_list = self.client.list_sessions()
-            lines = [self.styles.render("accent", "=== Active Sessions ===")]
-            for s in sess_list:
-                marker = " >" if s.session_id == self.session_id else "  "
-                lines.append(f"{marker} {s.session_id} (status={s.status}, turn={s.turn})")
-            self.terminal.commit_rows(lines)
+            if not sess_list:
+                self.terminal.commit_rows([self.styles.fg("warning", "No active sessions.")])
+                return
+            options = tuple(
+                ChoiceOption(
+                    id=s.session_id,
+                    label=f"{s.session_id[:8]} (turn {s.turn}, {s.status})" + (" [current]" if s.session_id == self.session_id else ""),
+                )
+                for s in sess_list
+            )
+            data = ChoicesViewData(options=options, action="tui.switch_session", argument_name="session_id")
+            overlay = InteractiveChoices(data, revision_id=self._displayed_revision(), title="Active Sessions")
+            for idx, s in enumerate(sess_list):
+                if s.session_id == self.session_id:
+                    overlay.selected_index = idx
+                    break
+            self.active_overlay = overlay
         except Exception as exc:
             self.terminal.commit_rows([self.styles.fg("error", f"Failed to list sessions: {_safe(exc)}")])
 
@@ -2023,12 +2301,15 @@ class CoreTuiApp:
 
         threading.Thread(target=worker, daemon=True, name="CoreFormLoad").start()
 
-    def _prepare_command_input_async(self, descriptor: CommandDescriptor) -> None:
+    def _prepare_command_input_async(self, descriptor: CommandDescriptor, *, arguments: Mapping[str, Any] | None = None) -> None:
         """Read optional plugin input off the UI thread without invoking its action."""
         self._interaction_serial += 1
         serial = self._interaction_serial
         session_id, generation, revision = self.session_id, self._generation, self.catalog_revision
-        self.status_line = f"Loading /{_slash_public_path(descriptor)}..."
+        owned_arguments = dict(arguments or {})
+        # Hidden actions (Alt+A monitor) show their human description, never a
+        # raw /dotted id a user could mistake for a slash command.
+        self.status_line = f"Loading {_safe(descriptor.description) if not descriptor.slash_visible else '/' + _slash_public_path(descriptor)}..."
 
         def worker() -> None:
             frame: dict[str, Any] = {
@@ -2037,20 +2318,98 @@ class CoreTuiApp:
                 "revision_id": revision,
                 "session_id": session_id,
                 "generation": generation,
+                "action": descriptor.name,
+                "arguments": owned_arguments,
             }
             try:
-                snapshot = self.client.command_input(session_id, descriptor.name, revision)
+                snapshot = self.client.command_input(session_id, descriptor.name, revision, arguments=owned_arguments)
                 if snapshot.revision_id != revision:
                     raise ValueError("command input revision changed; refresh the catalog")
                 presentation = snapshot.presentation
                 frame["view"] = PluginViewDescriptor(
                     owner=descriptor.owner, name=descriptor.name, title=presentation.title, view_type=presentation.view_type, data=presentation.data
                 )
+                frame["refresh_after_ms"] = presentation.refresh_after_ms
             except Exception as exc:
                 frame["error"] = str(exc)
             self.event_queue.put(frame)
 
         threading.Thread(target=worker, daemon=True, name="CoreCommandInput").start()
+
+    def _refresh_live_input_async(self) -> None:
+        """Re-read the open live view's source once; stale replies never render."""
+        live = self._live_input
+        if live is None:
+            return
+        self._live_serial += 1
+        serial = self._live_serial
+        session_id, generation = self.session_id, self._generation
+        action = str(live.get("name", ""))
+        revision = str(live.get("revision", ""))
+        owned_arguments = dict(live.get("arguments") or {})
+        source = live.get("source")
+
+        def worker() -> None:
+            frame: dict[str, Any] = {
+                "kind": "live_input_ready",
+                "serial": serial,
+                "revision_id": revision,
+                "session_id": session_id,
+                "generation": generation,
+                "action": action,
+                "arguments": owned_arguments,
+            }
+            try:
+                snapshot = self.client.command_input(session_id, action, revision, arguments=owned_arguments)
+                if snapshot.revision_id != revision:
+                    raise ValueError("command input revision changed; refresh the catalog")
+                presentation = snapshot.presentation
+                frame["view"] = PluginViewDescriptor(
+                    owner="live", name=action, title=presentation.title, view_type=presentation.view_type, data=presentation.data
+                )
+                frame["refresh_after_ms"] = presentation.refresh_after_ms
+            except Exception as exc:
+                frame["error"] = str(exc)
+            if source is not None:
+                frame["source"] = source
+            self.event_queue.put(frame)
+
+        threading.Thread(target=worker, daemon=True, name="CoreLiveInput").start()
+
+    def _arm_live_input(self, *, name: str, arguments: Mapping[str, Any], revision: str, refresh_after_ms: int | None, source: Any) -> None:
+        """Enable polling only from explicit refresh metadata on the open view."""
+        if refresh_after_ms is None:
+            self._live_input = None
+            self._live_refresh_at = 0.0
+            return
+        self._live_input = {
+            "name": name,
+            "arguments": dict(arguments),
+            "revision": revision,
+            "source": source,
+            "refresh_after_ms": refresh_after_ms,
+        }
+        self._live_refresh_at = time.monotonic() + refresh_after_ms / 1000.0
+
+    def _mount_live_view(
+        self, view: PluginViewDescriptor, revision: str, *, name: str, arguments: Mapping[str, Any], refresh_after_ms: int | None
+    ) -> bool:
+        """Mount one live view and arm its refresh; empty choices stay open."""
+        if not self._mount_interactive_view(view, revision):
+            return False
+        self._suspended_live = None
+        self._arm_live_input(name=name, arguments=arguments, revision=revision, refresh_after_ms=refresh_after_ms, source=self.active_overlay)
+        return True
+
+    def _dispatch_shortcut(self, descriptor: CommandDescriptor) -> None:
+        """Run one cached catalog chord without touching the composer draft."""
+        if self.upgrade is not None and self.upgrade.fenced:
+            self.status_line = "Core is draining for an upgrade; retry after it restarts"
+            return
+        if descriptor.has_input:
+            self._prepare_command_input_async(descriptor)
+            return
+        self._dispatch_catalog_command(descriptor, "")
 
     def _dispatch_catalog_command(self, cmd_desc: CommandDescriptor | None, arg_str: str) -> None:
         if cmd_desc is None:
@@ -2144,7 +2503,7 @@ class CoreTuiApp:
         elif self.active_overlay is not None:
             overlay_rows = (
                 self.active_overlay.render_rows(width, self.styles, max_rows=max(6, getattr(self.terminal, "height", 24) - len(footer_rows)))
-                if isinstance(self.active_overlay, InteractiveMarkdown)
+                if isinstance(self.active_overlay, (InteractiveMarkdown, InteractiveChoices))
                 else self.active_overlay.render_rows(width, self.styles)
             )
             frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, *footer_rows), cursor=None)

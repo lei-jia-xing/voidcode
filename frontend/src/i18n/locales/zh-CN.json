@@ -90,5 +90,11 @@
   "core.revisionAdopted": "已采用核心修订 {{revision}}：目录与视图已刷新",
   "core.formTitle": "表单：{{action}}",
   "core.commandInputRevisionChanged": "命令输入的版本已变化，请刷新命令列表。",
-  "core.formMustBeChoice": "{{field}} 必须从可用选项中选择。"
+  "core.formMustBeChoice": "{{field}} 必须从可用选项中选择。",
+  "core.choicesFilter": "筛选选项…",
+  "core.choicesEmpty": "暂无选项。",
+  "core.choicesNoMatch": "没有匹配的选项。",
+  "core.shortcutActions": "操作",
+  "core.shortcutConflict": "快捷键 {{chord}} 被 {{names}} 同时声明；未绑定按键",
+  "core.shortcutConflicted": "快捷键冲突，按钮仍可用"
 }

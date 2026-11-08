@@ -9,12 +9,6 @@ def _prompt(name: str) -> str:
     return files(__package__).joinpath("texts", f"{name}.txt").read_text(encoding="utf-8").strip()
 
 
-DEFAULT_AGENT = AgentDefinition(
-    name="default",
-    description="General user-facing assistant; runtime owns policy and tool scope.",
-    prompt=_prompt("default"),
-)
-
 EXECUTE_AGENT = AgentDefinition(
     name="execute",
     description="Delegated execution of an assigned task; runtime enforces the active tool scope.",
@@ -51,7 +45,6 @@ PLAN_AGENT = AgentDefinition(
 
 
 _AGENTS = (
-    DEFAULT_AGENT,
     EXECUTE_AGENT,
     REVIEW_AGENT,
     EXPLORE_AGENT,

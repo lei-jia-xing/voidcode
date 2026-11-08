@@ -17,7 +17,7 @@ passed. Each scenario needs client behavior tests or a recorded manual check.
 
 | Commands | Current behavior / evidence | Interaction acceptance still required |
 | --- | --- | --- |
-| `agents`, `agents.show` | List returns choices; detail returns Markdown; bare show prepares dynamic name options without invocation. SDK, plugin, TUI/Web and real RPC tests cover selection and revision binding | Empty/error discovery and long profile details still need physical terminal/browser acceptance |
+| `skills`, `skills.show` | List returns choices; detail returns Markdown; bare show prepares dynamic name options without invocation. SDK, plugin, TUI/Web and real RPC tests cover selection and revision binding | Empty/error discovery and long skill details |
 | `goal` | `goal/goal_plugin.py`: empty state opens creation; existing goal shows bounded status/objective/usage details and applicable Edit/Pause/Resume/Clear actions. Edit prepares the prefilled form without mutation | Physical client acceptance for lifecycle actions and large-objective loading |
 | `goal.set`, `goal.edit` | Prepared multiline creation and prefilled editing; natural objective text via catalog `text_argument`; explicit JSON retained | Physical client acceptance for large objective loading and validation/refusal recovery |
 | `goal.pause`, `goal.resume`, `goal.clear`, `goal.load_objective` | Typed lifecycle commands / exact-read form helper | Actions offered from goal details; physical client acceptance remains; replacement confirmation and exact-read helper remain governed |
@@ -30,7 +30,6 @@ passed. Each scenario needs client behavior tests or a recorded manual check.
 | `review` | Bare slash input prepares a target/focus form with default workspace changes and branch/SHA requirements; explicit natural focus and structured invocation remain available. Preparation performs no Git/provider/child work; focus survives all target types | Physical client acceptance of target selection, missing-argument recovery and governed child startup |
 | `compact` | One-step explicit action returns structured accounting: event range, covered/dropped bytes, summary source and measured tokens; absent measurements remain unknown. Unit tests cover success, no-op and empty session | Physical client acceptance for accounting and refusal readability |
 | `mcp`, `lsp` | Passive service selectors open status/error details; MCP tools page through the full cached surface and distinguish undiscovered from known-empty. Unit tests verify selection, failures, disabled recovery and 61-tool Unicode pagination | Physical client acceptance of server navigation and recovery; configuration changes still require admission |
-| `effectiveness` | Readable paged diagnostics show tool outcomes, retries/truncation, model edits and usage coverage; unknown tokens/cost stay explicit, full structured data remains available | Physical client acceptance of diagnostics navigation and empty/unknown states |
 | `btw`, shell (`!`) | Separate question / supervised shell commands | Preserve natural raw text and existing cancellation/approval semantics; action receipts may remain concise |
 
 Paths in the table are relative to `src/voidcode/plugins/`. Core help/status and
@@ -40,8 +39,8 @@ plugin command names.
 
 ## Completion acceptance
 
-- `/` and `/ag` show one root `agents`, with its description and namespace marker.
-- `/agents ` offers `show`; bare `/agents` remains executable with Enter.
+- `/` and `/sk` show one root `skills`, with its description and namespace marker.
+- `/skills ` offers `show`; bare `/skills` remains executable with Enter.
 - Tab enters child namespaces. Enter on a namespace with no command enters it;
   Enter on an exact executable selection dispatches only that command.
 - Descriptions and required `<argument>` / optional `[argument]` hints come from
@@ -56,9 +55,55 @@ Real client acceptance is recorded in `tests/integration/test_tui_command_browse
 `frontend/e2e/command-browsers.spec.ts` (Chromium keyboard hierarchy, Todo editors,
 Skills pages, passive replay, catalog refresh and disabled command rejection).
 
+## Subagent monitor acceptance
+
+The monitor is a hidden, revision-bound live view (`subagents.monitor`, Alt+A
+in the TUI, action button in Chromium): a searchable roster of the bound
+session's whole descendant subtree plus one scrollable Markdown detail, with
+explicit subtree cancellation through the durable confirmation gate. Roster and
+detail refresh only from `command.input` reads carrying `refresh_after_ms`
+while the view is open; no invoke receipts, no notice consumption, no history replay mounting.
+
+Exercised on real surfaces (not mocks for the UI path):
+- `tests/integration/test_tui_monitor.py`: restored persisted roster with both
+  nested labels on screen at 80x24 and 40x18; empty roster stays mounted and
+  Enter-safe; remote disable drops an open roster plus the chord visibly;
+  remote gated live scene (cross-plugin grandchild) browses roster/detail and
+  restores draft/caret by real edit; deny leaves the subtree running while
+  allow settles it `interrupted`/`owner_cancel` with the requested (not
+  stopped) receipt wording, sibling and root completing afterwards.
+- `frontend/e2e/monitor.spec.ts`: read-only open via `command.input` only with
+  zero invokes; controlled filter with Esc clear; close restores draft/focus;
+  reload never resurrects; disable removes button and panel; one gated live
+  scenario browses roster/detail, denies then allows with the completion
+  receipt in the transcript, verifies running/interrupted/completed states.
+- `tests/unit/tui/test_shortcut_bindings.py`,
+  `tests/unit/tui/test_live_command_input.py`, `tests/unit/test_core_tui.py`
+  choices/viewport cases, and `frontend/src/core/{slash,views}.test.tsx`
+  cover chord conflicts, filter/selection stability, refresh cadence and
+  failure recovery, gate priority, and poll/navigation non-interference.
+- Native approval priority was exercised once per surface with throwaway
+  two-stage scripts (not permanent tests): first open the monitor with a draft
+  on an idle root, then start one real bundled `write` under policy ask. The
+  genuine approval arrives while the monitor is already open. TUI: Alt+A cannot
+  replace the gate across refresh; deny restores the monitor and draft/caret.
+  Chromium: the shortcut button stays disabled and the focused Deny button
+  retains focus across refresh; after deny, closing the monitor restores the
+  exact draft/caret. Both runs finish `completed`, with one approval request,
+  exactly one durable deny decision, and no target file.
+- A throwaway admitted conflict plugin claims `alt+a` alongside subagents.
+  Real TUI input names both claimants, dispatches neither, and retains draft/
+  caret. Chromium names the conflict while both command buttons still open their
+  own presentations. This does not claim browser-level Alt+A interception.
+
+Limits of the current proof: cancellation targets the child subtree in the
+exercises above; deeper multi-level queued-followup races and the backend's
+rare parked-registration races are backend-suite territory (see the subagents
+monitor integration tests), not re-proven here.
+
 The Chromium no-provider scenario additionally verifies review target preparation
 and server validation with draft retention; schedule creation, list and cancellation;
-usage after explicit hot reload; context/effectiveness empty states; MCP/LSP
+usage after explicit hot reload; context empty states; MCP/LSP
 configuration recovery notices; goal creation without submitting; and passive
 replay after refresh. These checks do not establish non-empty server navigation,
 all goal lifecycle actions, workflow execution UI, or terminal acceptance.

@@ -362,10 +362,12 @@ export class CoreClient {
     sessionId: string,
     name: string,
     expectedRevision: string,
+    args: Record<string, unknown> = {},
   ) {
     return this.call("command.input", {
       session_id: sessionId,
       name,
+      arguments: args,
       expected_revision: expectedRevision,
     });
   }

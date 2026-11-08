@@ -64,7 +64,6 @@ test.beforeAll(async () => {
     "cron",
     "review",
     "goal",
-    "effectiveness",
     "mcp",
     "lsp",
   ])
@@ -152,27 +151,24 @@ test("keyboard discovery, todo editing, passive replay and paged skills work in 
   await page.goto(`${base}/?token=${token}`);
   await expect(page.locator('[data-testid^="session-tab-"]')).toHaveCount(1);
   const input = page.getByTestId("prompt-input");
-  await input.fill("/ag");
+  await input.fill("/sk");
   await expect(
     page.getByTestId("slash-suggestions").getByRole("button"),
   ).toHaveCount(1);
   await expect(page.getByTestId("slash-suggestions")).not.toContainText(
-    "/agents show",
+    "/skills show",
   );
   await input.press("Tab");
-  await expect(input).toHaveValue("/agents ");
+  await expect(input).toHaveValue("/skills ");
   await expect(page.getByTestId("slash-suggestions")).toContainText(
-    "/agents show",
+    "/skills show",
   );
   await input.press("Escape");
   await expect(page.getByTestId("slash-suggestions")).toHaveCount(0);
-  await expect(input).toHaveValue("/agents ");
+  await expect(input).toHaveValue("/skills ");
   await input.press("Backspace");
   await input.press("Enter");
-  await page.getByTestId("choice-option-explore").click();
-  await expect(page.getByTestId("command-presentation")).toContainText(
-    "Agent: explore",
-  );
+  await expect(page.getByTestId("command-presentation")).toBeVisible();
   await input.fill("/todo");
   await input.press("Enter");
   await page
@@ -351,12 +347,6 @@ test("guided review, schedule cancellation and diagnostic panels work without a 
   const previousAdoptions = await adoptions.count();
   await command("/core reload");
   await expect(adoptions).toHaveCount(previousAdoptions + 1);
-  await command("/effectiveness");
-  await expect(panel).toContainText("No persisted tool calls");
-  await panel
-    .getByRole("button", { name: "Refresh metrics", exact: true })
-    .click();
-  await expect(panel).toContainText("Session effectiveness");
   await command("/mcp");
   await expect(panel).toContainText("No MCP servers are configured");
   await expect(panel).toContainText("/core reload");

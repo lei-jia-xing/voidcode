@@ -239,13 +239,16 @@ class CoreRpcClient:
             )
         )
 
-    def command_input(self, session_id: str, name: str, expected_revision: str) -> CommandInputSnapshot:
+    def command_input(
+        self, session_id: str, name: str, expected_revision: str, *, arguments: Mapping[str, object] | None = None
+    ) -> CommandInputSnapshot:
         return CommandInputSnapshot.from_payload(
             self._call(
                 "command.input",
                 {
                     "session_id": session_id,
                     "name": name,
+                    "arguments": dict(arguments or {}),
                     "expected_revision": expected_revision,
                 },
             )

@@ -5,6 +5,7 @@ VoidCode is configured by exactly one file per workspace: `voidcode.json` at the
 A fresh state directory (no database or adopted revision) starts with bundled plugins enabled and no selected model; supported environment credentials can supply providers without a file. It never creates `voidcode.json`. Restarts restore the recorded configuration and private snapshot without reading new environment keys or the live file. The live file is required for explicit `/core reload`, or when a database exists without an adopted revision. `/status` and `/help` work without a model; model turns require a selected `model.model` and an available provider.
 
 Configuration is adopted as a *revision*. To apply an edited `voidcode.json` or changed environment credentials, run `/core reload` on an idle session (`voidcode invoke <session_id> core.reload --expected-revision <revision_id>` from the CLI). It re-admits the live file and commits a new revision; busy sessions and `policy.read_only` refuse the reload. A new `--state-dir` adopts the current file and environment as a fresh first revision.
+Before upgrading from a build that bundles `effectiveness`, set `plugins.effectiveness.enabled` to `false` in `voidcode.json`, then run `/core reload` and confirm the revision commits while still on the old build. Editing the file alone is insufficient: restart restores the recorded revision, not the live file.
 
 Plugins may additionally read their own resources (for example agent profiles under `$XDG_CONFIG_HOME/voidcode/agents`), but that never overrides `voidcode.json`.
 
@@ -34,7 +35,6 @@ Plugins may additionally read their own resources (for example agent profiles un
   "plugins": {
     "files": { "enabled": true },
     "providers": { "enabled": true },
-    "effectiveness": { "enabled": false },
     "my-linter": {
       "enabled": true,
       "path": "../voidcode-plugins/my-linter",
@@ -167,9 +167,9 @@ Each key is a plugin id matching `[a-z][a-z0-9_-]*`.
 
 Bundled plugin ids (those shipped in `src/voidcode/plugins/`) need no entry at all: they are enabled with an empty configuration by default, and an entry only exists to disable one, configure it, or point it at a different source.
 
-Agent discovery and `/agents`/`agents show` belong to `delegation`, along with
+Subagent discovery and monitoring belong to `subagents`, along with
 `task`/`task_batch`. Agent files use `.claude/agents/` and the supported Claude Code
-Markdown format. See the [delegation](../src/voidcode/plugins/delegation/README.md)
+Markdown format. See the [subagents](../src/voidcode/plugins/subagents/README.md)
 README for the supported fields and explicit runtime limitations.
 
 ### Scripted workflows

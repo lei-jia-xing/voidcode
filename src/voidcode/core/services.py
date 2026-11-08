@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
-from voidcode.sdk.history import HistoryPage
+from voidcode.sdk.history import PAGE_BYTES, HistoryPage
 from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import own_json_object
 from voidcode.sdk.observed_effects import ObservedEffects
@@ -22,8 +22,10 @@ from voidcode.sdk.services import (
     ArtifactPage,
     ArtifactReference,
     BackgroundActionStatus,
+    CancelSubtreeReceipt,
     ChildOutcome,
     ChildSendReceipt,
+    DescendantNode,
     EventView,
     PluginBudget,
     ProcessHandle,
@@ -77,6 +79,7 @@ class RuntimeServices:
             "read_context_history",
             "read_child_history",
             "read_session_history",
+            "list_descendants",
             "session_info",
             "get_usage",
             "get_budget",
@@ -529,6 +532,7 @@ class RuntimeServices:
             bool(notify_on_completion),
             lease.owner,
             idempotency_key,
+            self._runtime.admission_guard(lease),
         )
 
     def find_child(self, *, idempotency_key: str) -> str | None:
@@ -570,7 +574,7 @@ class RuntimeServices:
         callback = self._runtime.send_child_callback
         if callback is None:
             raise RuntimeError("child messaging is unavailable")
-        payload = callback(lease.session_id, child_session_id, prompt, str(label), bool(notify_on_completion))
+        payload = callback(lease.session_id, child_session_id, prompt, str(label), bool(notify_on_completion), self._runtime.admission_guard(lease))
         if not isinstance(payload, Mapping):
             raise RuntimeError("runtime returned a malformed child send receipt")
         delivery = str(payload.get("delivery", "queued"))
@@ -652,6 +656,39 @@ class RuntimeServices:
         if callback is None:
             raise RuntimeError("child cancellation is unavailable")
         return callback(lease.session_id, str(child_session_id), str(reason))
+
+    def list_descendants(self) -> tuple[DescendantNode, ...]:
+        lease = self._active_lease()
+        callback = self._runtime.list_descendants_callback
+        if callback is None:
+            raise RuntimeError("descendant listing is unavailable")
+        rows = callback(lease.session_id)
+        if not isinstance(rows, tuple) or not all(isinstance(row, DescendantNode) for row in rows):
+            raise RuntimeError("runtime returned a malformed descendant listing")
+        return rows
+
+    def cancel_descendant_subtree(
+        self,
+        target_session_id: str,
+        *,
+        expected_run_id: str | None,
+        reason: str = "owner cancellation",
+    ) -> CancelSubtreeReceipt:
+        lease = self._active_lease()
+        self._check_hook("cancel_descendant_subtree")
+        if not isinstance(target_session_id, str) or not target_session_id:
+            raise ValueError("target_session_id must be a non-empty string")
+        if expected_run_id is not None and (not isinstance(expected_run_id, str) or not expected_run_id):
+            raise ValueError("expected_run_id must be a non-empty string or null")
+        if lease.internal_restricted:
+            raise PermissionError("Cannot cancel a descendant subtree from a read-only service lease")
+        callback = self._runtime.cancel_subtree_callback
+        if callback is None:
+            raise RuntimeError("subtree cancellation is unavailable")
+        receipt = callback(lease.session_id, target_session_id, expected_run_id, str(reason))
+        if not isinstance(receipt, CancelSubtreeReceipt):
+            raise RuntimeError("runtime returned a malformed subtree receipt")
+        return receipt
 
     def enqueue_background_action(
         self,
@@ -840,12 +877,15 @@ class RuntimeServices:
         after_sequence: int = 0,
         offset: int = 0,
         limit: int = 100,
+        page_bytes: int = PAGE_BYTES,
     ) -> HistoryPage:
         lease = self._active_lease()
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("session_id must be a non-empty string")
         if type(after_sequence) is not int or after_sequence < 0 or type(offset) is not int or offset < 0:
             raise ValueError("after_sequence and offset must be non-negative integers")
+        if type(page_bytes) is not int or page_bytes < 1 or page_bytes > PAGE_BYTES:
+            raise ValueError(f"page_bytes must be an integer within 1..{PAGE_BYTES}")
         limit = max(1, min(limit, 200))
         store = self._runtime.require_store()
         if session_id != lease.session_id:
@@ -854,7 +894,7 @@ class RuntimeServices:
             if target.workspace != caller.workspace or not self._runtime.is_descendant(target, caller.session_id):
                 raise PermissionError("session history is readable only for this session or its own descendants")
         events = store.events(session_id, after_sequence=after_sequence, limit=limit + 1)
-        page = render_history_page(events[:limit], after_sequence=after_sequence, offset=offset)
+        page = render_history_page(events[:limit], after_sequence=after_sequence, offset=offset, page_bytes=page_bytes)
         return replace(page, truncated=page.truncated or len(events) > limit)
 
     def tool_definition(self, name: str) -> ToolDefinition | None:

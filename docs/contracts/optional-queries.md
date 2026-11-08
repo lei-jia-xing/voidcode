@@ -43,12 +43,12 @@ fail visibly: disable one provider before admitting another. A breaking request/
 requires a new query name; do not silently change the meaning of an existing contract.
 Domain policy — what absence means for a concrete consumer, which answers are
 malformed — lives with the domain contracts in the owning plugin READMEs
-(files, lsp, delegation), not here.
+(files, lsp, subagents), not here.
 
 `voidcode.capabilities.agent_queries` shares one more contract the same way
 (`AGENT_DEFINITIONS.ask`/`bind`). The named-agent answer shape, provider
 behavior, substitution rules, and profile narrowing are canonical in the
-[delegation](../../src/voidcode/plugins/delegation/README.md) README.
+[subagents](../../src/voidcode/plugins/subagents/README.md) README.
 
 ## Distinct outcomes
 
@@ -70,7 +70,7 @@ failures.
 with all official plugins disabled and drives real file tools through the core. It checks
 substitution, provider absence, malformed answers, and unchanged files after refused edits.
 `tests/integration/test_agent_definition_query.py` does the same for named agents:
-delegation answers, any admitted plugin may substitute, an unknown name is `None`,
+subagents answers, any admitted plugin may substitute, an unknown name is `None`,
 and absence is a visible `QueryUnavailable`.
-The review and delegation integration suites also run their workflows without optional
+The review and subagents integration suites also run their workflows without optional
 inspection plugins or synthetic stand-in tools.

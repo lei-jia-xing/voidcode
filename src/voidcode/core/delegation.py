@@ -10,23 +10,22 @@ import hashlib
 import sqlite3
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
 from ..sdk.codec import decode_provider_result
 from ..sdk.limits import CHILD_PROMPT_MAX_BYTES
-from ..sdk.services import (
-    ChildOutcome,
-    ChildSendReceipt,
-)
+from ..sdk.services import CancelSubtreeReceipt, ChildOutcome, ChildSendReceipt, DescendantNode
 from .child_history import spill_history
 from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
 from .storage.store import (
     ContinuationRecord,
     EventDraft,
+    FencedSubtree,
     SessionRecord,
+    SqliteStore,
     StagedContinuationDraft,
     StoreConflict,
     StoredEvent,
@@ -113,6 +112,14 @@ class DelegationManager:
         #: ponytail: unbounded, one small id per spawn this process drove; cap it if a
         #: long-lived core ever drives enough children for this to matter.
         self._started_children: set[str] = set()
+        #: Subtree targets currently being cancelled, with an install count so
+        #: overlapping cancels of the same target never lift each other's fence.
+        #: Install/release happens under the lifecycle lock; registration
+        #: transactions consult the guard under the store lock over a
+        #: caller-captured ancestor chain, so no store call happens under the
+        #: lifecycle lock and lock order never inverts.
+        self._lifecycle_lock = threading.Lock()
+        self._cancel_fences: dict[str, int] = {}
 
     def close(self) -> None:
         with self._child_finished_lock:
@@ -130,6 +137,7 @@ class DelegationManager:
         notify_on_completion: bool = False,
         owner: str = "",
         idempotency_key: str | None = None,
+        admission_guard: Callable[[], bool] | None = None,
     ) -> str:
         """Create and start a delegated child session under `parent_session_id`.
 
@@ -157,9 +165,6 @@ class DelegationManager:
         if depth > DELEGATION_MAX_DEPTH:
             raise ValueError(f"delegation depth limit exceeded: depth {depth} exceeds max {DELEGATION_MAX_DEPTH}")
         budget = self.core.config.max_root_children
-        # No early return for existing keys here: every mapped key flows through the same
-        # recovery path below (spec verification plus pristine repair), and the quota only
-        # refuses genuine creation inside the store's atomic budget transaction.
         scope = self._child_tool_scope(parent, tool_allowlist)
         spec_hash = self._spawn_spec_hash(prompt, scope, max_steps, bool(readonly) or False)
         if idempotency_key is None:
@@ -182,21 +187,30 @@ class DelegationManager:
             )
             if recovery is not None:
                 return recovery
+        birth: dict[str, object] | None = None
+        if idempotency_key is not None:
+            birth = {
+                "child_session_id": child_id,
+                "parent_session_id": parent.session_id,
+                "label": label,
+                "depth": depth,
+                "tool_allowlist": list(scope) if scope is not None else None,
+                "notify_on_completion": notify_on_completion,
+                "spawn_owner": owner,
+                "idempotency_key": idempotency_key,
+                "spec_hash": spec_hash,
+                "readonly": bool(readonly),
+            }
+        # Capture the immutable ancestor chain and fast pre-check; the
+        # authoritative fence decision happens inside the store transaction
+        # via _guard_fence, so a fence installed between here and commit still
+        # refuses this spawn.
+        chain = self._chain_of(parent_session_id)
+        with self._lifecycle_lock:
+            fenced = self._fence_holds(chain)
+            if fenced is not None:
+                raise PermissionError(f"session {parent_session_id!r} is inside subtree {fenced!r} under cancellation")
         try:
-            birth: dict[str, object] | None = None
-            if idempotency_key is not None:
-                birth = {
-                    "child_session_id": child_id,
-                    "parent_session_id": parent.session_id,
-                    "label": label,
-                    "depth": depth,
-                    "tool_allowlist": list(scope) if scope is not None else None,
-                    "notify_on_completion": notify_on_completion,
-                    "spawn_owner": owner,
-                    "idempotency_key": idempotency_key,
-                    "spec_hash": spec_hash,
-                    "readonly": bool(readonly),
-                }
             self.core.store.create_child_session(
                 child_id,
                 str(self.core.workspace),
@@ -207,12 +221,20 @@ class DelegationManager:
                 tool_allowlist=scope,
                 max_root_children=budget,
                 birth=birth,
+                caller_chain=chain,
+                admission_guard=admission_guard,
             )
+        except FencedSubtree as exc:
+            raise PermissionError(str(exc)) from exc
         except sqlite3.IntegrityError:
+            collided = True
+        else:
+            collided = False
+        if collided:
             # Lost a same-key race: the winner owns the id, so re-enter the recovery path
             # (spec-mismatched retries still refuse there). Only keyed ids can collide.
             if idempotency_key is None:
-                raise
+                raise sqlite3.IntegrityError("child session id collision")
             recovery = self._recover_keyed_spawn(
                 parent.session_id,
                 child_id,
@@ -228,7 +250,7 @@ class DelegationManager:
                 idempotency_key=idempotency_key,
             )
             if recovery is None:  # pragma: no cover - the colliding row vanished mid-race
-                raise
+                raise sqlite3.IntegrityError("child session id collision")
             return recovery
         if readonly:
             # Core-owned stance record: the child stays restricted even if the parent's
@@ -544,6 +566,7 @@ class DelegationManager:
         *,
         label: str = "",
         notify_on_completion: bool = True,
+        admission_guard: Callable[[], bool] | None = None,
     ) -> ChildSendReceipt:
         """Send one attributed follow-up to a direct child, in the child's own session.
 
@@ -566,23 +589,35 @@ class DelegationManager:
         attributed = "[Follow-up from your parent agent; delegated agent input, not a direct user message]\n\n" + prompt
         outstanding = self._child_has_outstanding_work(child)
         self.core.store.ensure_root_budget(message_id, 32)
-        self.core.store.enqueue_continuation(
-            message_id,
-            CHILD_MESSAGE_OWNER,
-            child_id,
-            "kernel",
-            run_id=parent.run_id or uuid4().hex,
-            revision_id=self.core.revision_id,
-            payload={
-                "kind": "child_followup",
-                "text": attributed,
-                "prompt": prompt,
-                "label": label,
-                "notify_on_completion": notify_on_completion,
-            },
-            root_id=message_id,
-            role="user",
-        )
+        # Fast pre-check on a captured chain; the authoritative fence decision
+        # happens inside the store transaction via _guard_fence.
+        chain = self._chain_of(parent_session_id)
+        with self._lifecycle_lock:
+            fenced = self._fence_holds(chain, child_id)
+            if fenced is not None:
+                raise PermissionError(f"session {child_id!r} is inside subtree {fenced!r} under cancellation")
+        try:
+            self.core.store.enqueue_continuation(
+                message_id,
+                CHILD_MESSAGE_OWNER,
+                child_id,
+                "kernel",
+                run_id=parent.run_id or uuid4().hex,
+                revision_id=self.core.revision_id,
+                payload={
+                    "kind": "child_followup",
+                    "text": attributed,
+                    "prompt": prompt,
+                    "label": label,
+                    "notify_on_completion": notify_on_completion,
+                },
+                root_id=message_id,
+                role="user",
+                caller_chain=chain,
+                admission_guard=admission_guard,
+            )
+        except FencedSubtree as exc:
+            raise PermissionError(str(exc)) from exc
         delivery: Literal["started", "queued"] = "queued"
         started_run: str | None = None
         if not outstanding:
@@ -595,7 +630,12 @@ class DelegationManager:
                     revision_id=self.core.revision_id,
                     initial_root_budget=32,
                     continuation_id=message_id,
+                    caller_chain=chain,
                 )
+            except FencedSubtree:
+                # The fence won the race: the message stays queued and the
+                # canceller's disarm sweep owns it. The receipt honestly says queued.
+                pass
             except StoreConflict:
                 pass
             else:
@@ -656,44 +696,233 @@ class DelegationManager:
             raise PermissionError("child session does not belong to this parent session")
         return child
 
+    def list_descendants(self, session_id: str) -> tuple[DescendantNode, ...]:
+        """Every transitive descendant of one session with verbatim lifecycle facts."""
+        self.core._ensure_open()
+        caller = self.core.session(session_id)
+        nodes: list[DescendantNode] = []
+        for child in self.core.store.descendant_sessions(session_id):
+            if child.workspace != caller.workspace:
+                continue
+            label = self._child_label(child.parent_session_id or "", child.session_id) if child.parent_session_id else ""
+            # latest_stop_cause(run_id) returns None for the "" bookkeeping
+            # marker; a claimed-reserved node reports its committed owner_cancel.
+            stop_cause = self.core.store.latest_stop_cause(child.session_id, child.run_id or None) or ("owner_cancel" if child.run_id == "" else None)
+            queued = self.core.store.has_queued_child_followup(child.session_id)
+            tool_fact = self.core.store.latest_tool_fact(child.session_id)
+            activity = None if tool_fact is None else f"{tool_fact[0]} {tool_fact[1]}"
+            nodes.append(
+                DescendantNode(
+                    session_id=child.session_id,
+                    parent_session_id=child.parent_session_id,
+                    depth=child.depth,
+                    status=child.status,
+                    # The reserved-claim bookkeeping marker ("") is not a real
+                    # run: project it as null so detail/cancel bindings stay
+                    # valid and a claimed parent with descendants stays selectable.
+                    run_id=child.run_id or None,
+                    stop_cause=stop_cause,
+                    label=label or None,
+                    activity=activity,
+                    turn=child.turn,
+                    last_event_sequence=child.last_event_sequence,
+                    has_queued_followup=queued,
+                    awaiting_approval=child.status == "waiting",
+                )
+            )
+        return tuple(nodes)
+
+    def _fence_holds(self, chain: frozenset[str], child_id: str | None = None) -> str | None:
+        """The active fence blocking spawn/send through this chain, if any (caller holds the lifecycle lock)."""
+        fences = self._cancel_fences
+        if child_id is not None and child_id in fences:
+            return child_id
+        for fenced in fences:
+            if fenced in chain:
+                return fenced
+        return None
+
+    def _chain_of(self, session_id: str) -> frozenset[str]:
+        """One session's ancestor chain snapshot (outside any store transaction)."""
+        try:
+            record = self.core.store.session(session_id)
+        except KeyError:
+            return frozenset((session_id,))
+        return frozenset((session_id, *self._parent_chain(record)))
+
+    def _guard_fence(self, chain: frozenset[str], child_id: str | None) -> str | None:
+        """Store-transaction fence check: in-memory fence set plus a captured chain."""
+        with self._lifecycle_lock:
+            return self._fence_holds(chain, child_id)
+
+    def attach_store(self, store: SqliteStore) -> None:
+        """Install the in-transaction fence guard on the owning store (called once by Core)."""
+        store._cancel_fence_guard = self._guard_fence  # noqa: SLF001 - core owns the store seam
+
+    def cancel_descendant_subtree(
+        self, bound_session_id: str, target_session_id: str, *, expected_run_id: str | None, reason: str = "owner cancellation"
+    ) -> CancelSubtreeReceipt:
+        self.core._ensure_open()
+        bound = self.core.session(bound_session_id)
+        try:
+            target = self.core.store.session(target_session_id)
+        except KeyError as exc:
+            raise PermissionError("cancellation target is not a descendant of this session") from exc
+        if target.workspace != bound.workspace:
+            raise PermissionError("cancellation target is not a descendant of this session")
+        chain = self._parent_chain(target)
+        if bound_session_id not in chain:
+            raise PermissionError("cancellation target is not a descendant of this session")
+        if (target.run_id or None) != expected_run_id:
+            raise ValueError("cancellation target moved to a newer run; refresh and confirm again")
+        # Registration takes store -> lifecycle. Install the fence without
+        # reading the store under lifecycle, then census committed admissions.
+        with self._lifecycle_lock:
+            self._cancel_fences[target_session_id] = self._cancel_fences.get(target_session_id, 0) + 1
+        try:
+            descendants = self.core.store.descendant_sessions(target_session_id)
+            if (self.core.store.session(target_session_id).run_id or None) != expected_run_id:
+                raise ValueError("cancellation target moved to a newer run; refresh and confirm again")
+            subtree = (target_session_id, *(child.session_id for child in descendants))
+            observed_runs = {child.session_id: child.run_id or None for child in descendants}
+            observed_runs[target_session_id] = expected_run_id
+            cancelled: list[str] = []
+            already_terminal: list[str] = []
+            disarmed: list[str] = []
+            claimed: list[str] = []
+            moved: list[str] = []
+            for node_id in reversed(subtree):
+                record = self.core.store.session(node_id)
+                observed_run = observed_runs.get(node_id)
+                if (record.run_id or None) != observed_run:
+                    moved.append(node_id)
+                    continue
+                # Disarm first so an already-enqueued follow-up cannot start a
+                # new run after the snapshot below. The fence blocks new
+                # enqueues; a newer run that still slips through is left alone
+                # and reported distinctly below. No session lock is taken here:
+                # a live run holds its own lock for the whole provider call,
+                # and the bound signal below binds inside the abort registry.
+                pending = self.core.store.cancel_pending_continuations(node_id, CHILD_MESSAGE_OWNER, expected_session=record)
+                fresh = self.core.store.session(node_id)
+                fresh_run = fresh.run_id or None
+                if fresh_run != observed_run:
+                    if pending:
+                        disarmed.append(node_id)
+                    moved.append(node_id)
+                    continue
+                if fresh.status in ("completed", "failed"):
+                    if pending:
+                        disarmed.append(node_id)
+                    else:
+                        already_terminal.append(node_id)
+                    continue
+                if record.run_id is None and record.status == "idle":
+                    # Reserved but unstarted: the lock-free CAS claim below wins
+                    # only on the pristine state, so a racing first run either
+                    # claims first (claim is moot) or loses its own CAS.
+                    if self._claim_reserved_child(node_id, reason):
+                        claimed.append(node_id)
+                        continue
+                    if (self.core.store.session(node_id).run_id or None) != observed_run:
+                        moved.append(node_id)
+                        continue
+                stopped = self.core._cancel_session_run(node_id, reason, cause="owner_cancel", expected_run_id=observed_run)
+                if not stopped and (self.core.store.session(node_id).run_id or None) != observed_run:
+                    # The bound signal refused: a newer run claimed after the
+                    # pre-signal read. It was never signalled; report distinctly.
+                    moved.append(node_id)
+                    continue
+                if pending and not stopped:
+                    disarmed.append(node_id)
+                elif stopped:
+                    cancelled.append(node_id)
+                else:
+                    already_terminal.append(node_id)
+                child = self.core.store.session(node_id)
+                if child.parent_session_id is not None and record.run_id and child.run_id == record.run_id:
+                    facts = self._reconstruct_child_outcome(child)
+                    if facts is not None and not self._child_fact_exists(child.parent_session_id, node_id, record.run_id):
+                        self._publish_child_terminal(
+                            child.parent_session_id,
+                            node_id,
+                            run_id=record.run_id,
+                            status=facts.status,
+                            output=facts.output,
+                            error=facts.error,
+                            stop_cause=facts.stop_cause,
+                            label=facts.label,
+                            notify=facts.notify,
+                            deliver=False,
+                        )
+            return CancelSubtreeReceipt(
+                target_session_id=target_session_id,
+                expected_run_id=expected_run_id,
+                cancelled=tuple(cancelled),
+                already_terminal=tuple(already_terminal),
+                disarmed_queued=tuple(disarmed),
+                claimed_reserved=tuple(claimed),
+                observed_newer_run=tuple(moved),
+            )
+        finally:
+            with self._lifecycle_lock:
+                remaining = self._cancel_fences.get(target_session_id, 0) - 1
+                if remaining > 0:
+                    self._cancel_fences[target_session_id] = remaining
+                else:
+                    self._cancel_fences.pop(target_session_id, None)
+
+    def _parent_chain(self, record: SessionRecord) -> tuple[str, ...]:
+        chain: list[str] = []
+        current = record.parent_session_id
+        seen = {record.session_id}
+        while current is not None and current not in seen:
+            chain.append(current)
+            seen.add(current)
+            try:
+                current = self.core.store.session(current).parent_session_id
+            except KeyError:
+                break
+        return tuple(chain)
+
     def _claim_reserved_child(self, child_id: str, reason: str) -> bool:
         """Claim a pristine reserved child with an owner-cancel interruption; False when it already ran.
 
-        The claim commits an owner-cancel interruption plus a terminal checkpoint in one
-        CAS transaction guarded on the pristine state (idle, no run), so a racing first
-        run either wins the CAS (and this claim is moot) or loses it. A claimed child
-        reports cancelled and its late driver refuses to start; an explicit follow-up
-        afterwards is still a legal fresh run.
+        The claim is one lock-free CAS transaction guarded on the pristine
+        state (idle, no run, expected sequence), so a racing first run either
+        wins the CAS (and this claim is moot) or loses it. A claimed child
+        reports cancelled and its late driver refuses to start; an explicit
+        follow-up afterwards is still a legal fresh run. No session lock is
+        taken: an initial driver may already hold it for its provider call.
         """
-        with self.core._session_lock(child_id):  # noqa: SLF001 - the delegation manager serializes child claims
-            child = self.core.store.session(child_id)
-            if child.status != "idle" or child.run_id is not None:
+        child = self.core.store.session(child_id)
+        if child.status != "idle" or child.run_id is not None:
+            return False
+        for event in self.core.store.events(child_id):
+            if event.event_type == EventType.USER_MESSAGE:
                 return False
-            for event in self.core.store.events(child_id):
-                if event.event_type == EventType.USER_MESSAGE:
-                    return False
-            try:
-                self.core.store.commit_staged(
-                    child_id,
-                    expected_sequence=child.last_event_sequence,
-                    expected_run_id=None,
-                    run_id="",
-                    revision_id=self.core.revision_id,
-                    events=(
-                        EventDraft(
-                            EventType.RUN_INTERRUPTED,
-                            "kernel",
-                            "kernel",
-                            {"reason": reason, "stop_cause": "owner_cancel", "logical_turn": ""},
-                        ),
+        try:
+            self.core.store.commit_staged(
+                child_id,
+                expected_sequence=child.last_event_sequence,
+                expected_run_id=None,
+                run_id="",
+                revision_id=self.core.revision_id,
+                events=(
+                    EventDraft(
+                        EventType.RUN_INTERRUPTED,
+                        "kernel",
+                        "kernel",
+                        {"reason": reason, "stop_cause": "owner_cancel", "logical_turn": ""},
                     ),
-                    status="interrupted",
-                    checkpoint_kind="terminal",
-                    checkpoint_payload={"step": 0, "stop_cause": "owner_cancel"},
-                )
-            except StoreConflict:
-                return False
-            return True
+                ),
+                status="interrupted",
+                checkpoint_kind="terminal",
+                checkpoint_payload={"step": 0, "stop_cause": "owner_cancel"},
+            )
+        except StoreConflict:
+            return False
+        return True
 
     def _child_has_outstanding_work(self, child: SessionRecord) -> bool:
         """A running child, or a follow-up queued for it (never unread notices or parked work)."""
@@ -1192,7 +1421,7 @@ class DelegationManager:
             if continuation_id is None:
                 self.core._drive_pending(session_id, 32)
             else:
-                self.core.drain_continuations(session_id, limit=1, continuation_id=continuation_id)
+                self.core.drain_continuations(session_id, limit=1, continuation_id=continuation_id, _automatic=True)
         except Exception:
             # The message is durable; the next run, drain, or restart delivers it.
             return
@@ -1236,12 +1465,15 @@ class DelegationManager:
         return len(claimed)
 
     def _first_child_message(self, session_id: str) -> ContinuationRecord | None:
-        """The oldest core child message that is claimed or still pending, if any."""
+        """The oldest eligible core child message, excluding implicit stopped-session wakeups."""
+        interrupted = self.core.store.session(session_id).status == "interrupted"
         for records in (
             self.core.store.claimed_continuations(session_id, limit=100),
             self.core.store.pending_continuations(session_id, limit=100),
         ):
             for record in records:
                 if record.owner == CHILD_MESSAGE_OWNER:
+                    if interrupted and record.payload.get("kind") == "child_finished":
+                        continue
                     return record
         return None

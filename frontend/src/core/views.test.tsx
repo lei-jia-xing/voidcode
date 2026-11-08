@@ -63,6 +63,93 @@ describe("ChoicesView", () => {
     fireEvent.click(screen.getByTestId("choice-option-fast"));
     expect(onSelect).toHaveBeenCalledWith("set_mode", { mode_id: "fast" });
   });
+
+  it("filters by label or id and keeps arrows for navigation", () => {
+    const onSelect = vi.fn();
+    render(
+      <ChoicesView
+        data={{
+          style: null,
+          action: "open",
+          argument_name: "target",
+          options: [
+            { id: "jakarta", label: "Jakarta child" },
+            { id: "oslo", label: "Oslo child" },
+          ],
+        }}
+        onSelect={onSelect}
+      />,
+    );
+    const filter = screen.getByTestId("choices-filter");
+    // j/k are filter text, never navigation.
+    fireEvent.change(filter, { target: { value: "jak" } });
+    expect(filter).toHaveValue("jak");
+    expect(screen.getByTestId("choice-option-jakarta")).toBeVisible();
+    expect(screen.queryByTestId("choice-option-oslo")).toBeNull();
+    fireEvent.keyDown(filter, { key: "Escape" });
+    expect(filter).toHaveValue("");
+    expect(screen.getByTestId("choice-option-oslo")).toBeVisible();
+    fireEvent.change(filter, { target: { value: "jak" } });
+    fireEvent.keyDown(filter, { key: "ArrowDown" });
+    expect(
+      screen.getByTestId("choice-option-jakarta").getAttribute("aria-selected"),
+    ).toBe("true");
+    fireEvent.change(filter, { target: { value: "" } });
+    fireEvent.keyDown(filter, { key: "ArrowDown" });
+    expect(
+      screen.getByTestId("choice-option-oslo").getAttribute("aria-selected"),
+    ).toBe("true");
+    fireEvent.keyDown(filter, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("open", { target: "oslo" });
+  });
+
+  it("keeps the stable selection across a refresh and shows empty states", () => {
+    const onSelect = vi.fn();
+    const base = {
+      style: null,
+      action: "open",
+      argument_name: "target",
+    } as const;
+    const { rerender } = render(
+      <ChoicesView
+        data={{
+          ...base,
+          options: [
+            { id: "a", label: "Alpha" },
+            { id: "b", label: "Beta" },
+          ],
+        }}
+        onSelect={onSelect}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("choice-option-b"));
+    fireEvent.change(screen.getByTestId("choices-filter"), {
+      target: { value: "beta" },
+    });
+    rerender(
+      <ChoicesView
+        data={{
+          ...base,
+          options: [
+            { id: "b", label: "Beta refreshed" },
+            { id: "c", label: "Gamma" },
+          ],
+        }}
+        onSelect={onSelect}
+      />,
+    );
+    expect(screen.getByTestId("choices-filter")).toHaveValue("beta");
+    expect(screen.getByTestId("choice-option-b")).toBeVisible();
+    expect(screen.queryByTestId("choice-option-c")).toBeNull();
+    expect(
+      screen.getByTestId("choice-option-b").getAttribute("aria-selected"),
+    ).toBe("true");
+    rerender(
+      <ChoicesView data={{ ...base, options: [] }} onSelect={onSelect} />,
+    );
+    expect(screen.getByTestId("choices-empty")).toBeVisible();
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("FormView", () => {

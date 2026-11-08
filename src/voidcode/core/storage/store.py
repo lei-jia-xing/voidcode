@@ -7,7 +7,7 @@ import os
 import sqlite3
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -44,6 +44,15 @@ class SequenceConflict(StoreConflict):
 
 class RootBudgetExhausted(StoreConflict):
     """The durable root action budget refused this reservation."""
+
+
+class FencedSubtree(StoreConflict):
+    """A child registration or follow-up enqueue landed inside a fenced subtree."""
+
+    def __init__(self, fence: str, session_id: str) -> None:
+        super().__init__(f"session {session_id!r} is inside subtree {fence!r} under cancellation")
+        self.fence = fence
+        self.session_id = session_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -515,7 +524,12 @@ class SqliteStore:
 
     def __init__(self, path: Path | str) -> None:
         self._lock = threading.RLock()
-        # ponytail: single store RLock serializes connection access per instance; separate reader/writer connection pools if concurrency matters
+        #: Optional in-process cancellation fence consulted inside store
+        #: transactions (set by DelegationManager). The guard takes a
+        #: caller-captured ancestor chain plus an optional child id, reads only
+        #: in-memory fence state under its own lock, and never calls back into
+        #: the store, so lock order stays lifecycle -> store and never inverts.
+        self._cancel_fence_guard: Callable[[frozenset[str], str | None], str | None] | None = None
         self._closed = False
         if isinstance(path, str):
             path = Path(path)
@@ -677,6 +691,8 @@ class SqliteStore:
         tool_allowlist: tuple[str, ...] | None = None,
         max_root_children: int | None = None,
         birth: Mapping[str, object] | None = None,
+        caller_chain: frozenset[str] | None = None,
+        admission_guard: Callable[[], bool] | None = None,
     ) -> SessionRecord:
         """Create a delegated child session that can only be narrower than its parent.
 
@@ -702,13 +718,20 @@ class SqliteStore:
                 if max_root_children is not None or birth is not None:
                     self._connection.execute("BEGIN IMMEDIATE")
                     in_transaction = True
-                    if max_root_children is not None:
-                        row = self._connection.execute(
-                            "SELECT COUNT(*) FROM sessions WHERE root_session_id = ? AND parent_session_id IS NOT NULL",
-                            (root_session_id,),
-                        ).fetchone()
-                        if row is not None and int(row[0]) >= max_root_children:
-                            raise ValueError("delegation spawn budget exhausted for this chain")
+                guard = self._cancel_fence_guard
+                if guard is not None and caller_chain is not None:
+                    fenced = guard(caller_chain, None)
+                    if fenced is not None:
+                        raise FencedSubtree(fenced, parent_session_id)
+                if admission_guard is not None and not admission_guard():
+                    raise PermissionError("calling invocation is no longer active")
+                if max_root_children is not None:
+                    row = self._connection.execute(
+                        "SELECT COUNT(*) FROM sessions WHERE root_session_id = ? AND parent_session_id IS NOT NULL",
+                        (root_session_id,),
+                    ).fetchone()
+                    if row is not None and int(row[0]) >= max_root_children:
+                        raise ValueError("delegation spawn budget exhausted for this chain")
                 cursor = self._connection.execute(
                     """
                     INSERT INTO sessions (
@@ -1165,6 +1188,94 @@ class SqliteStore:
             if row is None:
                 raise KeyError(f"unknown session: {session_id}")
             return _session_record(row)
+
+    def descendant_sessions(self, session_id: str) -> tuple[SessionRecord, ...]:
+        """Every transitive descendant of one session, in stable creation order."""
+        with self._lock:
+            self._check_open()
+            self.session(session_id)
+            cursor = self._connection.execute(
+                """
+                WITH RECURSIVE subtree(session_id) AS (
+                    SELECT session_id FROM sessions WHERE parent_session_id = ?
+                    UNION
+                    SELECT s.session_id FROM sessions s JOIN subtree t ON s.parent_session_id = t.session_id
+                )
+                SELECT s.session_id, s.workspace, s.status, s.active_revision_id, s.run_id, s.turn,
+                       s.last_event_sequence, s.parent_session_id, s.root_session_id, s.depth, s.tool_allowlist_json
+                FROM sessions s JOIN subtree t ON s.session_id = t.session_id
+                ORDER BY s.rowid ASC
+                """,
+                (session_id,),
+            )
+            return tuple(_session_record(row) for row in cursor.fetchall())
+
+    def latest_stop_cause(self, session_id: str, run_id: str | None) -> str | None:
+        """The committed stop cause of one run, or None when no terminal fact names one."""
+        with self._lock:
+            self._check_open()
+            if not run_id:
+                return None
+            row = self._connection.execute(
+                """
+                SELECT payload_json FROM session_events
+                WHERE session_id = ? AND run_id = ? AND event_type = ?
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (session_id, run_id, EventType.RUN_INTERRUPTED),
+            ).fetchone()
+            if row is None:
+                return None
+            payload = own_json_object(json.loads(row[0]))
+            cause = payload.get("stop_cause")
+            return cause if isinstance(cause, str) and cause else None
+
+    def has_queued_child_followup(self, session_id: str) -> bool:
+        """Whether one session holds a pending core child follow-up (never notices or claims)."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                """
+                SELECT 1 FROM continuations
+                WHERE session_id = ? AND status = 'pending' AND owner = ?
+                  AND json_extract(payload_json, '$.kind') = 'child_followup'
+                LIMIT 1
+                """,
+                (session_id, CHILD_MESSAGE_OWNER),
+            ).fetchone()
+            return row is not None
+
+    def latest_tool_fact(self, session_id: str) -> tuple[str, str] | None:
+        """The newest committed tool identity/outcome pair, or None when no tool finished."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                """
+                SELECT event_type, payload_json FROM session_events
+                WHERE session_id = ? AND event_type IN (?, ?)
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (session_id, EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED),
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                payload = own_json_object(json.loads(row[1]))
+                call = payload.get("call")
+                result = payload.get("result")
+                if not isinstance(call, Mapping) or not isinstance(result, Mapping):
+                    return None
+                name = call.get("tool_name")
+                if not isinstance(name, str) or not name:
+                    return None
+                outcome = result.get("status")
+                if outcome not in ("ok", "error"):
+                    return None
+                if row[0] == EventType.TOOL_INTERRUPTED:
+                    outcome = "cancelled"
+                return name, str(outcome)
+            except ValueError, OSError:
+                return None
 
     def session_info(self, session_id: str, owner: str) -> SessionInfo:
         """Read session, parked approval and budgets in one consistent row."""
@@ -2613,12 +2724,36 @@ class SqliteStore:
         root_id: str | None = None,
         root_budget: int | None = None,
         role: str = "system",
+        caller_chain: frozenset[str] | None = None,
+        admission_guard: Callable[[], bool] | None = None,
     ) -> str:
         """Directly enqueue a continuation in pending state, optionally opening its root budget."""
         if role not in ("system", "user"):
             raise ValueError("continuation role must be 'system' or 'user'")
         with self._lock:
             self._check_open()
+            guard = self._cancel_fence_guard
+            if guard is not None and owner == CHILD_MESSAGE_OWNER and payload.get("kind") == "child_followup":
+                chain = caller_chain
+                if chain is None:
+                    ancestors = self._connection.execute(
+                        """
+                        WITH RECURSIVE ancestors(session_id, parent_session_id) AS (
+                            SELECT session_id, parent_session_id FROM sessions WHERE session_id = ?
+                            UNION
+                            SELECT s.session_id, s.parent_session_id FROM sessions s
+                            JOIN ancestors a ON s.session_id = a.parent_session_id
+                        )
+                        SELECT session_id FROM ancestors
+                        """,
+                        (session_id,),
+                    ).fetchall()
+                    chain = frozenset(row[0] for row in ancestors)
+                fenced = guard(chain, session_id)
+                if fenced is not None:
+                    raise FencedSubtree(fenced, session_id)
+            if admission_guard is not None and not admission_guard():
+                raise PermissionError("calling invocation is no longer active")
             now = int(time.time() * 1000)
             if idempotency_key is not None:
                 cursor = self._connection.execute(
@@ -2948,8 +3083,10 @@ class SqliteStore:
         logical_turn: str,
         *,
         revision_id: str,
+        caller_chain: frozenset[str],
         initial_root_budget: int = 32,
         continuation_id: str | None = None,
+        automatic: bool = False,
     ) -> tuple[ContinuationRecord, SessionRecord]:
         """Atomically claim ONE continuation, emit continuation_started, advance session, and commit ready CP.
 
@@ -2993,12 +3130,18 @@ class SqliteStore:
                     WHERE session_id = ? AND status = 'pending'
                       AND source <> '@core/background'
                       AND (? IS NULL OR continuation_id = ?)
+                      AND NOT (? AND owner = ? AND COALESCE(json_extract(payload_json, '$.kind'), '') = 'child_finished')
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
-                    (session_id, continuation_id, continuation_id),
+                    (session_id, continuation_id, continuation_id, automatic and status == "interrupted", CHILD_MESSAGE_OWNER),
                 )
                 cont_row = c_cursor.fetchone()
+                guard = self._cancel_fence_guard
+                if guard is not None and cont_row is not None and cont_row[1] == CHILD_MESSAGE_OWNER:
+                    fenced = guard(caller_chain, session_id)
+                    if fenced is not None:
+                        raise FencedSubtree(fenced, session_id)
                 if cont_row is None:
                     c_cursor2 = self._connection.execute(
                         """
@@ -3234,29 +3377,34 @@ class SqliteStore:
             )
             return cursor.fetchone() is not None
 
-    def cancel_pending_continuations(self, session_id: str, owner: str, *, continuation_id: str | None = None) -> int:
-        """Directly cancel pending continuations owned by owner in session."""
+    def cancel_pending_continuations(
+        self, session_id: str, owner: str, *, continuation_id: str | None = None, expected_session: SessionRecord | None = None
+    ) -> int:
+        """Cancel pending owned work, optionally pinned to the session's observed run."""
         with self._lock:
             self._check_open()
             now = int(time.time() * 1000)
-            if continuation_id is not None:
-                cursor = self._connection.execute(
-                    """
-                    UPDATE continuations
-                    SET status = 'cancelled', updated_at = ?
-                    WHERE session_id = ? AND owner = ? AND continuation_id = ? AND status = 'pending'
-                    """,
-                    (now, session_id, owner, continuation_id),
-                )
-            else:
-                cursor = self._connection.execute(
-                    """
-                    UPDATE continuations
-                    SET status = 'cancelled', updated_at = ?
-                    WHERE session_id = ? AND owner = ? AND status = 'pending'
-                    """,
-                    (now, session_id, owner),
-                )
+            cursor = self._connection.execute(
+                """
+                UPDATE continuations
+                SET status = 'cancelled', updated_at = ?
+                WHERE session_id = ? AND owner = ? AND status = 'pending'
+                  AND (? IS NULL OR continuation_id = ?)
+                  AND (? OR EXISTS (
+                      SELECT 1 FROM sessions s WHERE s.session_id = ? AND s.run_id IS ?
+                  ))
+                """,
+                (
+                    now,
+                    session_id,
+                    owner,
+                    continuation_id,
+                    continuation_id,
+                    expected_session is None,
+                    session_id,
+                    expected_session.run_id if expected_session is not None else None,
+                ),
+            )
             return cursor.rowcount
 
     def claim_background_action(self, *, workspace: str, claim_identity: Mapping[str, object]) -> ContinuationRecord | None:

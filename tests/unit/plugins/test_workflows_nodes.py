@@ -45,7 +45,7 @@ def _seed(services: FakeServices, **overrides: Any) -> str:
 def _agent_services() -> FakeServices:
     services = FakeServices(session_id="s1")
     services.spawn_child = _spawn_with_key(services)  # type: ignore[method-assign]
-    profile = AgentDefinition(name="review", description="Review", prompt="Review.", readonly=True, tools=("read", "grep"), max_turns=4)
+    profile = AgentDefinition(name="review", description="Review", prompt="Review.", readonly=True, max_turns=4)
     services.queries_dict["workspace.agent_definition"] = profile.as_payload()
     return services
 

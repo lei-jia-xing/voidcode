@@ -34,7 +34,6 @@ def test_semantic_consumers_use_public_facts_instead_of_private_event_parsers() 
     plugins = Path(__file__).resolve().parents[3] / "src" / "voidcode" / "plugins"
     violations: list[str] = []
     for name in (
-        "effectiveness/effectiveness_plugin.py",
         "skills/skills_plugin.py",
         "todo/todo_plugin.py",
         "cron/cron_plugin.py",

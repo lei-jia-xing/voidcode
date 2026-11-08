@@ -492,7 +492,9 @@ class SessionClient(Protocol):
 
     def resume(self, session_id: str, spec: ResumeSpec | None = None) -> RunResult: ...
 
-    def command_input(self, session_id: str, name: str, expected_revision: str) -> CommandInputSnapshot: ...
+    def command_input(
+        self, session_id: str, name: str, expected_revision: str, *, arguments: Mapping[str, object] | None = None
+    ) -> CommandInputSnapshot: ...
 
     def invoke_command(
         self,

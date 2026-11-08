@@ -165,10 +165,12 @@ class CoreLocalClient:
         if not expected_revision:
             raise CoreClientError("expected_revision must be the revision the client displayed", status_code=400, code="invalid_params")
 
-    def command_input(self, session_id: str, name: str, expected_revision: str) -> CommandInputSnapshot:
+    def command_input(
+        self, session_id: str, name: str, expected_revision: str, *, arguments: Mapping[str, object] | None = None
+    ) -> CommandInputSnapshot:
         self._validate_command_request(session_id, name, expected_revision)
         try:
-            return self._core.command_input(session_id, name, expected_revision=expected_revision)
+            return self._core.command_input(session_id, name, expected_revision=expected_revision, arguments=arguments)
         except Exception as exc:
             raise self._refusal(exc) from None
 

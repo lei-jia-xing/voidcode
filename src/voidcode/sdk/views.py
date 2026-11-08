@@ -75,8 +75,6 @@ class ViewAction:
     def __post_init__(self) -> None:
         if not self.label.strip() or not self.action.strip():
             raise ValueError("view action label and command must be non-empty")
-        if self.prepare_input and self.arguments:
-            raise ValueError("input preparation actions cannot carry invocation arguments")
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +116,8 @@ class ChoicesViewData:
     action: str
     argument_name: str = "choice"
     style: ComponentStyle | None = None
+    #: True routes a selection to command.input (read-only); False invokes the action.
+    prepare_input: bool = False
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> ChoicesViewData:

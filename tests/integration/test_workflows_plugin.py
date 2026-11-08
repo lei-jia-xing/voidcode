@@ -60,7 +60,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, script: str = _REVIEW_SC
     state_dir.mkdir(parents=True, exist_ok=True)
     plugins: dict[str, object] = {name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS}
     plugins["providers"] = {"enabled": True}
-    plugins["delegation"] = {"enabled": True}
+    plugins["subagents"] = {"enabled": True}
     plugins["exec"] = {"enabled": True}
     plugins["workflows"] = {"enabled": True, "config": {"workflows": {"parallel_review": "flows/parallel_review.py"}}}
     (workspace / "voidcode.json").write_text(

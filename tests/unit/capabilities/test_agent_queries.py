@@ -22,7 +22,6 @@ _FIXTURE = AgentDefinition(
     source_scope="builtin",
     source_path=None,
     readonly=True,
-    tools=("read", "grep"),
     max_turns=4,
 )
 
@@ -51,12 +50,6 @@ def test_answer_for_another_agent_is_malformed() -> None:
         AGENT_DEFINITIONS.ask(cast(Any, Transport(_FIXTURE.as_payload())), AgentDefinitionRequest(name="other"))
 
 
-def test_missing_tools_key_never_silently_widens_scope() -> None:
-    answer = {key: value for key, value in _FIXTURE.as_payload().items() if key != "tools"}
-    with pytest.raises(QueryContractError):
-        AGENT_DEFINITIONS.ask(cast(Any, Transport(answer)), AgentDefinitionRequest(name=_FIXTURE.name))
-
-
 def test_extra_answer_key_is_malformed() -> None:
     answer = {**_FIXTURE.as_payload(), "model": "inherit"}
     with pytest.raises(QueryContractError):
@@ -73,8 +66,6 @@ def test_bound_query_rejects_bad_request_before_handler() -> None:
             AGENT_DEFINITIONS.bind(handler).handler(arguments, caller)
 
 
-def test_apply_agent_profile_narrows_scope_and_budget_without_widening() -> None:
+def test_apply_agent_profile_applies_stance_and_budget() -> None:
     _, profile_readonly, profile_tools, profile_max_steps = apply_agent_profile(_FIXTURE, "look", ("read", "write"), 32)
-    assert (profile_readonly, profile_tools, profile_max_steps) == (True, ("read",), 4)
-    with pytest.raises(ValueError, match="no tools within the requested scope"):
-        apply_agent_profile(_FIXTURE, "look", ("write",), 32)
+    assert (profile_readonly, profile_tools, profile_max_steps) == (True, ("read", "write"), 4)

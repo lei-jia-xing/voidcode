@@ -102,12 +102,11 @@ Every client dispatches commands from the admitted catalog. TUI and web use spac
 | `goal` | `/goal`, `/goal set`, `/goal edit`, `/goal pause`, `/goal resume`, `/goal clear`, `/goal load_objective` |
 | `skills` | `/skills` |
 | `providers` | `/model`, `/providers` |
-| `delegation` | `/agents`, `/agents show` |
+| `subagents` | alt+a (subagent monitor) |
 | `review` | `/review` |
 | `btw` | `/btw` |
 | `cron` | `/loop` |
 | `compaction` | `/compact` |
-| `effectiveness` | `/effectiveness` |
 | `lsp` | `/lsp` |
 | `mcp` | `/mcp` |
 | `user_shell` | `/shell` |

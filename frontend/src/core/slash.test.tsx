@@ -343,33 +343,33 @@ describe("spaced slash dispatch", () => {
   it("groups parent commands and reveals described children after selection", async () => {
     const h = await mount([
       {
-        owner: "delegation",
-        name: "agents",
-        description: "List profiles",
+        owner: "skills",
+        name: "skills",
+        description: "List skills",
         argument_schema: { type: "object", properties: {} },
       },
       {
-        owner: "delegation",
-        name: "agents.show",
-        description: "Inspect a profile",
+        owner: "skills",
+        name: "skills.show",
+        description: "Inspect a skill",
         argument_schema: { type: "object", properties: {} },
       },
     ]);
     fireEvent.change(screen.getByTestId("prompt-input"), {
-      target: { value: "/ag" },
+      target: { value: "/sk" },
     });
     const suggestions = await screen.findByTestId("slash-suggestions");
-    expect(suggestions).toHaveTextContent("List profiles");
-    expect(suggestions).not.toHaveTextContent("/agents show");
+    expect(suggestions).toHaveTextContent("List skills");
+    expect(suggestions).not.toHaveTextContent("/skills show");
     fireEvent.click(
-      screen.getByRole("button", { name: /agents.*List profiles/ }),
+      screen.getByRole("button", { name: /skills.*List skills/ }),
     );
-    expect(screen.getByTestId("prompt-input")).toHaveValue("/agents ");
+    expect(screen.getByTestId("prompt-input")).toHaveValue("/skills ");
     expect(screen.getByTestId("slash-suggestions")).toHaveTextContent(
-      "/agents show",
+      "/skills show",
     );
     expect(screen.getByTestId("slash-suggestions")).toHaveTextContent(
-      "Inspect a profile",
+      "Inspect a skill",
     );
     h.unmount();
   });
@@ -412,8 +412,8 @@ describe("spaced slash dispatch", () => {
   it("renders command choices and dispatches their action with the receipt revision", async () => {
     const h = await mount(
       [
-        { owner: "delegation", name: "agents", description: "Profiles" },
-        { owner: "delegation", name: "agents.show", description: "Inspect" },
+        { owner: "skills", name: "skills", description: "Skills" },
+        { owner: "skills", name: "skills.show", description: "Inspect" },
       ],
       {
         status: "ok",
@@ -423,17 +423,17 @@ describe("spaced slash dispatch", () => {
           view_type: "choices",
           data: {
             options: [{ id: "explore", label: "Explore" }],
-            action: "agents.show",
+            action: "skills.show",
             argument_name: "name",
           },
         },
       },
     );
-    await submitSlash(h, "/agents");
+    await submitSlash(h, "/skills");
     fireEvent.click(await screen.findByTestId("choice-option-explore"));
     await waitFor(() => expect(h.invokes).toHaveLength(2));
     expect(h.invokes[1].params).toMatchObject({
-      name: "agents.show",
+      name: "skills.show",
       arguments: { name: "explore" },
       expected_revision: "rev-1",
     });
@@ -531,9 +531,9 @@ describe("spaced slash dispatch", () => {
     const h = await mount(
       [
         {
-          owner: "delegation",
-          name: "agents.show",
-          description: "Inspect profile",
+          owner: "skills",
+          name: "skills.show",
+          description: "Inspect skill",
           has_input: true,
         },
       ],
@@ -541,14 +541,14 @@ describe("spaced slash dispatch", () => {
       {
         revision_id: "rev-1",
         presentation: {
-          title: "Choose agent",
+          title: "Choose skill",
           view_type: "form",
           data: {
-            action: "agents.show",
+            action: "skills.show",
             fields: [
               {
                 name: "name",
-                label: "Agent",
+                label: "Skill",
                 options: [
                   { id: "explore", label: "Explore workspace" },
                   { id: "review", label: "Review changes" },
@@ -559,14 +559,15 @@ describe("spaced slash dispatch", () => {
         },
       },
     );
-    await submitSlash(h, "/agents show");
+    await submitSlash(h, "/skills show");
     expect(
-      await screen.findByRole("combobox", { name: /Agent/ }),
+      await screen.findByRole("combobox", { name: /Skill/ }),
     ).toBeVisible();
     expect(h.invokes).toHaveLength(0);
     expect(h.rpcMock).toHaveBeenCalledWith("command.input", {
       session_id: SESSION,
-      name: "agents.show",
+      name: "skills.show",
+      arguments: {},
       expected_revision: "rev-1",
     });
     fireEvent.change(screen.getByTestId("form-input-name"), {
@@ -575,7 +576,7 @@ describe("spaced slash dispatch", () => {
     fireEvent.click(screen.getByTestId("form-submit-btn"));
     await waitFor(() => expect(h.invokes).toHaveLength(1));
     expect(h.invokes[0].params).toMatchObject({
-      name: "agents.show",
+      name: "skills.show",
       arguments: { name: "review" },
       expected_revision: "rev-1",
     });
@@ -784,6 +785,497 @@ describe("spaced slash dispatch", () => {
     });
     expect(screen.getByTestId("event-7")).toHaveTextContent("/goal pause [ok]");
     expect(screen.getByTestId("event-7")).not.toHaveTextContent("goal.pause");
+    unmount();
+  });
+
+  it("offers a hidden shortcut action as an accessible button without slash text", async () => {
+    const h = await mount(
+      [
+        {
+          owner: "p",
+          name: "monitor",
+          description: "Running subagents",
+          has_input: true,
+          slash_visible: false,
+          default_shortcut: "alt+a",
+        },
+      ],
+      { status: "ok", output: "done" },
+      {
+        revision_id: "rev-1",
+        presentation: {
+          title: "Running subagents",
+          view_type: "choices",
+          data: {
+            options: [{ id: "child-1", label: "child one" }],
+            action: "monitor",
+            argument_name: "target",
+          },
+        },
+      },
+    );
+    const button = await screen.findByTestId("shortcut-action-monitor");
+    expect(button).toHaveAttribute("aria-label", "Running subagents (alt+a)");
+    expect(button).toHaveAttribute("type", "button");
+    fireEvent.change(screen.getByTestId("prompt-input"), {
+      target: { value: "draft stays" },
+    });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(screen.getByTestId("command-presentation")).toBeVisible();
+    });
+    expect(screen.getByTestId("prompt-input")).toHaveValue("draft stays");
+    expect(h.rpcMock).toHaveBeenCalledWith(
+      "command.input",
+      expect.objectContaining({
+        name: "monitor",
+        arguments: {},
+        expected_revision: "rev-1",
+      }),
+    );
+    h.unmount();
+  });
+
+  it("shows a shortcut conflict explicitly while keeping both buttons usable", async () => {
+    const h = await mount([
+      {
+        owner: "p",
+        name: "one",
+        description: "One",
+        default_shortcut: "alt+a",
+      },
+      {
+        owner: "q",
+        name: "two",
+        description: "Two",
+        default_shortcut: "alt+a",
+      },
+    ]);
+    await waitFor(() => {
+      expect(screen.getByTestId("shortcut-conflict-alt+a")).toBeVisible();
+    });
+    // No key binds, but both actions stay clickable with conflict labelling.
+    expect(screen.getByTestId("shortcut-action-one")).toBeVisible();
+    expect(screen.getByTestId("shortcut-action-two")).toBeVisible();
+    expect(screen.getByTestId("shortcut-action-one")).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("conflict"),
+    );
+    h.unmount();
+  });
+
+  it("keeps a live view refreshing after one failed read", async () => {
+    const roster = (options: Array<{ id: string; label: string }>) => ({
+      revision_id: "rev-1",
+      presentation: {
+        title: "Running subagents",
+        view_type: "choices",
+        data: {
+          options,
+          action: "monitor",
+          argument_name: "target",
+          prepare_input: true,
+        },
+        refresh_after_ms: 50,
+      },
+    });
+    let reads = 0;
+    const rpcMock = vi.fn(async (method: string): Promise<MockResponse> => {
+      if (method === "command.input") {
+        reads += 1;
+        if (reads === 2) return jsonResponse({ error: "flaky read" }, 500);
+        // The recovery read carries a new node: visible content (not the
+        // counter) proves the loop kept going.
+        if (reads >= 3)
+          return jsonResponse(
+            roster([
+              { id: "child-1", label: "child one" },
+              { id: "child-2", label: "child two arrived" },
+            ]),
+          );
+        return jsonResponse(roster([{ id: "child-1", label: "child one" }]));
+      }
+      if (method === "command.catalog") {
+        return jsonResponse({
+          revision_id: "rev-1",
+          commands: [
+            {
+              owner: "p",
+              name: "monitor",
+              description: "Running subagents",
+              has_input: true,
+              slash_visible: false,
+              default_shortcut: "alt+a",
+            },
+          ],
+        });
+      }
+      if (method === "session.views") {
+        return jsonResponse({ revision_id: "rev-1", views: [] });
+      }
+      if (method === "session.subscribe") {
+        return frameSource(
+          [
+            JSON.stringify({
+              session: { session_id: SESSION },
+              events: [],
+            }),
+          ],
+          [],
+        );
+      }
+      if (method === "health.get") {
+        return jsonResponse({ status: "ok", fenced: false });
+      }
+      if (method === "session.show") {
+        return jsonResponse({
+          session_id: SESSION,
+          status: "idle",
+          run_id: null,
+          revision_id: "rev-1",
+          turn: 1,
+          last_event_sequence: 0,
+          checkpoint: null,
+        });
+      }
+      return jsonResponse({
+        sessions: [
+          {
+            session_id: SESSION,
+            workspace: "/tmp/ws",
+            status: "idle",
+            active_revision_id: "rev-1",
+            turn: 1,
+            last_event_sequence: 0,
+          },
+        ],
+      });
+    });
+    installRpcPeer(rpcMock);
+    const { unmount } = render(<CoreApp baseUrl="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId(`session-tab-${SESSION}`)).toBeVisible();
+    });
+    fireEvent.click(await screen.findByTestId("shortcut-action-monitor"));
+    await waitFor(() => {
+      expect(screen.getByTestId("command-presentation")).toBeVisible();
+    });
+    expect(reads).toBe(1);
+    // Typing in the prompt bumps the interaction serial mid-poll: the loop
+    // must neither freeze nor drop the reply.
+    fireEvent.change(screen.getByTestId("prompt-input"), {
+      target: { value: "draft during poll" },
+    });
+    // The failed second read surfaces; the loop reschedules and the new node
+    // becomes visible. The counter only gates timing, never the proof.
+    await waitFor(() => expect(reads).toBeGreaterThanOrEqual(2), {
+      timeout: 5000,
+    });
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("choice-option-child-2")).toBeVisible();
+      },
+      { timeout: 5000 },
+    );
+    expect(screen.getByTestId("command-presentation")).toHaveTextContent(
+      "child two arrived",
+    );
+    expect(screen.getByTestId("prompt-input")).toHaveValue("draft during poll");
+    unmount();
+  });
+
+  it("lets a pending poll and a detail navigation resolve without clobbering", async () => {
+    const roster = {
+      revision_id: "rev-1",
+      presentation: {
+        title: "Running subagents",
+        view_type: "choices",
+        data: {
+          options: [{ id: "child-1", label: "child one" }],
+          action: "monitor",
+          argument_name: "target",
+          prepare_input: true,
+        },
+        refresh_after_ms: 50,
+      },
+    };
+    const detail = {
+      revision_id: "rev-1",
+      presentation: {
+        title: "Subagent child-1",
+        view_type: "markdown",
+        data: {
+          content: "child one detail",
+          actions: [
+            {
+              label: "Back to roster",
+              action: "monitor",
+              arguments: {},
+              prepare_input: true,
+            },
+          ],
+        },
+        refresh_after_ms: 50,
+      },
+    };
+    const pollGate: { release: ((value: unknown) => void) | null } = {
+      release: null,
+    };
+    let rosterReads = 0;
+    const rpcMock = vi.fn(
+      async (
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<MockResponse> => {
+        if (method === "command.input") {
+          const args = (params.arguments ?? {}) as Record<string, unknown>;
+          if ("target" in args) return jsonResponse(detail);
+          rosterReads += 1;
+          // Hold the first roster *poll* (not the initial open) until
+          // navigation has started.
+          if (rosterReads === 2 && pollGate.release === null) {
+            await new Promise<unknown>((resolve) => {
+              pollGate.release = resolve;
+            });
+          }
+          return jsonResponse(roster);
+        }
+        if (method === "command.catalog") {
+          return jsonResponse({
+            revision_id: "rev-1",
+            commands: [
+              {
+                owner: "p",
+                name: "monitor",
+                description: "Running subagents",
+                has_input: true,
+                slash_visible: false,
+                default_shortcut: "alt+a",
+              },
+            ],
+          });
+        }
+        if (method === "session.views") {
+          return jsonResponse({ revision_id: "rev-1", views: [] });
+        }
+        if (method === "session.subscribe") {
+          return frameSource(
+            [
+              JSON.stringify({
+                session: { session_id: SESSION },
+                events: [],
+              }),
+            ],
+            [],
+          );
+        }
+        if (method === "health.get") {
+          return jsonResponse({ status: "ok", fenced: false });
+        }
+        if (method === "session.show") {
+          return jsonResponse({
+            session_id: SESSION,
+            status: "idle",
+            run_id: null,
+            revision_id: "rev-1",
+            turn: 1,
+            last_event_sequence: 0,
+            checkpoint: null,
+          });
+        }
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: SESSION,
+              workspace: "/tmp/ws",
+              status: "idle",
+              active_revision_id: "rev-1",
+              run_id: null,
+              turn: 1,
+              last_event_sequence: 0,
+            },
+          ],
+        });
+      },
+    );
+    installRpcPeer(rpcMock);
+    const { unmount } = render(<CoreApp baseUrl="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId(`session-tab-${SESSION}`)).toBeVisible();
+    });
+    fireEvent.click(await screen.findByTestId("shortcut-action-monitor"));
+    await waitFor(() => {
+      expect(screen.getByTestId("command-presentation")).toBeVisible();
+    });
+    // Navigate to detail while the roster poll is still held: the late
+    // roster reply must not overwrite the detail view.
+    fireEvent.click(screen.getByTestId("choice-option-child-1"));
+    await waitFor(() => {
+      expect(screen.getByTestId("command-presentation")).toHaveTextContent(
+        "child one detail",
+      );
+    });
+    pollGate.release?.(undefined);
+    await waitFor(() => {
+      expect(screen.getByTestId("command-presentation")).toHaveTextContent(
+        "child one detail",
+      );
+    });
+    unmount();
+  });
+
+  it("resumes polling after a failed cancel invoke without losing the detail", async () => {
+    const detail = (content: string) => ({
+      revision_id: "rev-1",
+      presentation: {
+        title: "Subagent child-1",
+        view_type: "markdown",
+        data: {
+          content,
+          actions: [
+            {
+              label: "Cancel subtree",
+              action: "monitor.cancel",
+              arguments: { target: "child-1" },
+            },
+            {
+              label: "Back to roster",
+              action: "monitor",
+              arguments: {},
+              prepare_input: true,
+            },
+          ],
+        },
+        refresh_after_ms: 50,
+      },
+    });
+    let polls = 0;
+    const rpcMock = vi.fn(
+      async (
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<MockResponse> => {
+        if (method === "command.input") {
+          const args = (params.arguments ?? {}) as Record<string, unknown>;
+          if ("target" in args) {
+            polls += 1;
+            // Post-failure poll carries fresh content: visible proof the loop
+            // resumed instead of freezing on the invoke's serial bump.
+            if (polls >= 2) return jsonResponse(detail("child one settled"));
+            return jsonResponse(detail("child one live"));
+          }
+          return jsonResponse({
+            revision_id: "rev-1",
+            presentation: {
+              title: "Running subagents",
+              view_type: "choices",
+              data: {
+                options: [{ id: "child-1", label: "child one" }],
+                action: "monitor",
+                argument_name: "target",
+                prepare_input: true,
+              },
+              refresh_after_ms: 50,
+            },
+          });
+        }
+        if (method === "command.invoke") {
+          return jsonResponse({ status: "error", error: "target moved" });
+        }
+        if (method === "command.catalog") {
+          return jsonResponse({
+            revision_id: "rev-1",
+            commands: [
+              {
+                owner: "p",
+                name: "monitor",
+                description: "Running subagents",
+                has_input: true,
+                slash_visible: false,
+                default_shortcut: "alt+a",
+              },
+              {
+                owner: "p",
+                name: "monitor.cancel",
+                description: "Cancel one subagent",
+                has_input: false,
+                slash_visible: false,
+              },
+            ],
+          });
+        }
+        if (method === "session.views") {
+          return jsonResponse({ revision_id: "rev-1", views: [] });
+        }
+        if (method === "session.subscribe") {
+          return frameSource(
+            [
+              JSON.stringify({
+                session: { session_id: SESSION },
+                events: [],
+              }),
+            ],
+            [],
+          );
+        }
+        if (method === "health.get") {
+          return jsonResponse({ status: "ok", fenced: false });
+        }
+        if (method === "session.show") {
+          return jsonResponse({
+            session_id: SESSION,
+            status: "idle",
+            run_id: null,
+            revision_id: "rev-1",
+            turn: 1,
+            last_event_sequence: 0,
+            checkpoint: null,
+          });
+        }
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: SESSION,
+              workspace: "/tmp/ws",
+              status: "idle",
+              active_revision_id: "rev-1",
+              run_id: null,
+              turn: 1,
+              last_event_sequence: 0,
+            },
+          ],
+        });
+      },
+    );
+    installRpcPeer(rpcMock);
+    const { unmount } = render(<CoreApp baseUrl="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId(`session-tab-${SESSION}`)).toBeVisible();
+    });
+    fireEvent.click(await screen.findByTestId("shortcut-action-monitor"));
+    await waitFor(() => {
+      expect(screen.getByTestId("choice-option-child-1")).toBeVisible();
+    });
+    fireEvent.click(screen.getByTestId("choice-option-child-1"));
+    await waitFor(() => {
+      expect(screen.getByTestId("command-presentation")).toHaveTextContent(
+        "child one live",
+      );
+    });
+    // The cancel invoke fails (stale target): the view stays, the error
+    // surfaces, and the next poll still refreshes the detail content.
+    fireEvent.click(screen.getByText("Cancel subtree"));
+    await waitFor(() => {
+      expect(screen.getByText(/target moved/)).toBeVisible();
+    });
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("command-presentation")).toHaveTextContent(
+          "child one settled",
+        );
+      },
+      { timeout: 5000 },
+    );
     unmount();
   });
 });

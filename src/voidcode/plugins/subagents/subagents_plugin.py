@@ -1280,7 +1280,7 @@ class TaskBatchTool:
         )
 
 
-def prepare_delegation_deactivation(
+def prepare_subagents_deactivation(
     state: Mapping[str, object],
     scope: str,
     scope_key: str,

@@ -1,4 +1,4 @@
-"""End-to-end integration tests for the btw and effectiveness plugins on the real stack."""
+"""End-to-end integration tests for the btw plugin on the real stack."""
 
 from __future__ import annotations
 
@@ -37,23 +37,12 @@ class NotesWriteTool:
     )
 
     def invoke(self, call, *, context, services):
-        path = str(call.arguments.get("path", "note.txt"))
-        if path == "boom.txt":
-            return ToolFailure(
-                tool_name=self.definition.name,
-                error="notes_write refused boom.txt",
-                output=TextOutput(text="refused"),
-            )
         return ToolSuccess(tool_name=self.definition.name, output=TextOutput(text="notes written"))
 
 
 def create_plugin(config):
     return Plugin(tools=(NotesWriteTool(),))
 '''
-_NOTES_PLUGIN_SOURCE = _NOTES_PLUGIN_SOURCE.replace(
-    "from voidcode.sdk.tools import TextOutput, ToolDefinition, ToolEffect, ToolSuccess",
-    "from voidcode.sdk.tools import TextOutput, ToolDefinition, ToolEffect, ToolFailure, ToolSuccess",
-)
 _CREATED_CORES: list[Core] = []
 
 
@@ -90,7 +79,6 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *plugin_ids: str, approv
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     plugins: dict[str, object] = {
-        # The bundled files plugin is not under test here and is rewritten by another P4 lane.
         "files": {"enabled": False},
         "notes": {"path": str(_notes_plugin(workspace))},
     }
@@ -152,7 +140,6 @@ def test_btw_answers_without_polluting_history(tmp_path: Path) -> None:
         assert [message["role"] for message in btw_messages] == ["user", "assistant", "user"]
         prompt = str(btw_messages[-1]["content"])
         assert "what is 2+2?" in prompt
-        assert "NO tools" in prompt
         assert btw_messages[0]["content"] == "main question"
         assert btw_messages[1]["content"] == "first answer"
         assert server.requests[1].get("tools") in (None, [])
@@ -197,67 +184,3 @@ def test_btw_uses_complete_context_while_tool_approval_is_pending(tmp_path: Path
         after = core.session(session_id)
         assert after.status == before.status
         assert after.run_id == before.run_id
-
-
-def test_effectiveness_projects_real_session_events(tmp_path: Path) -> None:
-    replies = [
-        openai_response(
-            message={
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call-ok",
-                        "type": "function",
-                        "function": {"name": "notes_write", "arguments": json.dumps({"path": "ok.txt"})},
-                    }
-                ],
-            },
-            finish="tool_calls",
-            usage={"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
-        ),
-        openai_response(
-            message={
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call-bad",
-                        "type": "function",
-                        "function": {"name": "notes_write", "arguments": json.dumps({"path": "boom.txt"})},
-                    }
-                ],
-            },
-            finish="tool_calls",
-            usage={"prompt_tokens": 30, "completion_tokens": 8, "total_tokens": 38},
-        ),
-        openai_response(
-            message={"role": "assistant", "content": "done"},
-            finish="stop",
-            usage={"prompt_tokens": 40, "completion_tokens": 5, "total_tokens": 45},
-        ),
-    ]
-    with _loopback_server(replies) as server:
-        core = _core(tmp_path, server, "effectiveness")
-        session_id = core.create_session().session_id
-        assert core.run("write two notes", session_id=session_id).status == "completed"
-
-        result = _invoke(core, session_id, "effectiveness", {})
-        assert result.status == "ok"
-        assert result.data is not None
-        rows = {row["tool"]: row for row in result.data["tools"]}
-        assert rows["notes_write"]["calls"] == 2
-        assert rows["notes_write"]["successes"] == 1
-        assert rows["notes_write"]["errors"] == 1
-        usage = result.data["provider_usage"]
-        assert usage["input_tokens"] == 90
-        assert usage["output_tokens"] == 21
-        report = str(result.data) + str(result.output)
-        for private_content in ("ok.txt", "boom.txt", "notes written", "refused"):
-            assert private_content not in report
-        assert "notes_write" in str(result.output)
-
-        empty = _invoke(core, core.create_session().session_id, "effectiveness", {})
-        assert empty.status == "ok"
-        assert empty.data is not None
-        assert tuple(empty.data["tools"]) == ()

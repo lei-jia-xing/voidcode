@@ -17,6 +17,7 @@ from voidcode.sdk.gates import ApprovalGate
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.json_values import json_wire_value
 from voidcode.sdk.views import (
+    ChoiceOption,
     ChoicesViewData,
     ConfirmationViewData,
     DiffViewData,
@@ -33,7 +34,7 @@ from voidcode.sdk.views import (
 
 from .keys import Key
 from .styles import Styles, markdown_theme, render_icon, resolve_component, syntax_theme
-from .term import clamp_row, escape_terminal_controls, render_lines
+from .term import clamp_row, escape_terminal_controls, grapheme_spans, render_lines, visible_width
 
 
 def _styles_arg(styles: Styles | None) -> Styles:
@@ -290,7 +291,7 @@ class InteractiveMarkdown:
 
 
 class InteractiveChoices:
-    """Interactive selector for ChoicesView."""
+    """Interactive selector with type-to-filter and a selected-visible viewport."""
 
     def __init__(self, data: ChoicesViewData, *, revision_id: str = "", title: str = "Choose an option") -> None:
         self.title = title
@@ -298,7 +299,10 @@ class InteractiveChoices:
         #: The revision of the envelope that rendered these options; the
         #: selection is dispatched under exactly that generation.
         self.revision_id = revision_id
+        #: Substring filter; printable keys append, Backspace edits, Esc clears first.
+        self.filter = ""
         self.selected_index = 0
+        self._clamp_selection()
 
     @property
     def action(self) -> str:
@@ -308,42 +312,170 @@ class InteractiveChoices:
     def argument_name(self) -> str:
         return self.view.argument_name
 
-    def handle_key(self, key: Key) -> dict[str, Any] | None:
-        if key.name in ("up", "k"):
-            if self.view.options:
-                self.selected_index = (self.selected_index - 1) % len(self.view.options)
-            return None
-        if key.name in ("down", "j"):
-            if self.view.options:
-                self.selected_index = (self.selected_index + 1) % len(self.view.options)
-            return None
-        if key.name == "enter":
-            if not self.view.options:
-                return {"cancel": True}
-            action, arguments = choices_dispatch(self.view, self.view.options[self.selected_index].id)
-            return {"action": action, "arguments": arguments}
-        if key.name == "esc":
-            return {"cancel": True}
+    @property
+    def filtered_options(self) -> tuple[ChoiceOption, ...]:
+        """Options matching the filter (label or id, Unicode casefold)."""
+        if not self.filter:
+            return self.view.options
+        needle = self.filter.casefold()
+        return tuple(opt for opt in self.view.options if needle in opt.label.casefold() or needle in opt.id.casefold())
+
+    @property
+    def selected_id(self) -> str | None:
+        filtered = self.filtered_options
+        if filtered and 0 <= self.selected_index < len(filtered):
+            return filtered[self.selected_index].id
         return None
 
-    def render_rows(self, width: int, styles: Styles | None = None) -> list[str]:
+    def _clamp_selection(self) -> None:
+        filtered = self.filtered_options
+        if not filtered:
+            self.selected_index = 0
+        else:
+            self.selected_index = min(max(0, self.selected_index), len(filtered) - 1)
+
+    def _restore_selection(self, option_id: str | None) -> None:
+        """Keep the stable ID visible after a filter/refresh change, else clamp."""
+        if option_id is not None:
+            for index, opt in enumerate(self.filtered_options):
+                if opt.id == option_id:
+                    self.selected_index = index
+                    return
+        self.selected_index = 0
+        self._clamp_selection()
+
+    def update_view(self, data: ChoicesViewData) -> None:
+        """Swap options in place: filter kept, stable ID kept when still present."""
+        option_id = self.selected_id
+        self.view = data
+        self._restore_selection(option_id)
+
+    def handle_key(self, key: Key) -> dict[str, Any] | None:
+        if key.name == "esc":
+            if self.filter:
+                self.filter = ""
+                self.selected_index = 0
+                return None
+            return {"cancel": True}
+        filtered = self.filtered_options
+        if key.name == "up":
+            if filtered:
+                self.selected_index = (self.selected_index - 1) % len(filtered)
+            return None
+        if key.name == "down":
+            if filtered:
+                self.selected_index = (self.selected_index + 1) % len(filtered)
+            return None
+        if key.name in ("pageUp", "pageDown", "home", "end"):
+            if filtered:
+                if key.name == "home":
+                    self.selected_index = 0
+                elif key.name == "end":
+                    self.selected_index = len(filtered) - 1
+                else:
+                    delta = -8 if key.name == "pageUp" else 8
+                    self.selected_index = min(max(0, self.selected_index + delta), len(filtered) - 1)
+            return None
+        if key.name in ("ctrl+u",):
+            if self.filter:
+                self.filter = ""
+                self.selected_index = 0
+            return None
+        if key.name == "backspace":
+            if self.filter:
+                option_id = self.selected_id
+                spans = grapheme_spans(self.filter)
+                self.filter = self.filter[: spans[-1][0]] if spans else ""
+                self._restore_selection(option_id)
+            return None
+        if key.name == "enter":
+            if not filtered:
+                return None
+            action, arguments = choices_dispatch(self.view, filtered[self.selected_index].id)
+            return {"action": action, "arguments": arguments, "prepare_input": self.view.prepare_input}
+        if key.text and not key.name.startswith("ctrl+") and not key.name.startswith("alt+"):
+            option_id = self.selected_id
+            self.filter += key.text
+            self._restore_selection(option_id)
+            return None
+        return None
+
+    def render_rows(self, width: int, styles: Styles | None = None, *, max_rows: int | None = None) -> list[str]:
         resolved = _styles_arg(styles)
         fg, bg, tone_slot = resolve_component(self.view.style)
+        filtered = self.filtered_options
+        self._clamp_selection()
+        total = len(self.view.options)
+        inner = max(8, width - 4)
+        # Floor chrome: panel borders + heading + hint/filter. Overflow markers
+        # and the empty row ride inside the option budget so a viewport of N
+        # physical rows always keeps the selected option on screen.
+        chrome = 2 + 1 + 1
+
+        def row(label: str, index: int, *, selected: bool) -> Text:
+            gutter = " > " if selected else "   "
+            number = f"[{index + 1}] "
+            room = max(1, inner - visible_width(gutter) - visible_width(number))
+            clean = escape_terminal_controls(label).replace("\n", " ")
+            if visible_width(clean) > room:
+                clean = clamp_row(clean, max(1, room - 1)) + "…"
+            line = Text(gutter + number, style=resolved.style("warning" if selected else "dim", bold=selected))
+            line.append(
+                clean,
+                style=resolved.style(
+                    "warning" if selected else (tone_slot or "text"),
+                    color=None if selected else fg,
+                    background=None if selected else bg,
+                    bold=selected,
+                ),
+            )
+            return line
+
+        if max_rows is None:
+            start, end = 0, len(filtered)
+        else:
+            budget = max(3, max_rows - chrome)
+            visible = budget
+            if len(filtered) > budget:
+                visible = budget - 2  # both overflow markers
+            start = max(0, min(self.selected_index, max(0, len(filtered) - max(1, visible))))
+            end = min(len(filtered), start + max(1, visible))
+            # One-sided overflow gives its unused marker row back to options.
+            if len(filtered) > budget and (start == 0 or end == len(filtered)) and end - start < budget - 1:
+                if start == 0:
+                    end = min(len(filtered), start + budget - 1)
+                else:
+                    start = max(0, end - (budget - 1))
+        hidden_above = start
+        hidden_below = len(filtered) - end
         text = Text()
-        text.append("Choose an option:\n", style=resolved.style(tone_slot or "accent", color=fg, background=bg, bold=True))
-        for i, opt in enumerate(self.view.options):
-            label = escape_terminal_controls(opt.label)
-            if i == self.selected_index:
-                text.append(f" > [{i + 1}] {label}\n", style=resolved.style("warning", bold=True))
+        text.append(f"Choose an option ({len(filtered)}/{total}):\n", style=resolved.style(tone_slot or "accent", color=fg, background=bg, bold=True))
+        if hidden_above:
+            text.append(Text(f"  ↑ {hidden_above} more\n", style=resolved.style("dim")))
+        for i in range(start, end):
+            text.append(row(filtered[i].label, i, selected=i == self.selected_index))
+            text.append("\n")
+        if hidden_below:
+            text.append(Text(f"  ↓ {hidden_below} more\n", style=resolved.style("dim")))
+        if not filtered:
+            if self.view.options:
+                text.append(f"  No matches for {escape_terminal_controls(self.filter)!r}.\n", style=resolved.style("dim"))
             else:
-                text.append(f"   [{i + 1}] {label}\n", style=resolved.style(tone_slot or "text", color=fg, background=bg))
+                text.append("  No options.\n", style=resolved.style("dim"))
+        if self.filter:
+            text.append(f"Filter: {escape_terminal_controls(self.filter)}\n", style=resolved.style("dim"))
+        else:
+            text.append("Type to filter · ↑/↓ select · Enter · Esc\n", style=resolved.style("dim"))
         panel = Panel(
             text,
             title=escape_terminal_controls(self.title),
             border_style=resolved.style(tone_slot or "warning", color=fg, background=bg),
             expand=True,
         )
-        return render_lines(panel, width, theme=markdown_theme(), color_system=resolved.color_system)
+        rows = render_lines(panel, width, theme=markdown_theme(), color_system=resolved.color_system)
+        if max_rows is not None and len(rows) > max_rows:
+            rows = rows[: max_rows - 1] + [rows[-1]]
+        return rows
 
 
 class InteractiveConfirmation:

@@ -11,7 +11,7 @@ import pytest
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 
-_DELEGATION_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "delegation"
+_SUBAGENTS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"
 
 _PROBE = """
 from voidcode.capabilities.agent_queries import AGENT_DEFINITIONS, AgentDefinitionRequest
@@ -65,17 +65,17 @@ def _close_created_cores() -> Iterator[None]:
         _CREATED_CORES.pop().close()
 
 
-def _core(tmp_path: Path, *, delegation: bool, substitute: bool) -> Core:
+def _core(tmp_path: Path, *, subagents: bool, substitute: bool) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     probe = tmp_path / "probe"
     probe.mkdir(parents=True, exist_ok=True)
     (probe / "__init__.py").write_text(_PROBE, encoding="utf-8")
     plugins: dict[str, object] = {"files": {"enabled": False}, "probe": {"path": str(probe)}}
-    if delegation:
-        plugins["delegation"] = {"path": str(_DELEGATION_PLUGIN_ROOT)}
+    if subagents:
+        plugins["subagents"] = {"path": str(_SUBAGENTS_PLUGIN_ROOT)}
     else:
-        plugins["delegation"] = {"enabled": False}
+        plugins["subagents"] = {"enabled": False}
     if substitute:
         replacement = tmp_path / "replacement"
         replacement.mkdir(parents=True, exist_ok=True)
@@ -93,18 +93,17 @@ def _probe(core: Core, session_id: str, name: str):
     return core.invoke_command(session_id, "agent.probe", {"name": name}, expected_revision=core.command_catalog().revision_id)
 
 
-def test_delegation_answers_effective_named_definition(tmp_path: Path) -> None:
+def test_subagents_answers_effective_named_definition(tmp_path: Path) -> None:
     project_dir = tmp_path / "workspace" / ".claude" / "agents"
     project_dir.mkdir(parents=True)
     (project_dir / "helper.md").write_text(
-        "---\nname: helper\ndescription: Local helper\ntools: read, grep\nmaxTurns: 3\n---\n\nHelp locally.\n",
+        "---\nname: helper\ndescription: Local helper\nmaxTurns: 3\n---\n\nHelp locally.\n",
         encoding="utf-8",
     )
-    core = _core(tmp_path, delegation=True, substitute=False)
+    core = _core(tmp_path, subagents=True, substitute=False)
     session_id = core.create_session().session_id
     helper = _probe(core, session_id, "helper")
     assert helper.status == "ok" and helper.data is not None
-    assert helper.data["tools"] == ("read", "grep")
     assert helper.data["max_turns"] == 3
     assert helper.data["source_scope"] == "project"
     unknown = _probe(core, session_id, "missing")
@@ -112,13 +111,13 @@ def test_delegation_answers_effective_named_definition(tmp_path: Path) -> None:
 
 
 def test_any_admitted_provider_can_answer_and_absence_is_visible(tmp_path: Path) -> None:
-    core = _core(tmp_path, delegation=False, substitute=True)
+    core = _core(tmp_path, subagents=False, substitute=True)
     session_id = core.create_session().session_id
     answered = _probe(core, session_id, "helper")
     assert answered.status == "ok" and answered.data is not None
     assert answered.data["readonly"] is True and answered.data["description"] == "Substitute"
 
-    core = _core(tmp_path / "absent", delegation=False, substitute=False)
+    core = _core(tmp_path / "absent", subagents=False, substitute=False)
     session_id = core.create_session().session_id
     absent = _probe(core, session_id, "helper")
     assert absent.status == "error" and absent.error is not None

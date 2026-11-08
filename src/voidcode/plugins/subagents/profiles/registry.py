@@ -12,9 +12,7 @@ from voidcode.capabilities.frontmatter import load_frontmatter_mapping, split_fr
 
 from .builtin import list_builtin_agents
 
-_CLAUDE_TOOL_NAMES = {"Read": "read", "Write": "write", "Edit": "edit", "Glob": "glob", "Grep": "grep", "Bash": "shell_exec", "Agent": "task"}
-
-_SUPPORTED_FIELDS = frozenset({"name", "description", "tools", "model", "maxTurns"})
+_SUPPORTED_FIELDS = frozenset({"name", "description", "model", "maxTurns"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,20 +73,12 @@ def agent_from_markdown(contents: str, *, scope: AgentSourceScope, source_path: 
     turns = payload.get("maxTurns")
     if "maxTurns" in payload and (type(turns) is not int or turns < 1):
         raise ValueError("agent maxTurns must be a positive integer")
-    tools = payload.get("tools")
-    if "tools" in payload:
-        if isinstance(tools, str):
-            tools = tools.split(",")
-        if not isinstance(tools, list) or not tools or any(not isinstance(name, str) or not name.strip() for name in tools):
-            raise ValueError("agent tools must be a non-empty comma-separated string or YAML list")
-        tools = tuple(dict.fromkeys(_CLAUDE_TOOL_NAMES.get(name.strip(), name.strip()) for name in tools))
     return AgentDefinition(
         name=name,
         description=description,
         prompt=body,
         source_scope=scope,
         source_path=source_path,
-        tools=cast(tuple[str, ...] | None, tools),
         max_turns=cast(int | None, turns),
     )
 

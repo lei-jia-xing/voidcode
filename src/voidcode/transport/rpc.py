@@ -59,7 +59,7 @@ METHODS: dict[str, RpcMethod] = {
     "command.input": RpcMethod(
         m.CommandInputRequest,
         CommandInputSnapshot,
-        lambda c, p: c.command_input(p.session_id, p.name, expected_revision=p.expected_revision).as_payload(),
+        lambda c, p: c.command_input(p.session_id, p.name, arguments=p.arguments, expected_revision=p.expected_revision).as_payload(),
     ),
     "command.invoke": RpcMethod(
         m.InvokeRequest,

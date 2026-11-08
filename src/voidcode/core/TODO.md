@@ -1,0 +1,4 @@
+# TODO
+
+- [ ] 运行中 follow-up 只进入 Core 持久化队列，不改写当前轮上下文；仅在 Core 确认接收后显示 pending，并于当前轮结束后按序投递。拒绝时保留未接收原稿；已接收队列项与原稿分开显示/恢复，避免误重送。参考 OMP [yield 队列与失败恢复](https://github.com/can1357/oh-my-pi/blob/45c35e40c46166dc726ccc52f5d27f40f2449f99/packages/coding-agent/src/modes/controllers/input-controller.ts#L1739-L1875)。
+- [ ] 图片输入贯通 `RunSpec`、`USER_MESSAGE` 事件/transcript、provider 原生内容段与两端输入。当前 `RunSpec.prompt`、事件 `content`、`ProviderMessage.content` 仅为文本；`TranscriptMessageWire.body` 包含 `ProviderMessage`，其 `content` 仍为文本。验收：真实图片随 prompt 到支持的 provider，失败恢复及会话重放不丢、不重复附件；不支持的 provider 明确拒绝，MIME/路径字符串不算图片支持。参考 OMP [图片输入](https://github.com/can1357/oh-my-pi/blob/45c35e40c46166dc726ccc52f5d27f40f2449f99/packages/coding-agent/src/modes/controllers/input-controller.ts#L2371-L2510) 与 [队列保留 `images`/`imageLinks`](https://github.com/can1357/oh-my-pi/blob/45c35e40c46166dc726ccc52f5d27f40f2449f99/packages/coding-agent/src/modes/controllers/input-controller.ts#L1739-L1875)。

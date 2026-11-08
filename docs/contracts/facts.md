@@ -72,7 +72,6 @@ Provider usage `output_tokens` counts total generated output, including reasonin
 
 Only the current persisted fact shape is supported. Invocation outcomes require their full recorded metadata, and public fact events require their recorded observer eligibility. Missing fields fail explicitly; the runtime never joins older tool intents, fills fields from the current catalog, or bypasses replay validation for older events. There is no legacy-data adapter or automatic conversion. Generation adoption (stop the old build, start the new one against the same workspace and state) does not make incompatible event records compatible.
 
-Core byte-observation semantics: `result_bytes` measures the canonical UTF-8 JSON result envelope, including its output, body, and observations. It is not provider wire size or token usage. Report-level aggregation on top of these facts — repeated/follow-up reads, the per-model WRITE-or-changes proxy, task/resume/projection counters, schema versioning, and retention limits — is plugin-owned and canonical in the [effectiveness](../../src/voidcode/plugins/effectiveness/README.md) README.
 
 
 ## Wakeup ownership and recovery

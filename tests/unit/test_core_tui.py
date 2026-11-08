@@ -139,6 +139,95 @@ def test_fields_view_folds_long_cjk_value_without_clipping() -> None:
     assert "…" not in compact
 
 
+def _many_options(count: int) -> ChoicesViewData:
+    options = tuple(
+        ChoiceOption(id=f"child-{index:02d}", label=f"child {index:02d} with a very long status label that wraps narrow terminals")
+        for index in range(count)
+    )
+    return ChoicesViewData(options=options, action="monitor.open", argument_name="target", prepare_input=True)
+
+
+def test_choices_filter_types_printables_and_keeps_stable_selection() -> None:
+    choices = InteractiveChoices(_many_options(4))
+    for char in "child 0":
+        assert choices.handle_key(Key(char, text=char)) is None
+    assert choices.filter == "child 0"
+    assert [opt.id for opt in choices.filtered_options] == [f"child-{index:02d}" for index in range(4)]
+    choices.handle_key(Key("down"))
+    for char in "2":
+        choices.handle_key(Key(char, text=char))
+    assert [opt.id for opt in choices.filtered_options] == ["child-02"]
+    assert choices.selected_id == "child-02"
+    # j/k are filter text, never navigation: a name containing them still filters.
+    choices = InteractiveChoices(ChoicesViewData(options=(ChoiceOption(id="jk", label="jakarta"),), action="open", argument_name="target"))
+    choices.handle_key(Key("j", text="j"))
+    assert choices.filter == "j"
+    assert choices.selected_id == "jk"
+
+
+def test_choices_backspace_deletes_grapheme_and_esc_clears_first() -> None:
+    choices = InteractiveChoices(_many_options(2))
+    choices.handle_key(Key("e", text="e"))
+    choices.handle_key(Key("́", text="é"))
+    assert choices.handle_key(Key("backspace")) is None
+    assert choices.filter == "e"
+    assert choices.handle_key(Key("esc")) is None
+    assert choices.filter == ""
+    assert choices.handle_key(Key("esc")) == {"cancel": True}
+
+
+def test_choices_enter_on_empty_matches_does_nothing_and_reports_prepare_flag() -> None:
+    choices = InteractiveChoices(_many_options(2))
+    for char in "zzz-no-match":
+        choices.handle_key(Key(char, text=char))
+    assert choices.filtered_options == ()
+    assert choices.handle_key(Key("enter")) is None
+    choices.handle_key(Key("esc"))
+    outcome = choices.handle_key(Key("enter"))
+    assert outcome == {"action": "monitor.open", "arguments": {"target": "child-00"}, "prepare_input": True}
+
+
+def test_choices_viewport_keeps_selected_visible_at_40x18() -> None:
+    import re
+
+    from voidcode.tui.styles import Styles
+
+    choices = InteractiveChoices(_many_options(20))
+    for _ in range(19):
+        choices.handle_key(Key("down"))
+    rows = choices.render_rows(40, Styles(), max_rows=12)
+    plain = "\n".join(re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows)
+    assert len(rows) <= 12
+    assert "child-19" in plain or "child 19" in plain
+    assert "↑" in plain
+    from voidcode.tui.term import visible_width
+
+    assert all(visible_width(row) <= 40 for row in rows)
+    first = InteractiveChoices(_many_options(20))
+    rows = first.render_rows(40, Styles(), max_rows=12)
+    plain = "\n".join(re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows)
+    assert "child 00" in plain
+    assert "↓" in plain
+
+
+def test_choices_update_view_preserves_filter_and_stable_id() -> None:
+    choices = InteractiveChoices(_many_options(3))
+    choices.handle_key(Key("down"))
+    assert choices.selected_id == "child-01"
+    choices.update_view(
+        ChoicesViewData(
+            options=(ChoiceOption(id="child-01", label="child 01 refreshed"), ChoiceOption(id="child-03", label="child 03 new")),
+            action="monitor.open",
+            argument_name="target",
+            prepare_input=True,
+        )
+    )
+    assert choices.selected_id == "child-01"
+    choices.update_view(ChoicesViewData(options=(), action="monitor.open", argument_name="target", prepare_input=True))
+    assert choices.selected_id is None
+    assert choices.handle_key(Key("enter")) is None
+
+
 def test_interactive_choices_navigation_and_selection() -> None:
     choices = InteractiveChoices(
         ChoicesViewData(
@@ -154,7 +243,7 @@ def test_interactive_choices_navigation_and_selection() -> None:
 
     # Enter selects Option B
     outcome = choices.handle_key(Key("enter"))
-    assert outcome == {"action": "select_target", "arguments": {"target_id": "b"}}
+    assert outcome == {"action": "select_target", "arguments": {"target_id": "b"}, "prepare_input": False}
 
     # Esc cancels
     assert choices.handle_key(Key("esc")) == {"cancel": True}
@@ -1862,18 +1951,18 @@ def test_command_choices_open_only_on_live_reply_and_dispatch_displayed_revision
         presentation=CommandPresentation(
             title="Profiles",
             view_type="choices",
-            data={"options": [{"id": "explore", "label": "Explore"}], "action": "agents.show", "argument_name": "name"},
+            data={"options": [{"id": "explore", "label": "Explore"}], "action": "demo.show", "argument_name": "name"},
         ),
     )
-    client = _CommandClient(results={"agents": result})
+    client = _CommandClient(results={"demo": result})
     terminal = _StubTerminal()
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
     app.catalog_revision = "rev-1"
     rows: list[str] = []
-    app._handle_stream_event(_event(1, "core.command_completed", name="agents", result=result.as_payload()), rows)
+    app._handle_stream_event(_event(1, "core.command_completed", name="demo", result=result.as_payload()), rows)
     assert app.active_overlay is None
     assert rows == ["Explore"]
-    app._invoke_async("agents", {}, "rev-1")
+    app._invoke_async("demo", {}, "rev-1")
     deadline = time.monotonic() + 5
     while not isinstance(app.active_overlay, InteractiveChoices) and time.monotonic() < deadline:
         app._drain_events()
@@ -1883,7 +1972,7 @@ def test_command_choices_open_only_on_live_reply_and_dispatch_displayed_revision
     deadline = time.monotonic() + 5
     while len(client.invoked) < 2 and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert client.invoked[-1] == ("s1", "agents.show", {"name": "explore"}, "rev-1")
+    assert client.invoked[-1] == ("s1", "demo.show", {"name": "explore"}, "rev-1")
 
 
 def test_late_command_reply_never_closes_or_reopens_an_editor_after_cancel() -> None:
@@ -1983,3 +2072,64 @@ def test_markdown_action_history_is_passive_but_explicit_presentation_opens_deta
     assert app._mount_interactive_view(view, "shown-revision")
     assert isinstance(app.active_overlay, InteractiveMarkdown)
     assert app.active_overlay.revision_id == "shown-revision"
+
+
+def test_tui_sessions_selector_mount_and_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+    from voidcode.tui.views import InteractiveChoices
+
+    class _SessionsClient(_StubClient):
+        def __init__(self, sessions: list[SessionRow]) -> None:
+            super().__init__()
+            self._sessions = list(sessions)
+
+        def list_sessions(self, limit: int = 100) -> list[SessionRow]:
+            return list(self._sessions)
+
+    s1 = _session_row("s1-abcde", status="idle", turn=1)
+    s2 = _session_row("s2-fghij", status="running", turn=2)
+    client = _SessionsClient([s1, s2])
+    terminal = _StubTerminal()
+    app = CoreTuiApp(client, session_id="s1-abcde", terminal=terminal)  # type: ignore[arg-type]
+
+    switched: list[str] = []
+    monkeypatch.setattr(app, "_switch_session", lambda target: switched.append(target))
+
+    # 1. /tui sessions mounts InteractiveChoices with sessions list
+    app._dispatch_slash_command("/tui sessions")
+    assert isinstance(app.active_overlay, InteractiveChoices)
+    assert app.active_overlay.title == "Active Sessions"
+    assert app.active_overlay.action == "tui.switch_session"
+    assert app.active_overlay.argument_name == "session_id"
+    assert app.active_overlay.selected_index == 0
+    assert len(app.active_overlay.filtered_options) == 2
+    assert " [current]" in app.active_overlay.filtered_options[0].label
+    assert " [current]" not in app.active_overlay.filtered_options[1].label
+
+    # 2. Esc dismisses overlay without switching
+    app._handle_overlay_key(Key("esc"))
+    assert app.active_overlay is None
+    assert switched == []
+
+    # 3. Selecting the current session dismisses overlay without switching
+    app._dispatch_slash_command("/tui sessions")
+    assert isinstance(app.active_overlay, InteractiveChoices)
+    assert app.active_overlay.selected_index == 0
+    app._handle_overlay_key(Key("enter"))
+    assert app.active_overlay is None
+    assert switched == []
+
+    # 4. Selecting a different session calls _switch_session
+    app._dispatch_slash_command("/tui sessions")
+    assert isinstance(app.active_overlay, InteractiveChoices)
+    app._handle_overlay_key(Key("down"))
+    assert app.active_overlay.selected_index == 1
+    app._handle_overlay_key(Key("enter"))
+    assert app.active_overlay is None
+    assert switched == ["s2-fghij"]
+
+    # 5. Empty session list commits warning without overlay
+    empty_app = CoreTuiApp(_SessionsClient([]), session_id="s1", terminal=_StubTerminal())  # type: ignore[arg-type]
+    empty_app._dispatch_slash_command("/tui sessions")
+    assert empty_app.active_overlay is None
+    assert any("No active sessions." in row for row in empty_app.terminal.committed)

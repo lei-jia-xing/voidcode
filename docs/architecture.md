@@ -52,7 +52,7 @@ graph TD
     subgraph Plugins["Bundled plugins (src/voidcode/plugins/)"]
         Files["files · ast_grep · exec"]
         Model["providers"]
-        Product["goal · plan · todo · skills · review · delegation · btw · cron · compaction · hooks · user_shell · effectiveness · mcp · lsp · web"]
+        Product["goal · plan · todo · skills · review · subagents · btw · cron · compaction · hooks · user_shell · mcp · lsp · web"]
     end
 
     SDK["SDK contracts (src/voidcode/sdk/): plugin · tools · commands · services · provider · hooks · views · invocation · history · queries"]
@@ -122,13 +122,12 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `plan` | `/plan`, `/plan off`, `/plan status` collaboration mode |
 | `skills` | `skill` tool and `/skills` |
 | `review` | `/review` |
-| `delegation` | `task`, `task_batch` (agent-facing delegation) plus `/agents`, `/agents show` profiles |
+| `subagents` | `task`, `task_batch` (agent-facing delegation) plus `alt+a` subagent monitor |
 | `btw` | `/btw` side question |
 | `cron` | `cron_create`, `cron_delete`, `cron_list`, `/loop` |
 | `compaction` | `/compact` context compaction |
 | `hooks` | lifecycle hook execution |
 | `user_shell` | `/shell` user shell escape |
-| `effectiveness` | `/effectiveness` session-scoped metrics |
 | `goal` | thread goal tools and `/goal*` commands |
 | `workflows` | `workflow_run` tool, `/workflow <run\|status\|pause\|resume\|cancel>` commands, scripted child-session graphs |
 
@@ -221,4 +220,4 @@ Delegation and review select the available subset of their declared tools. An un
 optional tool never causes a retry with the broader parent scope. See
 [optional query contracts](contracts/optional-queries.md) for provider authoring and failure semantics.
 
-Plugin observers and historical projections share [public SDK facts](./contracts/facts.md). Tool names identify dispatch; governance effects declare authority and result observations record what happened. Effectiveness and skills consume that contract without inspecting private event payloads or depending on file/delegation/compression plugin names.
+Plugin observers and historical projections share [public SDK facts](./contracts/facts.md). Tool names identify dispatch; governance effects declare authority and result observations record what happened. Skills consume that contract without inspecting private event payloads or depending on file/subagents/compression plugin names.

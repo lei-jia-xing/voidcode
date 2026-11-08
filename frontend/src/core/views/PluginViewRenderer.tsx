@@ -82,7 +82,14 @@ export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
         <ChoicesView
           title={descriptor.title}
           data={data as ChoicesViewData}
-          onSelect={(action, args) => onAction(action, args, revisionId)}
+          onSelect={(action, args) =>
+            onAction(
+              action,
+              args,
+              revisionId,
+              (data as ChoicesViewData).prepare_input === true,
+            )
+          }
           disabled={disabled}
         />
       );

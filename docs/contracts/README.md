@@ -17,7 +17,7 @@ This directory contains the authoritative technical contracts for the VoidCode c
 
 ## Plugin entry docs
 
-See the canonical [plugin index](../README.md#plugins): one README per bundled plugin. Cross-references from core contracts point there (agent format → delegation, scripted workflows → workflows, goal accounting → goal, effectiveness aggregation → effectiveness, edit/version domain policy → files/lsp).
+See the canonical [plugin index](../README.md#plugins): one README per bundled plugin. Cross-references from core contracts point there (agent format → delegation, scripted workflows → workflows, goal accounting → goal, edit/version domain policy → files/lsp).
 
 Wire models, configuration, and tool definitions are defined directly in code, which is the only source of truth:
 - SDK contracts: `src/voidcode/sdk/` (`plugin.py`, `tools.py`, `commands.py`, `views.py`).

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from pydantic import TypeAdapter
 
+from .history import PAGE_BYTES
 from .json_values import json_wire_object, own_json_object
 
 if TYPE_CHECKING:
@@ -190,6 +191,68 @@ class ChildSendReceipt:
         if self.message_id is not None:
             payload["message_id"] = self.message_id
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class DescendantNode:
+    """One live descendant of the bound session: verbatim status, never a collapsed outcome."""
+
+    session_id: str
+    parent_session_id: str | None
+    depth: int
+    status: str
+    run_id: str | None = None
+    stop_cause: str | None = None
+    label: str | None = None
+    activity: str | None = None
+    turn: int = 0
+    last_event_sequence: int = 0
+    has_queued_followup: bool = False
+    awaiting_approval: bool = False
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "parent_session_id": self.parent_session_id,
+            "depth": self.depth,
+            "status": self.status,
+            "run_id": self.run_id,
+            "stop_cause": self.stop_cause,
+            "label": self.label,
+            "activity": self.activity,
+            "turn": self.turn,
+            "last_event_sequence": self.last_event_sequence,
+            "has_queued_followup": self.has_queued_followup,
+            "awaiting_approval": self.awaiting_approval,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CancelSubtreeReceipt:
+    """Outcome of one bound subtree cancellation request: accepted signals plus already-terminal facts."""
+
+    target_session_id: str
+    expected_run_id: str | None
+    cancelled: tuple[str, ...] = ()
+    already_terminal: tuple[str, ...] = ()
+    disarmed_queued: tuple[str, ...] = ()
+    claimed_reserved: tuple[str, ...] = ()
+    observed_newer_run: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("cancelled", "already_terminal", "disarmed_queued", "claimed_reserved", "observed_newer_run"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "target_session_id": self.target_session_id,
+            "expected_run_id": self.expected_run_id,
+            "cancelled": list(self.cancelled),
+            "already_terminal": list(self.already_terminal),
+            "disarmed_queued": list(self.disarmed_queued),
+            "claimed_reserved": list(self.claimed_reserved),
+            "observed_newer_run": list(self.observed_newer_run),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -692,8 +755,14 @@ class PluginServices(Protocol):
         after_sequence: int = 0,
         offset: int = 0,
         limit: int = 100,
+        page_bytes: int = PAGE_BYTES,
     ) -> HistoryPage:
-        """Render one bounded Markdown transcript page for the bound session or an owned child."""
+        """Render one bounded Markdown transcript page for the bound session or an owned descendant.
+
+        ``page_bytes`` bounds the rendered text (1..40960); callers needing a
+        smaller presentation page pass a smaller budget and follow the returned
+        cursor. The default preserves the existing 40 KiB page.
+        """
         ...
 
     def tool_definition(self, name: str) -> ToolDefinition | None:
@@ -877,6 +946,27 @@ class PluginServices(Protocol):
 
     def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
         """Cancel a child this session spawned, whether it is running or parked for approval."""
+        ...
+
+    def list_descendants(self) -> tuple[DescendantNode, ...]:
+        """Every transitive descendant of the bound session, in stable creation order."""
+        ...
+
+    def cancel_descendant_subtree(
+        self,
+        target_session_id: str,
+        *,
+        expected_run_id: str | None,
+        reason: str = "owner cancellation",
+    ) -> CancelSubtreeReceipt:
+        """Request cancellation of a descendant and its whole subtree under a fenced run binding.
+
+        Refused from read-only preparation leases. The target must still carry
+        ``expected_run_id`` (None only when it never started); a newer run is a
+        stale-target error with zero side effects. The receipt reports which
+        sessions accepted the request and which were already terminal; signals
+        are not proof the work stopped.
+        """
         ...
 
     def enqueue_background_action(

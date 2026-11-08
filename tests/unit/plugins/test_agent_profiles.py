@@ -4,12 +4,9 @@ from importlib.resources import files
 
 import pytest
 
-from voidcode.plugins.delegation import create_plugin
-from voidcode.plugins.delegation.profiles.builtin import list_builtin_agents
-from voidcode.plugins.delegation.profiles.commands import AgentsCommand, AgentShowCommand
-from voidcode.plugins.delegation.profiles.registry import agent_from_markdown, load_agent_registry, project_agent_dir, user_agent_dir
-from voidcode.sdk.commands import CommandInvocation
-from voidcode.sdk.invocation import ToolContext
+from voidcode.plugins.subagents import create_plugin
+from voidcode.plugins.subagents.profiles.builtin import list_builtin_agents
+from voidcode.plugins.subagents.profiles.registry import agent_from_markdown, load_agent_registry, project_agent_dir, user_agent_dir
 
 
 def _document(name="helper", extra="", body="Help locally."):
@@ -26,13 +23,12 @@ def _write(directory, filename, text):
 def test_minimal_standard_definition_uses_name_and_body_without_extra_manifest_fields():
     agent = agent_from_markdown(_document("Exact Name"), scope="project")
     assert agent.name == "Exact Name" and agent.prompt == "Help locally."
-    assert agent.tools is None and agent.max_turns is None and not agent.readonly
+    assert agent.max_turns is None and not agent.readonly
 
 
-@pytest.mark.parametrize("tools", ["tools: read, grep\n", "tools: Read, Grep\n", "tools: [read, grep]\n", "tools:\n  - read\n  - grep\n"])
-def test_standard_tools_and_turn_cap_are_parsed(tools):
-    agent = agent_from_markdown(_document(extra=tools + "model: inherit\nmaxTurns: 4\n"), scope="user")
-    assert agent.tools == ("read", "grep") and agent.max_turns == 4
+def test_standard_turn_cap_is_parsed():
+    agent = agent_from_markdown(_document(extra="model: inherit\nmaxTurns: 4\n"), scope="user")
+    assert agent.max_turns == 4
 
 
 @pytest.mark.parametrize(
@@ -40,8 +36,8 @@ def test_standard_tools_and_turn_cap_are_parsed(tools):
     [
         ("model: sonnet\n", "per-agent model selection"),
         ("permissionMode: bypassPermissions\n", "unsupported agent field"),
-        ("tools: []\n", "agent tools"),
-        ("tools: read,,grep\n", "agent tools"),
+        ("tools: [read, grep]\n", "unsupported agent field"),
+        ("tools: read, grep\n", "unsupported agent field"),
         ("maxTurns: true\n", "positive integer"),
         ("maxTurns: 0\n", "positive integer"),
         ("mode: subagent\n", "unsupported agent field"),
@@ -102,44 +98,15 @@ def test_duplicates_in_one_scope_and_malformed_files_report_paths(tmp_path):
 
 
 def test_builtin_prompts_and_stances_are_preserved():
-    resources = files("voidcode.plugins.delegation.profiles").joinpath("texts")
-    for agent in list_builtin_agents():
+    resources = files("voidcode.plugins.subagents.profiles").joinpath("texts")
+    agents = list_builtin_agents()
+    assert {agent.name for agent in agents} == {"execute", "review", "explore", "research", "plan"}
+    for agent in agents:
         assert agent.prompt == resources.joinpath(f"{agent.name}.txt").read_text().strip()
-        assert agent.tools is None
         assert agent.readonly == (agent.name in {"review", "explore", "research", "plan"})
 
 
-def test_agent_commands_report_actual_definition(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "user"))
-    _write(project_agent_dir(tmp_path), "local.md", _document(extra="maxTurns: 3\n"))
-    context = ToolContext(tmp_path, "session", "run", "invocation", "revision", "user")
-    shown = AgentShowCommand().invoke(CommandInvocation(context, "agents.show", {"name": "helper"}), None)
-    assert shown.status == "ok" and shown.output == "Help locally."
-    assert shown.data["name"] == "helper" and shown.data["maxTurns"] == 3
-    assert "model_preference" not in shown.data and "prompt_materialization" not in shown.data
-    listed = AgentsCommand().invoke(CommandInvocation(context, "agents", {}), None)
-    assert listed.status == "ok" and "helper" in listed.output
-    assert listed.presentation.view_type == "choices"
-    assert listed.presentation.data["action"] == "agents.show"
-    assert any(option["id"] == "helper" for option in listed.presentation.data["options"])
-    assert shown.presentation.view_type == "markdown"
-    assert shown.presentation.data["content"] == shown.output
-    unknown = AgentShowCommand().invoke(CommandInvocation(context, "agents.show", {"name": "missing"}), None)
-    assert unknown.status == "error"
-    assert [tool.definition.name for tool in create_plugin({}).tools] == ["task", "task_batch"]
-
-
-def test_agent_input_discovers_names_without_executing_show(tmp_path, monkeypatch):
-    from voidcode.sdk.views import FormViewData, validate_form_submission
-
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "user"))
-    _write(project_agent_dir(tmp_path), "custom.md", _document())
-    context = ToolContext(tmp_path, "session", "run", "invocation", "revision", "user")
-    command = AgentShowCommand()
-    presentation = command.prepare_input(CommandInvocation(context, "agents.show"), None)
-    form = FormViewData.from_payload(presentation.data)
-    assert form.action == "agents.show"
-    assert any(option.id == "helper" for option in form.fields[0].options)
-    args = validate_form_submission(form, {"name": "helper"})
-    shown = command.invoke(CommandInvocation(context, form.action, args), None)
-    assert shown.output == "Help locally."
+def test_subagents_plugin_surface():
+    plugin = create_plugin({})
+    assert [tool.definition.name for tool in plugin.tools] == ["task", "task_batch"]
+    assert [cmd.definition.name for cmd in plugin.commands] == ["subagents.monitor", "subagents.monitor.cancel"]

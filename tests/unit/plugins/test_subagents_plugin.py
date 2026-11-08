@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
-from voidcode.plugins.delegation import create_plugin
-from voidcode.plugins.delegation.delegation_plugin import (
+from voidcode.plugins.subagents import create_plugin
+from voidcode.plugins.subagents.profiles.registry import load_agent_registry
+from voidcode.plugins.subagents.subagents_plugin import (
     CANCEL_REASON,
     DEFAULT_JOIN_TIMEOUT_SECONDS,
     MAX_BATCH_SIZE,
@@ -20,7 +21,6 @@ from voidcode.plugins.delegation.delegation_plugin import (
     TaskBatchTool,
     TaskTool,
 )
-from voidcode.plugins.delegation.profiles.registry import load_agent_registry
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import (
     ChildOutcome,
@@ -256,11 +256,11 @@ def test_unknown_subagent_type_fails_without_spawning(tmp_path: Path) -> None:
     assert services.get_state("session") == (None, 0)
 
 
-def test_default_agent_is_a_normal_delegatable_definition(tmp_path: Path) -> None:
+def test_execute_agent_is_a_normal_delegatable_definition(tmp_path: Path) -> None:
     services = FakeServices()
-    result = _task(services, tmp_path, {"prompt": "work", "subagent_type": "default"})
+    result = _task(services, tmp_path, {"prompt": "work", "subagent_type": "execute"})
     assert isinstance(result, ToolSuccess)
-    assert services.spawn_calls[0]["prompt"] == f"{_builtin_body(tmp_path, 'default')}\n\nwork"
+    assert services.spawn_calls[0]["prompt"] == f"{_builtin_body(tmp_path, 'execute')}\n\nwork"
 
 
 def test_custom_profile_spawns_with_its_own_body_scope_and_writable_stance(tmp_path: Path) -> None:
@@ -780,17 +780,15 @@ def test_plugin_registers_tools_and_profile_commands() -> None:
     for tool in plugin.tools:
         assert tool.definition.replay_policy == "never"
         assert {effect.value for effect in tool.definition.effects} == {"read", "spawn", "session"}
-    assert [command.definition.name for command in plugin.commands] == ["agents", "agents.show"]
+    assert [command.definition.name for command in plugin.commands] == ["subagents.monitor", "subagents.monitor.cancel"]
 
 
-def test_standard_agent_tools_and_max_turns_apply_to_task_and_batch(tmp_path: Path):
-    workspace = _custom_workspace(
-        tmp_path, "helper.md", "---\nname: helper\ndescription: d\ntools: read, grep\nmaxTurns: 3\nmodel: inherit\n---\nHelp."
-    )
+def test_standard_agent_max_turns_apply_to_task_and_batch(tmp_path: Path):
+    workspace = _custom_workspace(tmp_path, "helper.md", "---\nname: helper\ndescription: d\nmaxTurns: 3\nmodel: inherit\n---\nHelp.")
     services = FakeServices()
     result = _task_at(services, workspace, {"prompt": "work", "subagent_type": "helper", "tool_allowlist": ["read", "glob"], "max_steps": 7})
     assert isinstance(result, ToolSuccess)
-    assert services.spawn_calls[0]["tool_allowlist"] == ("read",)
+    assert services.spawn_calls[0]["tool_allowlist"] == ("read", "glob")
     assert services.spawn_calls[0]["max_steps"] == 3
     tool = TaskBatchTool()
     result = tool.invoke(
@@ -799,5 +797,5 @@ def test_standard_agent_tools_and_max_turns_apply_to_task_and_batch(tmp_path: Pa
         services=services,
     )
     assert isinstance(result, ToolSuccess)
-    assert services.spawn_calls[1]["tool_allowlist"] == ("read", "grep")
+    assert services.spawn_calls[1]["tool_allowlist"] is None
     assert services.spawn_calls[1]["max_steps"] == 2

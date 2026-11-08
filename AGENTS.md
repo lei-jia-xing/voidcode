@@ -80,7 +80,7 @@ A plugin is a Python package directory whose `__init__.py` exports `create_plugi
 
 - **Reserved config key**: the product layer injects the resolved providers map into every factory as `config["providers"]`. Strict plugin parsers accept and ignore it; plugins that register providers consume it. Never publish credentials from it into state, events, views, or errors.
 - **Revisions**: the admitted generation is the *revision*: an opaque UUID names the recorded config/composition, with the private snapshot digest remaining for config integrity. A restart imports the current source with the recorded configuration. Changed configuration is never admitted implicitly; `core.reload` re-admits the live file as a new revision in-session, and a hot reload never crosses an SDK or image change.
-- **Hot activation**: `core.reload` re-admits the live configuration and commits a new revision in-session. To remove a plugin, disable it via `core.reload` on the old core first so its real `prepare_deactivate` runs. Every state-owning bundled plugin declares one (see `docs/contracts/hot-activation.md`); profile listing (`/agents`, `/agents show`) ships inside `delegation`, which also owns `task`/`task_batch`.
+- **Hot activation**: `core.reload` re-admits the live configuration and commits a new revision in-session. To remove a plugin, disable it via `core.reload` on the old core first so its real `prepare_deactivate` runs. Every state-owning bundled plugin declares one (see `docs/contracts/hot-activation.md`); child orchestration and monitoring ship inside `subagents`, which owns `task`/`task_batch`.
 
 ## Configuration & State
 

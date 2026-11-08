@@ -24,7 +24,6 @@ Each bundled plugin documents its own surface, configuration, behavior, and limi
 | `compaction` | [README](../src/voidcode/plugins/compaction/README.md) |
 | `cron` | [README](../src/voidcode/plugins/cron/README.md) |
 | `delegation` | [README](../src/voidcode/plugins/delegation/README.md) |
-| `effectiveness` | [README](../src/voidcode/plugins/effectiveness/README.md) |
 | `exec` | [README](../src/voidcode/plugins/exec/README.md) |
 | `files` | [README](../src/voidcode/plugins/files/README.md) |
 | `goal` | [README](../src/voidcode/plugins/goal/README.md) |
@@ -42,4 +41,4 @@ Each bundled plugin documents its own surface, configuration, behavior, and limi
 
 ## Open work
 
-- [`TODO.md`](./TODO.md): Verified open gaps and deferred work preserved from retired reports.
+- [`TODO.md`](./TODO.md): Module-owned open work; see [command UX acceptance](./command-ux.md) for per-command checks.

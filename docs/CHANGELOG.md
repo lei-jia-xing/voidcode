@@ -4,6 +4,14 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Effectiveness plugin removed (BREAKING)
+- The bundled plugin and `/effectiveness` command are removed. Before upgrading from a build that bundled it, set `plugins.effectiveness.enabled` to `false` and run `/core reload` while still on the old build; restart restores the recorded revision, and no ledger/config conversion is performed.
+
+### Subagent monitor (TUI Alt+A + web action)
+- Hidden live view over the bound session's descendant subtree: searchable roster with stable selection and viewport, scrollable detail with Back/Refresh/Cancel actions, and explicit subtree cancellation through the durable confirmation gate. Browsing and refresh are read-only `command.input` polls only while the view is open; duplicate chords bind nobody with a visible conflict; disabled delegation removes the binding and drops open views without retry.
+- Proven on real PTY (80x24, 40x18, embedded and remote) and real Chromium against served cores with loopback providers: gated live child/grandchild/sibling plus running root, deny preserving work, allow settling `interrupted`/`owner_cancel` with requested wording, draft/caret restoration, and reload/disabled invalidation.
+- Cancellation is run-bound through active signals, parked commits, and queued-work disarming. Old SDK invocations cannot register late child work after cancellation returns; completion notices do not automatically revive interrupted parents. Later explicit work remains legal.
+
 ### Model-only compaction (BREAKING)
 - The deterministic rendering path is deleted: every projection's replacement is the model's summary text, and a failed, blank, or unshrinkable summary fails loudly instead of falling back. The `summary_enabled` config key is removed (strict parsers refuse it); old stored `deterministic` rows still validate but nothing writes that kind again. `CompactionConfig` parsing is now pydantic (`strict=True`, `extra="forbid"`).
 
@@ -25,7 +33,7 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - `/model openrouter` reads the configured `/models` endpoint through the existing SDK client when no shipped catalog exists. Listing makes no inference request or retry; errors stay visible and credentials stay out of public output.
 
 ### Space-separated slash subcommands (BREAKING)
-- TUI and web use `/core reload`, `/goal set`, `/agents show`, and `/workflow status`; dotted slash input is no longer accepted. Completion, help, and command labels use the same catalog-derived spelling.
+- TUI and web use `/core reload`, `/goal set`, `/skills show`, and `/workflow status`; dotted slash input is no longer accepted. Completion, help, and command labels use the same catalog-derived spelling.
 - The longest registered path wins and argument text keeps its dots and whitespace. Machine command IDs, RPC/CLI invocation names, captured revisions, and decision gates are unchanged.
 
 ### Minimal TUI transcript and automatic slash completion

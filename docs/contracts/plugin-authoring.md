@@ -80,7 +80,7 @@ arguments against the registered schema before dispatch; a schema failure is
 ## 4. Commands: revision binding, busy gate
 
 Commands declare `argument_schema`, `effects`, `busy_gate`,
-and optional `client_syntax`.
+and optional `client_syntax` and `default_shortcut`.
 Clients render namespace dots as spaces (`/goal set`); CLI/RPC invocation and persisted facts retain the canonical ID (`goal.set`). A slash `client_syntax` chooses one preferred public path, with dots normalized the same way. There is no client-side command table or dotted slash alias.
 
 - `expected_revision` is REQUIRED and must equal the catalog revision the
@@ -89,6 +89,11 @@ Clients render namespace dots as spaces (`/goal set`); CLI/RPC invocation and pe
 - `busy_gate: true` refuses while the session is busy.
 - Unknown command names raise `Unknown command`; schema failures return a
   `CommandResult(status="error")` naming the schema violation.
+- `default_shortcut`, such as `alt+a`, is declarative catalog metadata, not a
+  keyboard callback. The TUI binds a uniquely claimed, non-reserved chord;
+  conflicts bind nobody and name every claimant. Web clients expose action
+  buttons without taking browser shortcuts. Hidden commands can expose this
+  entry without adding a public slash command.
 
 All commands follow the same effects/read-only rules: there is no command
 trust classification and no read-only exemption for particular commands.
@@ -161,6 +166,15 @@ core access, never a sibling plugin's state, never an unrestricted store
 scan. Own state stays owner/scope-bound; session or descendant history reads through typed
 `read_session_history` / `read_child_history` return bounded Markdown `HistoryPage` (parent,
 sibling, and unrelated sessions are refused).
+`read_session_history(..., page_bytes=8192)` requests a smaller page than the
+default 40 KiB bound; continue with the returned sequence/UTF-8 offset cursor,
+never reconstruct a cursor from trimmed display text.
+- Cross-plugin descendant monitoring uses `list_descendants()` and the typed
+  `DescendantNode` projection, not a concrete delegation-plugin import.
+  `cancel_descendant_subtree(target, expected_run_id=...)` is a mutating,
+  run-bound operation; use a durable confirmation for a user-facing cancel.
+  Scope, race receipts, and explicit-null unstarted nodes are defined in
+  [agent collaboration](agent-collaboration.md#subagent-monitor).
 - Neutral cross-plugin reads: `services.tool_definition(name)` answers from
   the active revision's dispatch snapshot with the caller's scope and stance
   applied (`None` covers unknown/hidden equally; the runtime keeps no copy),
@@ -280,8 +294,16 @@ session, and captured revision. It cannot stage state, events, continuations,
 processes, or other service mutations. It produces no command-completed event.
 A form/choices presentation must target the preparing command itself. A missing
 capability, malformed result, handler error, and an empty candidate set remain
-distinct: return a notice explaining an empty set, and let failures surface.
+distinct. Empty choices are valid, including a mounted live roster waiting for
+new work; use a notice when no interaction is needed. Failures surface.
 Every presentation remains bounded by the existing view-data byte limit.
+`command.input` can carry partial `arguments`. Supplied keys and types are
+validated against the command schema, with only its top-level `required`
+removed; normal invocation still requires the complete schema.
+`CommandPresentation.refresh_after_ms` (250..60000) requests advisory refresh
+only while that view remains open. Refresh must preserve its captured revision,
+navigation arguments, filter, stable selected id, and viewport; it must not
+invoke the command, consume notices, or replace an active approval/form.
 
 Text form fields may declare `options` as a sequence of `ChoiceOption(id, label)`.
 `None` means free text; an explicit option list restricts the submitted value to
@@ -300,9 +322,10 @@ and `/workflow run review`; bare forms provide guided optional arguments.
 
 Markdown details may declare `actions` as `ViewAction(label, action, arguments)`.
 Clients show these controls only for live presentations. Set `prepare_input=True`
-to open the target command's declared input without invoking it; preparation
-actions cannot carry invocation arguments. Normal actions retain the producing
-revision and pass through governed command invocation.
+to pass those arguments to the target command's declared input without invoking
+it (for example a history cursor or selected session id). Choices may likewise
+set `prepare_input=True` to route selections through preparation. Normal actions
+retain the producing revision and pass through governed command invocation.
 
 Forms may provide fixed `arguments` alongside editable fields, for identifiers
 and concurrency tokens. Field names cannot shadow those arguments. Submission
