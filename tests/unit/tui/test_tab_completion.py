@@ -138,7 +138,7 @@ def test_moved_highlight_enter_fills_instead_of_running_typed_exact() -> None:
     assert app.composer.completion == ()
 
 
-def test_args_multiline_plain_and_midline_never_open() -> None:
+def test_args_multiline_plain_and_outside_token_never_open() -> None:
     app, _ = _app()
     _type(app, "/show ")
     assert app.composer.completion == ("/show more",)
@@ -155,8 +155,99 @@ def test_args_multiline_plain_and_midline_never_open() -> None:
     assert app.composer.completion == ()
     app.composer.clear()
     _type(app, "/sh")
-    app._handle_composer_key(Key("left"))
+    for _ in range(3):
+        app._handle_composer_key(Key("left"))
+    assert app.composer.cursor == 0
     assert app.composer.completion == ()
+
+
+def test_midline_slash_completion_replaces_token_without_submitting() -> None:
+    app, _ = _app()
+    calls: list[str] = []
+    app._dispatch_user_prompt = lambda p: calls.append(p)  # type: ignore[method-assign]
+    app._dispatch_slash_command = lambda p: calls.append(p)  # type: ignore[method-assign]
+
+    # Mid-line typing gives candidates. Tab replaces token without dispatching.
+    _type(app, "hello /he")
+    assert app.composer.completion == ("/help",)
+    app._handle_composer_key(Key("tab"))
+    assert app.composer.value == "hello /help"
+    assert app.composer.cursor == len("hello /help")
+    assert app.composer.completion == ()
+    assert calls == []
+
+    # Enter on mid-line replaces token without dispatching.
+    app.composer.clear()
+    _type(app, "prefix /he")
+    assert app.composer.completion == ("/help",)
+    app._handle_composer_key(Key("enter"))
+    assert app.composer.value == "prefix /help"
+    assert app.composer.cursor == len("prefix /help")
+    assert app.composer.completion == ()
+    assert calls == []
+    # 2nd Enter dispatches the user prompt.
+    app._handle_composer_key(Key("enter"))
+    assert calls == ["prefix /help"]
+
+
+def test_midline_trailing_arguments_preserved() -> None:
+    app, _ = _app()
+    calls: list[str] = []
+    app._dispatch_slash_command = lambda p: calls.append(p)  # type: ignore[method-assign]
+    app._dispatch_user_prompt = lambda p: calls.append(p)  # type: ignore[method-assign]
+
+    # /he now with cursor at /he completes to /help now preserving " now"
+    _type(app, "/he now")
+    assert app.composer.completion == ()
+    for _ in range(4):
+        app._handle_composer_key(Key("left"))
+    assert app.composer.cursor == 3
+    assert app.composer.completion == ("/help",)
+
+    # Tab completes token and preserves arguments
+    app._handle_composer_key(Key("tab"))
+    assert app.composer.value == "/help now"
+    assert app.composer.cursor == 5
+    assert app.composer.completion == ()
+    assert calls == []
+
+    # 2nd Enter dispatches the command with arguments
+    app._handle_composer_key(Key("enter"))
+    assert calls == ["/help now"]
+
+    # Enter on /he now with cursor at /he also completes without premature dispatch
+    calls.clear()
+    app.composer.clear()
+    _type(app, "/he now")
+    for _ in range(4):
+        app._handle_composer_key(Key("left"))
+    assert app.composer.completion == ("/help",)
+    app._handle_composer_key(Key("enter"))
+    assert app.composer.value == "/help now"
+    assert app.composer.cursor == 5
+    assert app.composer.completion == ()
+    assert calls == []
+
+
+def test_cursor_moving_outside_slash_token_closes_completion() -> None:
+    app, _ = _app()
+    _type(app, "hello /sh")
+    assert app.composer.completion == ("/shell", "/show")
+    # Move inside token keeps completion open
+    app._handle_composer_key(Key("left"))
+    assert app.composer.cursor == 8
+    assert app.composer.completion == ("/shell", "/show")
+    app._handle_composer_key(Key("left"))
+    assert app.composer.cursor == 7
+    assert app.composer.completion  # "/" still matches commands
+    # Move before "/" (outside token) closes completion
+    app._handle_composer_key(Key("left"))
+    assert app.composer.cursor == 6
+    assert app.composer.completion == ()
+    # Move back right into token reopens completion
+    app._handle_composer_key(Key("right"))
+    assert app.composer.cursor == 7
+    assert app.composer.completion
 
 
 def test_tui_subcommand_filters_and_cjk_plain_text_safe() -> None:

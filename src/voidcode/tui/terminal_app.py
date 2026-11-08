@@ -1776,7 +1776,7 @@ class CoreTuiApp:
             )
             is_group = selected not in paths
             if is_group or (name == "tab" and any(path.startswith(selected + " ") for path in paths)):
-                self.composer.set_text(selected + " ")
+                self.composer.accept_completion_with(selected + " ")
                 self._sync_slash_completion()
                 return
         if name == "enter" and self.composer.completion and self.composer.value == self.composer.completion[self.composer.completion_index]:
@@ -1810,14 +1810,18 @@ class CoreTuiApp:
         if dismissed:
             self.composer.set_completion(())
             return
-        candidates = self._completion_candidates()
-        if not candidates:
+        candidates, token_range = self._completion_candidates()
+        if not candidates or token_range is None:
             self.composer.set_completion(())
             return
         previous = self.composer.completion
         index = self.composer.completion_index
         selected = previous[index] if previous and 0 <= index < len(previous) else None
-        self.composer.set_completion(candidates, index=candidates.index(selected) if selected in candidates else 0)
+        self.composer.set_completion(
+            candidates,
+            index=candidates.index(selected) if selected in candidates else 0,
+            target_range=token_range,
+        )
         descriptions: dict[str, str] = {}
         for entry in self.catalog_cache:
             path = f"/{_slash_public_path(entry)}"
@@ -1835,18 +1839,32 @@ class CoreTuiApp:
             or candidate == "/tui"
         }
 
-    def _completion_candidates(self) -> list[str]:
-        """Slash-command paths matching the draft prefix (catalog + /tui controls)."""
-        draft = self.composer.value
-        if not draft.startswith("/") or "\n" in draft or self.composer.cursor != len(draft):
-            return []
-        prefix = draft[1:].lstrip()
+    def _completion_candidates(self) -> tuple[list[str], tuple[int, int] | None]:
+        """Slash-command paths matching the draft token at cursor (catalog + /tui controls)."""
+        text = self.composer.value
+        cursor = self.composer.cursor
+        slash_idx = text[:cursor].rfind("/")
+        if slash_idx < 0:
+            return [], None
+        if slash_idx > 0 and text[slash_idx - 1] not in " \t\n":
+            return [], None
+        prefix = text[slash_idx + 1 : cursor]
+        if "\n" in prefix:
+            return [], None
+
+        token_end = cursor
+        while token_end < len(text) and (text[token_end].isalnum() or text[token_end] in "_-"):
+            token_end += 1
+
         names = [_slash_public_path(entry) for entry in self.catalog_cache if entry.slash_visible]
         names.extend(f"tui {control}" for control in ("help", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit"))
         parent, _, partial = prefix.rpartition(" ")
         base = f"{parent} " if parent else ""
         candidates = {base + name[len(base) :].split(" ", 1)[0] for name in names if name.startswith(base) and name[len(base) :].startswith(partial)}
-        return sorted(f"/{name}" for name in candidates if name and name != parent)
+        candidate_list = sorted(f"/{name}" for name in candidates if name and name != parent)
+        if not candidate_list:
+            return [], None
+        return candidate_list, (slash_idx, token_end)
 
     def _dispatch_user_prompt(self, prompt: str) -> None:
         # No optimistic commit: the durable core.user_message event is the one

@@ -273,6 +273,7 @@ class Composer:
         self._cursor_position: tuple[int, int] | None = None
         self._completion: tuple[str, ...] = ()
         self._completion_index = 0
+        self._completion_range: tuple[int, int] | None = None
         self.completion_descriptions: dict[str, str] = {}
         self.completion_groups: set[str] = set()
 
@@ -356,10 +357,21 @@ class Composer:
         """Highlighted candidate while the popup is open."""
         return self._completion_index
 
-    def set_completion(self, candidates: Sequence[str], index: int = 0) -> None:
+    @property
+    def completion_range(self) -> tuple[int, int] | None:
+        """Active token [start, end) range being completed."""
+        return self._completion_range
+
+    def set_completion(
+        self,
+        candidates: Sequence[str],
+        index: int = 0,
+        target_range: tuple[int, int] | None = None,
+    ) -> None:
         """Open the popup over ``candidates`` (empty closes it)."""
         self._completion = tuple(candidates)
         self._completion_index = min(max(0, index), max(0, len(self._completion) - 1))
+        self._completion_range = target_range if self._completion else None
 
     # -- editing primitives ------------------------------------------------
 
@@ -438,12 +450,23 @@ class Composer:
 
     # -- completion ----------------------------------------------------------
 
-    def _accept_completion(self) -> None:
-        """Replace the draft with the highlighted candidate."""
-        self._text = self._completion[self._completion_index]
-        self._cursor = len(self._text)
+    def accept_completion_with(self, replacement: str) -> None:
+        """Replace the target token (or draft) with ``replacement``."""
+        if self._completion_range is not None:
+            start, end = self._completion_range
+            self._text = self._text[:start] + replacement + self._text[end:]
+            self._cursor = start + len(replacement)
+        else:
+            self._text = replacement
+            self._cursor = len(self._text)
         self.set_completion(())
         self._edited()
+
+    def _accept_completion(self) -> None:
+        """Replace the active token (or draft) with the highlighted candidate."""
+        if not self._completion:
+            return
+        self.accept_completion_with(self._completion[self._completion_index])
 
     def _complete(self) -> ComposerOutcome:
         """Tab: accept the highlighted candidate (arrows move first)."""
