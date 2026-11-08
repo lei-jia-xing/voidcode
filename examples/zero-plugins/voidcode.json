@@ -55,9 +55,6 @@
     "review": {
       "enabled": false
     },
-    "session_info": {
-      "enabled": false
-    },
     "skills": {
       "enabled": false
     },

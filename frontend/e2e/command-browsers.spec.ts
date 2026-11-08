@@ -64,7 +64,6 @@ test.beforeAll(async () => {
     "cron",
     "review",
     "goal",
-    "session_info",
     "effectiveness",
     "mcp",
     "lsp",
@@ -352,13 +351,6 @@ test("guided review, schedule cancellation and diagnostic panels work without a 
   const previousAdoptions = await adoptions.count();
   await command("/core reload");
   await expect(adoptions).toHaveCount(previousAdoptions + 1);
-  await command("/usage");
-  await expect(panel.getByTestId("fields-view")).toContainText(
-    "Usage coverage",
-  );
-  await expect(panel).toContainText("Active budget");
-  await command("/context");
-  await expect(panel).toContainText("No committed provider dispatch");
   await command("/effectiveness");
   await expect(panel).toContainText("No persisted tool calls");
   await panel

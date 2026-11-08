@@ -34,7 +34,6 @@ Each bundled plugin documents its own surface, configuration, behavior, and limi
 | `plan` | [README](../src/voidcode/plugins/plan/README.md) |
 | `providers` | [README](../src/voidcode/plugins/providers/README.md) |
 | `review` | [README](../src/voidcode/plugins/review/README.md) |
-| `session_info` | [README](../src/voidcode/plugins/session_info/README.md) |
 | `skills` | [README](../src/voidcode/plugins/skills/README.md) |
 | `todo` | [README](../src/voidcode/plugins/todo/README.md) |
 | `user_shell` | [README](../src/voidcode/plugins/user_shell/README.md) |

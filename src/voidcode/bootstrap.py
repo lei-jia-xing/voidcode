@@ -63,7 +63,6 @@ BUNDLED_PLUGIN_IDS = (
     "plan",
     "providers",
     "review",
-    "session_info",
     "skills",
     "todo",
     "user_shell",

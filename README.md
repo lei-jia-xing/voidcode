@@ -97,7 +97,6 @@ Every client dispatches commands from the admitted catalog. TUI and web use spac
 
 | Plugin | Commands |
 |---|---|
-| `session_info` | `/context`, `/usage`, `/export`, `/copy` |
 | `plan` | `/plan`, `/plan off`, `/plan status` |
 | `todo` | `/todo`, `/todo clear` |
 | `goal` | `/goal`, `/goal set`, `/goal edit`, `/goal pause`, `/goal resume`, `/goal clear`, `/goal load_objective` |

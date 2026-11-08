@@ -34,7 +34,7 @@ def _entries(core, session_id):
             return entries, empty_pages
 
 
-def test_public_transcript_and_panels_survive_restart_without_clipping_messages(tmp_path):
+def test_public_transcript_survives_restart_without_clipping_messages(tmp_path):
     source = tmp_path / "probe"
     source.mkdir()
     (source / "__init__.py").write_text(PLUGIN)
@@ -46,7 +46,6 @@ def test_public_transcript_and_panels_survive_restart_without_clipping_messages(
     with _server([_turn(_call("lookup-1", "arbitrary_lookup")), _turn(output=answer)]) as server:
         plugins = {name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS}
         plugins["providers"] = {"enabled": True}
-        plugins["session_info"] = {"enabled": True}
         plugins["probe"] = {"path": str(source)}
         (workspace / "voidcode.json").write_text(
             json.dumps(
@@ -73,15 +72,6 @@ def test_public_transcript_and_panels_survive_restart_without_clipping_messages(
             assert len(dispatches) == 2
             assert all(entry.content.provider_name == "endpoint" and entry.content.model_name == "exact-model" for entry in dispatches)
             expected = entries
-            for command in ("export", "copy", "context", "usage"):
-                panel = core.invoke_command(result.session_id, command, {}, expected_revision=core.revision_id)
-                assert panel.status == "ok", panel.error
-                if command == "export":
-                    assert prompt in panel.output and "lookup result" in panel.output
-                elif command == "copy":
-                    assert panel.data["blocks"][0]["text"] == "print('complete')\n"
-                elif command == "context":
-                    assert panel.data["dispatch_sequence"] == dispatches[-1].sequence
         with open_core(workspace, state_dir=state) as core:
             restored, _ = _entries(core, result.session_id)
             assert restored == expected

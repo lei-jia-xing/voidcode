@@ -82,7 +82,6 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, plugin: Path) -> N
             "mcp",
             "plan",
             "review",
-            "session_info",
             "skills",
             "todo",
             "user_shell",

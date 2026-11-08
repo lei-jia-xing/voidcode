@@ -79,7 +79,7 @@ mise run frontend:api:check      # fail when the committed types are stale
 
 `e2e/core.spec.ts` covers initial connection and command execution.
 `e2e/rpc-reconnect.spec.ts` restarts the real server while the browser stays open
-and proves cursor replay without duplicate rows or command resends. The smoke spawns the real core server on a throwaway workspace and state dir whose `voidcode.json` is just `{"schema_version": 1}`, opens the bundle the core serves at `/`, and asserts that the client renders, creates a session, and renders the committed result of the `/usage` plugin command. No provider is configured, so nothing in the smoke reaches a model.
+and proves cursor replay without duplicate rows or command resends. The smoke spawns the real core server on a throwaway workspace and state dir whose `voidcode.json` is just `{"schema_version": 1}`, opens the bundle the core serves at `/`, and asserts that the client renders, creates a session, and renders the committed result of the `/plan status` plugin command. No provider is configured, so nothing in the smoke reaches a model.
 
 ```bash
 bun run build       # the served bundle is dist/index.html

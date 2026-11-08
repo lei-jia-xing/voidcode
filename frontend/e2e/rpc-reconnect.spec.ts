@@ -114,9 +114,9 @@ test("RPC reconnect restores events once and accepts a new command", async ({
     await page.goto(`${base}/?token=${token}`);
     const commands = page
       .locator('[data-testid^="event-"]')
-      .filter({ hasText: "/usage [ok]" });
+      .filter({ hasText: "/plan status [ok]" });
     await expect(page.locator('[data-testid^="session-tab-"]')).toHaveCount(1);
-    await page.getByTestId("prompt-input").fill("/usage");
+    await page.getByTestId("prompt-input").fill("/plan status");
     await page.getByTestId("send-btn").click();
     await expect(commands).toHaveCount(1);
     const firstId = await commands.first().getAttribute("data-testid");
@@ -127,7 +127,7 @@ test("RPC reconnect restores events once and accepts a new command", async ({
     await expect
       .poll(() => replayHeads, { timeout: 15000 })
       .toBeGreaterThan(beforeRestart);
-    await page.getByTestId("prompt-input").fill("/usage");
+    await page.getByTestId("prompt-input").fill("/plan status");
     await page.getByTestId("send-btn").click();
     await expect(commands).toHaveCount(2, { timeout: 15000 });
     expect(firstId).not.toBeNull();
