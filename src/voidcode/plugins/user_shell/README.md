@@ -5,7 +5,7 @@ Run a shell command locally through the governed `!` escape.
 ## Surface
 
 - Command `/shell` with required `command` (non-empty string), exposed to clients as the `!` prefix. Effect `EXECUTE`, `busy_gate=False`.
-- Returns combined stdout+stderr (middle-truncated to a 10,000-byte budget) plus data with exit code, status (`completed` | `failed` | `timed_out` | `cancelled`), duration, and truncation flags. Always stages a `shell_executed` event with the full record.
+- Returns combined stdout+stderr (spilling to an artifact if output exceeds the standard tool output budget) plus data with exit code, status (`completed` | `failed` | `timed_out` | `cancelled`), duration, and truncation flags. Always stages a `shell_executed` event with the full record.
 
 ## Configuration
 

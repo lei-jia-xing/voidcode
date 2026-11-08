@@ -11,7 +11,6 @@ from typing import Final
 from voidcode.sdk.services import ProcessResult
 
 USER_SHELL_TIMEOUT_SECONDS: Final[int] = 3600
-USER_SHELL_TRUNCATION_BYTES: Final[int] = 10_000
 
 
 def parse_shell_escape(text: str) -> str | None:
@@ -63,24 +62,6 @@ def _default_user_shell() -> tuple[str, str]:
         if resolved:
             return resolved, name
     return "/bin/sh", "sh"
-
-
-def truncate_middle_chars(text: str, max_bytes: int) -> str:
-    """Keep a UTF-8 head and tail with a truncation marker.
-
-    Keeps a byte-budget head and tail split evenly on char boundaries with a
-    ``…N chars truncated…`` marker. Pure function of the input.
-    """
-    if max_bytes <= 0:
-        return f"…{len(text)} chars truncated…" if text else ""
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text
-    left_budget, right_budget = max_bytes // 2, max_bytes - max_bytes // 2
-    head = encoded[:left_budget].decode("utf-8", errors="ignore")
-    tail = encoded[len(encoded) - right_budget :].decode("utf-8", errors="ignore")
-    removed = max(0, len(text) - len(head) - len(tail))
-    return f"{head}…{removed} chars truncated…{tail}"
 
 
 def format_user_shell_record(command: str, result: ProcessResult, output: str) -> str:

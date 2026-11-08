@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
 
 from voidcode.plugins.user_shell import user_shell as user_shell_module
-from voidcode.plugins.user_shell.user_shell import login_shell_args, parse_shell_escape, truncate_middle_chars
+from voidcode.plugins.user_shell.user_shell import login_shell_args, parse_shell_escape
 from voidcode.plugins.user_shell.user_shell_plugin import ShellCommand
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices, ProcessResult
+from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
+from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessResult
 
 
 def test_parse_shell_escape_detects_bang_prefix() -> None:
@@ -50,27 +52,35 @@ def test_login_shell_args_powershell_and_cmd(monkeypatch) -> None:
     assert login_shell_args("dir") == ["cmd.exe", "/c", "dir"]
 
 
-def test_truncate_middle_chars_short_text_unchanged() -> None:
-    assert truncate_middle_chars("short", 10) == "short"
+def test_shell_preserves_large_output_without_custom_middle_slicing(tmp_path: Path) -> None:
+    large_text = "x" * 20_000
+    services = ProcessServices(ProcessResult(0, large_text, "", 10))
+    result = _invoke(tmp_path, services)
+    assert result.output == large_text
+    assert result.data is not None
+    assert result.data["truncated"] is False
+    assert "artifact" not in result.data
+    assert services.artifacts == {}
 
 
-def test_truncate_middle_chars_cuts_middle_with_exact_marker() -> None:
-    text = "a" * 100 + "b" * 100
-
-    result = truncate_middle_chars(text, 40)
-
-    assert result == "a" * 20 + "…160 chars truncated…" + "b" * 20
-
-
-def test_truncate_middle_chars_zero_budget() -> None:
-    assert truncate_middle_chars("abc", 0) == "…3 chars truncated…"
-    assert truncate_middle_chars("", 0) == ""
+def test_shell_output_exceeding_budget_spills_artifact(tmp_path: Path) -> None:
+    overflow_text = "y" * (TOOL_OUTPUT_BYTES + 500)
+    services = ProcessServices(ProcessResult(0, overflow_text, "", 10))
+    result = _invoke(tmp_path, services)
+    assert result.output == overflow_text
+    assert result.data is not None
+    assert result.data["truncated"] is True
+    expected_sha = hashlib.sha256(overflow_text.encode("utf-8")).hexdigest()
+    assert result.data["artifact"] == {"sha256": expected_sha, "bytes": len(overflow_text.encode("utf-8")), "media_type": "text/plain; charset=utf-8"}
+    assert result.data["artifact_uri"] == f"artifact://{expected_sha}"
+    assert expected_sha in services.artifacts
 
 
 class ProcessServices(PluginServices):
     def __init__(self, result: ProcessResult) -> None:
         self.result = result
         self.events: list[Mapping[str, object]] = []
+        self.artifacts: dict[str, bytes] = {}
 
     def run_process(self, argv: Sequence[str], **kwargs: object) -> ProcessResult:
         return self.result
@@ -78,6 +88,12 @@ class ProcessServices(PluginServices):
     def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
         assert event_type == "shell_executed"
         self.events.append(payload)
+
+    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> ArtifactReference:
+        raw = data.encode("utf-8") if isinstance(data, str) else data
+        sha = hashlib.sha256(raw).hexdigest()
+        self.artifacts[sha] = raw
+        return ArtifactReference(sha256=sha, bytes=len(raw), media_type=media_type)
 
 
 def _invoke(tmp_path: Path, services: ProcessServices, command: str = "echo hi"):
@@ -121,11 +137,6 @@ def test_empty_escape_never_starts_a_process(tmp_path: Path, command: str) -> No
     result = _invoke(tmp_path, services, command)
     assert result.status == "error"
     assert services.events == []
-
-
-def test_truncation_respects_utf8_character_boundaries() -> None:
-    text = "你" * 20
-    assert truncate_middle_chars(text, 12) == "你你…16 chars truncated…你你"
 
 
 def test_login_shell_preserves_the_configured_executable_path(monkeypatch) -> None:

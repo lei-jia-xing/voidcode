@@ -118,11 +118,17 @@ def test_shell_captures_stderr_and_retains_bounded_preview(tmp_path: Path) -> No
     assert result.output == "oops\n"
     assert result.data is not None and result.data["exit_code"] == 7
     long_result = _invoke(core, session_id, "shell", {"command": "head -c 20000 /dev/zero | tr '\\0' a"})
-    assert long_result.output == "a" * 5000 + "…10000 chars truncated…" + "a" * 5000
-    assert long_result.data is not None and long_result.data["truncated"] is True
+    assert long_result.output == "a" * 20000
+    assert long_result.data is not None and long_result.data["truncated"] is False
     event = [event for event in core.events_after(session_id) if event.event_type == "plugin.user_shell.shell_executed"][-1]
     assert event.payload["stdout"] == "a" * 20000
     assert event.payload["cancelled"] is False
+
+    spill_result = _invoke(core, session_id, "shell", {"command": "head -c 60000 /dev/zero | tr '\\0' a"})
+    assert spill_result.output == "a" * 60000
+    assert spill_result.data is not None and spill_result.data["truncated"] is True
+    assert "artifact" in spill_result.data
+    assert str(spill_result.data.get("artifact_uri", "")).startswith("artifact://")
 
 
 def test_shell_marks_output_past_the_capture_limit(tmp_path: Path) -> None:
