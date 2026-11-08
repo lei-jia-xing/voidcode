@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Literal
 
 from voidcode.capabilities.providers.native.reasoning_effort import normalize_reasoning_effort
@@ -466,6 +467,9 @@ def _footer_row(workspace: str, model: str, effort: str | None, session: str, *,
     return clamp_row(model, width)
 
 
+_IGNORED_PATH_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".codegraph"}
+
+
 class CoreTuiApp:
     """RPC-backed inline TUI using Terminal and TuiFrame."""
 
@@ -567,6 +571,9 @@ class CoreTuiApp:
         self._stream_cancel: StreamCancellation | None = None
         #: Sessions whose welcome mark already committed; each empty visit shows it once.
         self._welcomed_sessions: set[str] = set()
+        self._path_replacements: dict[str, str] = {}
+        self._pending_path_replacements: dict[str, str] = {}
+        self._pending_path_descriptions: dict[str, str] = {}
 
     def run(self) -> int:
         self.running = True
@@ -1770,6 +1777,11 @@ class CoreTuiApp:
             return
         if name in ("enter", "tab") and self.composer.completion:
             selected = self.composer.completion[self.composer.completion_index]
+            if selected in self._path_replacements:
+                replacement = self._path_replacements[selected]
+                self.composer.accept_completion_with(replacement)
+                self._sync_slash_completion()
+                return
             paths = [f"/{_slash_public_path(entry)}" for entry in self.catalog_cache if entry.slash_visible]
             paths.extend(
                 f"/tui {control}" for control in ("help", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit")
@@ -1805,14 +1817,97 @@ class CoreTuiApp:
             else:
                 self._dispatch_user_prompt(line)
 
+    @property
+    def _workspace_root(self) -> Path:
+        if self._workspace_dir is not None:
+            return Path(self._workspace_dir).resolve()
+        if self.upgrade is not None and self.upgrade.workspace:
+            return Path(self.upgrade.workspace).resolve()
+        return Path.cwd().resolve()
+
+    def _path_candidates(self, query: str) -> tuple[list[str], dict[str, str], dict[str, str]]:
+        root = self._workspace_root
+        try:
+            if not root.is_dir():
+                return [], {}, {}
+        except OSError:
+            return [], {}, {}
+
+        if "/" in query:
+            dir_part, _, file_part = query.rpartition("/")
+            clean_dir = dir_part.strip("/")
+            target_dir = (root / clean_dir).resolve() if clean_dir else root
+            try:
+                target_dir.relative_to(root)
+                rel_parts = target_dir.relative_to(root).parts
+                if any(part in _IGNORED_PATH_DIRS for part in rel_parts):
+                    return [], {}, {}
+            except ValueError:
+                return [], {}, {}
+            prefix = f"{clean_dir}/" if clean_dir else ""
+        else:
+            file_part = query
+            target_dir = root
+            prefix = ""
+
+        try:
+            if not target_dir.is_dir():
+                return [], {}, {}
+            entries = list(target_dir.iterdir())
+        except OSError:
+            return [], {}, {}
+
+        allow_hidden = query.startswith(".") or file_part.startswith(".")
+        matching_dirs: list[str] = []
+        matching_files: list[str] = []
+        descriptions: dict[str, str] = {}
+        replacements: dict[str, str] = {}
+
+        for entry in entries:
+            name = entry.name
+            if name in _IGNORED_PATH_DIRS:
+                continue
+            if not allow_hidden and name.startswith("."):
+                continue
+            if file_part and not name.lower().startswith(file_part.lower()):
+                continue
+
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                continue
+
+            rel_path = f"{prefix}{name}"
+            if is_dir:
+                cand = f"{rel_path}/"
+                matching_dirs.append(cand)
+                descriptions[cand] = "directory"
+                replacements[cand] = f"{rel_path}/"
+            else:
+                cand = rel_path
+                matching_files.append(cand)
+                descriptions[cand] = "file"
+                replacements[cand] = f"{rel_path} "
+
+        matching_dirs.sort(key=lambda s: s.lower())
+        matching_files.sort(key=lambda s: s.lower())
+        candidates = (matching_dirs + matching_files)[:50]
+        return candidates, descriptions, replacements
+
     def _sync_slash_completion(self, *, dismissed: bool = False) -> None:
-        """Refresh the slash-name popup after one composer key; preserve selection."""
+        """Refresh the slash-name or path popup after one composer key; preserve selection."""
         if dismissed:
             self.composer.set_completion(())
+            self._path_replacements = {}
+            self._pending_path_replacements = {}
+            self._pending_path_descriptions = {}
             return
         candidates, token_range = self._completion_candidates()
         if not candidates or token_range is None:
             self.composer.set_completion(())
+            self._path_replacements = {}
+            self._pending_path_replacements = {}
+            self._pending_path_descriptions = {}
             return
         previous = self.composer.completion
         index = self.composer.completion_index
@@ -1822,28 +1917,66 @@ class CoreTuiApp:
             index=candidates.index(selected) if selected in candidates else 0,
             target_range=token_range,
         )
-        descriptions: dict[str, str] = {}
-        for entry in self.catalog_cache:
-            path = f"/{_slash_public_path(entry)}"
-            properties = entry.argument_schema.get("properties", {})
-            required = entry.argument_schema.get("required", ())
-            properties = properties if isinstance(properties, Mapping) else {}
-            required = required if isinstance(required, (tuple, list)) else ()
-            hints = " ".join(f"<{name}>" if name in required else f"[{name}]" for name in properties)
-            descriptions[path] = f"{hints} — {entry.description}" if hints else entry.description
-        self.composer.completion_descriptions = descriptions
-        self.composer.completion_groups = {
-            candidate
-            for candidate in candidates
-            if any(f"/{_slash_public_path(entry)}".startswith(candidate + " ") for entry in self.catalog_cache if entry.slash_visible)
-            or candidate == "/tui"
-        }
+        if self._pending_path_replacements:
+            self._path_replacements = dict(self._pending_path_replacements)
+            self.composer.completion_descriptions = dict(self._pending_path_descriptions)
+            self.composer.completion_groups = set()
+        else:
+            self._path_replacements = {}
+            descriptions: dict[str, str] = {}
+            for entry in self.catalog_cache:
+                path = f"/{_slash_public_path(entry)}"
+                properties = entry.argument_schema.get("properties", {})
+                required = entry.argument_schema.get("required", ())
+                properties = properties if isinstance(properties, Mapping) else {}
+                required = required if isinstance(required, (tuple, list)) else ()
+                hints = " ".join(f"<{name}>" if name in required else f"[{name}]" for name in properties)
+                descriptions[path] = f"{hints} — {entry.description}" if hints else entry.description
+            self.composer.completion_descriptions = descriptions
+            self.composer.completion_groups = {
+                candidate
+                for candidate in candidates
+                if any(f"/{_slash_public_path(entry)}".startswith(candidate + " ") for entry in self.catalog_cache if entry.slash_visible)
+                or candidate == "/tui"
+            }
 
     def _completion_candidates(self) -> tuple[list[str], tuple[int, int] | None]:
-        """Slash-command paths matching the draft token at cursor (catalog + /tui controls)."""
+        """Slash-command or workspace @path paths matching the draft token at cursor."""
         text = self.composer.value
         cursor = self.composer.cursor
+
+        at_idx = text[:cursor].rfind("@")
+        if at_idx >= 0 and (at_idx == 0 or text[at_idx - 1] in " \t\n([{\"':"):
+            token_mid = text[at_idx:cursor]
+            if not any(c in " \t\n" for c in token_mid):
+                token_end = cursor
+                while token_end < len(text) and text[token_end] not in " \t\n)]}\"':":
+                    token_end += 1
+                query = text[at_idx + 1 : cursor]
+                candidates, descriptions, replacements = self._path_candidates(query)
+                self._pending_path_descriptions = descriptions
+                self._pending_path_replacements = replacements
+                return candidates, (at_idx, token_end)
+
         slash_idx = text[:cursor].rfind("/")
+        if slash_idx > 0 and text[slash_idx - 1] not in " \t\n":
+            path_start = cursor
+            while path_start > 0 and text[path_start - 1] not in " \t\n([{\"':":
+                path_start -= 1
+            path_token = text[path_start:cursor]
+            if "/" in path_token and "\n" not in path_token:
+                token_end = cursor
+                while token_end < len(text) and text[token_end] not in " \t\n)]}\"':":
+                    token_end += 1
+                candidates, descriptions, replacements = self._path_candidates(path_token)
+                if candidates:
+                    self._pending_path_descriptions = descriptions
+                    self._pending_path_replacements = replacements
+                    return candidates, (path_start, token_end)
+
+        self._pending_path_descriptions = {}
+        self._pending_path_replacements = {}
+
         if slash_idx < 0:
             return [], None
         if slash_idx > 0 and text[slash_idx - 1] not in " \t\n":

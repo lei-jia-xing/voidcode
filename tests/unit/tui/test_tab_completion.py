@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from voidcode.sdk.client import CommandCatalog
@@ -481,3 +482,82 @@ def test_internal_command_helpers_do_not_create_discovery_namespaces() -> None:
     app._invoke_async = lambda name, arguments, revision, **kwargs: calls.append(name)
     app._dispatch_slash_command("/internal only")
     assert calls == ["internal.only"]
+
+
+def test_typing_at_opens_workspace_path_suggestions() -> None:
+    app, _ = _app()
+    _type(app, "@")
+    assert app.composer.completion
+    assert "src/" in app.composer.completion
+    assert "README.md" in app.composer.completion
+    assert app.composer.completion_descriptions.get("src/") == "directory"
+    assert app.composer.completion_descriptions.get("README.md") == "file"
+
+
+def test_typing_at_filter_to_directory() -> None:
+    app, _ = _app()
+    _type(app, "@sr")
+    assert app.composer.completion == ("src/",)
+
+
+def test_tab_directory_completes_and_allows_further_completion() -> None:
+    app, _ = _app()
+    _type(app, "@sr")
+    app._handle_composer_key(Key("tab"))
+    assert app.composer.value == "src/"
+    assert app.composer.completion
+    assert "src/voidcode/" in app.composer.completion
+
+
+def test_tab_file_completes_with_trailing_space_no_dispatch() -> None:
+    app, _ = _app()
+    dispatched: list[str] = []
+    app._dispatch_user_prompt = lambda line: dispatched.append(line)  # type: ignore[method-assign]
+    _type(app, "@README.md")
+    assert app.composer.completion == ("README.md",)
+    app._handle_composer_key(Key("tab"))
+    assert app.composer.value == "README.md "
+    assert dispatched == []
+
+
+def test_midsentence_at_path_replacement_preserves_surrounding_text() -> None:
+    app, _ = _app()
+    _type(app, "check @sr now")
+    for _ in range(len(" now")):
+        app._handle_composer_key(Key("left"))
+    assert app.composer.completion == ("src/",)
+    app._handle_composer_key(Key("tab"))
+    assert app.composer.value == "check src/ now"
+
+
+def test_ignored_directories_excluded() -> None:
+    app, _ = _app()
+    _type(app, "@.")
+    assert ".git/" not in app.composer.completion
+    assert not any(c.startswith(".git/") for c in app.composer.completion)
+    app.composer.set_text("")
+    _type(app, "@__")
+    assert "__pycache__/" not in app.composer.completion
+    assert not any(c.startswith("__pycache__/") for c in app.composer.completion)
+
+
+def test_accepting_path_with_enter_or_tab_does_not_submit_prompt() -> None:
+    app, _ = _app()
+    dispatched: list[str] = []
+    app._dispatch_user_prompt = lambda line: dispatched.append(line)  # type: ignore[method-assign]
+    _type(app, "@sr")
+    app._handle_composer_key(Key("enter"))
+    assert app.composer.value == "src/"
+    assert dispatched == []
+    app._handle_composer_key(Key("tab"))
+    assert "src/voidcode/" in app.composer.value
+    assert dispatched == []
+
+
+def test_path_candidates_does_not_escape_workspace(tmp_path: Path) -> None:
+    app, _ = _app()
+    app._workspace_dir = str(tmp_path)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "file.txt").write_text("hello")
+    _type(app, "@../")
+    assert app.composer.completion == ()
