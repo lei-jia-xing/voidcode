@@ -25,7 +25,7 @@ from voidcode.sdk.client import (
 )
 from voidcode.sdk.commands import CommandDescriptor, ConfirmationRequest
 from voidcode.sdk.gates import ApprovalGate
-from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
+from voidcode.sdk.provider import ProviderMessage, ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolEffect, ToolFailure, ToolSuccess
 from voidcode.sdk.transcript import TranscriptEntry, TranscriptPage, TranscriptRun, TranscriptTool
 from voidcode.sdk.views import (
@@ -2133,3 +2133,116 @@ def test_tui_sessions_selector_mount_and_switch(monkeypatch: pytest.MonkeyPatch)
     empty_app._dispatch_slash_command("/tui sessions")
     assert empty_app.active_overlay is None
     assert any("No active sessions." in row for row in empty_app.terminal.committed)
+
+
+def test_footer_row_degrade_order() -> None:
+    from voidcode.tui.term import visible_width
+    from voidcode.tui.terminal_app import _footer_row
+
+    # 1. Full fits at wide width
+    full = _footer_row("/srv/ws", "openai/gpt-5.2", "xhigh", "5.2k/200k", "12.5k total", width=100, compact=False)
+    assert full == "/srv/ws · openai/gpt-5.2 · xhigh · 5.2k/200k · 12.5k total"
+    assert "session" not in full
+
+    # 2. Too narrow for full: drops usage
+    no_usage = _footer_row("/srv/ws", "openai/gpt-5.2", "xhigh", "5.2k/200k", "12.5k total", width=50, compact=False)
+    assert no_usage == "/srv/ws · openai/gpt-5.2 · xhigh · 5.2k/200k"
+
+    # 3. Too narrow: crops or drops workspace; 40 cols preserves model
+    at_40 = _footer_row("/srv/very/long/workspace/path", "openai/gpt-5.2", "xhigh", "5.2k/200k", "12.5k total", width=40, compact=False)
+    assert "openai/gpt-5.2" in at_40
+    assert at_40 == "openai/gpt-5.2 · xhigh · 5.2k/200k"
+    assert visible_width(at_40) <= 40
+
+    # Crop workspace when room >= 8
+    cropped = _footer_row("/long/workspace/path", "gpt-5.2", "xhigh", "5.2k ctx", None, width=40, compact=False)
+    assert "gpt-5.2" in cropped and visible_width(cropped) <= 40
+    assert cropped.endswith(" · gpt-5.2 · xhigh · 5.2k ctx")
+
+    # 4. Too narrow: drops context
+    no_ctx = _footer_row("/srv/ws", "openai/gpt-5.2", "xhigh", "5.2k/200k", "12.5k total", width=25, compact=False)
+    assert no_ctx == "openai/gpt-5.2 · xhigh"
+
+    # 5. Very narrow: 保底 clamps model
+    clamped = _footer_row("/srv/ws", "openai/gpt-5.2", "xhigh", "5.2k/200k", "12.5k total", width=10, compact=False)
+    assert clamped == "openai/gpt"
+
+    # Compact mode: model · effort only
+    compact = _footer_row("/srv/ws", "openai/gpt-5.2", "xhigh", "5.2k/200k", "12.5k total", width=100, compact=True)
+    assert compact == "openai/gpt-5.2 · xhigh"
+    assert "/srv/ws" not in compact and "5.2k" not in compact
+
+
+def test_model_turn_updates_footer_context() -> None:
+    from types import SimpleNamespace
+
+    from voidcode.sdk.codec import encode_provider_result
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_StubClient(), session_id="session-secret-123", terminal=terminal, show_session=True)  # type: ignore[arg-type]
+    app.upgrade = SimpleNamespace(
+        status="ok",
+        stage="serving",
+        workspace="/tmp/ws",
+        fenced=False,
+        model=SimpleNamespace(
+            raw="openai/gpt-5.2",
+            provider="openai",
+            model="gpt-5.2",
+            reasoning_effort="xhigh",
+            context_window=200000,
+        ),
+    )
+    app._stream_ready = True
+
+    # Initially no turn measurements
+    assert app.latest_input_tokens is None
+    assert app.cumulative_input_tokens == 0
+    assert app.cumulative_output_tokens == 0
+    initial_ctx = app._footer_context(width=100)
+    assert initial_ctx == "/tmp/ws · openai/gpt-5.2 · xhigh"
+    assert "session-secret" not in initial_ctx
+
+    # Turn 1: 5200 in, 1500 out
+    turn1 = ProviderTurnResult(usage=ProviderTokenUsage(input_tokens=5200, output_tokens=1500))
+    ev1 = _event(1, "core.model_turn", content=turn1, result=encode_provider_result(turn1))
+    app.event_queue.put({"kind": "stream_event", "frame": EventFrame(session_id="session-secret-123", event=ev1)})
+    app._drain_events()
+
+    assert app.latest_input_tokens == 5200
+    assert app.cumulative_input_tokens == 5200
+    assert app.cumulative_output_tokens == 1500
+    ctx1 = app._footer_context(width=100)
+    assert ctx1 == "/tmp/ws · openai/gpt-5.2 · xhigh · 5.2k/200k · 6.7k total"
+    assert "session-secret" not in ctx1
+
+    # Turn 2: 8100 in, 2000 out (context tracks latest dispatch, total accumulates)
+    turn2 = ProviderTurnResult(usage=ProviderTokenUsage(input_tokens=8100, output_tokens=2000))
+    ev2 = _event(2, "core.model_turn", content=turn2, result=encode_provider_result(turn2))
+    app.event_queue.put({"kind": "stream_event", "frame": EventFrame(session_id="session-secret-123", event=ev2)})
+    app._drain_events()
+
+    assert app.latest_input_tokens == 8100
+    assert app.cumulative_input_tokens == 13300
+    assert app.cumulative_output_tokens == 3500
+    ctx2 = app._footer_context(width=100)
+    assert ctx2 == "/tmp/ws · openai/gpt-5.2 · xhigh · 8.1k/200k · 16.8k total"
+
+    # When context_window is unknown, displays "X.Xk ctx"
+    app.upgrade.model.context_window = None  # type: ignore[attr-defined]
+    app.upgrade.model.provider = "custom"  # type: ignore[attr-defined]
+    app.upgrade.model.model = "custom-llm"  # type: ignore[attr-defined]
+    ctx_no_win = app._footer_context(width=100)
+    assert "8.1k ctx" in ctx_no_win
+    assert "/200k" not in ctx_no_win and "/400k" not in ctx_no_win
+
+    # Switching session resets tracking variables
+    app._switch_session("new-session-456")
+    assert app.latest_input_tokens is None
+    assert app.cumulative_input_tokens == 0
+    assert app.cumulative_output_tokens == 0
+    reset_ctx = app._footer_context(width=100)
+    assert "total" not in reset_ctx
+    assert "ctx" not in reset_ctx
+    assert "session" not in reset_ctx

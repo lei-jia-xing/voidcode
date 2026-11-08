@@ -47,7 +47,7 @@ from voidcode.sdk.gates import (
     reduce_gates,
 )
 from voidcode.sdk.icons import Icon
-from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
+from voidcode.sdk.provider import ProviderMessage, ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.tools import (
     ToolEffect,
 )
@@ -445,25 +445,54 @@ def _short_workspace(path: str, *, local: bool) -> str:
     return path
 
 
-def _footer_row(workspace: str, model: str, effort: str | None, session: str, *, width: int, compact: bool) -> str:
-    """Context row with width degrade: crop workspace → drop session → drop workspace → model·effort → model."""
+def _footer_row(
+    workspace: str,
+    model: str,
+    effort: str | None,
+    context: str | None = None,
+    usage: str | None = None,
+    *,
+    width: int,
+    compact: bool,
+) -> str:
+    """Context row with width degrade: drop usage → crop workspace → drop workspace → drop context → model."""
     sep = " · "
     if compact:
-        return clamp_row(sep.join([model] + ([effort] if effort else [])), width)
-    tail = [model] + ([effort] if effort else [])
-    for drop_session in (False, True):
-        segments = ([workspace] if drop_session or not session else [workspace, session]) + tail if workspace else tail
-        text = sep.join(s for s in segments if s)
+        return clamp_row(sep.join([s for s in (model, effort) if s]), width)
+
+    # 1. Full: workspace · model · effort · context · usage
+    full_segments = [s for s in (workspace, model, effort, context, usage) if s]
+    text = sep.join(full_segments)
+    if visible_width(text) <= width:
+        return text
+
+    # 2. If too wide, drop usage: workspace · model · effort · context
+    if usage:
+        segments = [s for s in (workspace, model, effort, context) if s]
+        text = sep.join(segments)
         if visible_width(text) <= width:
             return text
-        if workspace and visible_width(workspace) > 8:
-            rest = sep.join(s for s in segments[1:] if s)
-            room = max(0, width - visible_width(sep + rest) if rest else width)
-            if room >= 8:
-                return crop_row_right(workspace, room) + (sep + rest if rest else "")
+
+    # 3. If too wide, crop workspace or drop workspace: model · effort · context
+    tail_with_ctx = [s for s in (model, effort, context) if s]
+    rest = sep.join(tail_with_ctx)
+    if workspace:
+        rest_w = visible_width(sep + rest) if rest else 0
+        room = max(0, width - rest_w)
+        if room >= 8 and visible_width(workspace) > room:
+            return crop_row_right(workspace, room) + (sep + rest if rest else "")
+
+    text = sep.join(tail_with_ctx)
+    if visible_width(text) <= width:
+        return text
+
+    # 4. If too wide, drop context: model · effort
+    tail = [s for s in (model, effort) if s]
     text = sep.join(tail)
     if visible_width(text) <= width:
         return text
+
+    # 5. If too wide (40 cols), 保底: model (clamped)
     return clamp_row(model, width)
 
 
@@ -574,6 +603,9 @@ class CoreTuiApp:
         self._path_replacements: dict[str, str] = {}
         self._pending_path_replacements: dict[str, str] = {}
         self._pending_path_descriptions: dict[str, str] = {}
+        self.latest_input_tokens: int | None = None
+        self.cumulative_input_tokens: int = 0
+        self.cumulative_output_tokens: int = 0
 
     def run(self) -> int:
         self.running = True
@@ -748,7 +780,7 @@ class CoreTuiApp:
         return render_assistant_markdown(text, width, self.styles)
 
     def _footer_context(self, width: int) -> str:
-        """Context row from the admitted health DTO only: workspace · model · effort."""
+        """Context row from health DTO and turn usage: workspace · model · effort · context · usage."""
         if self.footer_mode == "off":
             return ""
         from voidcode.tui.local_client import CoreLocalClient
@@ -756,8 +788,45 @@ class CoreTuiApp:
         model = getattr(self.upgrade, "model", None)
         local = isinstance(self.client, CoreLocalClient)
         workspace = _short_workspace(self.upgrade.workspace, local=local) if self.upgrade is not None and self.upgrade.workspace else ""
-        session = self.session_id[:8] if self.show_session and self.session_id else ""
-        return _footer_row(workspace, _model_segment(model), _effort_segment(model), session, width=width, compact=self.footer_mode == "compact")
+
+        context_segment: str | None = None
+        if self.latest_input_tokens is not None:
+            used_k = self.latest_input_tokens / 1000.0
+            used_str = f"{used_k:.1f}k"
+            window = getattr(model, "context_window", None)
+            if not (not isinstance(window, bool) and isinstance(window, int) and window > 0) and model is not None:
+                provider = getattr(model, "provider", None)
+                name = getattr(model, "model", None)
+                if isinstance(provider, str) and isinstance(name, str):
+                    try:
+                        from voidcode.capabilities.providers.native.model_catalog import static_catalog_metadata
+
+                        meta = static_catalog_metadata(provider, name)
+                        meta_win = meta.context_window if meta is not None else None
+                        if not isinstance(meta_win, bool) and isinstance(meta_win, int) and meta_win > 0:
+                            window = meta_win
+                    except Exception:
+                        pass
+            if not isinstance(window, bool) and isinstance(window, int) and window > 0:
+                win_str = f"{window / 1000.0:.0f}k"
+                context_segment = f"{used_str}/{win_str}"
+            else:
+                context_segment = f"{used_str} ctx"
+
+        usage_segment: str | None = None
+        total = self.cumulative_input_tokens + self.cumulative_output_tokens
+        if total > 0:
+            usage_segment = f"{total / 1000.0:.1f}k total"
+
+        return _footer_row(
+            workspace,
+            _model_segment(model),
+            _effort_segment(model),
+            context_segment,
+            usage_segment,
+            width=width,
+            compact=self.footer_mode == "compact",
+        )
 
     def _border_status(self) -> str:
         """`<spinner> working` while a run is active; idle borders stay clean."""
@@ -1097,6 +1166,8 @@ class CoreTuiApp:
         if etype in (EventType.USER_MESSAGE, EventType.RUN_RESUMED):
             self._run_active = True
             self.status_line = ""
+        elif etype == EventType.MODEL_TURN:
+            self._record_model_turn(payload, entry.content if entry else None)
         elif etype == EventType.TOOL_INTENT:
             invocation = payload.get("invocation_id")
             raw_call = payload.get("call")
@@ -1166,6 +1237,42 @@ class CoreTuiApp:
             self._clear_stream()
         elif etype == EventType.OBSERVER_ERROR:
             rows.extend(_prefixed_rows("Warning: plugin observer:", str(payload.get("error") or "Observer failed"), self.styles, slot="warning"))
+
+    def _record_model_turn(self, payload: Mapping[str, object], entry_content: object = None) -> None:
+        usage = None
+        if isinstance(entry_content, ProviderTurnResult) and entry_content.usage is not None:
+            usage = entry_content.usage
+        if usage is None:
+            raw_result = payload.get("result")
+            if isinstance(raw_result, ProviderTurnResult) and raw_result.usage is not None:
+                usage = raw_result.usage
+            elif isinstance(raw_result, Mapping):
+                usage = raw_result.get("usage")
+        if usage is None:
+            usage = payload.get("usage")
+
+        in_tok: int | None = None
+        out_tok: int | None = None
+        if isinstance(usage, ProviderTokenUsage):
+            if not isinstance(usage.input_tokens, bool) and isinstance(usage.input_tokens, int):
+                in_tok = usage.input_tokens
+            if not isinstance(usage.output_tokens, bool) and isinstance(usage.output_tokens, int):
+                out_tok = usage.output_tokens
+        elif isinstance(usage, Mapping):
+            raw_in = usage.get("input_tokens")
+            if not isinstance(raw_in, bool) and isinstance(raw_in, int):
+                in_tok = raw_in
+            raw_out = usage.get("output_tokens")
+            if not isinstance(raw_out, bool) and isinstance(raw_out, int):
+                out_tok = raw_out
+
+        if in_tok is not None:
+            self.latest_input_tokens = in_tok
+            self.cumulative_input_tokens += in_tok
+        else:
+            self.latest_input_tokens = None
+        if out_tok is not None:
+            self.cumulative_output_tokens += out_tok
 
     def _render_run_notice(self, status: str, detail: object, rows: list[str], *, stop_cause: object = None) -> None:
         if status == "failed":
@@ -2182,6 +2289,9 @@ class CoreTuiApp:
         self._gates = GateState()
         self._tool_headers.clear()
         self._clear_stream()
+        self.latest_input_tokens = None
+        self.cumulative_input_tokens = 0
+        self.cumulative_output_tokens = 0
         # A new stream is about to start: its first frame reconciles.
         self._stream_ready = False
         self.status_line = ""
