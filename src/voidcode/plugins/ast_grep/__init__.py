@@ -10,8 +10,10 @@ from collections.abc import Mapping
 
 from voidcode.sdk.plugin import Plugin
 
-from .ast_grep_tool import AstGrepTool
+from .ast_grep_tool import AstGrepReplaceTool, AstGrepTool
+
+__all__ = ["AstGrepReplaceTool", "AstGrepTool", "create_plugin"]
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    return Plugin(tools=(AstGrepTool(),))
+    return Plugin(tools=(AstGrepTool(), AstGrepReplaceTool()))

@@ -22,8 +22,12 @@ import pytest
 from tests.fixtures.reload_plugin import PROBE_TOOL, PROCESS_READ_TOOL, PROCESS_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.core.activation import SandboxPolicy
 from voidcode.core.engine import Core
+from voidcode.core.plugins import LeaseContext
 from voidcode.core.processes import ProcessRegistry
+from voidcode.core.sandbox import SandboxBackend
+from voidcode.core.services import RuntimeServices
 from voidcode.sdk.services import ProcessResult
 
 PLUGIN_ID = "reload-fixture"
@@ -64,7 +68,9 @@ def _close_cores() -> Iterator[None]:
 
 
 def _open(tmp_path: Path) -> Core:
-    core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    core = open_core(workspace, state_dir=tmp_path / "state")
     _CREATED.append(core)
     return core
 
@@ -392,3 +398,83 @@ def test_host_close_reaps_live_process_groups(tmp_path: Path) -> None:
         core.close()
         worker.join(timeout=_STARTUP_DEADLINE_SECONDS)
         assert _wait_for_pid_exit(pid, marker=str(pid_file))
+
+
+def test_read_only_lease_allows_run_query_process_and_hook_lease_rejects_both(tmp_path: Path) -> None:
+    core = _open(tmp_path)
+    runtime = core._snapshot.plugin_runtime
+
+    ro_lease = LeaseContext(
+        token="ro-token",
+        owner="test-plugin",
+        session_id="sess-ro",
+        workspace=core.workspace,
+        run_id="run-ro",
+        revision_id=core._snapshot.admission.revision_id,
+        invocation_id="inv-ro",
+        readonly=True,
+    )
+    ro_services = RuntimeServices(runtime, ro_lease)
+
+    with pytest.raises(PermissionError, match="read-only"):
+        ro_services.run_process(_python("print('should not run')"))
+
+    result = ro_services.run_query_process(_python("print('query ok')"))
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "query ok"
+    assert len(ro_lease.staged_observations) == 0
+
+    for ro in (True, False):
+        hook_lease = LeaseContext(
+            token=f"hook-token-{ro}",
+            owner="test-plugin",
+            session_id=f"sess-hook-{ro}",
+            workspace=core.workspace,
+            run_id=f"run-hook-{ro}",
+            revision_id=core._snapshot.admission.revision_id,
+            invocation_id=f"inv-hook-{ro}",
+            readonly=ro,
+            hook=True,
+        )
+        hook_services = RuntimeServices(runtime, hook_lease)
+        with pytest.raises(PermissionError):
+            hook_services.run_process(_python("print('should not run')"))
+        with pytest.raises(PermissionError, match="hook"):
+            hook_services.run_query_process(_python("print('should not run')"))
+
+
+def test_run_query_process_enforces_read_only_sandbox_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    core = _open(tmp_path)
+    runtime = core._snapshot.plugin_runtime
+    ro_lease = LeaseContext(
+        token="ro-token-sb",
+        owner="test-plugin",
+        session_id="sess-ro-sb",
+        workspace=core.workspace,
+        run_id="run-ro-sb",
+        revision_id=core._snapshot.admission.revision_id,
+        invocation_id="inv-ro-sb",
+        readonly=True,
+    )
+    fake_backend = SandboxBackend(
+        policy=SandboxPolicy(mode="workspace-write", writable_roots=("/tmp",)),
+        helper_path="/bin/true",
+        protected_paths=(),
+    )
+    runtime.sandbox_backend = fake_backend
+
+    recorded_sandbox: list[SandboxBackend | None] = []
+
+    def _intercept_run(*args: object, **kwargs: object) -> ProcessResult:
+        recorded_sandbox.append(kwargs.get("sandbox"))  # type: ignore[arg-type]
+        return ProcessResult(exit_code=0, stdout="intercepted", stderr="", duration_ms=1)
+
+    monkeypatch.setattr(runtime.processes, "run", _intercept_run)
+    services = RuntimeServices(runtime, ro_lease)
+    res = services.run_query_process(["echo", "hi"])
+    assert res.stdout == "intercepted"
+    assert len(recorded_sandbox) == 1
+    passed_sb = recorded_sandbox[0]
+    assert passed_sb is not None
+    assert passed_sb.policy.mode == "read-only"
+    assert passed_sb.policy.writable_roots == ()

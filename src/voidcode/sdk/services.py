@@ -843,6 +843,27 @@ class PluginServices(Protocol):
         """
         ...
 
+    def run_query_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        stdin: bytes | str | None = None,
+        timeout_seconds: float | None = None,
+        max_output_bytes: int = 262144,
+        on_output: Callable[[str, bytes], None] | None = None,
+    ) -> ProcessResult:
+        """Run one read-only query child process of this runtime under this lease.
+
+        Unlike `run_process`, a read-only lease IS permitted to execute read-only query
+        commands (such as code search, AST queries, linters, or non-mutating analysis tools).
+        Hook leases remain purely observational and are refused outright. When sandboxed,
+        the process runs under a read-only profile, and no mutable filesystem observations
+        are staged.
+        """
+        ...
+
     def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> ArtifactReference:
         """Store bytes under their own content address and return the reference to them.
 

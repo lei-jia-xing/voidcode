@@ -590,6 +590,27 @@ class FakeServices(PluginServices):
         _ = argv, cwd, env, stdin, timeout_seconds, max_output_bytes, on_output
         return self.process_result or ProcessResult(exit_code=0, stdout=b"", stderr=b"")
 
+    def run_query_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        stdin: bytes | str | None = None,
+        timeout_seconds: float | None = None,
+        max_output_bytes: int = 262144,
+        on_output: Callable[[str, bytes], None] | None = None,
+    ) -> ProcessResult:
+        return self.run_process(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=stdin,
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            on_output=on_output,
+        )
+
     def spawn_service_process(
         self,
         argv: Sequence[str],

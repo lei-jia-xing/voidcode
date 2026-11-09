@@ -85,6 +85,9 @@ class ProcessServices(PluginServices):
     def run_process(self, argv: Sequence[str], **kwargs: object) -> ProcessResult:
         return self.result
 
+    def run_query_process(self, argv: Sequence[str], **kwargs: object) -> ProcessResult:
+        return self.run_process(argv, **kwargs)
+
     def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
         assert event_type == "shell_executed"
         self.events.append(payload)

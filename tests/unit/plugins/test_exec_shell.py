@@ -73,6 +73,27 @@ class _FakeLease:
         )
         return self.result
 
+    def run_query_process(
+        self,
+        argv: object,
+        *,
+        cwd: object = None,
+        env: object = None,
+        stdin: object = None,
+        timeout_seconds: object = None,
+        max_output_bytes: object = 262144,
+        on_output: object = None,
+    ) -> ProcessResult:
+        return self.run_process(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=stdin,
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            on_output=on_output,
+        )
+
     def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> ArtifactReference:
         payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
         self.spills.append({"data": payload, "media_type": media_type})

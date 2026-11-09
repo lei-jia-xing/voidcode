@@ -180,6 +180,38 @@ class RuntimeServices:
         self._stage_observations(lease, result.effects)
         return result
 
+    def run_query_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        stdin: bytes | str | None = None,
+        timeout_seconds: float | None = None,
+        max_output_bytes: int = 262144,
+        on_output: Callable[[str, bytes], None] | None = None,
+    ) -> ProcessResult:
+        lease = self._active_lease()
+        self._check_hook("run_query_process")
+        resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
+        if cwd is not None and not resolved_cwd.is_dir():
+            raise ValueError(f"run_query_process cwd is not a directory: {resolved_cwd}")
+        sandbox = self._runtime.sandbox_backend
+        if sandbox is not None and (sandbox.policy.mode != "read-only" or sandbox.policy.writable_roots):
+            sandbox = replace(sandbox, policy=replace(sandbox.policy, mode="read-only", writable_roots=()))
+        return self._runtime.processes.run(
+            argv,
+            cwd=resolved_cwd,
+            env=env,
+            stdin=stdin,
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+            cancel_event=self._runtime.cancel_event_for(lease),
+            on_output=on_output,
+            sandbox=sandbox,
+            workspace=self._runtime.workspace,
+        )
+
     def spawn_process(
         self,
         argv: Sequence[str],

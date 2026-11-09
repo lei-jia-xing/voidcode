@@ -24,14 +24,37 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
+__all__ = [
+    "AstGrepArgs",
+    "AstGrepReplaceArgs",
+    "AstGrepReplaceTool",
+    "AstGrepTool",
+]
+
 
 class AstGrepArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    mode: Literal["search", "preview", "replace"]
+    mode: Literal["search", "preview"]
     pattern: str
     path: str
     rewrite: str | None = None
+    lang: str | None = None
+
+    @field_validator("pattern", "path", "lang")
+    @classmethod
+    def _nonempty_text(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError(f"{info.field_name} must not be empty")
+        return value
+
+
+class AstGrepReplaceArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    pattern: str
+    rewrite: str
+    path: str
     lang: str | None = None
     apply: bool = False
     expectedHash: str | None = None
@@ -147,7 +170,7 @@ def _with_match_counts(matches: list[dict[str, Any]]) -> dict[str, Any]:
 def _preflight_replace_targets(
     matches: list[dict[str, Any]],
     *,
-    args: AstGrepArgs,
+    args: AstGrepReplaceArgs,
     workspace: Path,
     input_candidate: Path,
 ) -> tuple[dict[Path, str], dict[Path, bytes], dict[Path, str]]:
@@ -202,8 +225,16 @@ def _preflight_replace_targets(
     return display_paths, original_bytes, source_hashes
 
 
-def _run_ast_grep(*, cmd: list[str], workspace: Path, services: PluginServices, timeout_seconds: int = 30) -> ProcessResult:
-    result = services.run_process(cmd, cwd=workspace.resolve(), timeout_seconds=timeout_seconds)
+def _run_ast_grep(
+    *,
+    cmd: list[str],
+    workspace: Path,
+    services: PluginServices,
+    timeout_seconds: int = 30,
+    query: bool = False,
+) -> ProcessResult:
+    runner = services.run_query_process if query else services.run_process
+    result = runner(cmd, cwd=workspace.resolve(), timeout_seconds=timeout_seconds)
     if result.cancelled:
         raise ValueError("ast-grep was cancelled")
     if result.timed_out:
@@ -231,6 +262,7 @@ def _run_preview_replace(
     workspace: Path,
     services: PluginServices,
     timeout_seconds: int = 30,
+    query: bool = False,
 ) -> tuple[str, list[dict[str, Any]], int, str]:
     _, relative_path = _resolve_candidate(workspace=workspace, path_text=path_text)
     preview_cmd = ["ast-grep", "run", "--json=stream", "-p", pattern, "-r", rewrite]
@@ -238,7 +270,7 @@ def _run_preview_replace(
         preview_cmd.extend(["--lang", lang])
     preview_cmd.append(relative_path)
 
-    completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace, services=services, timeout_seconds=timeout_seconds)
+    completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace, services=services, timeout_seconds=timeout_seconds, query=query)
     if _is_no_match_result(completed):
         matches: list[dict[str, Any]] = []
     else:
@@ -260,24 +292,20 @@ class AstGrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="ast_grep",
         icon=Icon(glyph="⌕"),
-        description=(
-            "Structural code search and rewrite with ast-grep. Search and preview are read operations; replace mutates files and requires approval."
-        ),
+        description="Structural code search and rewrite preview with ast-grep (read-only query).",
         input_schema={
             "type": "object",
             "properties": {
-                "mode": {"type": "string", "enum": ["search", "preview", "replace"], "description": "AST operation to perform."},
+                "mode": {"type": "string", "enum": ["search", "preview"], "description": "AST operation to perform."},
                 "pattern": {"type": "string", "minLength": 1, "description": "ast-grep pattern."},
                 "path": {"type": "string", "minLength": 1, "description": "Workspace-relative or absolute file or directory path."},
-                "rewrite": {"type": "string"},
-                "lang": {"type": "string"},
-                "apply": {"type": "boolean"},
-                "expectedHash": {"type": "string", "description": "Optional expected SHA-256 content hash of target file for replace mode."},
+                "rewrite": {"type": "string", "description": "Optional rewrite template (required for preview mode)."},
+                "lang": {"type": "string", "description": "Optional language identifier."},
             },
             "required": ["mode", "pattern", "path"],
             "additionalProperties": False,
         },
-        effects=frozenset({ToolEffect.WRITE}),
+        effects=frozenset({ToolEffect.READ}),
         replay_policy="never",
         path_argument_keys=("path",),
     )
@@ -290,13 +318,8 @@ class AstGrepTool:
         args = AstGrepArgs.model_validate(dict(call.arguments))
         if args.mode == "search":
             return self._invoke_search(args, services=services, workspace=workspace, timeout_seconds=timeout_seconds)
-        if args.mode in ("preview", "replace"):
-            return self._invoke_preview_replace(
-                args,
-                services=services,
-                workspace=workspace,
-                timeout_seconds=timeout_seconds,
-            )
+        if args.mode == "preview":
+            return self._invoke_preview(args, services=services, workspace=workspace, timeout_seconds=timeout_seconds)
         raise ValueError(f"unknown ast_grep mode: {args.mode}")
 
     def _invoke_search(
@@ -313,7 +336,7 @@ class AstGrepTool:
             cmd.extend(["--lang", args.lang])
         cmd.append(relative_path)
 
-        completed = _run_ast_grep(cmd=cmd, workspace=workspace, services=services, timeout_seconds=timeout_seconds)
+        completed = _run_ast_grep(cmd=cmd, workspace=workspace, services=services, timeout_seconds=timeout_seconds, query=True)
         if _is_no_match_result(completed):
             matches: list[dict[str, Any]] = []
         else:
@@ -329,7 +352,7 @@ class AstGrepTool:
         rendered_matches = _render_matches(preview)
         if rendered_matches:
             output += "\n" + rendered_matches
-        output, artifact = _match_result_output(
+        output, _ = _match_result_output(
             output,
             completed.stdout,
             services=services,
@@ -349,7 +372,7 @@ class AstGrepTool:
             body=OpaqueToolBody(body),
         )
 
-    def _invoke_preview_replace(
+    def _invoke_preview(
         self,
         args: AstGrepArgs,
         *,
@@ -357,11 +380,9 @@ class AstGrepTool:
         workspace: Path,
         timeout_seconds: int,
     ) -> ToolResult:
-        if args.mode == "replace" and not args.apply:
-            raise ValueError("ast_grep replace mode requires apply=True")
         rewrite = args.rewrite
         if rewrite is None:
-            raise ValueError(f"ast_grep {args.mode} mode requires rewrite")
+            raise ValueError("ast_grep preview mode requires rewrite")
 
         relative_path, matches, replacement_count, native_jsonl = _run_preview_replace(
             pattern=args.pattern,
@@ -371,39 +392,86 @@ class AstGrepTool:
             services=services,
             workspace=workspace,
             timeout_seconds=timeout_seconds,
+            query=True,
         )
         preview_matches = matches[:_MATCH_PREVIEW_LIMIT]
         truncated = replacement_count > len(preview_matches)
 
-        if args.mode == "preview":
-            output_text = f"Previewed {replacement_count} AST replacement(s) in {relative_path}"
-            if truncated:
-                output_text += f"\nShowing the first {len(preview_matches)} matches."
-            rendered_matches = _render_matches(preview_matches, rewrite=rewrite)
-            if rendered_matches:
-                output_text += "\n" + rendered_matches
-            output, artifact = _match_result_output(
-                output_text,
-                native_jsonl,
-                services=services,
-                truncated=truncated,
-            )
-            body: dict[str, Any] = {
-                "path": relative_path,
-                "pattern": args.pattern,
-                "rewrite": args.rewrite,
-                "lang": args.lang,
-                "replacement_count": replacement_count,
-                **_with_match_counts(matches),
-                "applied": False,
-                "mode": "preview",
-                "timeout_seconds": timeout_seconds,
-            }
-            return ToolSuccess(
-                tool_name=self.definition.name,
-                output=output,
-                body=OpaqueToolBody(body),
-            )
+        output_text = f"Previewed {replacement_count} AST replacement(s) in {relative_path}"
+        if truncated:
+            output_text += f"\nShowing the first {len(preview_matches)} matches."
+        rendered_matches = _render_matches(preview_matches, rewrite=rewrite)
+        if rendered_matches:
+            output_text += "\n" + rendered_matches
+        output, _ = _match_result_output(
+            output_text,
+            native_jsonl,
+            services=services,
+            truncated=truncated,
+        )
+        body: dict[str, Any] = {
+            "path": relative_path,
+            "pattern": args.pattern,
+            "rewrite": args.rewrite,
+            "lang": args.lang,
+            "replacement_count": replacement_count,
+            **_with_match_counts(matches),
+            "applied": False,
+            "mode": "preview",
+            "timeout_seconds": timeout_seconds,
+        }
+        return ToolSuccess(
+            tool_name=self.definition.name,
+            output=output,
+            body=OpaqueToolBody(body),
+        )
+
+
+class AstGrepReplaceTool:
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="ast_grep_replace",
+        icon=Icon(glyph="⌕"),
+        description="Structural code search and rewrite with ast-grep: replaces matched AST nodes and mutates target files on disk.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "minLength": 1, "description": "ast-grep pattern."},
+                "rewrite": {"type": "string", "description": "Rewrite template for matched AST nodes."},
+                "path": {"type": "string", "minLength": 1, "description": "Workspace-relative or absolute file or directory path."},
+                "lang": {"type": "string", "description": "Optional language identifier."},
+                "apply": {"type": "boolean", "description": "Must be True to apply replacements to files on disk."},
+                "expectedHash": {"type": "string", "description": "Optional expected SHA-256 content hash of target file for replace."},
+            },
+            "required": ["pattern", "rewrite", "path"],
+            "additionalProperties": False,
+        },
+        effects=frozenset({ToolEffect.WRITE}),
+        replay_policy="never",
+        path_argument_keys=("path",),
+    )
+
+    def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
+        workspace = context.require_workspace()
+        return self._invoke(call, workspace=workspace, timeout_seconds=30, services=services)
+
+    def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int, services: PluginServices) -> ToolResult:
+        args = AstGrepReplaceArgs.model_validate(dict(call.arguments))
+        if not args.apply:
+            raise ValueError("ast_grep_replace requires apply=True")
+        rewrite = args.rewrite
+
+        relative_path, matches, replacement_count, native_jsonl = _run_preview_replace(
+            pattern=args.pattern,
+            rewrite=rewrite,
+            path_text=args.path,
+            lang=args.lang,
+            services=services,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+            query=False,
+        )
+        preview_matches = matches[:_MATCH_PREVIEW_LIMIT]
+        truncated = replacement_count > len(preview_matches)
 
         candidate, _ = _resolve_candidate(workspace=workspace, path_text=args.path)
         display_paths, original_bytes, source_hashes = _preflight_replace_targets(
@@ -437,7 +505,13 @@ class AstGrepTool:
             if args.lang:
                 apply_cmd.extend(["--lang", args.lang])
             apply_cmd.extend(["-U", *apply_paths])
-            completed = _run_ast_grep(cmd=apply_cmd, workspace=workspace, services=services, timeout_seconds=timeout_seconds)
+            completed = _run_ast_grep(
+                cmd=apply_cmd,
+                workspace=workspace,
+                services=services,
+                timeout_seconds=timeout_seconds,
+                query=False,
+            )
             if not _is_no_match_result(completed):
                 _raise_on_process_failure(completed=completed, fallback_message="ast-grep replace failed")
 
@@ -472,7 +546,7 @@ class AstGrepTool:
         rendered_matches = _render_matches(preview_matches, rewrite=rewrite)
         if rendered_matches:
             output_text += "\n" + rendered_matches
-        output, artifact = _match_result_output(
+        output, _ = _match_result_output(
             output_text,
             native_jsonl,
             services=services,
