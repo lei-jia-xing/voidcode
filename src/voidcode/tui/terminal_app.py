@@ -301,7 +301,13 @@ def _content_rows(
     """Render one typed transcript content into settled rows."""
     if isinstance(content, ProviderMessage):
         if content.role == "user":
-            return render_user_message(content.content or "", width, styles) if content.content and content.content.strip() else []
+            rows: list[str] = []
+            if content.images:
+                badges = " ".join(styles.fg("accent", f"[Image: {img.media_type}]") for img in content.images)
+                rows.append(badges)
+            if content.content and content.content.strip():
+                rows.extend(render_user_message(content.content, width, styles))
+            return rows
         if content.role == "system":
             return []
         rows: list[str] = []

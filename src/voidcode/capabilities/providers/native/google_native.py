@@ -211,6 +211,21 @@ class GoogleGenAIProvider:
         return response
 
     def _contents(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
+        provider_name = request.provider_name or self.name
+        model_name = request.model_name or "unknown"
+        if any(bool(m.images) for m in request.messages):
+            metadata = static_catalog_metadata(provider_name, request.model_name or "")
+            if metadata is not None and (
+                metadata.supports_vision is False or (metadata.modalities_input is not None and "image" not in metadata.modalities_input)
+            ):
+                raise ProviderExecutionError(
+                    kind="unsupported_feature",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message=f"model '{model_name}' does not support image input",
+                    retryable=False,
+                    fallback_allowed=True,
+                )
         system: list[str] = []
         contents: list[dict[str, object]] = []
         wire_ids: dict[str, str | None] = {}
@@ -275,7 +290,10 @@ class GoogleGenAIProvider:
                 contents.append({"role": "user", "parts": parts})
                 continue
             role = "model" if message.role == "assistant" else "user"
-            parts = [{"text": message.content}] if message.content else []
+            parts: list[dict[str, object]] = [{"text": message.content}] if message.content else []
+            if message.images:
+                for img in message.images:
+                    parts.append({"inline_data": {"mime_type": img.media_type, "data": img.data}})
             if parts:
                 contents.append({"role": role, "parts": parts})
             index += 1

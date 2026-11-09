@@ -566,10 +566,15 @@ class OpenAIChatCompletionsProvider:
                     }
                 )
             else:
-                replayed: dict[str, object] = {"role": message.role, "content": message.content}
+                if message.images:
+                    content: object = [
+                        {"type": "text", "text": message.content or ""},
+                        *[{"type": "image_url", "image_url": {"url": f"data:{img.media_type};base64,{img.data}"}} for img in message.images],
+                    ]
+                else:
+                    content = message.content
+                replayed: dict[str, object] = {"role": message.role, "content": content}
                 if message.role == "assistant" and requires_reasoning_content and message.reasoning:
-                    # DeepSeek's tools contract requires prior reasoning on all
-                    # assistant turns, not only turns that carried a tool call.
                     replayed["reasoning_content"] = message.reasoning
                 messages.append(replayed)
         return messages
@@ -592,8 +597,15 @@ class OpenAIChatCompletionsProvider:
                     "content": message.content or "",
                 }
                 messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)})
-            elif message.role != "assistant" or not message.tool_calls or message.content:
-                messages.append({"role": message.role, "content": message.content})
+            elif message.role != "assistant" or not message.tool_calls or message.content or message.images:
+                if message.images:
+                    content = [
+                        {"type": "text", "text": message.content or ""},
+                        *[{"type": "image_url", "image_url": {"url": f"data:{img.media_type};base64,{img.data}"}} for img in message.images],
+                    ]
+                else:
+                    content = message.content
+                messages.append({"role": message.role, "content": content})
         return messages
 
     def _tools(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
@@ -627,6 +639,18 @@ class OpenAIChatCompletionsProvider:
         # the provider and the mapped model is the authority the legacy
         # ``request.model_metadata`` used to be.
         metadata = static_catalog_metadata(request.provider_name or self.name, model_name)
+        if any(bool(m.images) for m in request.messages):
+            if metadata is not None and (
+                metadata.supports_vision is False or (metadata.modalities_input is not None and "image" not in metadata.modalities_input)
+            ):
+                raise ProviderExecutionError(
+                    kind="unsupported_feature",
+                    provider_name=request.provider_name or self.name,
+                    model_name=model_name,
+                    message=f"model '{model_name}' does not support image input",
+                    retryable=False,
+                    fallback_allowed=True,
+                )
         rule = thinking_rule_for(request.provider_name or self.name, model_name)
         payload: dict[str, object] = {"model": model_name, "messages": self._messages(request), "stream": stream}
         # The catalog is the authority on what this model accepts: a model that

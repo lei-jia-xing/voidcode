@@ -3589,7 +3589,7 @@ class SqliteStore:
                 for row in rows
             )
 
-    def claim_pending_followup(self, session_id: str) -> tuple[str, str, int | None] | None:
+    def claim_pending_followup(self, session_id: str) -> tuple[str, str, int | None, list[dict[str, object]]] | None:
         """Atomically claim the oldest pending kernel follow-up continuation for a session."""
         with self._lock:
             self._check_open()
@@ -3617,9 +3617,13 @@ class SqliteStore:
                 prompt = str(payload.get("prompt", ""))
                 max_steps = payload.get("max_steps")
                 steps = int(max_steps) if isinstance(max_steps, int) else None
-                return cid, prompt, steps
+                raw_images = payload.get("images")
+                images: list[dict[str, object]] = (
+                    [dict(img) for img in raw_images if isinstance(img, Mapping)] if isinstance(raw_images, (list, tuple)) else []
+                )
+                return cid, prompt, steps, images
             except Exception:
-                return cid, "", None
+                return cid, "", None, []
 
     def set_continuation_run_id(self, continuation_id: str, run_id: str) -> None:
         """Record the active run_id for a claimed continuation."""

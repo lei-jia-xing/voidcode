@@ -15,6 +15,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from voidcode.core.engine import Core
 from voidcode.sdk.client import CancelReceipt, RunResult, SessionRow
 from voidcode.sdk.commands import CommandCatalog, CommandInputSnapshot, CommandResult
+from voidcode.sdk.provider import ImageAttachment
 from voidcode.sdk.rpc import (
     RPC_EVENT_WINDOW,
     RPC_MAX_MESSAGE_BYTES,
@@ -50,7 +51,16 @@ METHODS: dict[str, RpcMethod] = {
     "session.create": RpcMethod(m.CreateSessionRequest, SessionRow, lambda c, p: session_payload(c.create_session(p.session_id))),
     "session.get": RpcMethod(m.SessionParams, SessionRow, lambda c, p: session_payload(c.session(p.session_id))),
     "session.show": RpcMethod(m.ShowParams, m.ShowBody, lambda c, p: c.show(p.session_id, events=p.events)),
-    "session.run": RpcMethod(m.RunRequest, RunResult, lambda c, p: c.run(p.prompt, session_id=p.session_id, max_steps=p.max_steps).as_payload()),
+    "session.run": RpcMethod(
+        m.RunRequest,
+        RunResult,
+        lambda c, p: c.run(
+            p.prompt,
+            session_id=p.session_id,
+            max_steps=p.max_steps,
+            images=tuple(ImageAttachment(img.media_type, img.data, img.artifact_id) for img in p.images),
+        ).as_payload(),
+    ),
     "session.resume": RpcMethod(
         m.ResumeRequest,
         RunResult,

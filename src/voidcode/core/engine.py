@@ -42,7 +42,7 @@ from ..sdk.invocation import ToolContext
 from ..sdk.json_values import json_wire_object, own_json_object
 from ..sdk.limits import CLIENT_PROMPT_MAX_BYTES
 from ..sdk.observed_effects import MAX_OBSERVED_CHANGES, ObservedChange
-from ..sdk.provider import ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
+from ..sdk.provider import ImageAttachment, ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
 from ..sdk.services import (
     CancelSubtreeReceipt,
     ChildOutcome,
@@ -1058,8 +1058,8 @@ class Core:
             snapshot.plugin_runtime.stop_background_processes()
         self._resources.close()
 
-    def run(self, prompt: str, *, session_id: str | None = None, max_steps: int = 32) -> CoreResult:
-        return self._run(prompt, session_id=session_id, max_steps=max_steps, prompt_max_bytes=CLIENT_PROMPT_MAX_BYTES)
+    def run(self, prompt: str, *, session_id: str | None = None, max_steps: int = 32, images: tuple[ImageAttachment, ...] = ()) -> CoreResult:
+        return self._run(prompt, session_id=session_id, max_steps=max_steps, prompt_max_bytes=CLIENT_PROMPT_MAX_BYTES, images=images)
 
     def _run(
         self,
@@ -1068,6 +1068,7 @@ class Core:
         session_id: str | None = None,
         max_steps: int = 32,
         prompt_max_bytes: int,
+        images: tuple[ImageAttachment, ...] = (),
         _refuse_reserved_cancelled: bool = False,
     ) -> CoreResult:
         # a core-driven child run carries a delegated payload (e.g. a review diff).
@@ -1080,7 +1081,7 @@ class Core:
             try:
                 active_sess = self.store.session(session_id)
                 if active_sess.status in ("running", "waiting"):
-                    return self._queue_followup(active_sess, prompt, max_steps)
+                    return self._queue_followup(active_sess, prompt, max_steps, images=images)
             except KeyError:
                 pass
         session_id = uuid4().hex if session_id is None else session_id
@@ -1097,7 +1098,7 @@ class Core:
                 except KeyError:
                     session = self._create_session_row(session_id)
                 if session.status in ("running", "waiting"):
-                    return self._queue_followup(session, prompt, max_steps)
+                    return self._queue_followup(session, prompt, max_steps, images=images)
                 if not self._admits_fresh_work(session):
                     raise ValueError("unfinished session requires explicit resume")
                 self._check_session(session)
@@ -1131,8 +1132,20 @@ class Core:
                     # The new user turn owns its own fresh root budget: the stopped
                     # chain's exhausted root is never reused or reset.
                     execution.cursor = _Cursor(root_id=root_id, initial_root_budget=max_steps)
+                user_payload: dict[str, object] = {"content": prompt}
+                if images:
+                    user_payload["images"] = [img.as_payload() for img in images]
                 self._commit(
-                    execution, "running", "ready", EventDraft(EventType.USER_MESSAGE, "client", "user", {"content": prompt}), start_turn=True
+                    execution,
+                    "running",
+                    "ready",
+                    EventDraft(
+                        EventType.USER_MESSAGE,
+                        "client",
+                        "user",
+                        user_payload,
+                    ),
+                    start_turn=True,
                 )
                 result = self._drive(execution, max_steps=max_steps)
             finally:
@@ -1141,8 +1154,17 @@ class Core:
         self._drive_pending(session_id, max_steps)
         return result
 
-    def _queue_followup(self, session: SessionRecord, prompt: str, max_steps: int) -> CoreResult:
+    def _queue_followup(
+        self,
+        session: SessionRecord,
+        prompt: str,
+        max_steps: int,
+        images: tuple[ImageAttachment, ...] = (),
+    ) -> CoreResult:
         cid = uuid4().hex
+        payload: dict[str, object] = {"prompt": prompt, "max_steps": max_steps}
+        if images:
+            payload["images"] = [img.as_payload() for img in images]
         self.store.enqueue_continuation(
             cid,
             "kernel",
@@ -1150,7 +1172,7 @@ class Core:
             "user_message",
             session.run_id or "",
             self.revision_id,
-            {"prompt": prompt, "max_steps": max_steps},
+            payload,
             role="user",
         )
         return CoreResult(
@@ -1160,7 +1182,15 @@ class Core:
             status="queued",
         )
 
-    def _execute_user_followup(self, session_id: str, continuation_id: str, prompt: str, max_steps: int) -> CoreResult:
+    def _execute_user_followup(
+        self,
+        session_id: str,
+        continuation_id: str,
+        prompt: str,
+        max_steps: int,
+        images: tuple[ImageAttachment, ...] = (),
+    ) -> CoreResult:
+
         with self._session_lock(session_id):
             self._ensure_open()
             self._abort.set_cancelled(False)
@@ -1191,11 +1221,19 @@ class Core:
                     if execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None:
                         self._interrupt_batch(execution)
                     execution.cursor = _Cursor(root_id=root_id, initial_root_budget=max_steps)
+                user_payload = {"content": prompt}
+                if images:
+                    user_payload["images"] = [img.as_payload() for img in images]
                 self._commit(
                     execution,
                     "running",
                     "ready",
-                    EventDraft(EventType.USER_MESSAGE, "client", "user", {"content": prompt}),
+                    EventDraft(
+                        EventType.USER_MESSAGE,
+                        "client",
+                        "user",
+                        user_payload,
+                    ),
                     start_turn=True,
                 )
                 self.store.set_continuation_run_id(continuation_id, execution.run_id)
@@ -1347,8 +1385,9 @@ class Core:
         for _ in range(max(1, limit)):
             followup = self.store.claim_pending_followup(session_id)
             if followup is not None:
-                cid, prompt, steps = followup
-                run_res = self._execute_user_followup(session_id, cid, prompt, steps or max_steps)
+                cid, prompt, steps, raw_images = followup
+                images = tuple(ImageAttachment.from_payload(img) for img in raw_images) if raw_images else ()
+                run_res = self._execute_user_followup(session_id, cid, prompt, steps or max_steps, images=images)
                 if run_res.status not in ("completed", "idle"):
                     return
                 continue
@@ -4844,7 +4883,9 @@ class Core:
             if event.event_type == EventType.USER_MESSAGE:
                 if pending_calls:
                     raise ValueError("user message crossed an unfinished native batch")
-                messages.append(ProviderMessage("user", str(event.payload["content"])))
+                raw_images = event.payload.get("images")
+                imgs = tuple(ImageAttachment.from_payload(item) for item in raw_images) if isinstance(raw_images, (list, tuple)) else ()
+                messages.append(ProviderMessage("user", str(event.payload["content"]), images=imgs))
             elif event.event_type == EventType.CONTINUATION_STARTED:
                 if pending_calls:
                     raise ValueError("continuation crossed an unfinished native batch")
@@ -4854,7 +4895,11 @@ class Core:
                 if event.payload.get("role") == "user":
                     # The owner declared a user-role message: its text (or payload) is verbatim.
                     text = p_map.get("text")
-                    messages.append(ProviderMessage("user", text if isinstance(text, str) else payload_str))
+                    if text is None and "prompt" in p_map:
+                        text = p_map.get("prompt")
+                    raw_images = p_map.get("images")
+                    imgs = tuple(ImageAttachment.from_payload(item) for item in raw_images) if isinstance(raw_images, (list, tuple)) else ()
+                    messages.append(ProviderMessage("user", text if isinstance(text, str) else payload_str, images=imgs))
                 else:
                     messages.append(ProviderMessage("system", f"[Durable continuation from {event.source}]\n{payload_str}"))
             elif event.event_type == EventType.WAKEUP_FIRED:

@@ -223,7 +223,10 @@ class CoreRpcClient:
         return self._call("session.show", {"session_id": session_id, "events": events})
 
     def run(self, session_id: str, spec: RunSpec) -> RunResult:
-        return RunResult.from_payload(self._call("session.run", {"session_id": session_id, "prompt": spec.prompt, "max_steps": spec.max_steps}))
+        params: dict[str, object] = {"session_id": session_id, "prompt": spec.prompt, "max_steps": spec.max_steps}
+        if spec.images:
+            params["images"] = [img.as_payload() for img in spec.images]
+        return RunResult.from_payload(self._call("session.run", params))
 
     def resume(self, session_id: str, spec: ResumeSpec | None = None) -> RunResult:
         active = spec or ResumeSpec()

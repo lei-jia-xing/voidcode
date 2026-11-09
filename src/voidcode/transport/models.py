@@ -36,9 +36,16 @@ class ShowParams(SessionParams):
     events: bool = False
 
 
+class ImageAttachmentPayload(RpcModel):
+    media_type: str = Field(min_length=1, max_length=128)
+    data: str = Field(min_length=1)
+    artifact_id: str | None = None
+
+
 class RunRequest(SessionParams):
     prompt: str = Field(min_length=1, max_length=65536)
     max_steps: int = Field(default=32, ge=1, le=1024)
+    images: list[ImageAttachmentPayload] = Field(default_factory=list)
 
 
 class ResumeRequest(SessionParams):

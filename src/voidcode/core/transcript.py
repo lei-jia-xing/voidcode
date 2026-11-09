@@ -7,7 +7,7 @@ from voidcode.sdk.codec import decode_provider_result, decode_tool_call, decode_
 from voidcode.sdk.hooks import RequestWindow
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.provider import ProviderMessage
+from voidcode.sdk.provider import ImageAttachment, ProviderMessage
 from voidcode.sdk.transcript import (
     ContextRecord,
     TranscriptChild,
@@ -37,13 +37,19 @@ def transcript_entry(event: StoredEvent) -> TranscriptEntry | None:
             text = payload["content"]
             if not isinstance(text, str):
                 raise ValueError("user message content must be a string")
-            content = ProviderMessage("user", text)
+            raw_images = payload.get("images")
+            imgs = tuple(ImageAttachment.from_payload(img) for img in raw_images) if isinstance(raw_images, (list, tuple)) else ()
+            content = ProviderMessage("user", text, images=imgs)
         case EventType.CONTINUATION_STARTED | EventType.WAKEUP_FIRED:
             inner = _mapping(payload["payload"])
             rendered = json.dumps(json_wire_object(inner), ensure_ascii=False)
             if payload["role"] == "user":
                 text = inner.get("text")
-                content = ProviderMessage("user", text if isinstance(text, str) else rendered)
+                if text is None and "prompt" in inner:
+                    text = inner.get("prompt")
+                raw_images = inner.get("images")
+                imgs = tuple(ImageAttachment.from_payload(img) for img in raw_images) if isinstance(raw_images, (list, tuple)) else ()
+                content = ProviderMessage("user", text if isinstance(text, str) else rendered, images=imgs)
             else:
                 wakeup = event.event_type == EventType.WAKEUP_FIRED
                 label = str(payload["owner"]) if wakeup else event.source

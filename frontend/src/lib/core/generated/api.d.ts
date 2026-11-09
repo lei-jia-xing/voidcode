@@ -663,6 +663,33 @@ export interface components {
             /** Glyph */
             glyph: string;
         };
+        /**
+         * ImageAttachment
+         * @description One image attachment carried on neutral messages.
+         */
+        ImageAttachment: {
+            /**
+             * Artifact Id
+             * @default null
+             */
+            artifact_id?: string | null;
+            /** Data */
+            data: string;
+            /** Media Type */
+            media_type: string;
+        };
+        /** ImageAttachmentPayload */
+        ImageAttachmentPayload: {
+            /**
+             * Artifact Id
+             * @default null
+             */
+            artifact_id?: string | null;
+            /** Data */
+            data: string;
+            /** Media Type */
+            media_type: string;
+        };
         /** InvokeRequest */
         InvokeRequest: {
             /** Arguments */
@@ -768,6 +795,11 @@ export interface components {
              * @default null
              */
             content?: string | null;
+            /**
+             * Images
+             * @default []
+             */
+            images?: components["schemas"]["ImageAttachment"][];
             /**
              * Is Error
              * @default false
@@ -1025,6 +1057,8 @@ export interface components {
         };
         /** RunRequest */
         RunRequest: {
+            /** Images */
+            images?: components["schemas"]["ImageAttachmentPayload"][];
             /**
              * Max Steps
              * @default 32

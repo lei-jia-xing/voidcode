@@ -415,6 +415,15 @@ class AnthropicMessagesProvider:
                 continue
             if message.content:
                 append_message("user", {"type": "text", "text": message.content})
+            if message.images:
+                for img in message.images:
+                    append_message(
+                        "user",
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": img.media_type, "data": img.data},
+                        },
+                    )
         return ("\n\n".join(system_parts) if system_parts else None), messages
 
     def _payload(self, request: ProviderTurnRequest, *, stream: bool) -> dict[str, object]:
@@ -429,9 +438,21 @@ class AnthropicMessagesProvider:
                 retryable=False,
                 fallback_allowed=True,
             )
-        system, messages = self._messages_and_system(request)
         metadata = static_catalog_metadata(provider_name, request.model_name or "")
         model_name = request.model_name or ""
+        if any(bool(m.images) for m in request.messages):
+            if metadata is not None and (
+                metadata.supports_vision is False or (metadata.modalities_input is not None and "image" not in metadata.modalities_input)
+            ):
+                raise ProviderExecutionError(
+                    kind="unsupported_feature",
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    message=f"model '{model_name}' does not support image input",
+                    retryable=False,
+                    fallback_allowed=True,
+                )
+        system, messages = self._messages_and_system(request)
         rule = thinking_rule_for(request.provider_name or self.name, model_name)
         # The Anthropic Messages API requires ``max_tokens``, so the cap is the
         # model's own maximum (OMP's ``maxAllowedTokens``); 64000 is only the

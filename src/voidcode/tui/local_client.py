@@ -131,7 +131,7 @@ class CoreLocalClient:
     def run(self, session_id: str, spec: RunSpec) -> RunResult:
         self._validated(session_id)
         try:
-            result = self._core.run(spec.prompt, session_id=session_id, max_steps=spec.max_steps)
+            result = self._core.run(spec.prompt, session_id=session_id, max_steps=spec.max_steps, images=spec.images)
         except Exception as exc:
             raise self._refusal(exc) from None
         return RunResult.from_payload(result.as_payload())

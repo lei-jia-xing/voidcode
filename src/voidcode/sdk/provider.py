@@ -35,6 +35,45 @@ type ProviderErrorKind = Literal[
 
 
 @dataclass(frozen=True, slots=True)
+class ImageAttachment:
+    """One image attachment carried on neutral messages."""
+
+    media_type: str
+    data: str
+    artifact_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.media_type, str) or not self.media_type:
+            raise ValueError("media_type must be a non-empty string")
+        if not isinstance(self.data, str) or not self.data:
+            raise ValueError("data must be a non-empty string")
+        if self.artifact_id is not None and not isinstance(self.artifact_id, str):
+            raise ValueError("artifact_id must be a string if provided")
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "media_type": self.media_type,
+            "data": self.data,
+        }
+        if self.artifact_id is not None:
+            payload["artifact_id"] = self.artifact_id
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> ImageAttachment:
+        if not isinstance(payload, Mapping):
+            raise ValueError("image attachment payload must be a mapping")
+        media_type = payload.get("media_type")
+        data = payload.get("data")
+        artifact_id = payload.get("artifact_id")
+        return cls(
+            media_type=str(media_type) if media_type is not None else "",
+            data=str(data) if data is not None else "",
+            artifact_id=str(artifact_id) if artifact_id is not None else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderMessage:
     """One neutral conversation message handed to a provider adapter."""
 
@@ -46,6 +85,7 @@ class ProviderMessage:
     is_error: bool = False
     reasoning: str | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
+    images: tuple[ImageAttachment, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.tool_calls, tuple):
@@ -53,6 +93,11 @@ class ProviderMessage:
         if not isinstance(self.metadata, Mapping):
             raise ValueError("message metadata must be a mapping")
         object.__setattr__(self, "metadata", own_json_object(self.metadata))
+        if not isinstance(self.images, tuple):
+            object.__setattr__(self, "images", tuple(self.images))
+        for img in self.images:
+            if not isinstance(img, ImageAttachment):
+                raise ValueError(f"expected ImageAttachment, got {type(img).__name__}")
 
 
 @dataclass(frozen=True, slots=True)

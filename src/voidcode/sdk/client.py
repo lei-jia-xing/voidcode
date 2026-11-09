@@ -19,6 +19,7 @@ from .commands import CommandCatalog, CommandInputSnapshot, CommandResult
 from .hooks import StopCause
 from .json_values import json_wire_object, own_json_object
 from .limits import CLIENT_PROMPT_MAX_BYTES
+from .provider import ImageAttachment
 from .services import ContinuationResult, SessionUsageReport
 from .transcript import ContextHistory, TranscriptEntry, TranscriptEntryWire, TranscriptPage
 from .views import ViewsSnapshot
@@ -161,10 +162,16 @@ class RunSpec:
 
     prompt: str
     max_steps: int = 32
+    images: tuple[ImageAttachment, ...] = ()
 
     def __post_init__(self) -> None:
         _validated_prompt(self.prompt)
         _validated_steps(self.max_steps)
+        if not isinstance(self.images, tuple):
+            object.__setattr__(self, "images", tuple(self.images))
+        for img in self.images:
+            if not isinstance(img, ImageAttachment):
+                raise ValueError(f"expected ImageAttachment, got {type(img).__name__}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -547,6 +554,7 @@ __all__ = [
     "HeadFrameWire",
     "HealthModel",
     "HealthStatus",
+    "ImageAttachment",
     "MAX_PROMPT_BYTES",
     "MAX_PROMPT_CHARS",
     "MAX_STEPS",

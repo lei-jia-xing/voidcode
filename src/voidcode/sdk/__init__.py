@@ -112,6 +112,7 @@ from .observed_effects import (
 )
 from .plugin import Plugin, PluginQuery, PluginQueryCaller, StateSchema
 from .provider import (
+    ImageAttachment,
     ProviderAbortSignal,
     ProviderCacheRetention,
     ProviderDoneReason,
@@ -340,6 +341,7 @@ __all__ = [
     "ProcessOutput",
     "ProcessResult",
     "ProviderAbortSignal",
+    "ImageAttachment",
     "ProviderCacheRetention",
     "ProviderDoneReason",
     "ProviderErrorKind",
