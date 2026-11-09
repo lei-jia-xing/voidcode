@@ -65,8 +65,10 @@ def test_tool_result_with_actual_sdk_fields_roundtrip() -> None:
         tool_name="read",
         output=AttachmentOutput(mime="text/plain", data_uri="data:text/plain;base64,aGVsbG8=", bounds=bounds),
         body=body,
+        steering_context="Success guidance: check next file",
     )
     enc_success = encode_tool_result(success)
+    assert enc_success["steering_context"] == "Success guidance: check next file"
     assert enc_success["status"] == "ok"
     dec_success = decode_tool_result(enc_success)
     assert isinstance(dec_success, ToolSuccess)
@@ -77,6 +79,7 @@ def test_tool_result_with_actual_sdk_fields_roundtrip() -> None:
     assert dec_success.output.bounds.reference == "void://art/1"
     assert dec_success.body is not None
     assert dec_success.body.as_payload() == {"lines": 10}
+    assert dec_success.steering_context == "Success guidance: check next file"
 
     # ToolFailure with real error and diagnostics
     diag = ToolDiagnostics(kind="syntax", summary="syntax error", details={"line": 5}, guidance="check syntax")
@@ -87,8 +90,10 @@ def test_tool_result_with_actual_sdk_fields_roundtrip() -> None:
         diagnostics=diag,
         execution=ConfirmedStop(cancellation_signalled=True),
         timeout_seconds=30,
+        steering_context="Retry guidance: use valid path",
     )
     enc_failure = encode_tool_result(failure)
+    assert enc_failure["steering_context"] == "Retry guidance: use valid path"
     assert enc_failure["status"] == "error"
     assert enc_failure["error"] == "File not found"
     dec_failure = decode_tool_result(enc_failure)
@@ -100,6 +105,7 @@ def test_tool_result_with_actual_sdk_fields_roundtrip() -> None:
     assert dec_failure.execution is not None
     assert dec_failure.execution.cancellation_signalled is True
     assert dec_failure.timeout_seconds == 30
+    assert dec_failure.steering_context == "Retry guidance: use valid path"
 
 
 def test_provider_wire_types_with_actual_sdk_fields() -> None:

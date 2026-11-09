@@ -178,6 +178,7 @@ class ToolResultWire(WireModel):
     diagnostics: ToolDiagnostics | None = None
     execution: ExecutionWire | None = None
     timeout_seconds: int | None = Field(default=None, ge=0)
+    steering_context: str | None = None
 
 
 _RESULT = TypeAdapter(ToolResultWire)
@@ -194,6 +195,8 @@ def encode_tool_result(result: ToolResult | Mapping[str, object]) -> dict[str, o
         "output": {"type": output_type, **_encode(output)},
         "body": None if result.body is None else result.body.as_payload(),
     }
+    if result.steering_context is not None:
+        payload["steering_context"] = result.steering_context
     if isinstance(result, ToolSuccess) and result.coverage:
         payload["coverage"] = [observation.as_payload() for observation in result.coverage]
     if result.changes:
@@ -237,7 +240,12 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
             for item in wire.coverage or ()
         )
         return ToolSuccess(
-            wire.tool_name, decoded, body, coverage, tuple(ResourceChange(item.path, item.operation, item.old_path) for item in wire.changes or ())
+            wire.tool_name,
+            decoded,
+            body,
+            coverage,
+            tuple(ResourceChange(item.path, item.operation, item.old_path) for item in wire.changes or ()),
+            steering_context=wire.steering_context,
         )
     if wire.error is None:
         raise ValueError("failure result requires an error")
@@ -261,4 +269,5 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
         execution,
         wire.timeout_seconds,
         tuple(ResourceChange(item.path, item.operation, item.old_path) for item in wire.changes or ()),
+        steering_context=wire.steering_context,
     )

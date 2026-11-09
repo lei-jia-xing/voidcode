@@ -345,6 +345,7 @@ class ToolSuccess[Body: ToolBody]:
     #: File versions this success made visible; empty for a result that observed no file.
     coverage: tuple[ReadObservation, ...] = ()
     changes: tuple[ResourceChange, ...] = ()
+    steering_context: str | None = None
 
     status: ClassVar[Literal["ok"]] = "ok"
 
@@ -364,6 +365,7 @@ class ToolFailure[Body: ToolBody]:
     timeout_seconds: int | None = None
     #: Files committed before this invocation failed or was cancelled.
     changes: tuple[ResourceChange, ...] = ()
+    steering_context: str | None = None
     status: ClassVar[Literal["error"]] = "error"
 
 

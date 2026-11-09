@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from threading import Event, Lock
 from types import MappingProxyType
@@ -576,6 +576,7 @@ class _Execution:
     events: list[StoredEvent]
     run_id: str
     lifecycle_started: bool = False
+    ephemeral_steering: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4041,6 +4042,7 @@ class Core:
             result.body,
             result.coverage,
             result.changes,
+            steering_context=result.steering_context,
         )
 
     @staticmethod
@@ -4731,6 +4733,8 @@ class Core:
                     break
             if extra:
                 result = replace(result, changes=(*result.changes, *extra))
+        if result.steering_context:
+            execution.ephemeral_steering.append(result.steering_context)
         cursor = execution.cursor
         deferred = cursor.deferred_sequence is not None
         batch_sequence = cursor.deferred_sequence or cursor.batch_sequence
@@ -4989,6 +4993,9 @@ class Core:
             activation_note = self._activation_outcome_note(execution)
             if activation_note is not None:
                 messages.append(ProviderMessage("system", activation_note))
+            if execution.ephemeral_steering:
+                messages.append(ProviderMessage("system", "[Tool Guidance]\n" + "\n".join(execution.ephemeral_steering)))
+                execution.ephemeral_steering.clear()
 
             # Hard bound check strictly AFTER contributions
             if sum(len(json.dumps(encode_message(message), allow_nan=False).encode("utf-8")) for message in messages) > 256 * 1024:

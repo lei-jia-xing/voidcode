@@ -1430,6 +1430,11 @@ export interface components {
              */
             status: "ok" | "error";
             /**
+             * Steering Context
+             * @default null
+             */
+            steering_context?: string | null;
+            /**
              * Timeout Seconds
              * @default null
              */
