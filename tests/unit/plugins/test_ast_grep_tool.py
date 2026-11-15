@@ -10,11 +10,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from voidcode.bootstrap import open_core
 from voidcode.plugins.ast_grep.ast_grep_tool import AstGrepReplaceTool, AstGrepTool
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessResult
-from voidcode.sdk.tools import ToolCall, ToolEffect, ToolResult, ToolSuccess, denied_under_restriction
+from voidcode.sdk.tools import ToolCall, ToolEffect, ToolResult, ToolSuccess
 
 
 class NativeResults(PluginServices):
@@ -232,34 +231,6 @@ def test_ast_grep_replace_fails_under_readonly_lease(tmp_path: Path) -> None:
     assert target.read_text() == "foo()\n"
 
 
-def test_ast_grep_replace_denied_by_core_under_readonly_stance(tmp_path: Path) -> None:
-    assert not denied_under_restriction(AstGrepTool.definition.effects)
-    assert denied_under_restriction(AstGrepReplaceTool.definition.effects)
-
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    core = open_core(workspace, state_dir=tmp_path / "state")
-    try:
-        replace_call = ToolCall(
-            tool_name="ast_grep_replace",
-            arguments={"path": "sample.py", "pattern": "foo()", "rewrite": "bar()", "apply": True},
-            tool_call_id="call-replace",
-        )
-        query_call = ToolCall(
-            tool_name="ast_grep",
-            arguments={"mode": "search", "path": "sample.py", "pattern": "foo()"},
-            tool_call_id="call-query",
-        )
-
-        denial_replace = core._denial(replace_call, AstGrepReplaceTool.definition, read_only=True)
-        assert denial_replace == "read-only policy denies the declared tool effects"
-
-        denial_query = core._denial(query_call, AstGrepTool.definition, read_only=True)
-        assert denial_query is None
-    finally:
-        core.close()
-
-
 def test_ast_grep_replace_requires_apply_true(tmp_path: Path) -> None:
     services = _services(tmp_path)
     with pytest.raises(ValueError, match="apply=True"):
@@ -283,3 +254,33 @@ def test_ast_grep_replace_rejects_concurrent_mutation_after_preview(tmp_path: Pa
     with pytest.raises(ValueError, match="stale edit"):
         _invoke_replace(tmp_path, services)
     assert len(services.commands) == 1
+
+
+def test_ast_grep_returns_usable_long_paths_and_complete_native_matches(tmp_path: Path) -> None:
+    target = tmp_path.joinpath(*("nested_component_" + str(index) for index in range(18)), "sample.py")
+    target.parent.mkdir(parents=True)
+    target.write_text("foo()\n" * 60, encoding="utf-8")
+    relative_path = target.relative_to(tmp_path).as_posix()
+    assert len(relative_path) > 256
+    matches = [
+        {
+            "file": relative_path,
+            "text": "foo()",
+            "range": {"start": {"line": index, "column": 0}, "end": {"line": index, "column": 5}},
+        }
+        for index in range(60)
+    ]
+    native_jsonl = "\n".join(json.dumps(match, ensure_ascii=False) for match in matches)
+    services = NativeResults(ProcessResult(0, native_jsonl, "", 1), target)
+
+    result = _invoke_query(tmp_path, services, path=relative_path)
+    assert isinstance(result, ToolSuccess)
+    payload = result.body.as_payload()
+    assert payload["path"] == relative_path
+    assert payload["matches"][0]["file"] == relative_path
+    assert (tmp_path / payload["matches"][0]["file"]).read_text(encoding="utf-8") == "foo()\n" * 60
+    assert payload["match_count"] == len(matches)
+    assert payload["matches_truncated"] is True
+    assert result.output.bounds.partial is True
+    assert result.output.bounds.reference.sha256 == hashlib.sha256(native_jsonl.encode("utf-8")).hexdigest()
+    assert [json.loads(line) for line in services.artifacts[0].splitlines()] == matches

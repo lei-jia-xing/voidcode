@@ -653,10 +653,12 @@ def test_genuine_root_budget_exhaustion_still_reports_limit_reached(tmp_path: Pa
         _CREATED.append(core)
         parent = core.create_session("parent").session_id
 
-        result = core.run("recurse until the root gives out", session_id=parent, max_steps=4)
+        result = core.run("recurse until the root gives out", session_id=parent, root_action_budget=4)
         assert result.status == "interrupted", result.error
         assert result.stop_cause == "limit_reached"
-        assert result.error == "root action budget exhausted"
+        assert result.error == "root action budget exhausted: consumed 4 of 4, remaining 0"
+        assert result.budget_exhaustion is not None
+        assert result.budget_exhaustion.dimension == "root_actions"
         checkpoint = core.store.checkpoint(parent)
         assert checkpoint is not None
         assert core.store.root_budget_state(str(checkpoint.payload["root_id"])) == (4, 4)

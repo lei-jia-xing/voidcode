@@ -13,6 +13,7 @@ from collections.abc import AsyncGenerator, Mapping
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from voidcode.sdk.client import (
+    ArtifactPage,
     CancelReceipt,
     CommandCatalog,
     CommandResult,
@@ -131,7 +132,13 @@ class CoreLocalClient:
     def run(self, session_id: str, spec: RunSpec) -> RunResult:
         self._validated(session_id)
         try:
-            result = self._core.run(spec.prompt, session_id=session_id, max_steps=spec.max_steps, images=spec.images)
+            result = self._core.run(
+                spec.prompt,
+                session_id=session_id,
+                max_steps=spec.max_steps,
+                root_action_budget=spec.root_action_budget,
+                images=spec.images,
+            )
         except Exception as exc:
             raise self._refusal(exc) from None
         return RunResult.from_payload(result.as_payload())
@@ -149,6 +156,8 @@ class CoreLocalClient:
                 approval_request_id=active.approval_request_id,
                 decision=cast(Any, active.decision),
                 max_steps=active.max_steps,
+                extend_root_actions=active.extend_root_actions,
+                root_action_grant_id=active.root_action_grant_id,
             )
         except Exception as exc:
             raise self._refusal(exc) from None
@@ -313,13 +322,8 @@ class CoreLocalClient:
             if cancel is not None:
                 cancel.detach()
 
-    def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> Any:
-        from voidcode.sdk.services import ArtifactPage, ArtifactReference
-
-        data, total_bytes, eof, media_type = self._core._artifacts.read(sha256, offset=offset, limit=limit)
-        return ArtifactPage(
-            artifact=ArtifactReference(sha256, total_bytes, media_type),
-            offset=offset,
-            data=data,
-            eof=eof,
-        )
+    def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
+        try:
+            return self._core.read_artifact(sha256, offset=offset, limit=limit)
+        except Exception as exc:
+            raise self._refusal(exc) from None

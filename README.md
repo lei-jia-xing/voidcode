@@ -16,6 +16,8 @@ VoidCode is an open-source, local-first coding agent built as a small trusted co
 - **Append-only durability**: one immutable event stream per session. Views, transcripts, usage, and UI are projections; clients commit each fact exactly once and never rewind.
 - **Three client surfaces, one contract**: the product CLI executes commands directly, and the inline terminal UI and React web client speak the same WebSocket RPC contract — one command catalog, one set of declarative views, one event stream.
 - **Agent-facing delegation**: the primary agent delegates focused work through the `task`/`task_batch` tools; there is no separate human task console.
+- **Explicit execution budgets**: fresh runs have no implicit 32-turn lifetime. Optional provider-turn caps and operator-granted root-action budgets are separate; finite root authorization is shared by descendants and survives restart without refilling.
+- **Immutable result recovery**: selected tool text is projected once; complete machine results and captured resources remain byte-page readable through local or authenticated RPC clients. Viewer/image-terminal presentation is a separate surface; current limits and SDK gaps are tracked in [TODO](./docs/TODO.md).
 
 ## Quickstart
 
@@ -77,8 +79,8 @@ In a source checkout without the console script installed, use `uv run python -m
 
 | Command | Purpose |
 |---|---|
-| `voidcode run "<prompt>"` | Execute an agent turn in a new or existing session (`--session-id`, `--max-steps`). |
-| `voidcode resume <session_id>` | Continue a session, optionally resolving an approval (`--approval-request-id`, `--decision allow\|deny`). |
+| `voidcode run "<prompt>"` | Execute an agent turn in a new or existing session (`--session-id`, optional `--max-steps`, optional `--root-action-budget`). |
+| `voidcode resume <session_id>` | Continue a session, optionally resolving approval (`--approval-request-id`, `--decision allow\|deny`), replacing its total `--max-steps` cap, or explicitly `--extend-root-actions N`. |
 | `voidcode create-session` | Create an empty session (`--session-id` to choose the id). |
 | `voidcode sessions` | List this workspace's sessions (`--limit`). |
 | `voidcode show <session_id>` | Inspect durable state; `--events` adds the raw event history. Works even when configuration is broken. |

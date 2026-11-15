@@ -4,6 +4,15 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Explicit budgets and immutable result recovery (BREAKING)
+- Fresh runs no longer receive an implicit 32-provider-turn cutoff. Optional `max_steps` remains a provider-turn cap; a separate finite `root_action_budget` is an operator grant shared by captured descendant/follow-up work and durable across restart. Resume extensions are explicit, idempotently keyed grants. Only committed `user_stop`/`owner_cancel` child stops map to `cancelled`; budget, shutdown, error, and unknown stops remain interrupted.
+- Legacy pending schema-v6 work without a captured root authorization (child births, checkpoints, queued rows, or wakeups) is refused visibly; no migration, inferred grant, or fresh root is fabricated.
+- `shell_exec` stdout/stderr now use typed artifact references even for an empty captured stream; the former inline-string/alias contract is removed. The reference preserves captured text, not byte-identical raw subprocess data.
+- Core persists complete canonical tool results before omitting machine bodies. `TextOutput.text` is the selected model page; redundant structured bodies remain available through the canonical `result_reference`. Structured-only `EmptyOutput` bodies stay inline, while explicit textual artifact references (including JSON/XML) use bounded paging. Shell/web captured text and file/raster originals retain typed artifact identities.
+- Core and local/authenticated RPC clients expose strict byte-offset artifact pages (base64 on the wire, bytes in Python). This does not claim raw binary fidelity for shell subprocess capture or adaptive per-dispatch model-window sizing; those exact SDK gaps remain documented in the Core/SDK TODOs. Viewer and live-progress work is tracked separately from this Core/API foundation.
+- Verification recorded in the Core/SDK TODOs: uncapped real CLI drain beyond 32 dispatches, explicit/shared/restart budgets including independent children, valid decoded PNGs through real Core/native provider SDK routes, full >4 MiB captured-text readback, canonical result reopen, selected-file coverage/read→edit, and JSON web content in the real Core/provider projection (targeted proof: 2 passed in 5.56s). No blanket “all MAX” or all-plugin-audit claim.
+
+
 ### Effectiveness plugin removed (BREAKING)
 - The bundled plugin and `/effectiveness` command are removed. Before upgrading from a build that bundled it, set `plugins.effectiveness.enabled` to `false` and run `/core reload` while still on the old build; restart restores the recorded revision, and no ledger/config conversion is performed.
 

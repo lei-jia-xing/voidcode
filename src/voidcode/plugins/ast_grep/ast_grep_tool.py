@@ -112,7 +112,6 @@ def _render_matches(matches: list[dict[str, Any]], *, rewrite: str | None = None
 
 
 _MATCH_PREVIEW_LIMIT = 50
-_MATCH_PREVIEW_PATH_LIMIT = 256
 
 
 def _match_body_preview(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -120,9 +119,7 @@ def _match_body_preview(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for match in matches[:_MATCH_PREVIEW_LIMIT]:
         raw_path = match.get("file")
         path = raw_path if isinstance(raw_path, str) else "<unknown>"
-        item: dict[str, Any] = {"file": path[:_MATCH_PREVIEW_PATH_LIMIT]}
-        if len(path) > _MATCH_PREVIEW_PATH_LIMIT:
-            item["file_truncated"] = True
+        item: dict[str, Any] = {"file": path}
         range_value = match.get("range")
         start = range_value.get("start") if isinstance(range_value, dict) else None
         if isinstance(start, dict):

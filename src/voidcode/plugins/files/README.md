@@ -21,5 +21,8 @@ Takes no plugin config; `create_plugin` ignores it. See [configuration](../../..
 ## Behavior and limits
 
 - File mutations validate explicit caller evidence and exact matching — replacement modes compare caller-supplied content hashes, patch mode preflights exact marker chunks and re-checks bytes at commit, and no mode requires a prior session read. Read observations are historical facts, not write permissions (see [facts](../../../../docs/contracts/facts.md)). Stale-hash, commit-race, and ambiguous-match failures surface as typed `ToolFailure` results with retry guidance — the boundary this adapter adds.
+
+- `TextOutput.text` is the selected page. Its typed body retains machine fields such as `raw_content`, line records, and content hash at the canonical result artifact when Core omits that redundant body; omission alone does not mark the page or `ReadObservation` clipped.
+- Raster reads publish original bytes through streaming artifact ingress rather than an arbitrary media-size cutoff. Real Core/native Anthropic and Google routes preserve valid decoded PNG pixels above the 256 KiB artifact-page size; complete bytes remain pageable by digest. Viewer and image-terminal integration are tracked separately from this plugin contract.
 - Query-absence behavior: read/write/edit never consult a workspace query; `apply_workspace_edit` with a version fails closed (`document_version_unavailable`) when no provider answers, while hash-only edits (no version) work without any provider.
 - Write-class tools declare `WRITE` and route through the core's approval check (`_needs_approval`: external mutations need approval unless policy says otherwise); see [plugin authoring](../../../../docs/contracts/plugin-authoring.md) for the surrounding contract.

@@ -14,9 +14,11 @@ import pytest
 from tests.fixtures.s5_plugin import HOOK_DIAGNOSTIC, PLUGIN_ID, PROBE_TOOL, WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
-from voidcode.core.coverage import model_result_text
+from voidcode.core.coverage import project_tool_result
 from voidcode.core.engine import Core
+from voidcode.core.storage.store import StoreConflict
 from voidcode.sdk.codec import decode_tool_result
+from voidcode.sdk.limits import CLIENT_PROMPT_MAX_BYTES, TOOL_OUTPUT_BYTES
 from voidcode.sdk.tools import TextOutput, ToolSuccess
 
 #: A full bundled cold start and a killed service tree both need more than the old 10 s bound
@@ -108,7 +110,11 @@ def test_receipt_returns_before_same_session_target_and_projects_no_synthetic_ca
             assert note["role"] == "user"
             assert completed[1].payload["invocation_id"] in note["content"]
             assert request.payload["request_id"] in note["content"] and PROBE_TOOL in note["content"]
-            target_text, _ = model_result_text(decode_tool_result(completed[1].payload["result"]))
+            target_text, _, _ = project_tool_result(
+                decode_tool_result(completed[1].payload["result"]),
+                max_bytes=TOOL_OUTPUT_BYTES,
+                artifact_reader=lambda digest, offset, limit: core.read_artifact(digest, offset=offset, limit=limit),
+            )
             assert note["content"].split("\n", 1)[1] == target_text
             native = next(message for message in messages if message.get("role") == "assistant")
             paired = next(message for message in messages if message.get("role") == "tool")
@@ -156,7 +162,7 @@ def test_nested_write_parks_and_resumes_exact_approval_after_restart(tmp_path: P
                     core.store._connection.set_trace_callback(None)
             assert len(queries) == 1 and queries[0].lstrip().startswith("SELECT")
             assert info.status == "waiting" and info.pending_approval["request_id"] == request_id
-            assert info.chain_budget == 32 and info.chain_reserved == 2
+            assert info.chain_budget is None and info.chain_reserved is None
         with _open(tmp_path) as core:
             with pytest.raises(ValueError, match="exact pending request"):
                 core.resume(waiting.session_id, approval_request_id="wrong", decision=decision)
@@ -200,8 +206,17 @@ def test_deferred_target_keeps_scope_stance_gate_and_schema(tmp_path: Path, deni
                     root_session_id=parent.session_id,
                     depth=1,
                     tool_allowlist=(PROBE_TOOL,),
+                    birth={"root_id": "scoped-root", "root_action_budget": None},
                 )
-            result = core.run("Request the governed target.", session_id=session_id)
+            if session_id is None:
+                result = core.run("Request the governed target.")
+            else:
+                result = core._run(
+                    "Request the governed target.",
+                    session_id=session_id,
+                    prompt_max_bytes=CLIENT_PROMPT_MAX_BYTES,
+                    _root_id="scoped-root",
+                )
             assert result.status == "completed", result.error
             assert not (workspace / "forbidden.txt").exists()
             target_event = next(
@@ -250,17 +265,122 @@ def test_recursive_requests_spend_one_root_budget_and_cannot_bypass_it_on_resume
     with _server([_turn(_call("recurse", PROBE_TOOL, action="recurse"))]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
-            result = core.run("Recurse through the tool service.", max_steps=4)
+            result = core.run("Recurse through the tool service.", root_action_budget=4)
             assert result.status == "interrupted" and result.stop_cause == "limit_reached"
-            assert "root action budget" in result.error
+            assert result.budget_exhaustion is not None
+            assert result.budget_exhaustion.dimension == "root_actions"
+            assert "root action budget exhausted" in result.error
             assert [body["invocation_depth"] for body in _bodies(core, result.session_id)] == [0, 1, 2, 3]
             checkpoint = core.store.checkpoint(result.session_id)
             assert checkpoint is not None
             assert core.store.root_budget_state(checkpoint.payload["root_id"]) == (4, 4)
         with _open(tmp_path) as core:
-            resumed = core.resume(result.session_id, max_steps=32)
+            resumed = core.resume(result.session_id)
             assert resumed.stop_cause == "limit_reached"
+            assert resumed.budget_exhaustion is not None
             assert len(server.requests) == 1
+
+
+def test_explicit_provider_turn_cap_resumes_without_replaying_tools(tmp_path: Path) -> None:
+    with _server(
+        [
+            _turn(_call("first", PROBE_TOOL, action="echo", text="once")),
+            _turn(output="finished after explicit continuation"),
+        ]
+    ) as server:
+        _configure(tmp_path, server)
+        with _open(tmp_path) as core:
+            limited = core.run("Use one tool, then continue.", max_steps=1)
+            assert limited.status == "interrupted"
+            assert limited.budget_exhaustion is not None
+            assert limited.budget_exhaustion.dimension == "provider_turns"
+            assert limited.budget_exhaustion.source == "max_steps"
+            assert limited.budget_exhaustion.consumed == 1
+            assert len(_bodies(core, limited.session_id)) == 1
+        with _open(tmp_path) as core:
+            preserved = core.resume(limited.session_id)
+            assert preserved.status == "interrupted"
+            assert preserved.budget_exhaustion is not None
+            assert preserved.budget_exhaustion.consumed == 1
+            assert preserved.budget_exhaustion.remaining == 0
+            assert len(server.requests) == 1
+            assert len(_bodies(core, limited.session_id)) == 1
+            resumed = core.resume(limited.session_id, max_steps=2)
+            assert resumed.status == "completed", resumed.error
+            assert len(server.requests) == 2
+            assert len(_bodies(core, limited.session_id)) == 1
+
+
+def test_explicit_root_grant_is_idempotent_and_continues_without_replaying_tools(tmp_path: Path) -> None:
+    with _server(
+        [
+            _turn(_call("first", PROBE_TOOL, action="echo", text="once")),
+            _turn(_call("second", PROBE_TOOL, action="echo", text="twice")),
+            _turn(output="finished after authorized extensions"),
+        ]
+    ) as server:
+        _configure(tmp_path, server)
+        with _open(tmp_path) as core:
+            limited = core.run("Use two tools, then continue.", root_action_budget=1)
+            assert limited.status == "interrupted"
+            assert limited.budget_exhaustion is not None
+            assert limited.budget_exhaustion.dimension == "root_actions"
+            assert limited.budget_exhaustion.consumed == 1
+            checkpoint = core.store.checkpoint(limited.session_id)
+            assert checkpoint is not None
+            root_id = str(checkpoint.payload["root_id"])
+            assert len(_bodies(core, limited.session_id)) == 1
+        with _open(tmp_path) as core:
+            resumed = core.resume(
+                limited.session_id,
+                extend_root_actions=1,
+                root_action_grant_id="operator-grant-1",
+            )
+            assert resumed.status == "interrupted", resumed.error
+            assert core.store.root_budget_state(root_id) == (2, 2)
+            assert len(server.requests) == 2
+            assert len(_bodies(core, limited.session_id)) == 2
+            duplicate = core.resume(
+                limited.session_id,
+                extend_root_actions=1,
+                root_action_grant_id="operator-grant-1",
+            )
+            assert duplicate.status == "interrupted", duplicate.error
+            assert core.store.root_budget_state(root_id) == (2, 2)
+            assert len(server.requests) == 2
+            assert len(_bodies(core, limited.session_id)) == 2
+            continued = core.resume(
+                limited.session_id,
+                extend_root_actions=1,
+                root_action_grant_id="operator-grant-2",
+            )
+            assert continued.status == "completed", continued.error
+            assert core.store.root_budget_state(root_id) == (3, 3)
+            assert len(server.requests) == 3
+            assert len(_bodies(core, limited.session_id)) == 2
+
+
+def test_missing_finite_root_row_cannot_be_reinterpreted_as_uncapped(tmp_path: Path) -> None:
+    with _server([_turn(output="finite root completed")]) as server:
+        _configure(tmp_path, server)
+        with _open(tmp_path) as core:
+            result = core.run("finite parent", root_action_budget=1)
+            assert result.status == "completed", result.error
+            checkpoint = core.store.checkpoint(result.session_id)
+            assert checkpoint is not None
+            root_id = str(checkpoint.payload["root_id"])
+            assert core.store.root_budget_state(root_id) == (1, 1)
+            with core.store._lock:  # noqa: SLF001 - simulate a lost durable authorization row.
+                core.store._connection.execute("DELETE FROM root_budgets WHERE root_id = ?", (root_id,))
+                core.store._connection.commit()
+            with pytest.raises(StoreConflict, match="captured finite root authorization"):
+                core.spawn_child(
+                    result.session_id,
+                    "must not run under a new unlimited root",
+                    root_action_id=root_id,
+                    initial_root_budget=1,
+                )
+            assert core.list_descendants(result.session_id) == ()
 
 
 def test_thrown_callback_discards_its_staged_tool_request(tmp_path: Path) -> None:

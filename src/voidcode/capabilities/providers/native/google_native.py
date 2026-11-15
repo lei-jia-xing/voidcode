@@ -286,6 +286,9 @@ class GoogleGenAIProvider:
                             }
                         }
                     )
+                    if following.images:
+                        for img in following.images:
+                            parts.append({"inline_data": {"mime_type": img.media_type, "data": img.data}})
                     index += 1
                 contents.append({"role": "user", "parts": parts})
                 continue

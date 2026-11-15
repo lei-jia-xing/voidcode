@@ -20,11 +20,11 @@ from uuid import uuid4
 import jsonschema
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..sdk.client import BudgetExhaustion
 from ..sdk.codec import (
     decode_provider_result,
     decode_tool_call,
     decode_tool_result,
-    encode_message,
     encode_provider_result,
     encode_tool_call,
     encode_tool_definition,
@@ -40,10 +40,12 @@ from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
 from ..sdk.icons import Icon
 from ..sdk.invocation import ToolContext
 from ..sdk.json_values import json_wire_object, own_json_object
-from ..sdk.limits import CLIENT_PROMPT_MAX_BYTES
+from ..sdk.limits import CLIENT_PROMPT_MAX_BYTES, TOOL_OUTPUT_BYTES
 from ..sdk.observed_effects import MAX_OBSERVED_CHANGES, ObservedChange
 from ..sdk.provider import ImageAttachment, ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
 from ..sdk.services import (
+    ArtifactPage,
+    ArtifactReference,
     CancelSubtreeReceipt,
     ChildOutcome,
     ChildSendReceipt,
@@ -74,8 +76,8 @@ from .activation import (
     plan_state_copies,
     write_private_snapshot,
 )
-from .artifacts import ArtifactStore
-from .coverage import _target_paths, canonical_path, model_result_text
+from .artifacts import ArtifactNotFoundError, ArtifactStore
+from .coverage import ProjectionRequiresReference, _target_paths, canonical_path, project_tool_result
 from .delegation import (
     DELEGATION_SPAWN_BUDGET as DELEGATION_SPAWN_BUDGET,
 )
@@ -189,6 +191,8 @@ class _BackgroundContext:
         session_id: str,
         action: Mapping[str, object],
         revision_id: str,
+        root_action_id: str,
+        initial_root_budget: int | None,
         abort: threading.Event,
     ) -> None:
         self._core = core
@@ -197,6 +201,8 @@ class _BackgroundContext:
         self._session_id = session_id
         self._action = own_json_object(action)
         self._revision_id = revision_id
+        self._root_action_id = root_action_id
+        self._initial_root_budget = initial_root_budget
         self._abort = abort
 
     @property
@@ -218,6 +224,8 @@ class _BackgroundContext:
             callback,
             action_id=self._action_id,
             revision_id=self._revision_id,
+            root_action_id=self._root_action_id,
+            initial_root_budget=self._initial_root_budget,
             abort=self._abort,
         )
 
@@ -532,6 +540,8 @@ class _Cursor(BaseModel):
     deferred_sequence: int | None = Field(default=None, ge=1)
     deferred_depth: int = Field(default=0, ge=0)
     deferred_only: bool = False
+    #: Optional provider-turn cap for this logical run; independent of shared root actions.
+    max_steps: int | None = None
     step: int = Field(default=0, ge=0)
     abandon_batch: bool = False
     continuation_id: str | None = None
@@ -553,6 +563,7 @@ class CoreResult:
     error: str | None = None
     pending_approval: Mapping[str, object] | None = None
     stop_cause: StopCause | None = None
+    budget_exhaustion: BudgetExhaustion | None = None
 
     def as_payload(self) -> dict[str, object]:
         payload = {
@@ -566,6 +577,8 @@ class CoreResult:
         }
         if self.stop_cause is not None:
             payload["stop_cause"] = self.stop_cause
+        if self.budget_exhaustion is not None:
+            payload["budget_exhaustion"] = asdict(self.budget_exhaustion)
         return payload
 
 
@@ -660,18 +673,7 @@ class Core:
                 store=self.store,
                 usage_callback=self._get_session_usage,
                 budget_callback=self._get_owner_budget,
-                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify, owner, key, guard: self.spawn_child(
-                    parent,
-                    prompt,
-                    label=label,
-                    tool_allowlist=scope,
-                    max_steps=max_steps,
-                    readonly=readonly,
-                    notify_on_completion=notify,
-                    owner=owner,
-                    idempotency_key=key,
-                    admission_guard=guard,
-                ),
+                spawn_child_callback=self._spawn_child_callback,
                 find_child_callback=self._delegation.find_keyed_child,
                 join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
                 send_child_callback=lambda parent, child, prompt, label, notify, guard: self.send_child(
@@ -1059,29 +1061,62 @@ class Core:
             snapshot.plugin_runtime.stop_background_processes()
         self._resources.close()
 
-    def run(self, prompt: str, *, session_id: str | None = None, max_steps: int = 32, images: tuple[ImageAttachment, ...] = ()) -> CoreResult:
-        return self._run(prompt, session_id=session_id, max_steps=max_steps, prompt_max_bytes=CLIENT_PROMPT_MAX_BYTES, images=images)
+    def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
+        """Read immutable workspace artifact bytes, never a caller-supplied path."""
+        self._ensure_open()
+        try:
+            data, total, eof, media_type = self._artifacts.read(sha256, offset=offset, limit=limit)
+        except ArtifactNotFoundError as exc:
+            raise FileNotFoundError(f"artifact is not stored: {sha256}") from exc
+        return ArtifactPage(ArtifactReference(sha256, total, media_type), offset, data, eof)
+
+    def run(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        max_steps: int | None = None,
+        root_action_budget: int | None = None,
+        images: tuple[ImageAttachment, ...] = (),
+    ) -> CoreResult:
+        return self._run(
+            prompt,
+            session_id=session_id,
+            max_steps=max_steps,
+            root_action_budget=root_action_budget,
+            prompt_max_bytes=CLIENT_PROMPT_MAX_BYTES,
+            images=images,
+        )
 
     def _run(
         self,
         prompt: str,
         *,
         session_id: str | None = None,
-        max_steps: int = 32,
+        max_steps: int | None = None,
+        root_action_budget: int | None = None,
         prompt_max_bytes: int,
         images: tuple[ImageAttachment, ...] = (),
+        _root_id: str | None = None,
         _refuse_reserved_cancelled: bool = False,
     ) -> CoreResult:
-        # a core-driven child run carries a delegated payload (e.g. a review diff).
+        # A core-driven child run carries a delegated payload (e.g. a review diff).
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > prompt_max_bytes:
             raise ValueError(f"prompt must be nonempty UTF-8 text within {prompt_max_bytes // 1024} KiB")
         self._validate_steps(max_steps)
+        self._validate_root_action_budget(root_action_budget)
+        if _root_id is not None and (not isinstance(_root_id, str) or not _root_id or "\0" in _root_id):
+            raise ValueError("inherited root action id must be nonempty text without NUL")
+        if _root_id is not None and root_action_budget is not None:
+            raise ValueError("a child cannot assign a new root action budget")
         if session_id is not None and (not isinstance(session_id, str) or not session_id or len(session_id) > 128 or "\0" in session_id):
             raise ValueError("session_id must be nonempty text within 128 characters without NUL")
         if session_id is not None:
             try:
                 active_sess = self.store.session(session_id)
                 if active_sess.status in ("running", "waiting"):
+                    if root_action_budget is not None:
+                        raise ValueError("a queued follow-up cannot assign a new root action budget; resume with an explicit extension")
                     return self._queue_followup(active_sess, prompt, max_steps, images=images)
             except KeyError:
                 pass
@@ -1099,15 +1134,43 @@ class Core:
                 except KeyError:
                     session = self._create_session_row(session_id)
                 if session.status in ("running", "waiting"):
+                    if root_action_budget is not None:
+                        raise ValueError("a queued follow-up cannot assign a new root action budget; resume with an explicit extension")
                     return self._queue_followup(session, prompt, max_steps, images=images)
                 if not self._admits_fresh_work(session):
                     raise ValueError("unfinished session requires explicit resume")
                 self._check_session(session)
-                root_id = uuid4().hex
-                self.store.ensure_root_budget(root_id, max_steps)
+                root_id = _root_id if _root_id is not None else uuid4().hex
+                if session.parent_session_id is not None:
+                    if _root_id is None:
+                        raise ValueError("child sessions cannot start a new root action; use a parent-authorized child send")
+                    birth_root_id = self._delegation._captured_child_root_id(session_id)
+                    if birth_root_id != _root_id:
+                        raise ValueError("child run root action identity does not match its captured birth authorization")
+                elif _root_id is not None:
+                    raise ValueError("an inherited root action identity is only valid for a child session")
+                initial_root_budget = root_action_budget
+                if _root_id is None:
+                    self.store.ensure_root_budget(root_id, root_action_budget)
+                else:
+                    birth = self._delegation._birth_record(session_id)
+                    if birth is None or birth.get("root_id") != root_id:
+                        raise StoreConflict(f"child {session_id!r} is missing its captured root authorization")
+                    if "root_action_budget" not in birth:
+                        raise StoreConflict(f"child {session_id!r} has no captured root budget state")
+                    birth_budget = birth.get("root_action_budget")
+                    if birth_budget is not None and (type(birth_budget) is not int or birth_budget < 0):
+                        raise StoreConflict(f"child {session_id!r} has an invalid captured root budget")
+                    root_state = self.store.root_budget_state(root_id)
+                    if birth_budget is None:
+                        if root_state is not None:
+                            raise StoreConflict("captured uncapped root authorization conflicts with a finite budget row")
+                    elif root_state is None or root_state[0] < birth_budget:
+                        raise StoreConflict("captured finite root authorization has no matching durable budget row")
+                    initial_root_budget = birth_budget
                 execution = _Execution(
                     session,
-                    _Cursor(root_id=root_id, initial_root_budget=max_steps),
+                    _Cursor(root_id=root_id, initial_root_budget=initial_root_budget, max_steps=max_steps),
                     list(self.store.events(session_id)),
                     run_abort_id,
                 )
@@ -1130,10 +1193,13 @@ class Core:
                     if execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None:
                         # The stopped batch is never replayed: report its members before the new turn.
                         self._interrupt_batch(execution)
-                    # The new user turn owns its own fresh root budget: the stopped
-                    # chain's exhausted root is never reused or reset.
-                    execution.cursor = _Cursor(root_id=root_id, initial_root_budget=max_steps)
+                    # The new user turn has its own root identity and optional authorization.
+                    execution.cursor = _Cursor(root_id=root_id, initial_root_budget=initial_root_budget, max_steps=max_steps)
                 user_payload: dict[str, object] = {"content": prompt}
+                if max_steps is not None:
+                    user_payload["max_steps"] = max_steps
+                if root_action_budget is not None:
+                    user_payload["root_action_budget"] = root_action_budget
                 if images:
                     user_payload["images"] = [img.as_payload() for img in images]
                 self._commit(
@@ -1148,22 +1214,35 @@ class Core:
                     ),
                     start_turn=True,
                 )
-                result = self._drive(execution, max_steps=max_steps)
+                result = self._drive(execution)
             finally:
                 with self._aborts_lock:
                     self._session_aborts.pop(session_id, None)
-        self._drive_pending(session_id, max_steps)
+        self._drive_pending(session_id)
         return result
 
     def _queue_followup(
         self,
         session: SessionRecord,
         prompt: str,
-        max_steps: int,
+        max_steps: int | None,
         images: tuple[ImageAttachment, ...] = (),
     ) -> CoreResult:
+        checkpoint = self.store.checkpoint(session.session_id)
+        if checkpoint is None or not isinstance(checkpoint.payload, Mapping):
+            raise StoreConflict(f"running session {session.session_id!r} has no captured root authorization")
+        root_id = checkpoint.payload.get("root_id")
+        if not isinstance(root_id, str) or not root_id:
+            raise StoreConflict(f"running session {session.session_id!r} has no captured root action identity")
+        if "initial_root_budget" not in checkpoint.payload:
+            raise StoreConflict(f"running session {session.session_id!r} has no captured root budget state")
+        root_budget = checkpoint.payload.get("initial_root_budget")
+        if root_budget is not None and (type(root_budget) is not int or root_budget < 0):
+            raise StoreConflict(f"running session {session.session_id!r} has an invalid captured root budget")
         cid = uuid4().hex
-        payload: dict[str, object] = {"prompt": prompt, "max_steps": max_steps}
+        payload: dict[str, object] = {"prompt": prompt, "root_action_budget": root_budget}
+        if max_steps is not None:
+            payload["max_steps"] = max_steps
         if images:
             payload["images"] = [img.as_payload() for img in images]
         self.store.enqueue_continuation(
@@ -1174,6 +1253,7 @@ class Core:
             session.run_id or "",
             self.revision_id,
             payload,
+            root_id=root_id,
             role="user",
         )
         return CoreResult(
@@ -1188,10 +1268,31 @@ class Core:
         session_id: str,
         continuation_id: str,
         prompt: str,
-        max_steps: int,
+        max_steps: int | None,
+        root_id: str | None,
+        root_action_budget: int | None,
         images: tuple[ImageAttachment, ...] = (),
     ) -> CoreResult:
-
+        if not isinstance(root_id, str) or not root_id:
+            self.store.complete_continuation(continuation_id, status="failed")
+            return CoreResult(
+                session_id,
+                "",
+                self.revision_id,
+                "failed",
+                error="queued follow-up has no captured root action identity; refusing to create a new budget",
+                stop_cause="error",
+            )
+        if root_action_budget is not None and (type(root_action_budget) is not int or root_action_budget < 0):
+            self.store.complete_continuation(continuation_id, status="failed")
+            return CoreResult(
+                session_id,
+                "",
+                self.revision_id,
+                "failed",
+                error="queued follow-up has an invalid captured root budget",
+                stop_cause="error",
+            )
         with self._session_lock(session_id):
             self._ensure_open()
             self._abort.set_cancelled(False)
@@ -1205,11 +1306,35 @@ class Core:
                     self.store.complete_continuation(continuation_id, status="failed")
                     return CoreResult(session_id, "", self.revision_id, "failed", error="session does not admit fresh work")
                 self._check_session(session)
-                root_id = uuid4().hex
-                self.store.ensure_root_budget(root_id, max_steps)
+                root_state = self.store.root_budget_state(root_id)
+                if root_action_budget is None and root_state is not None:
+                    self.store.complete_continuation(continuation_id, status="failed")
+                    return CoreResult(
+                        session_id,
+                        "",
+                        self.revision_id,
+                        "failed",
+                        error="queued follow-up captured an uncapped root with a finite budget row",
+                        stop_cause="error",
+                    )
+                if root_action_budget is not None and (root_state is None or root_state[0] < root_action_budget):
+                    self.store.complete_continuation(continuation_id, status="failed")
+                    return CoreResult(
+                        session_id,
+                        "",
+                        self.revision_id,
+                        "failed",
+                        error="queued follow-up lost its captured finite root authorization",
+                        stop_cause="error",
+                    )
                 execution = _Execution(
                     session,
-                    _Cursor(root_id=root_id, initial_root_budget=max_steps),
+                    _Cursor(
+                        root_id=root_id,
+                        initial_root_budget=root_action_budget,
+                        max_steps=max_steps,
+                        continuation_id=continuation_id,
+                    ),
                     list(self.store.events(session_id)),
                     run_abort_id,
                 )
@@ -1221,34 +1346,39 @@ class Core:
                         execution.cursor.stop_cause = None
                     if execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None:
                         self._interrupt_batch(execution)
-                    execution.cursor = _Cursor(root_id=root_id, initial_root_budget=max_steps)
-                user_payload = {"content": prompt}
+                    execution.cursor = _Cursor(
+                        root_id=root_id,
+                        initial_root_budget=root_action_budget,
+                        max_steps=max_steps,
+                        continuation_id=continuation_id,
+                    )
+                user_payload: dict[str, object] = {"content": prompt}
+                if max_steps is not None:
+                    user_payload["max_steps"] = max_steps
                 if images:
                     user_payload["images"] = [img.as_payload() for img in images]
                 self._commit(
                     execution,
                     "running",
                     "ready",
-                    EventDraft(
-                        EventType.USER_MESSAGE,
-                        "client",
-                        "user",
-                        user_payload,
-                    ),
+                    EventDraft(EventType.USER_MESSAGE, "client", "user", user_payload),
                     start_turn=True,
                 )
                 self.store.set_continuation_run_id(continuation_id, execution.run_id)
-                result = self._drive(execution, max_steps=max_steps)
-                status_str: Literal["completed", "failed", "cancelled"] = "completed"
+                result = self._drive(execution)
+                status: Literal["completed", "failed", "cancelled"] = "completed"
                 if result.status in ("completed", "idle"):
-                    status_str = "completed"
+                    status = "completed"
                 elif result.status == "failed":
-                    status_str = "failed"
+                    status = "failed"
                 elif result.status == "interrupted":
-                    status_str = "cancelled"
+                    if result.stop_cause in ("user_stop", "owner_cancel"):
+                        status = "cancelled"
+                    else:
+                        return result
                 elif result.status == "waiting":
                     return result
-                self.store.complete_continuation(continuation_id, status=status_str)
+                self.store.complete_continuation(continuation_id, status=status)
                 return result
             finally:
                 with self._aborts_lock:
@@ -1260,9 +1390,12 @@ class Core:
         *,
         approval_request_id: str | None = None,
         decision: Literal["allow", "deny"] | None = None,
-        max_steps: int = 32,
+        max_steps: int | None = None,
+        extend_root_actions: int | None = None,
+        root_action_grant_id: str | None = None,
     ) -> CoreResult:
         self._validate_steps(max_steps)
+        self._validate_root_action_extension(extend_root_actions, root_action_grant_id)
         with self._session_lock(session_id):
             self._ensure_open()
             self._abort.set_cancelled(False)
@@ -1287,7 +1420,21 @@ class Core:
                 for ev in events_after_cp:
                     if not _is_parked_intervening(ev):
                         raise ValueError(f"Intervening event {ev.event_type} violates parked checkpoint prefix")
+                if "initial_root_budget" not in checkpoint.payload:
+                    raise ValueError("checkpoint has no captured root budget state")
                 cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
+                if not isinstance(cursor.root_id, str) or not cursor.root_id:
+                    raise ValueError("checkpoint has no captured root action identity")
+                root_state = self.store.root_budget_state(cursor.root_id)
+                if cursor.initial_root_budget is None:
+                    if root_state is not None:
+                        raise StoreConflict("checkpoint captured an uncapped root with a finite budget row")
+                elif root_state is None or root_state[0] < cursor.initial_root_budget:
+                    raise StoreConflict("checkpoint lost its captured finite root authorization")
+                if session.parent_session_id is not None:
+                    self._delegation._captured_child_root_id(session_id)
+                if max_steps is not None:
+                    cursor.max_steps = max_steps
                 execution = _Execution(session, cursor, list(self.store.events(session_id)), run_abort_id)
                 self._messages(execution, allow_pending=True)
                 if cursor.intent_sequence is not None:
@@ -1305,7 +1452,26 @@ class Core:
                         raise ValueError("pending approval does not match its native batch member")
                 elif approval_request_id is not None or decision is not None:
                     raise ValueError("session is not waiting for approval")
-                self._commit(execution, "running", "ready", EventDraft(EventType.RUN_RESUMED, "kernel", "user", {}))
+                resume_payload: dict[str, object] = {"max_steps": max_steps}
+                root_budget_grant: tuple[str, int, str] | None = None
+                if extend_root_actions is not None:
+                    if not cursor.root_id:
+                        raise ValueError("checkpoint has no root action identity to extend")
+                    resume_payload.update(
+                        {
+                            "root_id": cursor.root_id,
+                            "extend_root_actions": extend_root_actions,
+                            "root_action_grant_id": root_action_grant_id,
+                        }
+                    )
+                    root_budget_grant = (cursor.root_id, extend_root_actions, cast(str, root_action_grant_id))
+                self._commit(
+                    execution,
+                    "running",
+                    "ready",
+                    EventDraft(EventType.RUN_RESUMED, "kernel", "user", resume_payload),
+                    root_budget_grant=root_budget_grant,
+                )
                 if approval is not None:
                     cursor.approval_sequence = None
                     self._commit(
@@ -1343,7 +1509,7 @@ class Core:
                     if intent.payload["replay_policy"] == "never":
                         self._interrupt_batch(execution)
                     # A safe read reuses the durable invocation identity below.
-                result = self._drive(execution, max_steps=max_steps)
+                result = self._drive(execution)
                 if session.parent_session_id is not None and _terminal_run_result(result):
                     child_now = self.store.session(session_id)
                     notify = self._delegation._notify_requested(child_now, self.store.events(session_id))
@@ -1369,10 +1535,10 @@ class Core:
                     self._session_aborts.pop(session_id, None)
         if resumed_notice is not None:
             self._delegation._deliver_child_notice(*resumed_notice)
-        self._drive_pending(session_id, max_steps)
+        self._drive_pending(session_id)
         return result
 
-    def _drive_pending(self, session_id: str, max_steps: int, *, limit: int = 32) -> None:
+    def _drive_pending(self, session_id: str, *, limit: int = 32) -> None:
         """Drive owned queued follow-up work at a safe boundary, outside the run lock.
 
         Returns nothing on purpose: `run`/`resume` report the result of the
@@ -1386,14 +1552,14 @@ class Core:
         for _ in range(max(1, limit)):
             followup = self.store.claim_pending_followup(session_id)
             if followup is not None:
-                cid, prompt, steps, raw_images = followup
+                cid, prompt, steps, raw_images, root_id, root_budget = followup
                 images = tuple(ImageAttachment.from_payload(img) for img in raw_images) if raw_images else ()
-                run_res = self._execute_user_followup(session_id, cid, prompt, steps or max_steps, images=images)
+                run_res = self._execute_user_followup(session_id, cid, prompt, steps, root_id, root_budget, images=images)
                 if run_res.status not in ("completed", "idle"):
                     return
                 continue
             try:
-                results = self.drain_continuations(session_id, limit=1, max_steps=max_steps, _automatic=True)
+                results = self.drain_continuations(session_id, limit=1, _automatic=True)
             except StoreConflict:
                 # No pending or claimed continuation remains: the chain is done.
                 return
@@ -1412,19 +1578,18 @@ class Core:
             root_id = uuid4().hex
             execution = _Execution(
                 session,
-                _Cursor(root_id=root_id, initial_root_budget=32, deferred_only=True, logical_turn=uuid4().hex),
+                _Cursor(root_id=root_id, deferred_only=True, logical_turn=uuid4().hex),
                 list(self.store.events(session_id)),
                 uuid4().hex,
             )
             if self._next_deferred(execution) is None:
                 return
-            self.store.ensure_root_budget(root_id, 32)
             abort = Cancellation()
             with self._aborts_lock:
                 self._session_aborts[session_id] = (execution.run_id, abort)
             try:
                 self._commit(execution, "running", "ready")
-                self._drive(execution, max_steps=32)
+                self._drive(execution)
             finally:
                 with self._aborts_lock:
                     self._session_aborts.pop(session_id, None)
@@ -1890,6 +2055,7 @@ class Core:
 
         run_id = s.run_id or uuid4().hex
         inv_id = uuid4().hex
+        root_action_id, initial_root_budget = self._capture_root_authorization(s)
         context = ToolContext(
             workspace=self.workspace,
             session_id=session_id,
@@ -1898,6 +2064,8 @@ class Core:
             revision_id=self.revision_id,
             actor="client",
             logical_turn=uuid4().hex,
+            root_action_id=root_action_id,
+            initial_root_budget=initial_root_budget,
         )
         with self._dispatch(f"command:{name}"), self._command_abort(context) as context:
             outcome = self.plugin_runtime.invoke_command(
@@ -2040,6 +2208,7 @@ class Core:
         self.store.decide_confirmation(request_id, "allowed")
         run_id = s.run_id or uuid4().hex
         inv_id = uuid4().hex
+        root_action_id, initial_root_budget = self._capture_root_authorization(s)
         context = ToolContext(
             workspace=self.workspace,
             session_id=session_id,
@@ -2048,6 +2217,8 @@ class Core:
             revision_id=self.revision_id,
             actor="user",
             logical_turn=uuid4().hex,
+            root_action_id=root_action_id,
+            initial_root_budget=initial_root_budget,
         )
 
         with self._dispatch(f"command:{rec.command_name}"), self._command_abort(context) as context:
@@ -2175,7 +2346,7 @@ class Core:
         session_id: str,
         *,
         limit: int = 10,
-        max_steps: int = 32,
+        max_steps: int | None = None,
         continuation_id: str | None = None,
         _automatic: bool = False,
     ) -> tuple[ContinuationResult, ...]:
@@ -2211,19 +2382,59 @@ class Core:
                     else:
                         if s.status in ("running", "waiting"):
                             break
+                        pending = self.store.pending_continuations(session_id, limit=100)
+                        if continuation_id is not None:
+                            pending = tuple(record for record in pending if record.continuation_id == continuation_id)
+                        if pending and (not isinstance(pending[0].root_id, str) or not pending[0].root_id):
+                            missing = pending[0]
+                            self.store.complete_continuation(missing.continuation_id, status="failed")
+                            results.append(
+                                ContinuationResult(
+                                    continuation_id=missing.continuation_id,
+                                    owner=missing.owner,
+                                    session_id=session_id,
+                                    status="failed",
+                                    payload=missing.payload,
+                                    run_status="failed",
+                                    run_id=missing.run_id,
+                                    error="queued continuation has no captured root action identity; refusing to create a new budget",
+                                    stop_cause="error",
+                                )
+                            )
+                            if continuation_id is not None:
+                                break
+                            continue
                         try:
                             cont_record, session_record = self.store.claim_and_start_continuation(
                                 session_id,
                                 run_id,
                                 logical_turn,
                                 revision_id=self.revision_id,
-                                initial_root_budget=max_steps,
+                                initial_root_budget=None,
+                                max_steps=max_steps,
                                 continuation_id=continuation_id,
                                 caller_chain=self._delegation._chain_of(session_id),
                                 automatic=_automatic,
                             )
                         except StoreConflict:
                             break
+
+                    if not isinstance(cont_record.root_id, str) or not cont_record.root_id:
+                        self.store.complete_continuation(cont_record.continuation_id, status="failed")
+                        results.append(
+                            ContinuationResult(
+                                continuation_id=cont_record.continuation_id,
+                                owner=cont_record.owner,
+                                session_id=session_id,
+                                status="failed",
+                                payload=cont_record.payload,
+                                run_status="failed",
+                                run_id=run_id,
+                                error="continuation has no captured root action identity; refusing to create a new budget",
+                                stop_cause="error",
+                            )
+                        )
+                        break
 
                     if recovering:
                         checkpoint = self.store.checkpoint(session_id)
@@ -2245,7 +2456,11 @@ class Core:
                             break
                         cp = checkpoint.payload if isinstance(checkpoint.payload, Mapping) else {}
                         cursor = _Cursor.model_validate(json_wire_object(cp))
-                        if str(checkpoint.run_id) != str(cont_record.run_id) or str(cp.get("continuation_id")) != cont_record.continuation_id:
+                        if (
+                            str(checkpoint.run_id) != str(cont_record.run_id)
+                            or str(cp.get("continuation_id")) != cont_record.continuation_id
+                            or cursor.root_id != cont_record.root_id
+                        ):
                             self.store.complete_continuation(cont_record.continuation_id, status="failed")
                             results.append(
                                 ContinuationResult(
@@ -2256,39 +2471,49 @@ class Core:
                                     payload=cont_record.payload,
                                     run_status="failed",
                                     run_id=cont_record.run_id,
-                                    error="claimed continuation does not own the session checkpoint",
+                                    error="claimed continuation does not own its checkpoint or captured root action identity",
                                     stop_cause="error",
                                 )
                             )
                             break
-                        if not cursor.root_id:
-                            cursor.root_id = cont_record.root_id or cont_record.continuation_id
-                        self.store.ensure_root_budget(cursor.root_id, max_steps)
                         run_id = cont_record.run_id
                         session_record = self.store.session(session_id)
                     else:
                         cur_session = self.store.session(session_id)
-                        root_id = cont_record.root_id or cont_record.continuation_id
-                        self.store.ensure_root_budget(root_id, max_steps)
+                        root_id = cont_record.root_id
+                        root_state = self.store.root_budget_state(root_id)
+                        payload_max_steps = cont_record.payload.get("max_steps")
                         cursor = _Cursor(
                             continuation_id=cont_record.continuation_id,
                             root_id=root_id,
                             logical_turn=logical_turn,
-                            initial_root_budget=max_steps,
+                            initial_root_budget=None if root_state is None else root_state[0],
+                            max_steps=payload_max_steps if type(payload_max_steps) is int else None,
                         )
                         session_record = cur_session
-
                     execution = _Execution(session_record, cursor, list(self.store.events(session_id)), run_id)
-                    root_state = self.store.root_budget_state(cursor.root_id) if cursor.root_id else None
+                    root_state = self.store.root_budget_state(cursor.root_id)
+                    if max_steps is not None:
+                        cursor.max_steps = max_steps if cursor.max_steps is None else min(cursor.max_steps, max_steps)
                     with self._aborts_lock:
                         self._session_aborts[session_id] = (run_id, abort)
                     if root_state is not None and root_state[1] >= root_state[0]:
-                        run_res = self._stop(execution, "root action budget exhausted", stop_cause="limit_reached")
+                        exhaustion = BudgetExhaustion(
+                            dimension="root_actions",
+                            source="root_action_budget",
+                            limit=root_state[0],
+                            consumed=root_state[1],
+                            remaining=max(0, root_state[0] - root_state[1]),
+                            continue_with="extend_root_actions",
+                        )
+                        run_res = self._stop(
+                            execution,
+                            f"root action budget exhausted: consumed {root_state[1]} of {root_state[0]}, remaining 0",
+                            stop_cause="limit_reached",
+                            budget_exhaustion=exhaustion,
+                        )
                     else:
-                        per_claim = max_steps
-                        if root_state is not None:
-                            per_claim = max(1, min(max_steps, root_state[0] - root_state[1]))
-                        run_res = self._drive(execution, max_steps=per_claim)
+                        run_res = self._drive(execution)
 
                     status_str: Literal["pending", "claimed", "completed", "failed", "cancelled"] = "completed"
                     if run_res.status in ("completed", "idle"):
@@ -2318,6 +2543,7 @@ class Core:
                             output=run_res.output,
                             error=run_res.error,
                             stop_cause=run_res.stop_cause,
+                            budget_exhaustion=run_res.budget_exhaustion,
                         )
                     )
                     if cont_record.owner == CHILD_MESSAGE_OWNER and cont_record.payload.get("kind") == "child_followup":
@@ -2584,18 +2810,7 @@ class Core:
                 store=self.store,
                 usage_callback=self._get_session_usage,
                 budget_callback=self._get_owner_budget,
-                spawn_child_callback=lambda parent, prompt, label, max_steps, scope, readonly, notify, owner, key, guard: self.spawn_child(
-                    parent,
-                    prompt,
-                    label=label,
-                    tool_allowlist=scope,
-                    max_steps=max_steps,
-                    readonly=readonly,
-                    notify_on_completion=notify,
-                    owner=owner,
-                    idempotency_key=key,
-                    admission_guard=guard,
-                ),
+                spawn_child_callback=self._spawn_child_callback,
                 find_child_callback=self._delegation.find_keyed_child,
                 join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
                 send_child_callback=lambda parent, child, prompt, label, notify, guard: self.send_child(
@@ -2651,6 +2866,59 @@ class Core:
             prepared_against=snapshot.revision_id,
         )
 
+    def _spawn_child_callback(
+        self,
+        parent_session_id: str,
+        prompt: str,
+        label: str,
+        max_steps: int | None,
+        scope: tuple[str, ...] | None,
+        readonly: bool,
+        notify: bool,
+        owner: str,
+        key: str | None,
+        root_id: str,
+        root_budget: int | None,
+        guard: Callable[[], bool] | None,
+    ) -> str:
+        return self.spawn_child(
+            parent_session_id,
+            prompt,
+            label=label,
+            tool_allowlist=scope,
+            max_steps=max_steps,
+            readonly=readonly,
+            notify_on_completion=notify,
+            owner=owner,
+            idempotency_key=key,
+            root_action_id=root_id,
+            initial_root_budget=root_budget,
+            admission_guard=guard,
+        )
+
+    def _capture_root_authorization(self, session: SessionRecord) -> tuple[str, int | None]:
+        """Capture the current invocation's root, or inherit an immutable child birth."""
+        if session.parent_session_id is not None:
+            birth = self._delegation._birth_record(session.session_id)
+            if birth is None or "root_action_budget" not in birth:
+                raise StoreConflict(f"child session {session.session_id!r} has no captured root authorization")
+            root_id = birth.get("root_id")
+            root_budget = birth.get("root_action_budget")
+        elif session.status in ("running", "waiting"):
+            checkpoint = self.store.checkpoint(session.session_id)
+            payload = checkpoint.payload if checkpoint is not None and isinstance(checkpoint.payload, Mapping) else {}
+            if "initial_root_budget" not in payload:
+                raise StoreConflict(f"active session {session.session_id!r} has no captured root budget")
+            root_id = payload.get("root_id")
+            root_budget = payload.get("initial_root_budget")
+        else:
+            return uuid4().hex, None
+        if not isinstance(root_id, str) or not root_id or "\0" in root_id:
+            raise StoreConflict(f"session {session.session_id!r} has no valid captured root action identity")
+        if root_budget is not None and (type(root_budget) is not int or root_budget < 0):
+            raise StoreConflict(f"session {session.session_id!r} has an invalid captured root budget")
+        return root_id, root_budget
+
     def spawn_child(
         self,
         parent_session_id: str,
@@ -2658,13 +2926,37 @@ class Core:
         *,
         label: str = "",
         tool_allowlist: tuple[str, ...] | None = None,
-        max_steps: int = 32,
+        max_steps: int | None = None,
         readonly: bool = False,
         notify_on_completion: bool = False,
         owner: str = "",
         idempotency_key: str | None = None,
+        root_action_id: str | None = None,
+        initial_root_budget: int | None = None,
         admission_guard: Callable[[], bool] | None = None,
     ) -> str:
+        if root_action_id is None:
+            if initial_root_budget is not None:
+                raise ValueError("a finite child budget requires its captured root action identity")
+            if idempotency_key is not None:
+                retry_id = self._delegation._keyed_child_id(parent_session_id, owner, idempotency_key)
+                retry_birth = self._delegation._birth_record(retry_id)
+                if retry_birth is not None:
+                    if "root_action_budget" not in retry_birth:
+                        raise StoreConflict(f"keyed child {retry_id!r} has no captured root budget")
+                    candidate_root_id = retry_birth.get("root_id")
+                    if not isinstance(candidate_root_id, str) or not candidate_root_id:
+                        raise StoreConflict(f"keyed child {retry_id!r} has no captured root action identity")
+                    root_action_id = candidate_root_id
+                    candidate_budget = retry_birth.get("root_action_budget")
+                    if candidate_budget is None:
+                        initial_root_budget = None
+                    elif type(candidate_budget) is int and candidate_budget >= 0:
+                        initial_root_budget = candidate_budget
+                    else:
+                        raise StoreConflict(f"keyed child {retry_id!r} has an invalid captured root budget")
+            if root_action_id is None:
+                root_action_id, initial_root_budget = self._capture_root_authorization(self.store.session(parent_session_id))
         return self._delegation.spawn_child(
             parent_session_id,
             prompt,
@@ -2675,6 +2967,8 @@ class Core:
             notify_on_completion=notify_on_completion,
             owner=owner,
             idempotency_key=idempotency_key,
+            root_action_id=root_action_id,
+            initial_root_budget=initial_root_budget,
             admission_guard=admission_guard,
         )
 
@@ -2734,12 +3028,11 @@ class Core:
         if claimed is None:
             return {"fired": None}
         wakeup, session = claimed
-        self.store.ensure_root_budget(wakeup.wakeup_id, 32)
-        cursor = _Cursor(root_id=wakeup.wakeup_id, logical_turn=logical_turn, initial_root_budget=32)
+        cursor = _Cursor(root_id=wakeup.root_id, logical_turn=logical_turn)
         execution = _Execution(session, cursor, list(self.store.events(session.session_id)), run_id)
         with self._session_lock(session.session_id):
             self._deliver_facts(execution, (self._event(execution, session.last_event_sequence, EventType.WAKEUP_FIRED),))
-            result = self._drive(execution, max_steps=32)
+            result = self._drive(execution)
         if result.status in ("completed", "idle"):
             terminal: Literal["completed", "failed", "cancelled"] = "completed"
         elif result.status == "failed":
@@ -2802,6 +3095,12 @@ class Core:
         failure: str | None = None
         try:
             action = _wire_object(claimed.payload.get("action"), f"background action {action_id!r} envelope")
+            root_action_id = claimed.root_id
+            root_budget = claimed.payload.get("root_action_budget")
+            if not isinstance(root_action_id, str) or not root_action_id:
+                raise StoreConflict(f"background action {action_id!r} has no captured root authorization")
+            if root_budget is not None and (type(root_budget) is not int or root_budget < 0):
+                raise StoreConflict(f"background action {action_id!r} has an invalid captured root budget")
             context = _BackgroundContext(
                 self,
                 action_id=action_id,
@@ -2809,6 +3108,8 @@ class Core:
                 session_id=claimed.session_id,
                 action=action,
                 revision_id=claimed.revision_id,
+                root_action_id=root_action_id,
+                initial_root_budget=root_budget,
                 abort=abort,
             )
             driver = self._snapshot.plugin_runtime.background_driver(claimed.owner)
@@ -2848,6 +3149,8 @@ class Core:
         *,
         action_id: str,
         revision_id: str,
+        root_action_id: str,
+        initial_root_budget: int | None,
         abort: threading.Event,
     ) -> T:
         """Run one driver callback under a fresh lease and commit its staged work atomically.
@@ -2869,6 +3172,11 @@ class Core:
             runtime = snapshot.plugin_runtime
             session = self.store.session(session_id)
             self._check_session(session)
+            root_state = self.store.root_budget_state(root_action_id)
+            if not root_action_id or (initial_root_budget is not None and (root_state is None or root_state[0] < initial_root_budget)):
+                raise StoreConflict(f"background action {action_id!r} lost its captured finite root authorization")
+            if initial_root_budget is None and root_state is not None:
+                raise StoreConflict(f"background action {action_id!r} captured an uncapped root with a finite budget row")
             signal = _EventAbortSignal(abort)
             context = ToolContext(
                 workspace=self.workspace,
@@ -2878,6 +3186,8 @@ class Core:
                 revision_id=snapshot.revision_id,
                 actor="plugin",
                 logical_turn=action_id,
+                root_action_id=root_action_id,
+                initial_root_budget=initial_root_budget,
                 abort_signal=signal,
             )
             lease = runtime._open_lease(  # noqa: SLF001 - the core owns lease lifecycles
@@ -2888,6 +3198,8 @@ class Core:
                 readonly=self._session_read_only(session_id),
                 actor="plugin",
                 internal_work=True,
+                root_action_id=root_action_id,
+                initial_root_budget=initial_root_budget,
                 abort_signal=signal,
             )
             services = RuntimeServices(runtime, lease)
@@ -3723,6 +4035,7 @@ class Core:
         completed_continuation_id: str | None = None,
         completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
         reserve_root: bool = False,
+        root_budget_grant: tuple[str, int, str] | None = None,
         start_turn: bool = False,
         checkpoint_bindings: Sequence[tuple[str, str]] = (),
         pinned_run_id: str | None = None,
@@ -3755,10 +4068,9 @@ class Core:
             before = len(execution.events)
             previous = current
             root_id = execution.cursor.root_id
-            root_reservation: tuple[str, int] | None = None
+            root_reservation: tuple[str, int | None] | None = None
             if reserve_root and root_id:
-                root_budget = execution.cursor.initial_root_budget
-                root_reservation = (root_id, max(0, root_budget if root_budget is not None else 32))
+                root_reservation = (root_id, execution.cursor.initial_root_budget)
             stamped_continuations = tuple(
                 draft if draft.root_id is not None or not root_id else replace(draft, root_id=root_id) for draft in staged_continuations
             )
@@ -3774,6 +4086,9 @@ class Core:
                     checkpoint_kind=kind,
                     checkpoint_payload=execution.cursor.model_dump() if kind is not None else None,
                     root_reservation=root_reservation,
+                    root_action_id=root_id or None,
+                    root_action_budget=execution.cursor.initial_root_budget,
+                    root_budget_grant=root_budget_grant,
                     staged_state=staged_state,
                     staged_continuations=stamped_continuations,
                     staged_cancellations=staged_cancellations,
@@ -3864,6 +4179,7 @@ class Core:
         completed_continuation_id: str | None = None,
         completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
         reserve_root: bool = False,
+        root_budget_grant: tuple[str, int, str] | None = None,
         checkpoint_bindings: Sequence[tuple[str, str]] = (),
         pinned_run_id: str | None = None,
         enforce_pin: bool = False,
@@ -3875,6 +4191,7 @@ class Core:
             kind=kind,
             events=events,
             reserve_root=reserve_root,
+            root_budget_grant=root_budget_grant,
             checkpoint_bindings=checkpoint_bindings,
             staged_state=staged_state,
             staged_continuations=staged_continuations,
@@ -4005,7 +4322,7 @@ class Core:
         """
         if isinstance(result, ToolFailure):
             return result
-        text = result.output.text if isinstance(result.output, TextOutput) else ""
+        text = result.output.text if isinstance(result.output, TextOutput) else (result.output.presentation or "")
         candidates = [hook for hook in snapshot.plugin_runtime.post_tool_hooks if call.tool_name in hook[1] or "*" in hook[1]]
         if not candidates:
             return result
@@ -4204,11 +4521,27 @@ class Core:
         return not (mode == "write" and effects and effects <= {ToolEffect.READ, ToolEffect.WRITE})
 
     @staticmethod
-    def _validate_steps(max_steps: int) -> None:
-        if type(max_steps) is not int or max_steps < 1:
-            raise ValueError("max_steps must be a positive integer")
+    def _validate_steps(max_steps: int | None) -> None:
+        if max_steps is not None and (type(max_steps) is not int or max_steps < 1):
+            raise ValueError("max_steps must be a positive integer or null")
 
-    def _drive(self, execution: _Execution, *, max_steps: int) -> CoreResult:
+    @staticmethod
+    def _validate_root_action_budget(budget: int | None) -> None:
+        if budget is not None and (type(budget) is not int or not 0 <= budget <= 9_223_372_036_854_775_807):
+            raise ValueError("root_action_budget must fit a non-negative SQLite INTEGER")
+
+    @staticmethod
+    def _validate_root_action_extension(amount: int | None, grant_id: str | None) -> None:
+        if amount is None:
+            if grant_id is not None:
+                raise ValueError("root_action_grant_id requires extend_root_actions")
+            return
+        if type(amount) is not int or amount < 1:
+            raise ValueError("extend_root_actions must be a positive integer")
+        if not isinstance(grant_id, str) or not grant_id or len(grant_id) > 128 or "\0" in grant_id:
+            raise ValueError("root_action_grant_id must be nonempty text within 128 characters")
+
+    def _drive(self, execution: _Execution) -> CoreResult:
         while True:
             session_abort = None
             with self._aborts_lock:
@@ -4232,10 +4565,19 @@ class Core:
                             "ready",
                             reserve_root=True,
                         )
-                    except RootBudgetExhausted:
-                        _, call = self._pending(execution)
-                        self._report(execution, call, ToolFailure(call.tool_name, "root action budget exhausted"))
-                        return self._stop(execution, "root action budget exhausted", stop_cause="limit_reached")
+                    except RootBudgetExhausted as exc:
+                        exhaustion = BudgetExhaustion(
+                            dimension="root_actions",
+                            source="root_action_budget",
+                            limit=exc.budget,
+                            consumed=exc.reserved,
+                            remaining=max(0, exc.budget - exc.reserved),
+                            continue_with="extend_root_actions",
+                        )
+                        message = f"root action budget exhausted: consumed {exc.reserved} of {exc.budget}, remaining 0"
+                        cursor.deferred_sequence = None
+                        cursor.deferred_depth = 0
+                        return self._stop(execution, message, stop_cause="limit_reached", budget_exhaustion=exhaustion)
             if cursor.batch_sequence is None and cursor.deferred_sequence is None:
                 # A staged activation applies only here: the whole previous native batch has been
                 # reported and committed, so no result can mix generations, and the request is
@@ -4269,8 +4611,17 @@ class Core:
                         ),
                     )
                     return self._result(execution)
-                if cursor.step >= max_steps:
-                    return self._stop(execution, "provider turn budget exhausted", stop_cause="limit_reached")
+                if cursor.max_steps is not None and cursor.step >= cursor.max_steps:
+                    exhaustion = BudgetExhaustion(
+                        dimension="provider_turns",
+                        source="max_steps",
+                        limit=cursor.max_steps,
+                        consumed=cursor.step,
+                        remaining=max(0, cursor.max_steps - cursor.step),
+                        continue_with="resume_with_max_steps",
+                    )
+                    message = f"provider turn cap exhausted: consumed {cursor.step} of {cursor.max_steps}, remaining 0"
+                    return self._stop(execution, message, stop_cause="limit_reached", budget_exhaustion=exhaustion)
 
                 budget_stop = self._budget_admission(execution)
                 if budget_stop is not None:
@@ -4301,7 +4652,7 @@ class Core:
                         messages = self._messages(execution)
                     except ValueError as exc:
                         return self._fail(execution, str(exc))
-                    except (RuntimeError, TimeoutError) as exc:
+                    except (OSError, RuntimeError) as exc:
                         # Critical context/admission failure: the run finishes durably
                         # failed before any intent is committed or provider is billed.
                         return self._fail(execution, f"context assembly failed: {type(exc).__name__}: {exc}")
@@ -4356,8 +4707,17 @@ class Core:
                             ),
                             reserve_root=True,
                         )
-                    except RootBudgetExhausted:
-                        return self._stop(execution, "root action budget exhausted", stop_cause="limit_reached")
+                    except RootBudgetExhausted as exc:
+                        exhaustion = BudgetExhaustion(
+                            dimension="root_actions",
+                            source="root_action_budget",
+                            limit=exc.budget,
+                            consumed=exc.reserved,
+                            remaining=max(0, exc.budget - exc.reserved),
+                            continue_with="extend_root_actions",
+                        )
+                        message = f"root action budget exhausted: consumed {exc.reserved} of {exc.budget}, remaining 0"
+                        return self._stop(execution, message, stop_cause="limit_reached", budget_exhaustion=exhaustion)
                     intent_seq = next(ev.sequence for ev in intent_events if ev.event_type == EventType.PROVIDER_INTENT)
 
                     t0 = time.monotonic()
@@ -4640,6 +5000,8 @@ class Core:
                 logical_turn=execution.cursor.logical_turn,
                 abort_signal=effective_abort,
                 invocation_depth=cursor.deferred_depth,
+                root_action_id=cursor.root_id,
+                initial_root_budget=cursor.initial_root_budget,
             )
             try:
                 outcome = snapshot.plugin_runtime.invoke(
@@ -4699,6 +5061,84 @@ class Core:
                 return self._stop(execution, "tool cancelled its own durable work", stop_cause="owner_cancel")
             return None
 
+    def _artifact_page(self, digest: str, offset: int, limit: int) -> ArtifactPage:
+        return self.read_artifact(digest, offset=offset, limit=limit)
+
+    def _persist_result(self, result: ToolResult, *, force: bool) -> tuple[ToolResult, int]:
+        """Publish canonical JSON before any compact event can refer to it; never hash a self-reference."""
+        result = replace(result, result_reference=None)
+        encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":"))
+        pending: list[bytes] = []
+        size = 0
+        spill_id: str | None = None
+        try:
+            for piece in encoder.iterencode(encode_tool_result(result)):
+                data = piece.encode("utf-8")
+                size += len(data)
+                if spill_id is None and (force or size > TOOL_OUTPUT_BYTES):
+                    spill_id, spill = self._artifacts.start_spill("application/vnd.voidcode.tool-result+json", owner="kernel")
+                    for prior in pending:
+                        spill.append(prior)
+                    pending.clear()
+                if spill_id is None:
+                    pending.append(data)
+                else:
+                    self._artifacts.spill(spill_id).append(data)
+            if spill_id is None:
+                return result, size
+            digest, total, media_type = self._artifacts.finish(spill_id)
+        except BaseException:
+            if spill_id is not None:
+                self._artifacts.discard(spill_id)
+            raise
+        return replace(result, result_reference=ArtifactReference(digest, total, media_type)), size
+
+    def _prepare_report_result(self, result: ToolResult) -> tuple[ToolResult, int, bool]:
+        stored, size = self._persist_result(result, force=isinstance(result.output, TextOutput) and result.body is not None)
+        try:
+            projected, _, clipped = project_tool_result(
+                stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page, include_images=False
+            )
+        except ProjectionRequiresReference:
+            stored, size = self._persist_result(result, force=True)
+            projected, _, clipped = project_tool_result(
+                stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page, include_images=False
+            )
+        if size <= TOOL_OUTPUT_BYTES:
+            return stored, size, clipped
+        # The event carries a bounded representation, not another copy of a large body/capture.
+        # The complete original JSON is already durable at result_reference.
+        output = stored.output
+        projection = json.loads(projected)
+        if isinstance(output, TextOutput):
+            reference = output.bounds.reference
+            if reference is None and len(output.text.encode("utf-8")) > TOOL_OUTPUT_BYTES:
+                spill_id, spill = self._artifacts.start_spill("text/plain; charset=utf-8", owner="kernel")
+                try:
+                    for start in range(0, len(output.text), 65536):
+                        spill.append(output.text[start : start + 65536].encode("utf-8"))
+                    digest, total, media_type = self._artifacts.finish(spill_id)
+                except BaseException:
+                    self._artifacts.discard(spill_id)
+                    raise
+                reference = ArtifactReference(digest, total, media_type)
+            text = projection.get("text", "")
+            output = TextOutput(
+                text if isinstance(text, str) else "",
+                bounds=replace(output.bounds, reference=reference, partial=output.bounds.partial or clipped),
+            )
+        else:
+            presentation = projection.get("presentation", projection.get("text"))
+            output = replace(
+                output,
+                presentation=presentation if isinstance(presentation, str) else None,
+                bounds=replace(output.bounds, partial=output.bounds.partial or clipped),
+            )
+        compact = replace(stored, body=None, output=output, steering_context=None)
+        if isinstance(compact, ToolFailure):
+            compact = replace(compact, error=str(projection.get("error", compact.error)), diagnostics=None)
+        return compact, size, clipped
+
     def _report(
         self,
         execution: _Execution,
@@ -4749,7 +5189,7 @@ class Core:
         definition = self._snapshot.definition_of(call.tool_name)
         declaration = intent.payload if intent is not None else {}
         diagnostic = result.diagnostics if isinstance(result, ToolFailure) else None
-        _, projection_clipped = model_result_text(result)
+        committed_result, result_bytes, projection_content_clipped = self._prepare_report_result(result)
         model_event = next(
             (event for event in reversed(execution.events) if event.sequence == batch_sequence and event.event_type == EventType.MODEL_TURN), None
         )
@@ -4757,8 +5197,8 @@ class Core:
             "semantics": declaration.get("semantics", []) if intent is not None else [],
             "model": model_event.payload.get("model") if model_event is not None else None,
             "argument_bytes": len(canonical_json(dict(call.arguments)).encode("utf-8")),
-            "result_bytes": len(canonical_json(encode_tool_result(result)).encode("utf-8")),
-            "truncated": result.output.bounds.truncated or projection_clipped,
+            "result_bytes": result_bytes,
+            "truncated": result.output.bounds.truncated or projection_content_clipped,
             "partial": result.output.bounds.partial,
             "error_kind": diagnostic.kind if diagnostic else None,
             "has_retry_guidance": bool(diagnostic and diagnostic.guidance),
@@ -4778,7 +5218,7 @@ class Core:
                 {
                     **item.as_payload(),
                     "path": canonical_path(self.workspace, item.path),
-                    "clipped": item.clipped or projection_clipped,
+                    "clipped": item.clipped or projection_content_clipped,
                 }
                 for item in result.coverage
             ]
@@ -4807,7 +5247,7 @@ class Core:
         payload: dict[str, object] = {
             "batch_sequence": batch_sequence,
             "call": encode_tool_call(call),
-            "result": encode_tool_result(result),
+            "result": encode_tool_result(committed_result),
             "fact_metadata": metadata,
             "icon": declaration.get("icon") if intent is not None else ({"glyph": definition.icon.glyph} if definition and definition.icon else None),
             "logical_turn": execution.cursor.logical_turn,
@@ -4936,13 +5376,14 @@ class Core:
                     if event.payload["call"] != request.payload["call"]:
                         raise ValueError("deferred tool result does not match its committed request")
                     result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
-                    text, _clipped = model_result_text(result)
+                    text, images, _clipped = project_tool_result(result, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page)
                     messages.append(
                         ProviderMessage(
                             "user",
                             f"[Untrusted deferred tool result: {result.tool_name}; "
                             f"invocation {event.payload.get('invocation_id', 'not-dispatched')}; "
                             f"request {request.payload['request_id']}; caller {request.payload['caller_invocation_id']}]\n{text or ''}",
+                            images=images,
                         )
                     )
                     continue
@@ -4952,9 +5393,16 @@ class Core:
                 if _wire_object(event.payload["call"], "tool call") != json_wire_object(encode_tool_call(call)):
                     raise ValueError("reported tool result does not match the active batch call")
                 result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
-                text, _clipped = model_result_text(result)
+                text, images, _clipped = project_tool_result(result, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page)
                 messages.append(
-                    ProviderMessage("tool", text, tool_call_id=call.tool_call_id, tool_name=call.tool_name, is_error=isinstance(result, ToolFailure))
+                    ProviderMessage(
+                        "tool",
+                        text,
+                        tool_call_id=call.tool_call_id,
+                        tool_name=call.tool_name,
+                        is_error=isinstance(result, ToolFailure),
+                        images=images,
+                    )
                 )
                 pending_index += 1
                 if pending_index == len(pending_calls):
@@ -4996,10 +5444,6 @@ class Core:
             if execution.ephemeral_steering:
                 messages.append(ProviderMessage("system", "[Tool Guidance]\n" + "\n".join(execution.ephemeral_steering)))
                 execution.ephemeral_steering.clear()
-
-            # Hard bound check strictly AFTER contributions
-            if sum(len(json.dumps(encode_message(message), allow_nan=False).encode("utf-8")) for message in messages) > 256 * 1024:
-                raise ValueError("context exceeded hard bound; explicit compaction is required")
 
         return tuple(messages)
 
@@ -5092,19 +5536,11 @@ class Core:
                 )
             except StoreConflict:
                 return
-            budget = 32
-            root_state = self.store.root_budget_state(cursor.root_id) if cursor.root_id else None
-            if root_state is not None:
-                remaining = root_state[0] - root_state[1]
-                if remaining <= 0:
-                    self._stop(execution, "root action budget exhausted", stop_cause="limit_reached")
-                    return
-                budget = max(1, min(32, remaining))
             abort = Cancellation()
             with self._aborts_lock:
                 self._session_aborts[session_id] = (execution.run_id, abort)
             try:
-                self._drive(execution, max_steps=budget)
+                self._drive(execution)
             finally:
                 with self._aborts_lock:
                     self._session_aborts.pop(session_id, None)
@@ -5136,9 +5572,15 @@ class Core:
             return f"[core] capability activation {request_id} committed the revision {detail}."
         return f"[core] capability activation {request_id} was refused and the previous revision is still active: {detail}"
 
-    def _stop(self, execution: _Execution, message: str, *, stop_cause: StopCause = "user_stop") -> CoreResult:
-        """Stop a run. A deliberate user/owner stop is terminal for the session (no replay of the
-        abandoned native batch); crashes and shutdown keep their recoverable checkpoint."""
+    def _stop(
+        self,
+        execution: _Execution,
+        message: str,
+        *,
+        stop_cause: StopCause = "user_stop",
+        budget_exhaustion: BudgetExhaustion | None = None,
+    ) -> CoreResult:
+        """Stop a run without replaying an abandoned native batch."""
         execution.cursor.stop_cause = stop_cause
         deliberate = stop_cause in ("user_stop", "owner_cancel")
         if deliberate and (execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None):
@@ -5153,6 +5595,7 @@ class Core:
                 "reason": message,
                 "stop_cause": stop_cause,
                 "logical_turn": execution.cursor.logical_turn,
+                **({"budget_exhaustion": asdict(budget_exhaustion)} if budget_exhaustion is not None else {}),
                 **self._measured_run_elapsed_fields(execution),
             },
         )
@@ -5165,9 +5608,14 @@ class Core:
                 completed_continuation_id=execution.cursor.continuation_id,
                 completed_continuation_status="cancelled",
             )
-            return self._result(execution, error=message, stop_cause=stop_cause)
-        self._commit(execution, "interrupted", checkpoint_kind, stop_event)
-        return self._result(execution, error=message, stop_cause=stop_cause)
+        else:
+            self._commit(execution, "interrupted", checkpoint_kind, stop_event)
+        return self._result(
+            execution,
+            error=message,
+            stop_cause=stop_cause,
+            budget_exhaustion=budget_exhaustion,
+        )
 
     def _fail(self, execution: _Execution, message: str) -> CoreResult:
         execution.cursor.stop_cause = "error"
@@ -5195,6 +5643,7 @@ class Core:
         error: str | None = None,
         pending_approval: Mapping[str, object] | None = None,
         stop_cause: StopCause | None = None,
+        budget_exhaustion: BudgetExhaustion | None = None,
     ) -> CoreResult:
         return CoreResult(
             execution.session.session_id,
@@ -5205,4 +5654,5 @@ class Core:
             error=error,
             pending_approval=pending_approval,
             stop_cause=stop_cause,
+            budget_exhaustion=budget_exhaustion,
         )

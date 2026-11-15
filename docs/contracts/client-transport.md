@@ -23,8 +23,8 @@ SPA. Explicit `allow_origin` restrictions apply to both HTTP and WebSocket.
 
 | Subcommand | Purpose | Exit code |
 |---|---|---|
-| `run "<prompt>" [--session-id] [--max-steps]` | Execute one agent turn; prints the `CoreResult` JSON. | `0` ok, `1` failed, `130` interrupted |
-| `resume <session_id> [--approval-request-id --decision allow\|deny] [--max-steps]` | Continue a session, optionally resolving one native tool approval. | same as `run` |
+| `run "<prompt>" [--session-id] [--max-steps] [--root-action-budget]` | Execute one agent turn; prints the `CoreResult` JSON. | `0` ok, `1` failed, `130` interrupted |
+| `resume <session_id> [--approval-request-id --decision allow\|deny] [--max-steps] [--extend-root-actions]` | Continue a session, optionally resolving approval or adding explicit finite authorization. | same as `run` |
 | `create-session [--session-id]` | Create an empty session. | `0` |
 | `sessions [--limit]` | List this workspace's sessions. | `0` |
 | `show <session_id> [--events]` | Read durable state (and optionally the raw event history) without configuration, runtime, or revision checks. | `0` |
@@ -35,9 +35,18 @@ SPA. Explicit `allow_origin` restrictions apply to both HTTP and WebSocket.
 | `drain <session_id> [--limit]` | Execute pending durable continuations. | `0` |
 | `usage <session_id> [--since-sequence --until-sequence]` | Print the truthful session usage report. | `0` |
 | *(bare command)* `[--server --token --session-id]` | Start the TUI (direct local core unless `--server` is given). | — |
-| `serve [--host --port --bearer-token] [--open]` | Run the HTTP server: SSE event stream plus static web client at `/` (`--open` launches a browser). | — |
+| `serve [--host --port --bearer-token] [--open]` | Run the WebSocket RPC server plus static web client at `/` (`--open` launches a browser). | — |
 
 Root options: `--workspace PATH` (default: current directory), `--state-dir PATH`. `invoke` arguments must be a JSON object. Every failure (including malformed arguments or a missing config) prints `{"status": "failed", "error": "..."}` and exits non-zero.
+
+`max_steps` caps provider dispatches only. A fresh omitted cap is unbounded;
+omitting it on resume retains the checkpoint's existing total cap. An explicit
+resume cap replaces that total, so it must exceed already consumed dispatches
+to allow progress. `root_action_budget` is separate finite authorization shared
+across descendant/continuation actions. `--extend-root-actions` appends an
+explicit grant; the CLI supplies its unique grant id. SDK/RPC callers supply
+both `extend_root_actions` and idempotent `root_action_grant_id`. Exhaustion is
+an interrupted non-success with typed `BudgetExhaustion`, not cancellation.
 
 ## WebSocket and JSON-RPC
 
@@ -61,8 +70,8 @@ execute concurrently, so a long run never blocks session cancellation.
 | `session.create` | Optional `session_id` → session record. |
 | `session.get` | `session_id` → session record. |
 | `session.show` | `session_id`, optional `events` → durable state. |
-| `session.run` | `session_id`, `prompt`, optional `max_steps` → run result. |
-| `session.resume` | `session_id`, optional paired `approval_request_id`/`decision`, `max_steps` → run result. |
+| `session.run` | `session_id`, `prompt`, optional `max_steps`, `root_action_budget`, `images` → run result. |
+| `session.resume` | `session_id`, optional paired `approval_request_id`/`decision`, `max_steps`, paired `extend_root_actions`/`root_action_grant_id` → run result. |
 | `command.input` | `session_id`, `name`, `expected_revision`, optional `arguments` → read-only prepared input with its captured revision. |
 | `command.invoke` | `session_id`, `name`, `arguments`, `expected_revision` → command result. |
 | `action.confirm` | `session_id`, `request_id`, `decision`, `expected_revision` → command result. |
@@ -75,6 +84,7 @@ execute concurrently, so a long run never blocks session cancellation.
 | `session.subscribe` | Client-chosen `subscription_id`, `session_id`, optional `after_sequence`/`follow` → subscription receipt. |
 | `session.ack` | `subscription_id`, `through_sequence` → acknowledged cursor; usually a notification. |
 | `session.unsubscribe` | `subscription_id` → `removed`; never cancels the session's execution. |
+| `artifact.read` | `sha256`, optional byte `offset`/`limit` → immutable `artifact`, `offset`, base64 `data`, `eof`. |
 
 `transport/rpc.py` owns the method registry; `transport/models.py` owns strict
 parameter models. Unknown fields and invalid types fail at ingress. The schema
@@ -92,6 +102,12 @@ A connection accepts at most 32 ordinary pending calls, with eight additional
 slots for cancellation, acknowledgements, and unsubscribe. It permits 16 active
 subscriptions. Messages are limited to 4 MiB, the outgoing queue to 64 messages
 and 8 MiB. Overflow closes with 1013; malformed/oversized input is refused.
+
+`artifact.read` uses the authenticated workspace store, not a filesystem path.
+Pages default to 64 KiB and permit up to 256 KiB; byte offsets at/past EOF are
+empty with `eof=true`. Invalid digest/page parameters, missing objects, and
+storage failures remain distinct. Python clients return `ArtifactPage.data` as
+bytes, including binary data; see [artifacts](artifacts.md).
 
 ## Revision Binding
 

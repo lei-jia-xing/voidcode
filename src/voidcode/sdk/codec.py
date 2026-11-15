@@ -179,6 +179,7 @@ class ToolResultWire(WireModel):
     execution: ExecutionWire | None = None
     timeout_seconds: int | None = Field(default=None, ge=0)
     steering_context: str | None = None
+    result_reference: ArtifactReference | None = None
 
 
 _RESULT = TypeAdapter(ToolResultWire)
@@ -201,6 +202,8 @@ def encode_tool_result(result: ToolResult | Mapping[str, object]) -> dict[str, o
         payload["coverage"] = [observation.as_payload() for observation in result.coverage]
     if result.changes:
         payload["changes"] = [_encode(change) for change in result.changes]
+    if result.result_reference is not None:
+        payload["result_reference"] = _encode(result.result_reference)
     if isinstance(result, ToolFailure):
         execution = result.execution
         payload.update(
@@ -246,6 +249,7 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
             coverage,
             tuple(ResourceChange(item.path, item.operation, item.old_path) for item in wire.changes or ()),
             steering_context=wire.steering_context,
+            result_reference=wire.result_reference,
         )
     if wire.error is None:
         raise ValueError("failure result requires an error")
@@ -270,4 +274,5 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
         wire.timeout_seconds,
         tuple(ResourceChange(item.path, item.operation, item.old_path) for item in wire.changes or ()),
         steering_context=wire.steering_context,
+        result_reference=wire.result_reference,
     )

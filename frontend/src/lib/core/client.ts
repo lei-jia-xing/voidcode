@@ -1,6 +1,7 @@
 /** Multiplexed JSON-RPC over WebSocket; HTTP serves health only. */
 import type { RpcMethods } from "./generated/api";
 import type {
+  ArtifactPage,
   CommandDescriptor,
   CommandResult,
   HealthStatus,
@@ -334,28 +335,89 @@ export class CoreClient {
   async show(sessionId: string, events = false): Promise<ShowBody> {
     return this.call("session.show", { session_id: sessionId, events });
   }
+  async readArtifact(
+    sha256: string,
+    { offset = 0, limit = 65536 }: { offset?: number; limit?: number } = {},
+  ): Promise<ArtifactPage> {
+    const page = await this.call("artifact.read", { sha256, offset, limit });
+    try {
+      if (
+        !object(page) ||
+        !object(page.artifact) ||
+        page.artifact.sha256 !== sha256 ||
+        !/^[0-9a-f]{64}$/.test(sha256) ||
+        !Number.isSafeInteger(page.artifact.bytes) ||
+        page.artifact.bytes < 0 ||
+        typeof page.artifact.media_type !== "string" ||
+        page.offset !== offset ||
+        typeof page.eof !== "boolean" ||
+        typeof page.data !== "string" ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+          page.data,
+        )
+      )
+        throw new Error("Invalid artifact page metadata/base64");
+      const binary = atob(page.data);
+      const data = Uint8Array.from(binary, (character) =>
+        character.charCodeAt(0),
+      );
+      const end = page.offset + data.byteLength;
+      if (
+        data.byteLength > limit ||
+        (data.byteLength > 0 && end > page.artifact.bytes) ||
+        (page.offset < page.artifact.bytes && data.byteLength === 0) ||
+        page.eof !== end >= page.artifact.bytes
+      )
+        throw new Error("Invalid artifact page byte progress/EOF");
+      return {
+        ...page,
+        artifact: { ...page.artifact, media_type: page.artifact.media_type },
+        data,
+      };
+    } catch {
+      throw new CoreApiError(
+        "Malformed artifact page response",
+        502,
+        "protocol_error",
+      );
+    }
+  }
   async run(
     sessionId: string,
     prompt: string,
-    maxSteps = 32,
+    maxSteps?: number,
+    rootActionBudget?: number,
   ): Promise<RunResult> {
     return this.call("session.run", {
       session_id: sessionId,
       prompt,
-      max_steps: maxSteps,
+      ...(maxSteps === undefined ? {} : { max_steps: maxSteps }),
+      ...(rootActionBudget === undefined
+        ? {}
+        : { root_action_budget: rootActionBudget }),
     });
   }
   async resume(
     sessionId: string,
     approvalRequestId?: string,
     decision?: "allow" | "deny",
-    maxSteps = 32,
+    maxSteps?: number,
+    extendRootActions?: number,
+    rootActionGrantId?: string,
   ): Promise<RunResult> {
     return this.call("session.resume", {
       session_id: sessionId,
-      approval_request_id: approvalRequestId,
-      decision,
-      max_steps: maxSteps,
+      ...(approvalRequestId === undefined
+        ? {}
+        : { approval_request_id: approvalRequestId }),
+      ...(decision === undefined ? {} : { decision }),
+      ...(maxSteps === undefined ? {} : { max_steps: maxSteps }),
+      ...(extendRootActions === undefined
+        ? {}
+        : { extend_root_actions: extendRootActions }),
+      ...(rootActionGrantId === undefined
+        ? {}
+        : { root_action_grant_id: rootActionGrantId }),
     });
   }
   async commandInput(

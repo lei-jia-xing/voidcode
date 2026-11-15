@@ -43,7 +43,6 @@ STATUS_NODE_LIMIT = 50
 #: Internal driver bounds; the admitted max_root_children quota still governs total children.
 #: The join slice is short so pause/cancel land promptly; longer runs simply re-drive.
 JOIN_SLICE_SECONDS = 1.0
-DEFAULT_MAX_STEPS = 32
 MAX_CONCURRENT_NODES = 8
 #: One short lock serializes state commits; no text-match retries, no replay.
 _NO_CONFIG: Mapping[str, str] = MappingProxyType({})
@@ -556,10 +555,8 @@ class WorkflowContext:
             not isinstance(tool_allowlist, (list, tuple)) or any(not isinstance(name, str) or not name for name in tool_allowlist)
         ):
             raise ValueError(f"node '{key}' tool_allowlist must list non-empty tool names or be null")
-        if max_steps is None:
-            max_steps = DEFAULT_MAX_STEPS
-        if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
-            raise ValueError(f"node '{key}' max_steps must be a positive integer")
+        if max_steps is not None and (type(max_steps) is not int or max_steps < 1):
+            raise ValueError(f"node '{key}' max_steps must be a positive integer or null")
         scoped = None if tool_allowlist is None else tuple(tool_allowlist)
         outcome = await asyncio.to_thread(self._run_node_guarded, agent_name, prompt, key, deps, label, scoped, max_steps)
         return outcome
@@ -572,7 +569,7 @@ class WorkflowContext:
         depends_on: tuple[str, ...],
         label: str,
         tool_allowlist: tuple[str, ...] | None,
-        max_steps: int,
+        max_steps: int | None,
     ) -> str:
         with self._node_slots:
             return self._run_node(agent_name, prompt, key, depends_on, label, tool_allowlist, max_steps)
@@ -585,7 +582,7 @@ class WorkflowContext:
         depends_on: tuple[str, ...],
         label: str,
         tool_allowlist: tuple[str, ...] | None,
-        max_steps: int,
+        max_steps: int | None,
     ) -> str:
         def stage(context: ToolContext, services: PluginServices) -> _StagedNode:
             return _stage_pending_node(context, services, self.run_id, key, depends_on, agent_name, prompt, tool_allowlist, max_steps)
@@ -690,7 +687,7 @@ class _EffectivePlan:
     body: str
     readonly: bool
     scope: tuple[str, ...] | None
-    budget: int
+    budget: int | None
     effective_input: str
 
 
@@ -709,7 +706,7 @@ def _resolve_effective_plan(
     agent_name: str,
     prompt: str,
     tool_allowlist: tuple[str, ...] | None,
-    max_steps: int,
+    max_steps: int | None,
 ) -> _EffectivePlan:
     try:
         profile = AGENT_DEFINITIONS.ask(services, AgentDefinitionRequest(name=agent_name))
@@ -758,7 +755,7 @@ def _stage_pending_node(
     agent_name: str,
     prompt: str,
     tool_allowlist: tuple[str, ...] | None,
-    max_steps: int,
+    max_steps: int | None,
 ) -> _StagedNode:
     """First short invoke: persist the pending node and its effective spec, spawn nothing."""
     plan = _resolve_effective_plan(services, run_id, key, depends_on, agent_name, prompt, tool_allowlist, max_steps)

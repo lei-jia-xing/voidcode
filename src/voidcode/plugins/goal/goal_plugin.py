@@ -44,7 +44,10 @@ from voidcode.sdk.views import (
 )
 
 SCHEMA_VERSION = 1
-MAX_MODEL_OBJECTIVE_CHARS = 4000
+#: Inline characters repeated in every goal context contribution. Larger objectives
+#: use a durable URI instead, preserving the prior small-goal context footprint
+#: without limiting what can be stored or loaded. This is not an ingress bound.
+OBJECTIVE_INLINE_CONTEXT_CHARS = 4000
 
 GoalStatus = Literal["active", "paused", "blocked", "usage-limited", "budget-limited", "complete"]
 VALID_GOAL_STATUSES: frozenset[GoalStatus] = frozenset({"active", "paused", "blocked", "usage-limited", "budget-limited", "complete"})
@@ -361,35 +364,45 @@ class GoalState:
 # --- Objective Spilling ---
 
 
-def spill_objective_if_needed(workspace: Path, objective: str) -> tuple[str, str | None, str | None]:
-    """If objective exceeds MAX_MODEL_OBJECTIVE_CHARS, write exclusively to .voidcode/attachments/<uuid>/."""
-    if len(objective) <= MAX_MODEL_OBJECTIVE_CHARS:
+def spill_objective_if_needed(services: PluginServices, objective: str) -> tuple[str, str | None, str | None]:
+    """Keep short context inline; store larger objectives without workspace mutations."""
+    if len(objective) <= OBJECTIVE_INLINE_CONTEXT_CHARS:
         return objective, None, None
 
-    att_id = uuid4().hex
-    rel_path = f".voidcode/attachments/{att_id}/goal-objective.md"
-    target_file = workspace / rel_path
-
-    # Workspace containment check
-    resolved_target = target_file.resolve()
-    resolved_workspace = workspace.resolve()
-    if not resolved_target.is_relative_to(resolved_workspace):
-        raise ValueError(f"Spill path escapes workspace root: {rel_path}")
-
-    target_file.parent.mkdir(parents=True, exist_ok=True)
     raw_bytes = objective.encode("utf-8")
-    with target_file.open("xb") as writer:
-        writer.write(raw_bytes)
-
-    digest = hashlib.sha256(raw_bytes).hexdigest()
-    prompt_text = f"Read the goal objective file at {rel_path} before continuing."
-    return prompt_text, rel_path, digest
+    artifact = services.spill_artifact(raw_bytes, media_type="text/markdown; charset=utf-8")
+    prompt_text = f"Read the goal objective at {artifact.uri} before continuing."
+    return prompt_text, artifact.uri, artifact.sha256
 
 
-def read_full_objective(workspace: Path, state: GoalState) -> str:
-    """Read the full objective text, verifying containment and integrity if spilled."""
+def read_full_objective(workspace: Path, state: GoalState, services: PluginServices) -> str:
+    """Read the full objective text, verifying containment and integrity if spilled.
+
+    Artifact references are read from the content-addressed store via services.read_artifact.
+    Historical relative paths (persisted from older sessions) are read from the workspace
+    with strict containment and SHA-256 verification.
+    """
     if state.objective_file_ref is None:
         return state.objective
+
+    if state.objective_file_ref.startswith("artifact://"):
+        digest = state.objective_file_ref[len("artifact://") :]
+        if state.objective_file_sha256 is not None and state.objective_file_sha256 != digest:
+            raise ValueError(f"Goal objective artifact reference/hash mismatch: {state.objective_file_ref}")
+        chunks: list[bytes] = []
+        offset = 0
+        while True:
+            page = services.read_artifact(digest, offset=offset)
+            chunks.append(page.data)
+            if page.eof:
+                break
+            if not page.data:
+                raise OSError(f"Goal objective artifact read made no progress: {state.objective_file_ref}")
+            offset += len(page.data)
+        raw_bytes = b"".join(chunks)
+        if hashlib.sha256(raw_bytes).hexdigest() != digest:
+            raise ValueError(f"Goal objective artifact tampered or corrupted: {state.objective_file_ref}")
+        return raw_bytes.decode("utf-8")
 
     target_file = workspace / state.objective_file_ref
     resolved_target = target_file.resolve()
@@ -651,13 +664,7 @@ class CreateGoalTool:
                 error="goal objective must not be empty",
                 output=TextOutput("goal objective must not be empty"),
             )
-        objective = raw_objective.strip()
-        if len(objective) > MAX_MODEL_OBJECTIVE_CHARS:
-            return ToolFailure(
-                tool_name=self.definition.name,
-                error=f"goal objective must be at most {MAX_MODEL_OBJECTIVE_CHARS} characters",
-                output=TextOutput(f"goal objective must be at most {MAX_MODEL_OBJECTIVE_CHARS} characters"),
-            )
+        objective = raw_objective
 
         raw_budget = args.get("token_budget")
         token_budget: int | None = None
@@ -669,6 +676,7 @@ class CreateGoalTool:
                     output=TextOutput("goal budgets must be positive when provided"),
                 )
             token_budget = raw_budget
+        prompt_obj, file_ref, sha256 = spill_objective_if_needed(services, objective)
 
         usage_report = services.get_usage()
         start_seq = usage_report.through_sequence
@@ -678,7 +686,9 @@ class CreateGoalTool:
         new_goal = GoalState(
             goal_id=goal_id,
             status="active",
-            objective=objective,
+            objective=prompt_obj,
+            objective_file_ref=file_ref,
+            objective_file_sha256=sha256,
             created_at=now,
             updated_at=now,
             token_budget=token_budget,
@@ -698,7 +708,7 @@ class CreateGoalTool:
         )
         services.stage_event(
             "goal_created",
-            {"goal_id": goal_id, "objective": objective, "token_budget": token_budget},
+            {"goal_id": goal_id, "objective": prompt_obj, "token_budget": token_budget},
         )
         services.replace_state(new_goal.to_dict(), expected_version=version)
 
@@ -953,7 +963,7 @@ class GoalSetCommand:
             "required": ["objective"],
             "additionalProperties": False,
         },
-        effects=frozenset({ToolEffect.WRITE, ToolEffect.SESSION}),
+        effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
     )
 
@@ -999,7 +1009,7 @@ class GoalSetCommand:
         raw_obj = invocation.arguments.get("objective")
         if not isinstance(raw_obj, str) or not raw_obj.strip():
             return CommandResult(status="error", error="Goal objective must be a non-empty string")
-        objective = raw_obj.strip()
+        objective = raw_obj
 
         raw_budget = invocation.arguments.get("token_budget")
         token_budget: int | None = None
@@ -1008,10 +1018,7 @@ class GoalSetCommand:
                 return CommandResult(status="error", error="Goal token_budget must be a positive integer")
             token_budget = raw_budget
 
-        # Objective spilling: write exclusively to unique attachment path in authentic workspace
-        workspace = invocation.context.workspace
-        prompt_obj, file_ref, sha256 = spill_objective_if_needed(workspace, objective)
-
+        prompt_obj, file_ref, sha256 = spill_objective_if_needed(services, objective)
         usage_report = services.get_usage()
         start_seq = usage_report.through_sequence
         now = int(time.time() * 1000)
@@ -1072,7 +1079,7 @@ class GoalEditCommand:
             },
             "additionalProperties": False,
         },
-        effects=frozenset({ToolEffect.WRITE, ToolEffect.SESSION}),
+        effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
     )
 
@@ -1090,8 +1097,6 @@ class GoalEditCommand:
         goal = GoalState.from_dict(state_data)
         if goal is None:
             return CommandResult(status="error", error="Goal state is invalid")
-
-        workspace = invocation.context.workspace
 
         if "objective" not in invocation.arguments and "token_budget" not in invocation.arguments:
             # Bounded form only: the full objective is served by the READ loader
@@ -1121,7 +1126,7 @@ class GoalEditCommand:
             raw_obj = invocation.arguments["objective"]
             if not isinstance(raw_obj, str) or not raw_obj.strip():
                 return CommandResult(status="error", error="Goal objective must be a non-empty string")
-            objective = raw_obj.strip()
+            objective = raw_obj
             objective_changed = objective != goal.objective
 
         new_budget = goal.token_budget
@@ -1157,7 +1162,7 @@ class GoalEditCommand:
                 else:
                     window_allowance = max(0, new_budget - closed_spend)
         if "objective" in invocation.arguments:
-            prompt_obj, file_ref, sha256 = spill_objective_if_needed(workspace, objective)
+            prompt_obj, file_ref, sha256 = spill_objective_if_needed(services, objective)
         updated_goal = replace(
             goal,
             objective=prompt_obj,
@@ -1357,7 +1362,7 @@ class GoalLoadObjectiveCommand:
 
         workspace = invocation.context.workspace
         try:
-            full_text = read_full_objective(workspace, goal)
+            full_text = read_full_objective(workspace, goal, services=services)
         except Exception as exc:
             return CommandResult(status="error", error=str(exc))
 

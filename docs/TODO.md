@@ -1,11 +1,57 @@
 # TODO
 
-待办分散在所属模块；本文件仅作导航。
+本文件集中跨模块取舍与导航；具体待办、现状证据和验收条件放在所属模块。新增项不代表功能已实现或已经实测。
 
-- [Core](../src/voidcode/core/TODO.md)：运行中跟进与图片输入。
-- [TUI](../src/voidcode/tui/TODO.md)：补全、路径/会话导航、footer、长输出。
-- [Web UI](../frontend/src/core/TODO.md)：artifact 查看与复制/导出。
+- [Core](../src/voidcode/core/TODO.md)：可选 provider-turn cap 与显式共享 root-action grant 已实现；adaptive model-headroom、输出投影及真实生产化边界继续按专属 TODO 跟踪。
+- [SDK](../src/voidcode/sdk/TODO.md)：typed artifact byte-page API 已贯通并有本地/认证 RPC 测试；仍有受治理 wait、adaptive headroom、typed child budget exhaustion、结果 schema 等表达力缺口。
+- [插件](../src/voidcode/plugins/TODO.md)：仅记录已验证的具体整改与仍未收敛的图片/UI、生产化、URI、Agent、进程和检索任务，不宣称全插件审计。
+- [TUI](../src/voidcode/tui/TODO.md)：独立记录图片渲染与实时进度/交互边界；viewer/API 不替代每条路径的真实 PTY 验收。
+- [Web UI](../frontend/src/core/TODO.md)：artifact 查看/复制/导出与真实浏览器验收。
 - [ast_grep](../src/voidcode/plugins/ast_grep/TODO.md)：只读查询边界。
 - [命令交互验收](./command-ux.md)：逐命令客户端验收清单。
 
-OMP 源码固定到 [v18.12.6（commit `45c35e40c46166dc726ccc52f5d27f40f2449f99`）](https://github.com/can1357/oh-my-pi/tree/45c35e40c46166dc726ccc52f5d27f40f2449f99)；隔离运行实际打开过 `/model` 选择器，其他对照仅为源码核对。
+## 取舍
+
+要吸收的不是一批同名工具，而是 **可组合的工具调用、统一可寻址的资源、可持续交互的 Agent，以及消费这些契约的 TUI**。只补皮肤、增加 shell 包装器或堆插件数量，不能补上这条链路。
+
+当前已有 typed tool body、`OutputBounds`、内容寻址 artifact、可注册 `ResourceReader`、工具进度回调、子 Agent 跟进/完成通知、动态 workflow、命令表单，以及两端长输出分页；这些不是从零重建的待办。已完成项保持勾选，不把“图片输入已通”混同于“终端可以显示工具返回的图片”。
+
+已核实的关键断点：SDK 的 `invoke_tool` 只排队不等待结果；资源读者没有能力发现及实时 Agent/进程投影；`ToolOutput` 仍只表达一个文本或附件。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。尚未解决的不是这些已证明行为，而是 active-model 自适应投影 headroom、typed child budget exhaustion 与各 UI/PTY/live-progress 收尾，见所属模块 TODO。
+
+## 优先级
+
+| 优先级 | 落地点 | 归属 |
+|---|---|---|
+| P0 | 自适应模型投影 headroom、资源完整读取与真实 UI/生产任务验收、受治理工具等待 | Core、SDK、插件、TUI/Web |
+| P1 | `eval` 工具桥、URI 跨工具复用、Agent 持续交互、富结果与结构化问答、后台执行收尾 | SDK/Core、插件、TUI/Web |
+| P2 | 多格式读取、语义检索、结构化模型查询、语义重构闭环 | 插件、SDK |
+
+P0 图片链路与 SDK 工具等待协议可独立推进；`eval` 的工具组合依赖后者，混合图文结果与完整问答分别依赖 SDK 的组合输出、用户问答契约。按模块待办中的依赖落地，不先造一个覆盖所有场景的平台。
+
+## 实施约束
+
+- 保留 plugin-only Core、SDK 依赖方向、owner/lineage/revision 隔离、可撤销 lease、显式审批和 append-only 事件；产品机制不下沉为 Core 内置工具。
+- 优先用已有 body、资源页、进度、子会话与 background action 契约；公开契约不够则先补 SDK TODO，不导入 peer 插件、不解析私有 `core.*` 事件、不维护第二套能力或权限注册表。
+- 不照搬 undo/fork/历史重写、OMP 的双存储体系，或把所有 scheme 都做成可写文件。任意脚本执行是执行能力，工具桥和审批不是 OS 沙箱。
+- 以完整任务验收：发现能力 → 调用 → 等待/交互 → 查看完整结果 → 跟进/取消 → 断线/重启后的真实状态；UI 要在真实客户端观察，缺依赖、未知状态和不能恢复必须显式呈现。
+
+## 对照证据口径
+
+历史条目的 OMP 源码基线固定到 [v18.12.6（commit `45c35e40c46166dc726ccc52f5d27f40f2449f99`）](https://github.com/can1357/oh-my-pi/tree/45c35e40c46166dc726ccc52f5d27f40f2449f99)；当时隔离运行实际打开过 `/model` 选择器，其他对照仅为源码核对。
+
+本轮新增条目核对 VoidCode 当前源码/契约与当前会话可读取的 OMP 官方运行时文档（`omp://` 链接），不宣称这些新文档对应上述旧版本，也不宣称本轮实跑了 OMP 图像终端、`eval` 或 Agent 场景。各项中的“目标/验收”是后续实现要求，不是本轮验证结果；实施时应固定实际参考的 OMP 源码 revision。
+
+## 不以添加 MAX 代替设计
+
+| 限制的性质 | 决策 |
+|---|---|
+| 真实协议、解码、内存或外部输入风险边界 | 只在负责该边界的一层保留有依据的保护；说明单位、来源与触发行为 |
+| 用户/宿主明确授予的费用、token、时间或轮数预算 | 明确授权与继承；不能偷换成所有任务默认都有的寿命 |
+| UI 预览、折叠、分页与模型上下文投影 | 属于消费策略；原件、资源身份及完整读取能力不变，按视窗/请求/上下文选择 |
+| 无依据的业务 MAX、重复预览、预览截断原始标识 | 删除或改成按需读取；不是把常量改大，也不是每个数字都加配置项 |
+
+本轮只抽查并逐条记录 shell/web/child 输出、monitor、AST、goal 及 Core 投影的行为与证据；不宣称审完所有插件或删除所有 MAX。已有完整 artifact、UTF-8 游标分页和 UI 展开是应复用的能力，不能为了删常量而删掉资源保护。
+
+OMP 自己也有 request budget 与 preview 阈值；它们不自动构成 VoidCode 的合理默认值。新待办中的“有界”必须对应实际消费者或资源风险，不能成为继续机械添加 `MAX_*` 的理由。
+
+项目自己写下的帧大小、preview 或输入常量，不能反过来作为“这是协议硬限制”的证据；保留限制需要可核查的来源或资源风险，默认值也需要独立理由。

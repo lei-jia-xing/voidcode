@@ -1,14 +1,15 @@
 """Direct in-process plugin services: the PluginServices protocol over core state.
 
 One `RuntimeServices` instance is bound to one lease (owner + session + stance) for the
-duration of a single plugin callback. Artifact spills write whole payloads;
+duration of a single plugin callback. Artifact spills publish immutable byte streams;
 process management delegates to the core-owned `ProcessRegistry`.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import CancelledError
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -342,24 +343,36 @@ class RuntimeServices:
             return
         self._runtime.claim_service(lease, str(process_id))
 
-    # ---- artifacts (core store, whole payloads, no chunking) ----
+    # ---- artifacts (immutable, spill before the referring fact commits) ----
 
     def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> ArtifactReference:
+        if not isinstance(data, (bytes, str)):
+            raise TypeError("artifact data must be bytes or text")
+        payload = data.encode("utf-8") if isinstance(data, str) else data
+        return self.spill_artifact_stream((payload,), media_type=media_type)
+
+    def spill_artifact_stream(self, chunks: Iterable[bytes], *, media_type: str = "application/octet-stream") -> ArtifactReference:
         from .artifacts import normalize_media_type
 
         lease = self._active_lease()
         if lease.hook:
             raise PermissionError("hook leases cannot spill artifacts: hooks observe, they produce no result")
-        payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
-        media_type = str(media_type)
-        if not media_type:
-            raise ValueError("spill_artifact media_type must not be empty")
         store = self._runtime.require_artifacts()
         spill_id, spill = store.start_spill(normalize_media_type(media_type), owner=lease.token)
         try:
-            spill.append(payload)
+            for chunk in chunks:
+                self._active_lease()
+                if self._runtime.cancel_event_for(lease).is_set() or (lease.abort_signal is not None and lease.abort_signal.cancelled):
+                    raise CancelledError("artifact spill cancelled")
+                if not isinstance(chunk, bytes):
+                    raise TypeError("artifact stream chunks must be bytes")
+                spill.append(chunk)
+            self._active_lease()
+            if self._runtime.cancel_event_for(lease).is_set() or (lease.abort_signal is not None and lease.abort_signal.cancelled):
+                raise CancelledError("artifact spill cancelled")
             digest, size, resolved = store.finish(spill_id)
-        except Exception:
+            self._active_lease()
+        except BaseException:
             store.discard(spill_id)
             raise
         return ArtifactReference(sha256=digest, bytes=size, media_type=resolved)
@@ -532,7 +545,7 @@ class RuntimeServices:
         *,
         label: str = "",
         tool_allowlist: tuple[str, ...] | None = None,
-        max_steps: int = 32,
+        max_steps: int | None = None,
         readonly: bool = False,
         notify_on_completion: bool = False,
         idempotency_key: str | None = None,
@@ -547,8 +560,10 @@ class RuntimeServices:
             not isinstance(tool_allowlist, (list, tuple)) or not all(isinstance(item, str) for item in tool_allowlist)
         ):
             raise ValueError("tool_allowlist must be a list of tool names or null")
-        if type(max_steps) is not int:
-            raise ValueError("max_steps must be an integer")
+        if max_steps is not None and type(max_steps) is not int:
+            raise ValueError("max_steps must be an integer or null")
+        if not isinstance(lease.root_action_id, str) or not lease.root_action_id:
+            raise ValueError("child spawning requires a captured root action identity")
         if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key):
             raise ValueError("idempotency_key must be a non-empty string or null")
         callback = self._runtime.spawn_child_callback
@@ -564,6 +579,8 @@ class RuntimeServices:
             bool(notify_on_completion),
             lease.owner,
             idempotency_key,
+            lease.root_action_id,
+            lease.initial_root_budget,
             self._runtime.admission_guard(lease),
         )
 
@@ -749,6 +766,8 @@ class RuntimeServices:
                 existing = self._runtime.require_store().background_action_id_for_idempotency(lease.session_id, lease.owner, key)
             if existing is not None:
                 return existing
+            if not isinstance(lease.root_action_id, str) or not lease.root_action_id:
+                raise RuntimeError("background action requires a captured root action identity")
             # Same deterministic identity rule as continuations: two concurrent leases that
             # both stage before either commits return the SAME id, and the store keeps one row.
             cid = uuid4().hex if key is None else hashlib.sha256("\0".join((lease.session_id, lease.owner, key)).encode("utf-8")).hexdigest()
@@ -758,9 +777,10 @@ class RuntimeServices:
                     continuation_id=cid,
                     owner=lease.owner,
                     source=BACKGROUND_ACTION_SOURCE,
-                    payload={"action": owned},
+                    payload={"action": owned, "root_action_budget": lease.initial_root_budget},
                     idempotency_key=key,
                     ordinal=lease.op_counter,
+                    root_id=lease.root_action_id,
                     role="system",
                 )
             )
@@ -835,6 +855,8 @@ class RuntimeServices:
             wakeup_id = uuid4().hex
         else:
             wakeup_id = hashlib.sha256("\0".join((lease.session_id, lease.owner, "wakeup", key)).encode("utf-8")).hexdigest()
+        if not isinstance(lease.root_action_id, str) or not lease.root_action_id:
+            raise RuntimeError("wakeup scheduling requires a captured root action identity")
         self._runtime.require_store().schedule_wakeup(
             wakeup_id,
             lease.owner,
@@ -843,6 +865,8 @@ class RuntimeServices:
             own_json_object(payload),
             due_at_ms,
             str(role),
+            root_action_id=lease.root_action_id,
+            root_action_budget=lease.initial_root_budget,
         )
         return wakeup_id
 

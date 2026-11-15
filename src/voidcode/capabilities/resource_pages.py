@@ -9,7 +9,6 @@ plugin or the ``read`` tool.
 
 from __future__ import annotations
 
-import base64
 import codecs
 from concurrent.futures import CancelledError
 
@@ -20,8 +19,6 @@ from voidcode.sdk.tools import AttachmentOutput, OutputBounds, TextOutput
 
 #: One bounded page stays below the model projection so result metadata fits.
 MAX_RESOURCE_PAGE_BYTES = TOOL_OUTPUT_BYTES - 4096
-#: Inline data-URI budget mirrors the read tool's attachment ceiling.
-MAX_INLINE_ATTACHMENT_BYTES = (TOOL_OUTPUT_BYTES - 128) * 3 // 4
 RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
 
 
@@ -96,17 +93,11 @@ def render_stored_artifact_page(
     media_type = artifact.media_type
 
     if byte_offset is None and media_type in RASTER_IMAGE_MIMES:
-        data_uri = None
-        if artifact.bytes <= MAX_INLINE_ATTACHMENT_BYTES:
-            data_uri = f"data:{media_type};base64,{base64.b64encode(first_page.data).decode('ascii')}"
-        presentation = "Image artifact read successfully"
-        if data_uri is None:
-            presentation += f"; the full image is stored at {uri}."
         return ResourcePage(
             output=AttachmentOutput(
                 media_type,
-                data_uri,
-                presentation=presentation,
+                None,
+                presentation=f"Image artifact read successfully; full image: {uri}.",
                 bounds=OutputBounds(reference=artifact, source=uri),
             ),
             body={

@@ -1435,6 +1435,7 @@ def test_durable_claim_crash_recovery_and_prefix_preservation(tmp_path: Path) ->
                 revision_id,
                 {"action": "test_crash"},
                 idempotency_key="unique-action-key",
+                root_id="cont-crash-root",
             )
             cid2 = store.enqueue_continuation(
                 "cont-002",
@@ -1445,6 +1446,7 @@ def test_durable_claim_crash_recovery_and_prefix_preservation(tmp_path: Path) ->
                 revision_id,
                 {"action": "test_crash"},
                 idempotency_key="unique-action-key",
+                root_id="cont-crash-root",
             )
             assert cid1 == cid2 == "cont-001"
             assert store.continuation_id_for_idempotency("cont-crash-session", _GOV_PLUGIN_ID, "unique-action-key") == "cont-001"
@@ -1543,10 +1545,8 @@ def test_idle_command_enqueue_drives_continuation_automatically(tmp_path: Path) 
 # ---------------------------------------------------------------------------
 
 
-def test_continuation_chain_budget_is_inherited_across_drains(tmp_path: Path) -> None:
-    """Prove the root action budget of a continuation chain is finite and
-    inherited: exhausting it in one drain cannot be reset by another drain.
-    """
+def test_default_continuation_runs_more_than_32_provider_turns(tmp_path: Path) -> None:
+    """A real CLI drain with no assigned cap can complete beyond 32 provider turns."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     source = tmp_path / "external"
@@ -1554,7 +1554,8 @@ def test_continuation_chain_budget_is_inherited_across_drains(tmp_path: Path) ->
     state = tmp_path / "state"
     (workspace / "input.txt").write_text("chain input\n", encoding="utf-8")
 
-    replies = [_turn(_call("c1", "gov_read", path="input.txt")) for _ in range(64)]
+    replies = [_turn(_call(f"c{index}", "gov_read", path="input.txt")) for index in range(33)]
+    replies.append(_turn(output="unbounded continuation completed"))
     with _provider(replies) as server:
         _configure(workspace, server, source, approval_mode="yolo")
         _cli(workspace, state, "create-session", "--session-id", "chain-session")
@@ -1567,20 +1568,16 @@ def test_continuation_chain_budget_is_inherited_across_drains(tmp_path: Path) ->
                 "run-init",
                 store.session("chain-session").active_revision_id,
                 {"action": "chain"},
+                root_id="chain-root",
             )
 
-        first = _cli(workspace, state, "drain", "chain-session")
-        assert [item["status"] for item in first["continuations"]] == ["claimed"], first
-        assert first["continuations"][0]["run_status"] == "interrupted", first
-        spent = len(server.requests)
-        assert spent == 32, (spent, first)
+        completed = _cli(workspace, state, "drain", "chain-session")
+        assert [item["status"] for item in completed["continuations"]] == ["completed"], completed
+        assert completed["continuations"][0]["run_status"] == "completed", completed
+        assert len(server.requests) == 34, completed
 
-        # A second drain must inherit the exhausted root budget: no new provider
-        # turn may be billed and the claim stays claimed with its real cause.
-        second = _cli(workspace, state, "drain", "chain-session")
-        assert [item["status"] for item in second["continuations"]] == ["claimed"], second
-        assert second["continuations"][0]["stop_cause"] == "limit_reached", second
-        assert len(server.requests) == spent, (len(server.requests), second)
+    with SqliteStore(state / "voidcode.db") as store:
+        assert store.root_budget_state("chain-root") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1650,6 +1647,7 @@ def test_owner_cancel_stops_own_claimed_run_without_next_turn(tmp_path: Path) ->
                 "run-init",
                 store.session("owner-cancel-session").active_revision_id,
                 {"action": "owner_cancel"},
+                root_id="owner-cancel-root",
             )
 
         token = "owner-cancel-token"
@@ -1730,7 +1728,7 @@ def test_root_action_budget_shares_main_and_child_dispatches(tmp_path: Path) -> 
         _configure(workspace, server, source, approval_mode="yolo")
         _cli(workspace, state, "create-session", "--session-id", "fanout-session")
 
-        started = _cli(workspace, state, "run", "start fanout", "--session-id", "fanout-session", "--max-steps", "3")
+        started = _cli(workspace, state, "run", "start fanout", "--session-id", "fanout-session", "--root-action-budget", "3")
         # The caller gets the main run's own output, never a drained child's result.
         assert started["status"] == "completed", started
         assert started["output"] == "main finished after fanout", started
@@ -1803,6 +1801,7 @@ def test_user_stop_cancels_claim_without_auto_resume(tmp_path: Path) -> None:
                 "run-init",
                 store.session("user-stop-session").active_revision_id,
                 {"action": "user_stop_claim"},
+                root_id="user-stop-root",
             )
 
         token = "user-stop-token"
@@ -2445,7 +2444,7 @@ def test_cancelled_finite_root_admits_a_fresh_authorized_root(tmp_path: Path) ->
         _configure(workspace, server, source, approval_mode="yolo")
         _cli(workspace, state, "create-session", "--session-id", "root-cancel")
 
-        burned = _cli(workspace, state, "run", "burn the root", "--session-id", "root-cancel", "--max-steps", "2", code=130)
+        burned = _cli(workspace, state, "run", "burn the root", "--session-id", "root-cancel", "--root-action-budget", "2", code=130)
         assert burned["stop_cause"] == "limit_reached", burned
         assert len(server.requests) == 2, server.requests
 
@@ -2476,7 +2475,7 @@ def test_cancelled_finite_root_admits_a_fresh_authorized_root(tmp_path: Path) ->
         drained = _cli(workspace, state, "drain", "root-cancel")
         assert drained["continuations"] == [], drained
 
-        fresh = _cli(workspace, state, "run", "fresh authorized root", "--session-id", "root-cancel", "--max-steps", "4")
+        fresh = _cli(workspace, state, "run", "fresh authorized root", "--session-id", "root-cancel", "--root-action-budget", "4")
         assert fresh["status"] == "completed", fresh
         assert fresh["output"] == "fresh root turn", fresh
 
@@ -2640,6 +2639,7 @@ def test_confirmed_owner_cancel_stops_claimed_run(tmp_path: Path) -> None:
                 "run-init",
                 store.session("confirm-cancel-session").active_revision_id,
                 {"action": "confirm_cancel"},
+                root_id="confirm-cancel-root",
             )
 
         token = "confirm-cancel-token"
@@ -2797,6 +2797,7 @@ def test_native_tool_cancellation_is_scoped_to_its_owner(tmp_path: Path, case: s
                 "run-init",
                 store.session(session_id).active_revision_id,
                 {"action": "native_scope"},
+                root_id=f"{session_id}-root",
             )
 
         token = f"native-scope-token-{case}"

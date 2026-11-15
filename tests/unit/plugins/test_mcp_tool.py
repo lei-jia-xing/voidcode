@@ -120,11 +120,15 @@ def test_resource_text_and_links_need_no_binary_artifact(tmp_path: Path, content
 
 
 def test_large_binary_does_not_hide_result_reference_from_model(tmp_path: Path):
-    from voidcode.core.coverage import model_result_text
+    from dataclasses import replace
+
+    from voidcode.core.coverage import project_tool_result
+    from voidcode.sdk.codec import encode_tool_result
 
     encoded = base64.b64encode(PNG + b"x" * 60_000).decode()
     result, services = invoke(tmp_path, [{"type": "image", "mimeType": "image/png", "data": encoded}])
-    text, clipped = model_result_text(result)
+    canonical = services.spill_artifact(json.dumps(encode_tool_result(result)), media_type="application/json")
+    text, _, clipped = project_tool_result(replace(result, result_reference=canonical), max_bytes=2048, include_images=False)
     assert clipped is False
     reference = result.body.as_payload()["result_artifact"]
     assert f"artifact://{reference['sha256']}" in text

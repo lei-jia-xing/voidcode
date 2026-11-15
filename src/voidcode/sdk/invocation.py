@@ -25,6 +25,8 @@ class ToolContext:
     revision_id: str
     actor: str
     logical_turn: str = ""
+    root_action_id: str | None = None
+    initial_root_budget: int | None = None
     #: How many nested invocations separate this call from the session's own tool call: a nested
     #: request inherits its caller's depth plus one, so a deferred descendant is always counted.
     invocation_depth: int = 0
@@ -38,6 +40,12 @@ class ToolContext:
             object.__setattr__(self, "workspace", Path(self.workspace))
         if type(self.invocation_depth) is not int or self.invocation_depth < 0:
             raise ValueError("tool invocation depth must be a non-negative integer")
+        if self.root_action_id is not None and (not isinstance(self.root_action_id, str) or not self.root_action_id):
+            raise ValueError("root action identity must be nonempty text or null")
+        if self.initial_root_budget is not None and (
+            type(self.initial_root_budget) is not int or not 0 <= self.initial_root_budget <= 9_223_372_036_854_775_807
+        ):
+            raise ValueError("initial root action budget must fit a non-negative SQLite INTEGER or be null")
 
     def require_workspace(self) -> Path:
         if self.session_id:

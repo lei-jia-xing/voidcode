@@ -48,6 +48,37 @@ export interface components {
             through_sequence: number;
         };
         /**
+         * ArtifactPageWire
+         * @description JSON-RPC artifact page; ``data`` is base64 on the wire and bytes in Python.
+         */
+        ArtifactPageWire: {
+            artifact: components["schemas"]["ArtifactReference"];
+            /**
+             * Data
+             * Format: base64
+             */
+            data: string;
+            /** Eof */
+            eof: boolean;
+            /** Offset */
+            offset: number;
+        };
+        /** ArtifactReadParams */
+        ArtifactReadParams: {
+            /**
+             * Limit
+             * @default 65536
+             */
+            limit?: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset?: number;
+            /** Sha256 */
+            sha256: string;
+        };
+        /**
          * ArtifactReference
          * @description Immutable artifact identity and stored metadata; ``uri`` is derived, not persisted.
          */
@@ -105,6 +136,33 @@ export interface components {
              * @constant
              */
             protocol_version?: 1;
+        };
+        /**
+         * BudgetExhaustion
+         * @description One finite execution cap that stopped a run without claiming success.
+         */
+        BudgetExhaustion: {
+            /** Consumed */
+            consumed: number;
+            /**
+             * Continue With
+             * @enum {string}
+             */
+            continue_with: "resume_with_max_steps" | "extend_root_actions";
+            /**
+             * Dimension
+             * @enum {string}
+             */
+            dimension: "provider_turns" | "root_actions";
+            /** Limit */
+            limit: number;
+            /** Remaining */
+            remaining: number;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "max_steps" | "root_action_budget";
         };
         /**
          * CancelReceipt
@@ -401,6 +459,8 @@ export interface components {
         };
         /** ContinuationResult */
         ContinuationResult: {
+            /** @default null */
+            budget_exhaustion?: components["schemas"]["BudgetExhaustion"] | null;
             /** Continuation Id */
             continuation_id: string;
             /**
@@ -978,10 +1038,20 @@ export interface components {
              */
             decision?: ("allow" | "deny") | null;
             /**
-             * Max Steps
-             * @default 32
+             * Extend Root Actions
+             * @default null
              */
-            max_steps?: number;
+            extend_root_actions?: number | null;
+            /**
+             * Max Steps
+             * @default null
+             */
+            max_steps?: number | null;
+            /**
+             * Root Action Grant Id
+             * @default null
+             */
+            root_action_grant_id?: string | null;
             /** Session Id */
             session_id: string;
         };
@@ -1061,11 +1131,16 @@ export interface components {
             images?: components["schemas"]["ImageAttachmentPayload"][];
             /**
              * Max Steps
-             * @default 32
+             * @default null
              */
-            max_steps?: number;
+            max_steps?: number | null;
             /** Prompt */
             prompt: string;
+            /**
+             * Root Action Budget
+             * @default null
+             */
+            root_action_budget?: number | null;
             /** Session Id */
             session_id: string;
         };
@@ -1074,6 +1149,8 @@ export interface components {
          * @description Outcome of one run/resume call: terminal facts, never a live handle.
          */
         RunResult: {
+            /** @default null */
+            budget_exhaustion?: components["schemas"]["BudgetExhaustion"] | null;
             /**
              * Error
              * @default null
@@ -1424,6 +1501,8 @@ export interface components {
             execution?: components["schemas"]["ExecutionWire"] | null;
             /** Output */
             output: components["schemas"]["TextOutputWire"] | components["schemas"]["EmptyOutputWire"] | components["schemas"]["AttachmentOutputWire"];
+            /** @default null */
+            result_reference?: components["schemas"]["ArtifactReference"] | null;
             /**
              * Status
              * @enum {string}
@@ -1691,6 +1770,7 @@ export interface operations {
 /** Typed JSON-RPC methods from the same backend registry. */
 export interface RpcMethods {
   "action.confirm": { params: components["schemas"]["ConfirmRequest"]; result: components["schemas"]["CommandResult"] };
+  "artifact.read": { params: components["schemas"]["ArtifactReadParams"]; result: components["schemas"]["ArtifactPageWire"] };
   "command.catalog": { params: components["schemas"]["EmptyParams"]; result: components["schemas"]["CommandCatalog"] };
   "command.input": { params: components["schemas"]["CommandInputRequest"]; result: components["schemas"]["CommandInputSnapshot"] };
   "command.invoke": { params: components["schemas"]["InvokeRequest"]; result: components["schemas"]["CommandResult"] };

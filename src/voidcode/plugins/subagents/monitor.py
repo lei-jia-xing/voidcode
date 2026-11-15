@@ -7,6 +7,7 @@ governed, confirmed command invocation.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import ClassVar
 from uuid import uuid4
@@ -20,41 +21,44 @@ from voidcode.sdk.commands import (
 )
 from voidcode.sdk.services import DescendantNode, PluginServices
 from voidcode.sdk.tools import ToolEffect
+from voidcode.sdk.views import MAX_VIEW_DATA_BYTES
 
 MONITOR_COMMAND = "subagents.monitor"
 MONITOR_CANCEL_COMMAND = "subagents.monitor.cancel"
 MONITOR_REFRESH_MS = 1000
 DETAIL_PAGE_BYTES = 8 * 1024
 MAX_DETAIL_EVENTS = 50
-MAX_LABEL_CHARS = 160
-MAX_ROSTER_LABEL_CHARS = 64
 
 
 def _short(session_id: str) -> str:
     return session_id[:8]
 
 
-def _preview(text: str, limit: int = MAX_LABEL_CHARS) -> str:
-    flattened = " ".join(text.split())
-    return flattened if len(flattened) <= limit else flattened[: limit - 1] + "…"
+def _clean_text(text: str) -> str:
+    return " ".join(text.split())
 
 
 def _node_label(node: DescendantNode, *, indent: str = "") -> str:
-    # Whole-roster budget: 64 descendants max (policy max_root_children) times
-    # a 64-char row stays far below the 64 KiB presentation contract even with
-    # worst-case escaping; status leads so narrow clients see state first.
-    head = _preview(node.label or _short(node.session_id), limit=32)
-    parts = [node.status, head]
+    parts = [node.status, node.label or node.session_id]
     if node.stop_cause:
         parts.append(node.stop_cause)
-    parts.append(f"run {node.run_id[:8]}" if node.run_id else "run none")
+    parts.append(f"run {node.run_id}" if node.run_id else "run none")
     if node.activity:
-        parts.append(_preview(node.activity, limit=24))
+        parts.append(node.activity)
     if node.has_queued_followup:
         parts.append("queued")
     if node.awaiting_approval:
         parts.append("approval")
-    return indent + _preview(" · ".join(parts), limit=MAX_ROSTER_LABEL_CHARS)
+    return indent + " · ".join(parts)
+
+
+def _view_bytes(data: Mapping[str, object]) -> int:
+    # Match validate_view_data's JSON escaping, not just UTF-8 source length.
+    return len(json.dumps(data, allow_nan=False).encode("utf-8"))
+
+
+def _choice_id(**arguments: object) -> str:
+    return json.dumps(arguments, ensure_ascii=False)
 
 
 def _non_negative(raw: object, field: str) -> int:
@@ -73,14 +77,7 @@ def _bounded_limit(raw: object) -> int:
     return raw
 
 
-def _roster(nodes: tuple[DescendantNode, ...]) -> CommandPresentation:
-    if not nodes:
-        return CommandPresentation(
-            title="Running subagents (none)",
-            view_type="choices",
-            data={"options": [], "action": MONITOR_COMMAND, "argument_name": "target_session_id", "prepare_input": True},
-            refresh_after_ms=MONITOR_REFRESH_MS,
-        )
+def _roster(nodes: tuple[DescendantNode, ...], *, offset: int = 0) -> CommandPresentation:
     by_parent: dict[str | None, list[DescendantNode]] = {}
     for node in nodes:
         by_parent.setdefault(node.parent_session_id, []).append(node)
@@ -95,39 +92,72 @@ def _roster(nodes: tuple[DescendantNode, ...]) -> CommandPresentation:
     for node in nodes:
         if node.parent_session_id not in known:
             _visit(node, 0)
+
+    options: list[dict[str, object]] = []
+    if offset:
+        options.append({"id": _choice_id(roster_offset=0), "label": "Back to first roster page"})
+
+    def _data(rows: list[dict[str, object]]) -> dict[str, object]:
+        return {"options": rows, "action": MONITOR_COMMAND, "argument_name": "selection", "prepare_input": True, "style": None}
+
+    def _next(index: int) -> list[dict[str, object]]:
+        return [{"id": _choice_id(roster_offset=index), "label": "Next roster page"}] if index < len(ordered) else []
+
+    for index in range(offset, len(ordered)):
+        node, level = ordered[index]
+        row: dict[str, object] = {
+            "id": _choice_id(target_session_id=node.session_id, roster_offset=offset),
+            "label": _node_label(node, indent="  " * level),
+        }
+        following = _next(index + 1)
+        if _view_bytes(_data([*options, row, *following])) > MAX_VIEW_DATA_BYTES:
+            if index != offset:
+                break
+            # Only an individually oversized row is folded. Full, unchanged fields
+            # remain available in the detail pages reached by this exact selector.
+            label = str(row["label"])
+            low, high = 0, len(label)
+            while low < high:
+                end = (low + high + 1) // 2
+                row["label"] = label[:end] + "… [open full details]"
+                if _view_bytes(_data([*options, row, *following])) <= MAX_VIEW_DATA_BYTES:
+                    low = end
+                else:
+                    high = end - 1
+            row["label"] = label[:low] + "… [open full details]"
+            if _view_bytes(_data([*options, row, *following])) > MAX_VIEW_DATA_BYTES:
+                raise ValueError("monitor navigation exceeds the view-data budget")
+        options.append(row)
+    else:
+        index = len(ordered)
+
+    # On a budget break, index names the first undisplayed descendant.
+    options.extend(_next(index))
     return CommandPresentation(
-        title="Running subagents",
+        title="Running subagents" if nodes else "Running subagents (none)",
         view_type="choices",
-        data={
-            "options": [{"id": node.session_id, "label": _node_label(node, indent="  " * level)} for node, level in ordered],
-            "action": MONITOR_COMMAND,
-            "argument_name": "target_session_id",
-            "prepare_input": True,
-        },
+        data=_data(options),
         refresh_after_ms=MONITOR_REFRESH_MS,
     )
 
 
 def _detail_text(node: DescendantNode, parent: DescendantNode | None, history: str, *, truncated: bool) -> str:
-    parent_name = _preview(parent.label or _short(parent.session_id), limit=64) if parent else "this session"
-    activity = _preview(node.activity or "unknown", limit=96)
+    parent_name = parent.label or parent.session_id if parent else "this session"
     lines = [
-        f"{node.status} · {_preview(node.label or _short(node.session_id))}",
+        f"{node.status} · {node.label or node.session_id}",
         f"session {node.session_id}",
         f"parent {parent_name}" + (f" ({parent.session_id})" if parent else ""),
         f"run {node.run_id or 'none'}" + (f" · stop {node.stop_cause}" if node.stop_cause else ""),
         f"turn {node.turn} · last event {node.last_event_sequence}",
-        f"activity {activity}",
+        f"activity {node.activity or 'unknown'}",
     ]
     if node.has_queued_followup:
         lines.append("queued follow-up waiting at the next safe boundary")
     if node.awaiting_approval:
         lines.append("parked waiting for approval (resume it from its own session)")
-    lines.append("")
-    lines.append(history or "(no readable events in this range)")
+    lines.extend(("", history or "(no readable events in this range)"))
     if truncated:
-        lines.append("")
-        lines.append("More history: use Next page.")
+        lines.extend(("", "More history: use Next page."))
     return "\n".join(lines)
 
 
@@ -135,6 +165,8 @@ def _detail(
     node: DescendantNode,
     parent: DescendantNode | None,
     *,
+    roster_offset: int = 0,
+    detail_offset: int = 0,
     after_sequence: int,
     history_offset: int,
     limit: int,
@@ -148,42 +180,59 @@ def _detail(
         "after_sequence": after_sequence,
         "history_offset": history_offset,
         "limit": limit,
+        "roster_offset": roster_offset,
     }
-    actions: list[dict[str, object]] = [
-        {"label": "Back to roster", "action": MONITOR_COMMAND, "arguments": {}, "prepare_input": True},
-        {
-            "label": "Cancel subtree",
-            "action": MONITOR_CANCEL_COMMAND,
-            "arguments": {"target_session_id": node.session_id, "expected_run_id": node.run_id},
-        },
-    ]
-    if truncated:
-        actions.append(
+    text = _detail_text(node, parent, page_text, truncated=truncated)
+
+    def _data(end: int) -> dict[str, object]:
+        actions: list[dict[str, object]] = [
+            {"label": "Back to roster", "action": MONITOR_COMMAND, "arguments": {"roster_offset": roster_offset}, "prepare_input": True},
             {
-                "label": "Next page",
-                "action": MONITOR_COMMAND,
-                "arguments": {
-                    "target_session_id": node.session_id,
-                    "after_sequence": next_after,
-                    "history_offset": next_offset,
-                    "limit": limit,
-                },
-                "prepare_input": True,
-            }
-        )
-    actions.append({"label": "Refresh", "action": MONITOR_COMMAND, "arguments": dict(base), "prepare_input": True})
+                "label": "Cancel subtree",
+                "action": MONITOR_CANCEL_COMMAND,
+                "arguments": {"target_session_id": node.session_id, "expected_run_id": node.run_id},
+                "prepare_input": False,
+            },
+        ]
+        if end < len(text) or truncated:
+            following = {**base, "detail_offset": end} if end < len(text) else {**base, "after_sequence": next_after, "history_offset": next_offset}
+            actions.append({"label": "Next page", "action": MONITOR_COMMAND, "arguments": following, "prepare_input": True})
+        actions.append({"label": "Refresh", "action": MONITOR_COMMAND, "arguments": {**base, "detail_offset": detail_offset}, "prepare_input": True})
+        return {"content": text[detail_offset:end], "actions": actions, "style": None}
+
+    end = len(text)
+    if _view_bytes(_data(end)) > MAX_VIEW_DATA_BYTES:
+        low, high = detail_offset, len(text)
+        while low < high:
+            candidate = (low + high + 1) // 2
+            if _view_bytes(_data(candidate)) <= MAX_VIEW_DATA_BYTES:
+                low = candidate
+            else:
+                high = candidate - 1
+        end = low
+        if end == detail_offset:
+            raise ValueError("monitor navigation exceeds the view-data budget")
     return CommandPresentation(
         title=f"Subagent {_short(node.session_id)}",
         view_type="markdown",
-        data={"content": _detail_text(node, parent, page_text, truncated=truncated), "actions": actions},
+        data=_data(end),
         refresh_after_ms=MONITOR_REFRESH_MS,
     )
 
 
 def _render(arguments: Mapping[str, object], services: PluginServices) -> CommandPresentation:
+    selection = arguments.get("selection")
+    if selection is not None:
+        if not isinstance(selection, str):
+            raise ValueError("monitor selection must be a string")
+        selected = json.loads(selection)
+        if not isinstance(selected, dict) or set(selected) - {"target_session_id", "roster_offset"}:
+            raise ValueError("invalid monitor selection")
+        arguments = {**arguments, **selected}
     target = arguments.get("target_session_id")
+    roster_offset = _non_negative(arguments.get("roster_offset"), "roster_offset")
     if target is None:
-        return _roster(services.list_descendants())
+        return _roster(services.list_descendants(), offset=roster_offset)
     if not isinstance(target, str) or not target:
         raise ValueError(f"{MONITOR_COMMAND} target_session_id must be a non-empty string")
     nodes = {node.session_id: node for node in services.list_descendants()}
@@ -197,8 +246,10 @@ def _render(arguments: Mapping[str, object], services: PluginServices) -> Comman
     return _detail(
         node,
         nodes.get(node.parent_session_id or ""),
+        roster_offset=roster_offset,
         after_sequence=after_sequence,
         history_offset=history_offset,
+        detail_offset=_non_negative(arguments.get("detail_offset"), "detail_offset"),
         limit=limit,
         page_text=page.text,
         next_after=page.next_after_sequence,
@@ -218,6 +269,9 @@ class MonitorCommand:
                 "after_sequence": {"type": "integer", "minimum": 0},
                 "history_offset": {"type": "integer", "minimum": 0},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_DETAIL_EVENTS},
+                "roster_offset": {"type": "integer", "minimum": 0},
+                "detail_offset": {"type": "integer", "minimum": 0, "description": "Character cursor within the current detail/history page."},
+                "selection": {"type": "string", "description": "Opaque roster navigation selection."},
             },
             "additionalProperties": False,
         },
@@ -291,7 +345,7 @@ class MonitorCancelCommand:
                     ui_data={
                         "request_id": request_id,
                         "message": (
-                            f"Cancel {_preview(node.label or _short(raw_target), limit=64)} and {len(descendants)} "
+                            f"Cancel {_clean_text(node.label) if node.label else _short(raw_target)} and {len(descendants)} "
                             f"descendant(s) ({names}{more})? Root and siblings are unaffected."
                         ),
                         "actions": ["allow", "deny"],

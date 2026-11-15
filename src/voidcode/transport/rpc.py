@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from voidcode.core.engine import Core
-from voidcode.sdk.client import CancelReceipt, RunResult, SessionRow
+from voidcode.sdk.client import ArtifactPageWire, CancelReceipt, RunResult, SessionRow
 from voidcode.sdk.commands import CommandCatalog, CommandInputSnapshot, CommandResult
 from voidcode.sdk.provider import ImageAttachment
 from voidcode.sdk.rpc import (
@@ -44,6 +44,11 @@ class RpcMethod:
 
 
 METHODS: dict[str, RpcMethod] = {
+    "artifact.read": RpcMethod(
+        m.ArtifactReadParams,
+        ArtifactPageWire,
+        lambda c, p: ArtifactPageWire.from_page(c.read_artifact(p.sha256, offset=p.offset, limit=p.limit)).model_dump(mode="json"),
+    ),
     "command.catalog": RpcMethod(m.EmptyParams, CommandCatalog, lambda c, _p: c.command_catalog().as_payload()),
     "session.list": RpcMethod(
         m.ListSessionsParams, m.SessionsBody, lambda c, p: {"sessions": [session_payload(s) for s in c.sessions(limit=p.limit)]}
@@ -58,13 +63,21 @@ METHODS: dict[str, RpcMethod] = {
             p.prompt,
             session_id=p.session_id,
             max_steps=p.max_steps,
-            images=tuple(ImageAttachment(img.media_type, img.data, img.artifact_id) for img in p.images),
+            root_action_budget=p.root_action_budget,
+            images=tuple(ImageAttachment.from_payload(image.model_dump(exclude_none=True)) for image in p.images),
         ).as_payload(),
     ),
     "session.resume": RpcMethod(
         m.ResumeRequest,
         RunResult,
-        lambda c, p: c.resume(p.session_id, approval_request_id=p.approval_request_id, decision=p.decision, max_steps=p.max_steps).as_payload(),
+        lambda c, p: c.resume(
+            p.session_id,
+            approval_request_id=p.approval_request_id,
+            decision=p.decision,
+            max_steps=p.max_steps,
+            extend_root_actions=p.extend_root_actions,
+            root_action_grant_id=p.root_action_grant_id,
+        ).as_payload(),
     ),
     "command.input": RpcMethod(
         m.CommandInputRequest,

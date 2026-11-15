@@ -16,6 +16,7 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference, PluginServices
 from voidcode.sdk.tools import (
     ConfirmedStop,
+    EmptyOutput,
     OutputBounds,
     TextOutput,
     ToolCall,
@@ -38,8 +39,6 @@ TOTAL_FETCH_SECONDS = 30
 MAX_REDIRECTS = 5
 #: Decompressed response body cap; Content-Length alone is never trusted.
 FETCH_MAX_BYTES = 5 * 1024 * 1024
-#: Head preview chars; the full rendered bytes always live in the spilled artifact.
-FETCH_PREVIEW_CHARS = 8000
 WEB_URI_PREFIX = "web://"
 _MAX_URL_CHARS = 8192
 _MAX_LOCATION_CHARS = 2048
@@ -277,24 +276,11 @@ class WebFetchTool:
                         rendered_bytes = rendered_text.encode("utf-8")
                         artifact = services.spill_artifact(rendered_bytes, media_type=rendered_mime)
                         web_uri = f"{WEB_URI_PREFIX}{artifact.sha256}"
-                        truncated = len(rendered_text) > FETCH_PREVIEW_CHARS
-                        preview = rendered_text[:FETCH_PREVIEW_CHARS]
-                        header = (
-                            f"Fetched {current_url}\n"
-                            f"Content: {mime} -> {rendered_mime} ({len(rendered_bytes)} bytes)\n"
-                            f"Full content: {web_uri} (canonical {artifact.uri})\n"
-                        )
-                        if truncated:
-                            header += f"Preview: first {FETCH_PREVIEW_CHARS} of {len(rendered_text)} chars.\n"
-                        output_text = f"{header}\n{preview}"
-                        if truncated:
-                            output_text += f"\n\n[preview truncated; full content at {web_uri}]"
                         return ToolSuccess(
                             tool_name=tool_name,
-                            output=TextOutput(
-                                output_text,
+                            output=EmptyOutput(
                                 presentation=f"Fetched {current_url}.",
-                                bounds=OutputBounds(truncated=truncated, partial=truncated, reference=web_uri, source=current_url),
+                                bounds=OutputBounds(reference=artifact, source=current_url),
                             ),
                             body=WebFetchResultBody(
                                 url=requested_url,
@@ -302,7 +288,7 @@ class WebFetchTool:
                                 content_type=mime,
                                 uri=web_uri,
                                 artifact=artifact,
-                                truncated=truncated,
+                                truncated=False,
                                 bytes=len(rendered_bytes),
                             ),
                         )

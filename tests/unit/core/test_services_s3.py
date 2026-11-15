@@ -172,7 +172,14 @@ def test_wakeup_claim_is_atomic_and_never_replayed(tmp_path: Path) -> None:
         core = _open(tmp_path)
         core.create_session("sess-claim")
         now = int(time.time() * 1000)
-        core.store.schedule_wakeup("due-now", PLUGIN_ID, str(core.workspace), "sess-claim", {"text": "fire"}, now - 1)
+        core.store.schedule_wakeup(
+            "due-now",
+            PLUGIN_ID,
+            str(core.workspace),
+            "sess-claim",
+            {"text": "fire"},
+            now - 1,
+        )
 
         def _tick() -> None:
             core.tick()

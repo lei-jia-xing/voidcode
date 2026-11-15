@@ -131,6 +131,7 @@ def test_followup_queue_retains_images_without_loss(tmp_path: Path) -> None:
             "prompt": "followup with image",
             "images": [img.as_payload()],
             "max_steps": 16,
+            "root_action_budget": None,
         }
         store.enqueue_continuation(
             "cid-1",
@@ -140,15 +141,18 @@ def test_followup_queue_retains_images_without_loss(tmp_path: Path) -> None:
             "run-1",
             rev_id,
             continuation_payload,
+            root_id="root-followup",
             role="user",
         )
 
         claimed = store.claim_pending_followup("sess-followup")
         assert claimed is not None
-        cid, prompt, max_steps, raw_images = claimed
+        cid, prompt, max_steps, raw_images, root_id, root_budget = claimed
         assert cid == "cid-1"
         assert prompt == "followup with image"
         assert max_steps == 16
+        assert root_id == "root-followup"
+        assert root_budget is None
         assert len(raw_images) == 1
         reconstructed_img = ImageAttachment.from_payload(raw_images[0])
         assert reconstructed_img == img

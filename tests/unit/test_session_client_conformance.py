@@ -24,7 +24,7 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.storage.store import SqliteStore
 from voidcode.sdk import SessionClient
-from voidcode.sdk.client import CoreClientError, RunSpec
+from voidcode.sdk.client import CoreClientError, ResumeSpec, RunSpec
 from voidcode.transport.http import create_core_app
 from voidcode.tui.client import CoreRpcClient
 from voidcode.tui.local_client import CoreLocalClient
@@ -214,6 +214,29 @@ def test_run_drives_tool_and_history_pages_advance(arm_client: tuple[str, Sessio
     history = client.context_history(session.session_id)
     assert history.reached_end
     assert history.records[0].sequence == 1
+
+
+def test_root_budget_grant_and_resume_cross_local_and_rpc_clients(
+    arm_client: tuple[str, SessionClient, Path, Path],
+) -> None:
+    _, client, _, state = arm_client
+    session = client.create_session("budget-session")
+    limited = client.run(
+        session.session_id,
+        RunSpec(prompt="add five to the tally", max_steps=2, root_action_budget=1),
+    )
+    assert limited.status == "interrupted"
+    assert limited.budget_exhaustion is not None
+    assert limited.budget_exhaustion.dimension == "root_actions"
+    assert limited.budget_exhaustion.consumed == 1
+    assert _stored_total(state, session.session_id) == 5
+
+    resumed = client.resume(
+        session.session_id,
+        ResumeSpec(extend_root_actions=1, root_action_grant_id="client-grant"),
+    )
+    assert resumed.status == "completed", resumed.error
+    assert _stored_total(state, session.session_id) == 5
 
 
 def test_stream_frames_carry_typed_transcript(arm_client: tuple[str, SessionClient, Path, Path]) -> None:

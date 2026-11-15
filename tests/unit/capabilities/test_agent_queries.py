@@ -66,6 +66,8 @@ def test_bound_query_rejects_bad_request_before_handler() -> None:
             AGENT_DEFINITIONS.bind(handler).handler(arguments, caller)
 
 
-def test_apply_agent_profile_applies_stance_and_budget() -> None:
+def test_apply_agent_profile_only_narrows_an_assigned_budget() -> None:
     _, profile_readonly, profile_tools, profile_max_steps = apply_agent_profile(_FIXTURE, "look", ("read", "write"), 32)
     assert (profile_readonly, profile_tools, profile_max_steps) == (True, ("read", "write"), 4)
+    _, _, _, unassigned_steps = apply_agent_profile(_FIXTURE, "look", None, None)
+    assert unassigned_steps is None

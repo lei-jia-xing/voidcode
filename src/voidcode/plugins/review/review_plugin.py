@@ -15,7 +15,6 @@ from voidcode.sdk.tools import ToolEffect
 from .workspace_review import GitStatusSnapshot, ReviewFileDiff, WorkspaceReviewService, git_status_snapshot
 
 REVIEW_CHILD_LABEL = "review"
-REVIEW_CHILD_MAX_STEPS = 32
 DEFAULT_JOIN_TIMEOUT_SECONDS = 300.0
 
 ReviewTargetType = Literal["uncommitted", "base_branch", "commit", "custom"]
@@ -248,7 +247,6 @@ class ReviewCommand:
             child_id = services.spawn_child(
                 prompt,
                 label=REVIEW_CHILD_LABEL,
-                max_steps=REVIEW_CHILD_MAX_STEPS,
                 # A review child never mutates: declaring the stance is what lets a read-only or
                 # plan-mode session delegate it at all, and the core forces it anyway whenever
                 # the calling lease is restrictive.

@@ -14,13 +14,13 @@ import pytest
 
 from tests.fixtures.fake_services import FakeServices
 from voidcode.bootstrap import open_core
-from voidcode.core.coverage import model_result_text
+from voidcode.core.coverage import project_tool_result
 from voidcode.plugins.web import create_plugin
 from voidcode.plugins.web.web_fetch import FETCH_MAX_BYTES, WebFetchResultBody, WebFetchTool
 from voidcode.plugins.web.web_reader import read_web_snapshot
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.resources import ResourceReadCaller, ResourceReadRequest
-from voidcode.sdk.tools import OpaqueToolBody, ToolCall, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import EmptyOutput, OpaqueToolBody, ToolCall, ToolFailure, ToolResult, ToolSuccess
 
 _HTML = (
     '<html><head><title>Smoke</title></head><body><h1>Hello fetch</h1><p>Local <a href="/other">link</a>.</p><script>alert(1)</script></body></html>'
@@ -197,10 +197,10 @@ def test_webfetch_renders_html_to_markdown_with_usable_links_and_full_artifact(t
     # Scripts are dropped, relative links resolve against the final URL.
     assert "alert(1)" not in full
     assert "http://example.com/other" in full
-    # Preview carries the recovery link, and the structured body never duplicates full content.
-    assert isinstance(result.output.text, str) and body.uri in result.output.text
-    assert f"artifact://{body.artifact.sha256}" in result.output.text
-    assert result.output.bounds.reference == body.uri
+    # Complete bytes live only behind a typed reference, not in the event presentation.
+    assert isinstance(result.output, EmptyOutput)
+    assert result.output.presentation == "Fetched http://example.com/page."
+    assert result.output.bounds.reference == body.artifact
     assert result.output.bounds.source == "http://example.com/page"
     assert "alert(1)" not in str(body.as_payload())
 
@@ -338,7 +338,7 @@ def test_webfetch_supports_json_body(tool_context: ToolContext, monkeypatch: pyt
     assert "hello" in full
 
 
-def test_webfetch_preview_flags_truncation_but_artifact_stays_complete(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_webfetch_returns_complete_document_reference_and_host_projects_a_page(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
     long_text = "lorem ipsum dolor sit amet " * 2000
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -348,18 +348,24 @@ def test_webfetch_preview_flags_truncation_but_artifact_stays_complete(tool_cont
     services = FakeServices()
     result = _ok(tool_context, services, "http://example.com/long")
 
-    assert result.body.truncated is True
-    assert result.output.bounds.truncated is True
-    assert result.output.bounds.partial is True
-    assert result.output.bounds.reference == result.body.uri
+    from dataclasses import replace
+
+    from voidcode.sdk.codec import encode_tool_result
+
+    assert isinstance(result.output, EmptyOutput)
+    assert result.output.bounds.reference == result.body.artifact
     full = services.artifacts[result.body.artifact.sha256].decode("utf-8")
     assert full == long_text
-    assert len(result.output.text) < len(full)
-    # The recovery URI survives model projection: body carries identity, never the full text.
-    projected, _ = model_result_text(result)
-    assert projected is not None
-    assert result.body.uri in projected
-    assert long_text not in projected
+    assert result.output.presentation is not None and long_text not in result.output.presentation
+    canonical = services.spill_artifact(json.dumps(encode_tool_result(result)), media_type="application/json")
+    projected, _, clipped = project_tool_result(
+        replace(result, result_reference=canonical),
+        max_bytes=2048,
+        artifact_reader=lambda digest, offset, limit: services.read_artifact(digest, offset=offset, limit=limit),
+    )
+    assert clipped and len(projected.encode("utf-8")) <= 2048
+    assert result.body.uri in projected and result.body.artifact.uri in projected
+    assert json.loads(projected)["text"].startswith("lorem ipsum")
 
 
 def test_webfetch_cancelled_before_request(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:

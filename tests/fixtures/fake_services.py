@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -269,7 +269,7 @@ class FakeServices(PluginServices):
         *,
         label: str = "",
         tool_allowlist: tuple[str, ...] | None = None,
-        max_steps: int = 32,
+        max_steps: int | None = None,
         readonly: bool = False,
         notify_on_completion: bool = False,
     ) -> str:
@@ -557,6 +557,9 @@ class FakeServices(PluginServices):
         sha = hashlib.sha256(raw).hexdigest()
         self.artifacts[sha] = raw
         return ArtifactReference(sha256=sha, bytes=len(raw), media_type=media_type)
+
+    def spill_artifact_stream(self, chunks: Iterable[bytes], *, media_type: str = "application/octet-stream") -> ArtifactReference:
+        return self.spill_artifact(b"".join(chunks), media_type=media_type)
 
     def read_artifact(
         self,

@@ -558,6 +558,15 @@ class OpenAIChatCompletionsProvider:
                 )
                 continue
             if message.role == "tool":
+                if message.images:
+                    raise ProviderExecutionError(
+                        kind="unsupported_feature",
+                        provider_name=request.provider_name or self.name,
+                        model_name=request.model_name or "unknown",
+                        message="OpenAI chat completions wire does not support image attachments in tool messages",
+                        retryable=False,
+                        fallback_allowed=True,
+                    )
                 messages.append(
                     {
                         "role": "tool",
@@ -596,7 +605,15 @@ class OpenAIChatCompletionsProvider:
                     "status": "error" if message.is_error else "ok",
                     "content": message.content or "",
                 }
-                messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)})
+                if message.images:
+                    synthetic_content: list[dict[str, object]] = [
+                        {"type": "text", "text": json.dumps(payload, ensure_ascii=False, sort_keys=True)},
+                    ]
+                    for img in message.images:
+                        synthetic_content.append({"type": "image_url", "image_url": {"url": f"data:{img.media_type};base64,{img.data}"}})
+                    messages.append({"role": "user", "content": synthetic_content})
+                else:
+                    messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)})
             elif message.role != "assistant" or not message.tool_calls or message.content or message.images:
                 if message.images:
                     content = [

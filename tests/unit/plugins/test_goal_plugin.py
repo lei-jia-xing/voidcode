@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -134,10 +135,11 @@ def test_models_state_transitions() -> None:
 
 
 def test_spill_and_read_long_objective(tmp_path: Path) -> None:
+    services = FakeServices()
     now = int(time.time() * 1000)
     # Short objective: not spilled
     short_text = "Fix the login button bug."
-    prompt, ref, digest = spill_objective_if_needed(tmp_path, short_text)
+    prompt, ref, digest = spill_objective_if_needed(services, short_text)
     assert prompt == short_text
     assert ref is None
     assert digest is None
@@ -146,12 +148,13 @@ def test_spill_and_read_long_objective(tmp_path: Path) -> None:
     long_text = ("🚀 Goal Objective: 必须完全验证所有边界条件。\n" * 150) + "Final acceptance."
     assert len(long_text) > 4000
 
-    prompt, ref, digest = spill_objective_if_needed(tmp_path, long_text)
+    prompt, ref, digest = spill_objective_if_needed(services, long_text)
     assert ref is not None
-    assert ref.startswith(".voidcode/attachments/")
-    assert ref.endswith("/goal-objective.md")
+    assert ref.startswith("artifact://")
     assert digest is not None
-    assert f"Read the goal objective file at {ref}" in prompt
+    assert f"Read the goal objective at {ref}" in prompt
+    # Workspace remains clean - no unapproved writes
+    assert not (tmp_path / ".voidcode").exists()
 
     state = GoalState(
         goal_id="g1",
@@ -163,9 +166,26 @@ def test_spill_and_read_long_objective(tmp_path: Path) -> None:
         objective_file_sha256=digest,
     )
 
-    # Read back complete
-    read_back = read_full_objective(tmp_path, state)
+    # Read back complete via services.read_artifact
+    read_back = read_full_objective(tmp_path, state, services=services)
     assert read_back == long_text
+
+    # Historical workspace attachment fallback (reading persisted older states)
+    legacy_ref = ".voidcode/attachments/old-uuid/goal-objective.md"
+    legacy_file = tmp_path / legacy_ref
+    legacy_file.parent.mkdir(parents=True, exist_ok=True)
+    legacy_file.write_text(long_text, encoding="utf-8")
+    legacy_digest = hashlib.sha256(long_text.encode("utf-8")).hexdigest()
+    legacy_state = GoalState(
+        goal_id="g_legacy",
+        status="active",
+        objective="Read old file",
+        created_at=now,
+        updated_at=now,
+        objective_file_ref=legacy_ref,
+        objective_file_sha256=legacy_digest,
+    )
+    assert read_full_objective(tmp_path, legacy_state, services=services) == long_text
 
     # Containment check: path escaping workspace raises ValueError
     bad_state = GoalState(
@@ -177,18 +197,17 @@ def test_spill_and_read_long_objective(tmp_path: Path) -> None:
         objective_file_ref="../escaped.txt",
     )
     with pytest.raises(ValueError, match="escapes workspace"):
-        read_full_objective(tmp_path, bad_state)
+        read_full_objective(tmp_path, bad_state, services=services)
 
-    # Tampered file detection
-    target_file = tmp_path / ref
-    target_file.write_text(long_text + " Tampered addition!", encoding="utf-8")
+    # Tampered legacy file detection
+    legacy_file.write_text(long_text + " Tampered addition!", encoding="utf-8")
     with pytest.raises(ValueError, match="tampered or corrupted"):
-        read_full_objective(tmp_path, state)
+        read_full_objective(tmp_path, legacy_state, services=services)
 
-    # Missing file detection
-    target_file.unlink()
+    # Missing legacy file detection
+    legacy_file.unlink()
     with pytest.raises(FileNotFoundError, match="missing"):
-        read_full_objective(tmp_path, state)
+        read_full_objective(tmp_path, legacy_state, services=services)
 
 
 # --- 3. Tools (Get, Create, Update) ---
@@ -258,6 +277,27 @@ def test_create_goal_tool(tmp_path: Path) -> None:
     assert services.budget.since_sequence == 3
     # The new goal owns a fresh accounting window starting at the current tip.
     assert new_state_data["active_windows"] == [{"start_sequence": 3, "end_sequence": None}]
+
+
+@pytest.mark.parametrize("repetitions", [120, 250, 5000])
+def test_create_goal_tool_preserves_unicode_objective_without_workspace_mutation(tmp_path: Path, repetitions: int) -> None:
+    services = FakeServices(through_sequence=5)
+    ctx = _make_context(tmp_path)
+    objective = " \n" + ("🎯 完全自动化端到端测试与真实验证。\n" * repetitions) + "Final acceptance.\n\t"
+    res = CreateGoalTool().invoke(
+        ToolCall(tool_name="create_goal", arguments={"objective": objective}),
+        context=ctx,
+        services=services,
+    )
+    assert isinstance(res, ToolSuccess)
+    state, _ = services.get_state("session")
+    assert state is not None
+    if repetitions > 120:
+        assert state["objective_file_ref"].startswith("artifact://")
+    loaded = GoalLoadObjectiveCommand().invoke(CommandInvocation(context=ctx, name="goal.load_objective"), services)
+    assert loaded.status == "ok", loaded.error
+    assert loaded.data["objective"] == objective
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_update_goal_tool_complete(tmp_path: Path) -> None:
@@ -469,8 +509,8 @@ def test_goal_edit_with_long_objective_and_budget_adjust(tmp_path: Path) -> None
     )
     assert res_edit_huge.status == "ok"
     st, _ = services.get_state("session")
-    assert st["objective_file_ref"].startswith(".voidcode/attachments/")
-    assert (tmp_path / st["objective_file_ref"]).is_file()
+    assert st["objective_file_ref"].startswith("artifact://")
+    assert not (tmp_path / ".voidcode").exists()
     # 2. Query edit form without arguments -> returns objective and initial values
     res_query = edit_cmd.invoke(
         CommandInvocation(context=ctx, name="goal.edit"),

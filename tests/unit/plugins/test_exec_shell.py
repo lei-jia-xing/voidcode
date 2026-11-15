@@ -2,8 +2,8 @@
 
 The lease owns the machine, so these tests drive a fake lease: it records the call the tool made
 and returns the scripted `ProcessResult` the host would have produced. What is under test is the
-tool's contract — the argv/cwd/timeout it asks for, the
-preview/artifact split of each stream, and the flags on each failure shape.
+tool's contract — the argv/cwd/timeout it asks for, complete captured-text references,
+and honest aggregate capture/timeout/cancellation flags.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from voidcode.capabilities.exec.shell_exec import ShellExecResultBody
 from voidcode.plugins.exec import create_plugin
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference, ProcessResult
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolSuccess
+from voidcode.sdk.tools import EmptyOutput, ToolCall, ToolFailure, ToolSuccess
 
 _SHELL_WRAPPER = ["cmd.exe", "/c"] if os.name == "nt" else ["/bin/sh", "-c"]
 
@@ -147,8 +147,8 @@ def test_shell_exec_runs_in_the_workspace_and_reports_success(tmp_path: Path) ->
     result = _invoke(command, tmp_path, lease)
 
     assert isinstance(result, ToolSuccess)
-    assert isinstance(result.output, TextOutput)
-    assert result.output.text == f"{tmp_path.resolve()}\n"
+    assert isinstance(result.output, EmptyOutput)
+    assert result.output.presentation is not None and "Captured stdout:" in result.output.presentation
     body = result.body
     assert isinstance(body, ShellExecResultBody)
     assert body.command == command
@@ -156,13 +156,12 @@ def test_shell_exec_runs_in_the_workspace_and_reports_success(tmp_path: Path) ->
     assert body.exit_code == 0
     assert body.timeout == 120
     assert body.truncated is False
-    assert body.stdout_truncated is False
-    assert body.stderr_truncated is False
-    # Every non-empty stream is spilled, truncated or not; only the preview stays inline.
-    assert body.stdout_artifact is not None
-    assert body.stdout_artifact.sha256 == hashlib.sha256(result.output.text.encode()).hexdigest()
-    assert body.stderr_artifact is None
-    assert lease.spills == [{"data": result.output.text.encode(), "media_type": "text/plain; charset=utf-8"}]
+    assert body.stdout.sha256 == hashlib.sha256(f"{tmp_path.resolve()}\n".encode()).hexdigest()
+    assert body.stderr.bytes == 0
+    assert lease.spills == [
+        {"data": f"{tmp_path.resolve()}\n".encode(), "media_type": "text/plain; charset=utf-8"},
+        {"data": b"", "media_type": "text/plain; charset=utf-8"},
+    ]
     assert body.as_payload()["exit_code"] == 0
     call = lease.calls[0]
     assert call["argv"] == [*_SHELL_WRAPPER, command]
@@ -177,13 +176,13 @@ def test_shell_exec_nonzero_exit_keeps_streams_apart(tmp_path: Path) -> None:
     result = _invoke("exit 7", tmp_path, lease)
 
     assert isinstance(result, ToolFailure)
-    assert isinstance(result.output, TextOutput)
-    assert result.output.text == "stdout\n"
-    assert result.error == "stderr\n"
+    assert isinstance(result.output, EmptyOutput)
+    assert result.output.presentation is not None and "Captured stdout:" in result.output.presentation
+    assert "Command exited with code 7" in result.error
     assert isinstance(result.body, ShellExecResultBody)
     assert result.body.exit_code == 7
-    assert result.body.stdout == "stdout\n"
-    assert result.body.stderr == "stderr\n"
+    assert result.body.stdout.sha256 == hashlib.sha256(b"stdout\n").hexdigest()
+    assert result.body.stderr.sha256 == hashlib.sha256(b"stderr\n").hexdigest()
 
 
 def test_shell_exec_reports_a_zero_exit_without_streams(tmp_path: Path) -> None:
@@ -192,7 +191,7 @@ def test_shell_exec_reports_a_zero_exit_without_streams(tmp_path: Path) -> None:
     result = _invoke("false", tmp_path, lease)
 
     assert isinstance(result, ToolFailure)
-    assert result.error == "Command exited with code 3."
+    assert result.error.startswith("Command exited with code 3; captured stderr:")
 
 
 @pytest.mark.parametrize("command", ["cat file.txt", "grep foo file.txt", "sed -i 's/a/b/' file.txt", "find . -name x"])
@@ -221,14 +220,15 @@ def test_shell_exec_timeout_returns_a_partial_body_with_its_artifact(tmp_path: P
     assert body.timed_out is True
     assert body.exit_code is None
     assert body.timeout == 1
-    assert body.stdout == "partial\n"
+    assert body.stdout.sha256 == hashlib.sha256(b"partial\n").hexdigest()
     assert result.error == "shell_exec command timed out after 1s"
     assert result.timeout_seconds == 1
     assert lease.calls[0]["timeout_seconds"] == 1.0
-    assert body.stdout_artifact is not None
-    assert body.stdout_artifact.sha256 == hashlib.sha256(b"partial\n").hexdigest()
-    assert body.stderr_artifact is None
-    assert lease.spills == [{"data": b"partial\n", "media_type": "text/plain; charset=utf-8"}]
+    assert body.stderr.bytes == 0
+    assert lease.spills == [
+        {"data": b"partial\n", "media_type": "text/plain; charset=utf-8"},
+        {"data": b"", "media_type": "text/plain; charset=utf-8"},
+    ]
 
 
 def test_shell_exec_cancellation_reports_the_abort_signal(tmp_path: Path) -> None:
@@ -240,14 +240,14 @@ def test_shell_exec_cancellation_reports_the_abort_signal(tmp_path: Path) -> Non
 
     assert isinstance(result, ToolFailure)
     assert result.error == "User aborted the command."
-    assert isinstance(result.output, TextOutput)
-    assert result.output.text == "User aborted the command.\n\nstarted\n"
+    assert isinstance(result.output, EmptyOutput)
+    assert result.output.presentation is not None and result.output.presentation.startswith("User aborted the command.\n\nCaptured stdout:")
     body = result.body
     assert isinstance(body, ShellExecResultBody)
     assert body.cancelled is True
     assert body.reason == "test abort"
     assert body.timed_out is False
-    assert body.stdout == "started\n"
+    assert body.stdout.sha256 == hashlib.sha256(b"started\n").hexdigest()
     assert body.as_payload()["reason"] == "test abort"
 
 
@@ -283,12 +283,12 @@ def test_shell_exec_reports_the_tool_timeout_with_partial_output(tmp_path: Path)
     assert isinstance(result.body, ShellExecResultBody)
     assert result.body.timed_out is True
     assert result.body.timeout == 1
-    assert result.body.stdout == "partial\n"
+    assert result.body.stdout.sha256 == hashlib.sha256(b"partial\n").hexdigest()
     assert result.error == "shell_exec command timed out after 1s"
     assert lease.calls[0]["timeout_seconds"] == 1.0
 
 
-def test_shell_exec_preview_overflow_spills_the_full_stream(tmp_path: Path) -> None:
+def test_shell_exec_spills_the_full_stream_to_artifact(tmp_path: Path) -> None:
     full = "x" * (60 * 1024)
     result_value = ProcessResult(exit_code=0, stdout=full, stderr="", duration_ms=8)
     lease = _FakeLease(result_value)
@@ -298,20 +298,14 @@ def test_shell_exec_preview_overflow_spills_the_full_stream(tmp_path: Path) -> N
     assert isinstance(result, ToolSuccess)
     body = result.body
     assert isinstance(body, ShellExecResultBody)
-    assert body.truncated is True
-    assert body.stdout_truncated is True
-    assert body.stderr_truncated is False
-    assert body.stdout == full[: 25 * 1024] + "\n... output preview omitted ...\n" + full[-25 * 1024 :]
-    assert isinstance(result.output, TextOutput)
-    assert result.output.bounds.truncated is True
-    assert result.output.bounds.partial is True
-    assert lease.spills == [{"data": full.encode(), "media_type": "text/plain; charset=utf-8"}]
-    assert body.stdout_artifact is not None
-    assert body.stdout_artifact.sha256 == hashlib.sha256(full.encode()).hexdigest()
-    reference = result.output.bounds.reference
-    assert reference is not None
-    assert reference.uri == f"artifact://{body.stdout_artifact.sha256}"
-    assert result.output.text == f"Captured process output: {reference.uri}\n\n{body.stdout}"
+    assert body.stdout.sha256 == hashlib.sha256(full.encode()).hexdigest()
+    assert isinstance(result.output, EmptyOutput)
+    assert lease.spills == [
+        {"data": full.encode(), "media_type": "text/plain; charset=utf-8"},
+        {"data": b"", "media_type": "text/plain; charset=utf-8"},
+    ]
+    assert result.output.bounds.reference == body.stdout
+    assert result.output.presentation is not None and full not in result.output.presentation
 
 
 def test_shell_exec_forwards_bounded_progress_chunks(tmp_path: Path) -> None:

@@ -26,6 +26,9 @@ class _DummyServices:
         raw = data.encode("utf-8") if isinstance(data, str) else bytes(data)
         return ArtifactReference(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw), media_type=media_type)
 
+    def spill_artifact_stream(self, chunks, *, media_type="application/octet-stream"):
+        return self.spill_artifact(b"".join(chunks), media_type=media_type)
+
 
 _SERVICES = cast(Any, _DummyServices())
 
@@ -231,7 +234,7 @@ def test_read_tool_renders_binary_file_as_attachment(tmp_path: Path) -> None:
 
 
 def test_read_tool_raster_attachment_grants_no_coverage(tmp_path: Path) -> None:
-    """An inline image read shows pixels, not file lines: no coverage."""
+    """A reference-backed raster read shows pixels, not file lines: no coverage."""
     plugin = create_plugin({})
     read_tool = next(t for t in plugin.tools if t.definition.name == "read")
     (tmp_path / "pixel.png").write_bytes(

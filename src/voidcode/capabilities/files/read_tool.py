@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import mimetypes
 from concurrent.futures import CancelledError
 from dataclasses import dataclass
-from io import TextIOWrapper
+from io import DEFAULT_BUFFER_SIZE, TextIOWrapper
 from pathlib import Path
 from typing import ClassVar, final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from voidcode.capabilities.resource_pages import MAX_INLINE_ATTACHMENT_BYTES, MAX_RESOURCE_PAGE_BYTES, RASTER_IMAGE_MIMES, format_resource_text
+from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES, RASTER_IMAGE_MIMES, format_resource_text
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.resources import ResourceReadRequest, ResourceUnavailable
@@ -68,7 +67,6 @@ class ReadArgs(BaseModel):
 DEFAULT_READ_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
 MAX_BYTES = 50 * 1024
-MAX_ATTACHMENT_BYTES = 50 * 1024
 BINARY_SNIFF_BYTES = 4096
 _LINE_TRUNCATION_SUFFIX = f"... (line truncated to {MAX_LINE_LENGTH} chars)"
 
@@ -214,12 +212,8 @@ def _render_file(
         sample = source.read(BINARY_SNIFF_BYTES)
         source.seek(0)
         if attachment or (not is_svg and _is_binary_content(candidate, sample)):
-            maximum = MAX_ATTACHMENT_BYTES if attachment else 50 * 1024 * 1024
-            raw = source.read(maximum + 1)
-            if len(raw) > maximum:
-                raise ValueError(f"read file exceeds the maximum supported size ({maximum} bytes): {relative_path}")
             effective_mime = mime or "application/octet-stream"
-            artifact = services.spill_artifact(raw, media_type=effective_mime)
+            artifact = services.spill_artifact_stream(iter(lambda: source.read(DEFAULT_BUFFER_SIZE), b""), media_type=effective_mime)
             uri = artifact.uri
             bounds = OutputBounds(reference=artifact, source=relative_path)
             body: dict[str, object] = {
@@ -228,15 +222,10 @@ def _render_file(
                 "artifact": artifact.as_payload(),
             }
             if attachment:
-                data_uri = (
-                    f"data:{effective_mime};base64,{base64.b64encode(raw).decode('ascii')}"
-                    if effective_mime in RASTER_IMAGE_MIMES and len(raw) <= MAX_INLINE_ATTACHMENT_BYTES
-                    else None
-                )
                 message = "Image read successfully"
-                return _ReadOutcome(output=AttachmentOutput(effective_mime, data_uri, presentation=message, bounds=bounds), body=OpaqueToolBody(body))
+                return _ReadOutcome(output=AttachmentOutput(effective_mime, None, presentation=message, bounds=bounds), body=OpaqueToolBody(body))
             presentation = (
-                f"Binary file {relative_path} ({effective_mime}, {len(raw)} bytes, sha256:{artifact.sha256}). "
+                f"Binary file {relative_path} ({effective_mime}, {artifact.bytes} bytes, sha256:{artifact.sha256}). "
                 f'Read full content with read(path="{uri}").'
             )
             return _ReadOutcome(output=TextOutput(presentation, bounds=bounds), body=OpaqueToolBody(body))
@@ -267,12 +256,11 @@ def _render_file(
                     content_truncated |= line_truncated
                 if any(line.truncated for line in rendered_lines):
                     source.seek(0)
-                    original = source.read(50 * 1024 * 1024 + 1)
-                    if len(original) > 50 * 1024 * 1024:
-                        raise ValueError(f"long-line recovery exceeds the maximum supported size ({50 * 1024 * 1024} bytes): {relative_path}")
-                    if hashlib.sha256(original).digest() != digest.digest():
+                    recovery_reference = services.spill_artifact_stream(
+                        iter(lambda: source.read(DEFAULT_BUFFER_SIZE), b""), media_type="text/plain; charset=utf-8"
+                    )
+                    if recovery_reference.sha256 != digest.hexdigest():
                         raise ValueError(f"file changed while preparing long-line recovery; retry read: {relative_path}")
-                    recovery_reference = services.spill_artifact(original, media_type="text/plain; charset=utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError("read only supports UTF-8 text files") from exc
     content_hash = digest.hexdigest()

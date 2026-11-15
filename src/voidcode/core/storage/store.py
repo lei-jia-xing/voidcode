@@ -34,6 +34,30 @@ class StoreConflict(StorageError):
     """Raised when an optimistic concurrency check fails or state is stale."""
 
 
+_WAKEUP_PAYLOAD_KEY = "_voidcode_core_wakeup"
+
+
+def _decode_wakeup_payload(value: object, wakeup_id: str) -> tuple[Mapping[str, object], str, int | None]:
+    if not isinstance(value, Mapping):
+        raise StoreConflict(f"wakeup {wakeup_id!r} has no captured root authorization")
+    stored = own_json_object(value)
+    envelope = stored.get(_WAKEUP_PAYLOAD_KEY)
+    if not isinstance(envelope, Mapping):
+        raise StoreConflict(f"wakeup {wakeup_id!r} has no captured root authorization")
+    root_id = envelope.get("root_id")
+    root_budget = envelope.get("root_action_budget")
+    payload = envelope.get("payload")
+    if "root_action_budget" not in envelope or not isinstance(root_id, str) or not root_id or "\0" in root_id or not isinstance(payload, Mapping):
+        raise StoreConflict(f"wakeup {wakeup_id!r} has a malformed root authorization envelope")
+    if root_budget is None:
+        validated_budget = None
+    elif type(root_budget) is int and root_budget >= 0:
+        validated_budget = root_budget
+    else:
+        raise StoreConflict(f"wakeup {wakeup_id!r} has a malformed root authorization envelope")
+    return own_json_object(payload), root_id, validated_budget
+
+
 class SequenceConflict(StoreConflict):
     """The session advanced between the caller's snapshot and its atomic CAS.
 
@@ -44,6 +68,12 @@ class SequenceConflict(StoreConflict):
 
 class RootBudgetExhausted(StoreConflict):
     """The durable root action budget refused this reservation."""
+
+    def __init__(self, root_id: str, budget: int, reserved: int) -> None:
+        super().__init__(f"root action budget exhausted for {root_id!r}")
+        self.root_id = root_id
+        self.budget = budget
+        self.reserved = reserved
 
 
 class FencedSubtree(StoreConflict):
@@ -189,10 +219,13 @@ class WakeupRecord:
     workspace: str
     session_id: str
     payload: Mapping[str, object]
-    role: str
+    root_id: str
     due_at: int
+    role: str
     status: str
     claim_run_id: str | None = None
+
+    root_action_budget: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", own_json_object(self.payload))
@@ -694,21 +727,12 @@ class SqliteStore:
         caller_chain: frozenset[str] | None = None,
         admission_guard: Callable[[], bool] | None = None,
     ) -> SessionRecord:
-        """Create a delegated child session that can only be narrower than its parent.
-
-        The lineage is durable and the insert still takes the revision from the workspace
-        pointer, so a child can never be pinned to a generation that just moved. When
-        `max_root_children` is set, the chain count and insert are one transaction so
-        concurrent spawns cannot both pass the same budget check.
-
-        With `birth`, the child's own first event (sequence 1) is committed atomically
-        in the same transaction: a self-describing `core.child_spawned` birth record
-        carrying the keyed identity (owner, key, spec hash, birth stance). The parent
-        fact published afterwards is the readable linkage; the birth record is the
-        crash-window truth that lets a lookup verify the mapping even when the parent
-        fact never landed. It carries an empty `eligible_owners` list: it is an
-        identity record, never an observer notification.
-        """
+        """Create a delegated child with its immutable action identity in the birth event."""
+        if not isinstance(birth, Mapping):
+            raise ValueError("child reservation requires an atomic birth record")
+        root_id = birth.get("root_id")
+        if not isinstance(root_id, str) or not root_id:
+            raise ValueError("child birth record requires a captured root action identity")
         now = int(time.time() * 1000)
         allowlist_json = None if tool_allowlist is None else json.dumps(list(tool_allowlist))
         with self._lock:
@@ -907,21 +931,14 @@ class SqliteStore:
         logical_turn: str,
         revision_id: str,
         eligible_owners: Sequence[str],
-        initial_root_budget: int = 32,
     ) -> tuple[WakeupRecord, SessionRecord] | None:
-        """Claim ONE due wakeup and create its authentic running session in the same transaction.
-
-        There is no TTL or reaper: a crash before this commit leaves the wakeup pending, and a
-        crash after it leaves a claimed wakeup whose session is visibly interrupted. The claim
-        and the run identity can never diverge, and two tickers can never both claim the row.
-        """
+        """Claim a due wakeup and start it under the root identity captured when scheduled."""
         with self._lock:
             self._check_open()
             in_transaction = False
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 in_transaction = True
-                now_ms = now
                 cursor = self._connection.execute(
                     """
                     SELECT wakeup_id, owner, workspace, session_id, payload_json, role, due_at, status, claim_run_id
@@ -930,43 +947,44 @@ class SqliteStore:
                     ORDER BY due_at ASC, created_at ASC
                     LIMIT 1
                     """,
-                    (workspace, now_ms),
+                    (workspace, now),
                 )
                 row = cursor.fetchone()
                 if row is None:
                     self._connection.execute("COMMIT")
                     in_transaction = False
                     return None
+                payload, root_id, root_action_budget = _decode_wakeup_payload(json.loads(row[4]), str(row[0]))
                 wakeup = WakeupRecord(
                     wakeup_id=str(row[0]),
                     owner=str(row[1]),
                     workspace=str(row[2]),
                     session_id=str(row[3]),
-                    payload=own_json_object(json.loads(row[4])),
+                    payload=payload,
+                    root_id=root_id,
                     role=str(row[5]),
                     due_at=int(row[6]),
                     status=str(row[7]),
                     claim_run_id=str(row[8]) if row[8] is not None else None,
+                    root_action_budget=root_action_budget,
                 )
                 claimed = self._connection.execute(
                     """
                     UPDATE wakeups SET status = 'claimed', claim_run_id = ?, updated_at = ?
                     WHERE wakeup_id = ? AND status = 'pending'
                     """,
-                    (run_id, now_ms, wakeup.wakeup_id),
+                    (run_id, now, wakeup.wakeup_id),
                 )
                 if claimed.rowcount == 0:
                     raise StoreConflict(f"wakeup {wakeup.wakeup_id!r} was claimed concurrently")
-                s_cursor = self._connection.execute(
+                session_row = self._connection.execute(
                     """
                     SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
                            parent_session_id, root_session_id, depth, tool_allowlist_json
-                    FROM sessions
-                    WHERE session_id = ?
+                    FROM sessions WHERE session_id = ?
                     """,
                     (wakeup.session_id,),
-                )
-                session_row = s_cursor.fetchone()
+                ).fetchone()
                 if session_row is None:
                     raise StoreConflict(f"wakeup {wakeup.wakeup_id!r} names an unknown session")
                 session = _session_record(session_row)
@@ -974,6 +992,15 @@ class SqliteStore:
                     raise StoreConflict("wakeup session belongs to another capability revision")
                 if session.status in ("running", "waiting"):
                     raise StoreConflict(f"wakeup session {session.session_id!r} is busy ({session.status})")
+                budget_row = self._connection.execute(
+                    "SELECT budget FROM root_budgets WHERE root_id = ?",
+                    (wakeup.root_id,),
+                ).fetchone()
+                if wakeup.root_action_budget is None and budget_row is not None:
+                    raise StoreConflict("wakeup captured an uncapped root with a finite budget row")
+                if wakeup.root_action_budget is not None and (budget_row is None or int(budget_row[0]) < wakeup.root_action_budget):
+                    raise StoreConflict("wakeup lost its captured finite root authorization")
+                initial_root_budget = wakeup.root_action_budget
                 new_seq = session.last_event_sequence + 1
                 fired_payload = canonical_json(
                     {
@@ -999,13 +1026,17 @@ class SqliteStore:
                         "next_call": 0,
                         "intent_sequence": None,
                         "approval_sequence": None,
+                        "deferred_sequence": None,
+                        "deferred_depth": 0,
+                        "deferred_only": False,
+                        "max_steps": None,
                         "step": 0,
                         "abandon_batch": False,
                         "continuation_id": None,
                         "logical_turn": logical_turn,
                         "stop_cause": None,
                         "initial_root_budget": initial_root_budget,
-                        "root_id": wakeup.wakeup_id,
+                        "root_id": wakeup.root_id,
                         "resume_intent": "",
                     }
                 )
@@ -1022,7 +1053,7 @@ class SqliteStore:
                         payload_json = excluded.payload_json,
                         updated_at = excluded.updated_at
                     """,
-                    (session.session_id, revision_id, run_id, new_seq, checkpoint_payload, now_ms),
+                    (session.session_id, revision_id, run_id, new_seq, checkpoint_payload, now),
                 )
                 self._connection.execute(
                     """
@@ -1030,7 +1061,7 @@ class SqliteStore:
                     SET status = 'running', run_id = ?, updated_at = ?, last_event_sequence = ?
                     WHERE session_id = ?
                     """,
-                    (run_id, now_ms, new_seq, session.session_id),
+                    (run_id, now, new_seq, session.session_id),
                 )
                 self._connection.execute("COMMIT")
                 in_transaction = False
@@ -1041,6 +1072,7 @@ class SqliteStore:
                         workspace=wakeup.workspace,
                         session_id=wakeup.session_id,
                         payload=wakeup.payload,
+                        root_id=wakeup.root_id,
                         role=wakeup.role,
                         due_at=wakeup.due_at,
                         status="claimed",
@@ -1074,38 +1106,91 @@ class SqliteStore:
         payload: Mapping[str, object],
         due_at: int,
         role: str = "system",
+        *,
+        root_action_id: str | None = None,
+        root_action_budget: int | None = None,
     ) -> str:
-        """Insert a pending wakeup now (its own transaction).
-
-        ponytail: scheduling is not staged with the callback's result commit; a crash between
-        them can leave a wakeup the tool did not report. The claim+run pair stays atomic, which
-        is what prevents duplicate or stuck executions. Stage it later if a plugin needs the
-        schedule to be exactly-once with its result.
-        """
+        """Persist a wakeup with the root authorization captured by its caller."""
+        if root_action_id is not None and (not isinstance(root_action_id, str) or not root_action_id or "\0" in root_action_id):
+            raise ValueError("root_action_id must be nonempty text without NUL")
+        if root_action_budget is not None and (type(root_action_budget) is not int or root_action_budget < 0):
+            raise ValueError("root_action_budget must be a non-negative integer or null")
+        if root_action_id is None and root_action_budget is not None:
+            raise ValueError("a finite root_action_budget requires its captured root_action_id")
         now = int(time.time() * 1000)
         with self._lock:
             self._check_open()
-            self._connection.execute(
-                """
-                INSERT INTO wakeups (
-                    wakeup_id, owner, workspace, session_id, payload_json, role, due_at,
-                    status, claim_run_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
-                ON CONFLICT (wakeup_id) DO NOTHING
-                """,
-                (
-                    wakeup_id,
-                    owner,
-                    workspace,
-                    session_id,
-                    canonical_json(payload),
-                    role if role in ("system", "user") else "system",
-                    due_at,
-                    now,
-                    now,
-                ),
-            )
-            return wakeup_id
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                session = self._connection.execute(
+                    "SELECT status FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if session is None:
+                    raise StoreConflict(f"wakeup session {session_id!r} does not exist")
+                if root_action_id is None:
+                    if session[0] in ("running", "waiting"):
+                        checkpoint = self._connection.execute(
+                            "SELECT payload_json FROM checkpoints WHERE session_id = ?",
+                            (session_id,),
+                        ).fetchone()
+                        checkpoint_payload = None if checkpoint is None else own_json_object(json.loads(checkpoint[0]))
+                        candidate_root_id = None if checkpoint_payload is None else checkpoint_payload.get("root_id")
+                        if not isinstance(candidate_root_id, str) or not candidate_root_id:
+                            raise StoreConflict(f"active wakeup session {session_id!r} has no captured root action identity")
+                        root_action_id = candidate_root_id
+                        if checkpoint_payload is None or "initial_root_budget" not in checkpoint_payload:
+                            raise StoreConflict(f"active wakeup session {session_id!r} has no captured root budget")
+                        candidate_budget = checkpoint_payload.get("initial_root_budget")
+                        if candidate_budget is None:
+                            root_action_budget = None
+                        elif type(candidate_budget) is int and candidate_budget >= 0:
+                            root_action_budget = candidate_budget
+                        else:
+                            raise StoreConflict(f"active wakeup session {session_id!r} has an invalid captured root budget")
+                    else:
+                        root_action_id = uuid4().hex
+                        root_action_budget = None
+                budget_row = self._connection.execute(
+                    "SELECT budget FROM root_budgets WHERE root_id = ?",
+                    (root_action_id,),
+                ).fetchone()
+                if root_action_budget is None and budget_row is not None:
+                    raise StoreConflict("wakeup captured an uncapped root with a finite budget row")
+                if root_action_budget is not None and (budget_row is None or int(budget_row[0]) < root_action_budget):
+                    raise StoreConflict("wakeup lost its captured finite root authorization")
+                stored_payload = {
+                    _WAKEUP_PAYLOAD_KEY: {
+                        "root_id": root_action_id,
+                        "root_action_budget": root_action_budget,
+                        "payload": json_wire_object(payload),
+                    }
+                }
+                self._connection.execute(
+                    """
+                    INSERT INTO wakeups (
+                        wakeup_id, owner, workspace, session_id, payload_json, role, due_at,
+                        status, claim_run_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
+                    ON CONFLICT (wakeup_id) DO NOTHING
+                    """,
+                    (
+                        wakeup_id,
+                        owner,
+                        workspace,
+                        session_id,
+                        canonical_json(stored_payload),
+                        role if role in ("system", "user") else "system",
+                        due_at,
+                        now,
+                        now,
+                    ),
+                )
+                self._connection.execute("COMMIT")
+                return wakeup_id
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
 
     def cancel_wakeup(self, wakeup_id: str, owner: str) -> bool:
         """Cancel one pending wakeup of this owner; already claimed wakeups are not touched."""
@@ -1146,20 +1231,25 @@ class SqliteStore:
                     """,
                     (workspace, max(1, limit)),
                 )
-            return tuple(
-                WakeupRecord(
-                    wakeup_id=str(row[0]),
-                    owner=str(row[1]),
-                    workspace=str(row[2]),
-                    session_id=str(row[3]),
-                    payload=own_json_object(json.loads(row[4])),
-                    role=str(row[5]),
-                    due_at=int(row[6]),
-                    status=str(row[7]),
-                    claim_run_id=str(row[8]) if row[8] is not None else None,
+            items: list[WakeupRecord] = []
+            for row in cursor.fetchall():
+                payload, root_id, root_action_budget = _decode_wakeup_payload(json.loads(row[4]), str(row[0]))
+                items.append(
+                    WakeupRecord(
+                        wakeup_id=str(row[0]),
+                        owner=str(row[1]),
+                        workspace=str(row[2]),
+                        session_id=str(row[3]),
+                        payload=payload,
+                        root_id=root_id,
+                        role=str(row[5]),
+                        due_at=int(row[6]),
+                        status=str(row[7]),
+                        claim_run_id=str(row[8]) if row[8] is not None else None,
+                        root_action_budget=root_action_budget,
+                    )
                 )
-                for row in cursor.fetchall()
-            )
+            return tuple(items)
 
     def count_root_children(self, root_session_id: str) -> int:
         """How many child sessions one chain root has already spawned (its durable budget)."""
@@ -1499,9 +1589,12 @@ class SqliteStore:
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
         completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
-        root_reservation: tuple[str, int] | None = None,
-        start_turn: bool = False,
         checkpoint_bindings: Sequence[tuple[str, str]] = (),
+        root_action_id: str | None = None,
+        root_action_budget: int | None = None,
+        root_budget_grant: tuple[str, int, str] | None = None,
+        root_reservation: tuple[str, int | None] | None = None,
+        start_turn: bool = False,
     ) -> SessionRecord:
         """Atomic CAS commit applying staged state updates, continuations, event drafts, and checkpoint.
 
@@ -1510,35 +1603,84 @@ class SqliteStore:
         THIS transaction, so a checkpoint reference can never point at a guessed
         or not-yet-committed sequence.
         """
+
+        if staged_wakeups:
+            if not isinstance(root_action_id, str) or not root_action_id:
+                raise StoreConflict("staged wakeups require a captured root action identity")
+            if root_action_budget is not None and (type(root_action_budget) is not int or root_action_budget < 0):
+                raise StoreConflict("staged wakeups have an invalid captured root budget")
         with self._lock:
             self._check_open()
             in_transaction = False
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 in_transaction = True
+                if staged_wakeups:
+                    assert root_action_id is not None
+                    wakeup_budget_row = self._connection.execute(
+                        "SELECT budget FROM root_budgets WHERE root_id = ?",
+                        (root_action_id,),
+                    ).fetchone()
+                    if root_action_budget is None and wakeup_budget_row is not None:
+                        raise StoreConflict("staged wakeup captured an uncapped root with a finite budget row")
+                    if root_action_budget is not None and (wakeup_budget_row is None or int(wakeup_budget_row[0]) < root_action_budget):
+                        raise StoreConflict("staged wakeup lost its captured finite root authorization")
+
+                if root_budget_grant is not None:
+                    root_id, amount, grant_id = root_budget_grant
+                    prior = self._connection.execute(
+                        """
+                        SELECT payload_json FROM session_events
+                        WHERE event_type = ?
+                          AND json_extract(payload_json, '$.root_action_grant_id') = ?
+                        LIMIT 1
+                        """,
+                        (EventType.RUN_RESUMED, grant_id),
+                    ).fetchone()
+                    if prior is not None:
+                        prior_payload = own_json_object(json.loads(prior[0]))
+                        if prior_payload.get("root_id") != root_id or prior_payload.get("extend_root_actions") != amount:
+                            raise StoreConflict("root action grant id was already used for a different authorization")
+                    else:
+                        state = self._connection.execute(
+                            "SELECT budget FROM root_budgets WHERE root_id = ?",
+                            (root_id,),
+                        ).fetchone()
+                        if state is None:
+                            raise StoreConflict("there is no finite root action budget to extend")
+                        if int(state[0]) + amount > 9_223_372_036_854_775_807:
+                            raise ValueError("root action budget extension exceeds SQLite INTEGER range")
+                        self._connection.execute(
+                            "UPDATE root_budgets SET budget = budget + ?, updated_at = ? WHERE root_id = ?",
+                            (amount, int(time.time() * 1000), root_id),
+                        )
 
                 if root_reservation is not None:
                     root_id, root_limit = root_reservation
                     reserved_at = int(time.time() * 1000)
-                    self._connection.execute(
-                        """
-                        INSERT OR IGNORE INTO root_budgets (root_id, budget, reserved, created_at, updated_at)
-                        VALUES (?, ?, 0, ?, ?)
-                        """,
-                        (root_id, max(0, root_limit), reserved_at, reserved_at),
-                    )
-                    # Reserve atomically with the event that bills this action, so a
-                    # crash after dispatch cannot refund the consumed root step.
-                    reserved = self._connection.execute(
-                        """
-                        UPDATE root_budgets
-                        SET reserved = reserved + 1, updated_at = ?
-                        WHERE root_id = ? AND reserved < budget
-                        """,
-                        (reserved_at, root_id),
-                    )
-                    if reserved.rowcount == 0:
-                        raise RootBudgetExhausted(f"root action budget exhausted for {root_id!r}")
+                    if root_limit is not None:
+                        self._connection.execute(
+                            """
+                            INSERT OR IGNORE INTO root_budgets (root_id, budget, reserved, created_at, updated_at)
+                            VALUES (?, ?, 0, ?, ?)
+                            """,
+                            (root_id, root_limit, reserved_at, reserved_at),
+                        )
+                    state = self._connection.execute(
+                        "SELECT budget, reserved FROM root_budgets WHERE root_id = ?",
+                        (root_id,),
+                    ).fetchone()
+                    if state is not None:
+                        reserved = self._connection.execute(
+                            """
+                            UPDATE root_budgets
+                            SET reserved = reserved + 1, updated_at = ?
+                            WHERE root_id = ? AND reserved < budget
+                            """,
+                            (reserved_at, root_id),
+                        )
+                        if reserved.rowcount == 0:
+                            raise RootBudgetExhausted(root_id, int(state[0]), int(state[1]))
 
                 cursor = self._connection.execute(
                     """
@@ -1703,6 +1845,8 @@ class SqliteStore:
                         raise StoreConflict(f"confirmation {confirmation.request_id!r} already exists") from exc
 
                 # Schedule or cancel owner wakeups with the callback that asked for them.
+                if staged_wakeups and (not isinstance(root_action_id, str) or not root_action_id):
+                    raise StoreConflict("staged wakeups require the run's captured root action identity")
                 for wakeup in staged_wakeups:
                     try:
                         self._connection.execute(
@@ -1717,7 +1861,15 @@ class SqliteStore:
                                 wakeup.owner,
                                 workspace,
                                 wakeup.session_id,
-                                canonical_json(wakeup.payload),
+                                canonical_json(
+                                    {
+                                        _WAKEUP_PAYLOAD_KEY: {
+                                            "root_id": root_action_id,
+                                            "root_action_budget": root_action_budget,
+                                            "payload": json_wire_object(wakeup.payload),
+                                        }
+                                    }
+                                ),
                                 wakeup.role if wakeup.role in ("system", "user") else "system",
                                 wakeup.due_at,
                                 now,
@@ -2727,9 +2879,12 @@ class SqliteStore:
         caller_chain: frozenset[str] | None = None,
         admission_guard: Callable[[], bool] | None = None,
     ) -> str:
-        """Directly enqueue a continuation in pending state, optionally opening its root budget."""
+        """Queue a continuation with its stable action-chain identity."""
         if role not in ("system", "user"):
             raise ValueError("continuation role must be 'system' or 'user'")
+        if not isinstance(root_id, str) or not root_id:
+            raise StoreConflict("continuation requires a captured root action identity")
+        payload_json = canonical_json(payload)
         with self._lock:
             self._check_open()
             guard = self._cancel_fence_guard
@@ -2758,23 +2913,25 @@ class SqliteStore:
             if idempotency_key is not None:
                 cursor = self._connection.execute(
                     """
-                    SELECT continuation_id FROM continuations
+                    SELECT continuation_id, root_id, payload_json FROM continuations
                     WHERE session_id = ? AND owner = ? AND idempotency_key = ? AND source <> ?
                     """,
                     (session_id, owner, idempotency_key, BACKGROUND_ACTION_SOURCE),
                 )
                 row = cursor.fetchone()
                 if row is not None:
+                    if row[1] != root_id or row[2] != payload_json:
+                        raise StoreConflict("continuation idempotency key was already used with a different authorization or payload")
                     return row[0]
-            if root_id is None and root_budget is not None:
-                root_id = continuation_id
-            if root_budget is not None and root_id is not None:
+            if root_budget is not None:
+                if type(root_budget) is not int or not 0 <= root_budget <= 9_223_372_036_854_775_807:
+                    raise ValueError("root_budget must fit a non-negative SQLite INTEGER")
                 self._connection.execute(
                     """
                     INSERT OR IGNORE INTO root_budgets (root_id, budget, reserved, created_at, updated_at)
                     VALUES (?, ?, 0, ?, ?)
                     """,
-                    (root_id, max(0, root_budget), now, now),
+                    (root_id, root_budget, now, now),
                 )
             try:
                 self._connection.execute(
@@ -2794,7 +2951,7 @@ class SqliteStore:
                         idempotency_key,
                         root_id,
                         role,
-                        canonical_json(payload),
+                        payload_json,
                         now,
                         now,
                     ),
@@ -2917,8 +3074,12 @@ class SqliteStore:
                     self._connection.execute("ROLLBACK")
                 raise
 
-    def ensure_root_budget(self, root_id: str, budget: int) -> None:
-        """Open a root action budget; an existing root keeps its original limit."""
+    def ensure_root_budget(self, root_id: str, budget: int | None) -> None:
+        """Record a finite root action authorization once; `None` means no action cap."""
+        if budget is None:
+            return
+        if type(budget) is not int or not 0 <= budget <= 9_223_372_036_854_775_807:
+            raise ValueError("root_action_budget must fit a non-negative SQLite INTEGER")
         with self._lock:
             self._check_open()
             now = int(time.time() * 1000)
@@ -2927,7 +3088,7 @@ class SqliteStore:
                 INSERT OR IGNORE INTO root_budgets (root_id, budget, reserved, created_at, updated_at)
                 VALUES (?, ?, 0, ?, ?)
                 """,
-                (root_id, max(0, budget), now, now),
+                (root_id, budget, now, now),
             )
 
     def root_budget_state(self, root_id: str) -> tuple[int, int] | None:
@@ -3084,7 +3245,8 @@ class SqliteStore:
         *,
         revision_id: str,
         caller_chain: frozenset[str],
-        initial_root_budget: int = 32,
+        initial_root_budget: int | None = None,
+        max_steps: int | None = None,
         continuation_id: str | None = None,
         automatic: bool = False,
     ) -> tuple[ContinuationRecord, SessionRecord]:
@@ -3171,8 +3333,14 @@ class SqliteStore:
                         cp_payload = own_json_object(json.loads(cp_payload_json))
                     except (TypeError, ValueError) as exc:
                         raise StoreConflict(f"claimed continuation {cont_row[0]!r} has a malformed checkpoint") from exc
-                    if str(cp_run_id) != str(cont_row[4]) or str(cp_payload.get("continuation_id")) != str(cont_row[0]):
-                        raise StoreConflict(f"claimed continuation {cont_row[0]!r} does not own the session checkpoint")
+                    if (
+                        str(cp_run_id) != str(cont_row[4])
+                        or str(cp_payload.get("continuation_id")) != str(cont_row[0])
+                        or not isinstance(cont_row[7], str)
+                        or not cont_row[7]
+                        or cp_payload.get("root_id") != cont_row[7]
+                    ):
+                        raise StoreConflict(f"claimed continuation {cont_row[0]!r} does not own its checkpoint/root action identity")
                     claimed_record = ContinuationRecord(
                         continuation_id=cont_row[0],
                         owner=cont_row[1],
@@ -3204,6 +3372,8 @@ class SqliteStore:
                         tool_allowlist=_allowlist_from_json(curr_allowlist),
                     )
 
+                if not isinstance(cont_row[7], str) or not cont_row[7]:
+                    raise StoreConflict(f"continuation {cont_row[0]!r} has no captured root action identity")
                 if status not in ("idle", "completed", "failed", "interrupted"):
                     raise StoreConflict(f"session {session_id!r} already holds active work ({status})")
                 if status == "idle" and curr_parent is not None:
@@ -3271,12 +3441,21 @@ class SqliteStore:
                     (run_id, new_turn, now, new_seq, session_id),
                 )
 
+                payload_max_steps = cont_record.payload.get("max_steps")
+                if payload_max_steps is not None and (type(payload_max_steps) is not int or payload_max_steps < 1):
+                    raise StoreConflict(f"continuation {cont_record.continuation_id!r} has an invalid max_steps cap")
+                if max_steps is not None and (type(max_steps) is not int or max_steps < 1):
+                    raise ValueError("max_steps must be a positive integer or null")
+                effective_steps = payload_max_steps
+                if max_steps is not None:
+                    effective_steps = max_steps if effective_steps is None else min(effective_steps, max_steps)
                 checkpoint_payload = {
                     "step": 0,
                     "continuation_id": cont_record.continuation_id,
-                    "root_id": cont_record.root_id or cont_record.continuation_id,
+                    "root_id": cont_record.root_id,
                     "logical_turn": logical_turn,
                     "initial_root_budget": initial_root_budget,
+                    "max_steps": effective_steps,
                 }
                 checkpoint_json = canonical_json(checkpoint_payload)
                 self._connection.execute(
@@ -3440,10 +3619,30 @@ class SqliteStore:
                     in_transaction = False
                     return None
                 now = int(time.time() * 1000)
+                root_id = row[7]
+                if not isinstance(root_id, str) or not root_id:
+                    raise StoreConflict(f"background action {row[0]!r} has no captured root authorization")
                 payload = own_json_object(json.loads(row[9]))
                 pending = payload.get("action")
                 action = dict(pending) if isinstance(pending, Mapping) else {}
-                envelope = {"claim": json_wire_object(claim_identity), "action": action}
+                if "root_action_budget" not in payload:
+                    raise StoreConflict(f"background action {row[0]!r} has no captured root budget")
+                root_budget = payload["root_action_budget"]
+                if root_budget is not None and (type(root_budget) is not int or root_budget < 0):
+                    raise StoreConflict(f"background action {row[0]!r} has an invalid captured root budget")
+                budget_row = self._connection.execute(
+                    "SELECT budget FROM root_budgets WHERE root_id = ?",
+                    (root_id,),
+                ).fetchone()
+                if root_budget is None and budget_row is not None:
+                    raise StoreConflict(f"background action {row[0]!r} captured an uncapped root with a finite budget row")
+                if root_budget is not None and (budget_row is None or int(budget_row[0]) < root_budget):
+                    raise StoreConflict(f"background action {row[0]!r} lost its captured finite root authorization")
+                envelope = {
+                    "claim": json_wire_object(claim_identity),
+                    "action": action,
+                    "root_action_budget": root_budget,
+                }
                 claimed = self._connection.execute(
                     """
                     UPDATE continuations SET status = 'claimed', updated_at = ?, payload_json = ?
@@ -3589,13 +3788,16 @@ class SqliteStore:
                 for row in rows
             )
 
-    def claim_pending_followup(self, session_id: str) -> tuple[str, str, int | None, list[dict[str, object]]] | None:
-        """Atomically claim the oldest pending kernel follow-up continuation for a session."""
+    def claim_pending_followup(
+        self,
+        session_id: str,
+    ) -> tuple[str, str, int | None, list[dict[str, object]], str | None, int | None] | None:
+        """Atomically claim a kernel follow-up with its captured root authorization."""
         with self._lock:
             self._check_open()
             cursor = self._connection.execute(
                 """
-                SELECT continuation_id, payload_json
+                SELECT continuation_id, payload_json, root_id
                 FROM continuations
                 WHERE session_id = ? AND status = 'pending' AND owner = 'kernel' AND source = 'user_message'
                 ORDER BY created_at ASC
@@ -3606,24 +3808,37 @@ class SqliteStore:
             row = cursor.fetchone()
             if row is None:
                 return None
-            cid, payload_json = row
-            now = int(time.time() * 1000)
-            self._connection.execute(
-                "UPDATE continuations SET status = 'claimed', updated_at = ? WHERE continuation_id = ?",
-                (now, cid),
-            )
+            cid, payload_json, root_id = row
             try:
                 payload = json.loads(payload_json)
-                prompt = str(payload.get("prompt", ""))
-                max_steps = payload.get("max_steps")
-                steps = int(max_steps) if isinstance(max_steps, int) else None
-                raw_images = payload.get("images")
-                images: list[dict[str, object]] = (
-                    [dict(img) for img in raw_images if isinstance(img, Mapping)] if isinstance(raw_images, (list, tuple)) else []
-                )
-                return cid, prompt, steps, images
-            except Exception:
-                return cid, "", None, []
+            except json.JSONDecodeError as exc:
+                raise StoreConflict(f"queued follow-up {cid!r} has invalid JSON payload") from exc
+            if not isinstance(payload, Mapping) or "root_action_budget" not in payload:
+                raise StoreConflict(f"queued follow-up {cid!r} has no captured root budget")
+            if not isinstance(root_id, str) or not root_id:
+                raise StoreConflict(f"queued follow-up {cid!r} has no captured root action identity")
+            root_budget = payload["root_action_budget"]
+            if root_budget is not None and (type(root_budget) is not int or root_budget < 0):
+                raise StoreConflict(f"queued follow-up {cid!r} has an invalid captured root budget")
+            prompt = payload.get("prompt")
+            if not isinstance(prompt, str):
+                raise StoreConflict(f"queued follow-up {cid!r} has no prompt")
+            max_steps_value = payload.get("max_steps")
+            if max_steps_value is not None and type(max_steps_value) is not int:
+                raise StoreConflict(f"queued follow-up {cid!r} has an invalid provider-turn cap")
+            steps = max_steps_value
+            raw_images = payload.get("images")
+            images: list[dict[str, object]] = (
+                [dict(img) for img in raw_images if isinstance(img, Mapping)] if isinstance(raw_images, (list, tuple)) else []
+            )
+            now = int(time.time() * 1000)
+            claimed = self._connection.execute(
+                "UPDATE continuations SET status = 'claimed', updated_at = ? WHERE continuation_id = ? AND status = 'pending'",
+                (now, cid),
+            )
+            if claimed.rowcount == 0:
+                raise StoreConflict(f"queued follow-up {cid!r} was claimed concurrently")
+            return cid, prompt, steps, images, root_id, root_budget
 
     def set_continuation_run_id(self, continuation_id: str, run_id: str) -> None:
         """Record the active run_id for a claimed continuation."""

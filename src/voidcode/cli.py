@@ -16,6 +16,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
+from uuid import uuid4
 
 from . import __version__
 from .bootstrap import open_core, state_directory
@@ -155,7 +156,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     agents.add_argument("prompt", metavar="PROMPT", help="Prompt to run")
     agents.add_argument("--session-id", metavar="ID", default=None, help="Session to continue, or create when absent")
-    agents.add_argument("--max-steps", type=int, default=32, metavar="N", help="Maximum agent steps (default: 32)")
+    agents.add_argument("--max-steps", type=int, default=None, metavar="N", help="Optional provider-turn cap for this run")
+    agents.add_argument(
+        "--root-action-budget",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Optional shared root-action cap for this run and its descendants",
+    )
     resume = commands.add_parser(
         "resume",
         help="Resume a session, optionally deciding a parked approval",
@@ -164,7 +172,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     resume.add_argument("session_id", metavar="SESSION", help="Session to resume")
     resume.add_argument("--approval-request-id", metavar="ID", default=None, help="Parked approval to decide")
     resume.add_argument("--decision", choices=("allow", "deny"), default=None, help="Decision for the parked approval")
-    resume.add_argument("--max-steps", type=int, default=32, metavar="N", help="Maximum agent steps (default: 32)")
+    resume.add_argument("--max-steps", type=int, default=None, metavar="N", help="Optional provider-turn cap for resumed work")
+    resume.add_argument(
+        "--extend-root-actions",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Explicitly extend an existing finite root-action authorization",
+    )
     create = commands.add_parser(
         "create-session", help="Create a session and print it as JSON", description="Create an empty session and print it as JSON."
     )
@@ -433,7 +448,12 @@ def _embedded_tui(
 
 def _dispatch(core: Core, args: argparse.Namespace) -> int:
     if args.command == "run":
-        result = core.run(args.prompt, session_id=args.session_id, max_steps=args.max_steps)
+        result = core.run(
+            args.prompt,
+            session_id=args.session_id,
+            max_steps=args.max_steps,
+            root_action_budget=args.root_action_budget,
+        )
         print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
         return 130 if result.status == "interrupted" else 1 if result.status == "failed" else 0
     if args.command == "resume":
@@ -442,6 +462,8 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
             approval_request_id=args.approval_request_id,
             decision=args.decision,
             max_steps=args.max_steps,
+            extend_root_actions=args.extend_root_actions,
+            root_action_grant_id=uuid4().hex if args.extend_root_actions is not None else None,
         )
         print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
         return 130 if result.status == "interrupted" else 1 if result.status == "failed" else 0

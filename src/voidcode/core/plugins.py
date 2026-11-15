@@ -142,12 +142,13 @@ class LeaseContext:
     revision_id: str
     invocation_id: str
     readonly: bool
+    root_action_id: str | None = None
+    initial_root_budget: int | None = None
     #: Provenance of the invocation that created this lease ("model", "client", "user", "plugin").
     actor: str = "model"
     #: Hook leases cannot start nested work.
     hook: bool = False
-    #: The lease may stage internal session work (state, events, budget, continuations):
-    #: set when the session stance is writable, or when the tool declares SESSION.
+    #: The lease may stage internal session work (state, events, budget, continuations).
     internal_work: bool = False
     invocation_depth: int = 0
     staged_state: dict[tuple[str, str], tuple[Mapping[str, object], int, int]] = field(default_factory=dict)
@@ -155,7 +156,6 @@ class LeaseContext:
     staged_continuations: list[StagedContinuationDraft] = field(default_factory=list)
     staged_cancellations: list[StagedCancellation] = field(default_factory=list)
     staged_budget: PluginBudget | None | Literal["clear"] = None
-    #: Supervisor-observed FS changes from this lease's confined children (transparent backend).
     staged_observations: list[ObservedChange] = field(default_factory=list)
     revoked: bool = False
     op_counter: int = 0
@@ -230,7 +230,10 @@ class PluginRuntime:
         store: SqliteStore | None = None,
         usage_callback: Callable[[str, int, int | None], SessionUsageReport] | None = None,
         budget_callback: Callable[[str, str], PluginBudget | None] | None = None,
-        spawn_child_callback: Callable[[str, str, str, int, tuple[str, ...] | None, bool, bool, str, str | None, Callable[[], bool]], str]
+        spawn_child_callback: Callable[
+            [str, str, str, int | None, tuple[str, ...] | None, bool, bool, str, str | None, str, int | None, Callable[[], bool]],
+            str,
+        ]
         | None = None,
         find_child_callback: Callable[[str, str, str], str | None] | None = None,
         join_child_callback: Callable[[str, str, float], Mapping[str, object]] | None = None,
@@ -634,6 +637,8 @@ class PluginRuntime:
         hook: bool = False,
         internal_work: bool = False,
         invocation_depth: int = 0,
+        root_action_id: str | None = None,
+        initial_root_budget: int | None = None,
         abort_signal: ProviderAbortSignal | None = None,
     ) -> LeaseContext:
         lease = LeaseContext(
@@ -646,6 +651,8 @@ class PluginRuntime:
             invocation_id=invocation_id,
             readonly=readonly,
             abort_signal=abort_signal,
+            root_action_id=root_action_id,
+            initial_root_budget=initial_root_budget,
             actor=actor,
             hook=hook,
             internal_work=internal_work,
@@ -1017,6 +1024,8 @@ class PluginRuntime:
             actor=context.actor,
             internal_work=(not readonly) or ToolEffect.SESSION in tool_definition.effects,
             invocation_depth=context.invocation_depth,
+            root_action_id=context.root_action_id,
+            initial_root_budget=context.initial_root_budget,
             abort_signal=context.abort_signal,
         )
         services = RuntimeServices(self, lease)
@@ -1164,6 +1173,8 @@ class PluginRuntime:
             readonly=readonly or (is_read_tier(cmd_definition.effects) and ToolEffect.EXECUTE not in cmd_definition.effects),
             actor=context.actor,
             internal_work=(not readonly) or ToolEffect.SESSION in cmd_definition.effects,
+            root_action_id=context.root_action_id,
+            initial_root_budget=context.initial_root_budget,
             abort_signal=context.abort_signal,
         )
         services = RuntimeServices(self, lease)

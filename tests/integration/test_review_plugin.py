@@ -304,6 +304,7 @@ def test_review_inherits_new_inspection_tools_without_widening_parent_scope(tmp_
                 root_session_id=root.session_id,
                 depth=1,
                 tool_allowlist=("inspect_repository",),
+                birth={"root_id": "restricted-root", "root_action_budget": None},
             )
         result = _invoke_review(core, parent_id, {})
         assert result.status == "ok", result.error

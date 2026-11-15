@@ -20,9 +20,6 @@ from .limits import (
 from .limits import (
     DIAGNOSTIC_ITEMS as _MAX_DIAGNOSTIC_ITEMS,
 )
-from .limits import (
-    DIAGNOSTIC_TEXT_CHARS as _MAX_DIAGNOSTIC_TEXT_CHARS,
-)
 from .services import ArtifactReference, PluginServices
 
 type ToolDiagnosticsDetails = Mapping[str, object]
@@ -70,15 +67,11 @@ UNCONFIRMED_STOP_CLAUSE = (
 )
 
 
-def _diagnostic_text(value: str) -> str:
-    return value[:_MAX_DIAGNOSTIC_TEXT_CHARS]
-
-
 def _sanitize_diagnostic_value(value: object, *, depth: int = 0) -> object:
     if depth > _MAX_DIAGNOSTIC_DEPTH:
         raise ValueError("diagnostics details exceed maximum nesting depth")
     if isinstance(value, str):
-        return _diagnostic_text(value)
+        return value
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
@@ -111,8 +104,6 @@ class ToolDiagnostics:
         for name, value in (("kind", self.kind), ("summary", self.summary), ("guidance", self.guidance)):
             if value is not None and not isinstance(value, str):
                 raise ValueError(f"diagnostics {name} must be a string or null")
-            if isinstance(value, str):
-                object.__setattr__(self, name, _diagnostic_text(value))
         if not isinstance(self.details, Mapping):
             raise ValueError("diagnostics details must be an object")
         sanitized = _sanitize_diagnostic_value(self.details)
@@ -211,6 +202,15 @@ class ToolCall:
 
 @dataclass(frozen=True, slots=True)
 class OutputBounds:
+    """Resource bounds and recovery identity; ``reference`` is not a page cursor.
+
+    ``TextOutput.text`` is the selected content already chosen by its producer, so hosts must
+    preserve it rather than re-reading ``reference`` from byte zero. A typed textual
+    ``ArtifactReference`` on ``EmptyOutput`` instead identifies content intentionally kept out
+    of line; a host may page that resource into its model projection while retaining
+    ``presentation`` as its summary.
+    """
+
     truncated: bool = False
     partial: bool = False
     reference: ArtifactReference | str | None = None
@@ -346,7 +346,7 @@ class ToolSuccess[Body: ToolBody]:
     coverage: tuple[ReadObservation, ...] = ()
     changes: tuple[ResourceChange, ...] = ()
     steering_context: str | None = None
-
+    result_reference: ArtifactReference | None = None
     status: ClassVar[Literal["ok"]] = "ok"
 
     def __post_init__(self) -> None:
@@ -366,6 +366,7 @@ class ToolFailure[Body: ToolBody]:
     #: Files committed before this invocation failed or was cancelled.
     changes: tuple[ResourceChange, ...] = ()
     steering_context: str | None = None
+    result_reference: ArtifactReference | None = None
     status: ClassVar[Literal["error"]] = "error"
 
 

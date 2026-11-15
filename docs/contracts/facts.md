@@ -24,6 +24,14 @@ The core freezes the recorded declaration in the tool intent before execution. P
 
 Read observations are historical facts, not write permissions. File mutations validate explicit content hashes and edit matching without requiring a prior read in the session.
 
+When the core projects a `TextOutput`, omitting its redundant machine body does
+not clip the selected page or invalidate its read observations. Only actual
+selected-content clipping (or the producer's own `ReadObservation.clipped`)
+marks those reads clipped. Complete machine data remains at the canonical
+result URI. Read facts therefore distinguish an omitted body from unseen file
+bytes; ordinary whole-file reads do not become incomplete just because their
+typed body repeats the displayed page.
+
 A tool can declare paths using `path_argument_keys`, including `edits[].path`. Invocation facts collect those paths and successful read/change paths. Skills uses that surface for touched-file rules; it no longer guesses parameter names or parses patch text. Undeclared shell effects are not inferred from command text. File-tool observations are claims by trusted tools, not filesystem monitoring — but exec changes ARE supervisor-observed: when the sandbox backend is configured, the confined supervisor snapshots writable roots before/after each child and the engine merges those observed changes into the tool's `changes` (success and failure alike, deduped against the tool's self-report). Background jobs contribute their cumulative sidecar when read or cancelled; service processes never stage.
 
 Command completion events separately retain bounded, deduplicated supervisor

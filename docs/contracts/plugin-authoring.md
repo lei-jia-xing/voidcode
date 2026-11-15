@@ -77,6 +77,23 @@ arguments against the registered schema before dispatch; a schema failure is
   `TextOutput`/`EmptyOutput`/`AttachmentOutput`); results cross only the
   storage/HTTP boundary as strict JSON (`sdk/codec.py`), never a plugin RPC.
 
+The model receives `TextOutput.text` as the authoritative selected page, not
+another copy of its `ToolBody`. The complete structured result is recoverable
+through the core-owned `result_reference`; the core publishes it before omitting
+even a small machine body. A recovery `OutputBounds.reference` does not replace
+selected text or reset its page cursor. For structured-only model data use
+`EmptyOutput` plus the body. For intentionally out-of-line textual content use
+`EmptyOutput` with a typed textual `ArtifactReference` and a separate summary in `presentation`.
+Use streaming artifact publication for chunked sources; see [artifacts](artifacts.md).
+The core pages explicitly referenced text, JSON, XML, and JavaScript bytes under
+the existing model allocation; it does not relabel the stored media type.
+
+The same budget distinction applies to child joins: only a committed user or
+owner cancellation is `cancelled`; interrupted results retain their actual or
+unknown stop cause. `ChildOutcome` currently has no typed `BudgetExhaustion`
+field, so joined children cannot yet report its dimension/source/counters.
+
+
 ## 4. Commands: revision binding, busy gate
 
 Commands declare `argument_schema`, `effects`, `busy_gate`,

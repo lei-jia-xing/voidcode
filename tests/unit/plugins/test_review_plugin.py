@@ -13,7 +13,6 @@ from voidcode.plugins.review import create_plugin
 from voidcode.plugins.review.review_plugin import (
     DEFAULT_JOIN_TIMEOUT_SECONDS,
     REVIEW_CHILD_LABEL,
-    REVIEW_CHILD_MAX_STEPS,
     ReviewCommand,
     ReviewTarget,
     build_review_prompt,
@@ -284,7 +283,7 @@ def test_review_spawns_the_read_only_profile_child_and_returns_its_answer(tmp_pa
     spawn = services.spawn_calls[0]
     assert spawn["label"] == REVIEW_CHILD_LABEL == "review"
     assert spawn["tool_allowlist"] is None
-    assert spawn["max_steps"] == REVIEW_CHILD_MAX_STEPS == 32
+    assert spawn["max_steps"] is None
     assert spawn["readonly"] is True, "a review child is always read-only"
     assert "+changed" in str(spawn["prompt"])
     assert "Reviewer focus: look for races" in str(spawn["prompt"])

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from voidcode.capabilities.resource_pages import MAX_INLINE_ATTACHMENT_BYTES, MAX_RESOURCE_PAGE_BYTES
+from tests.fixtures.png import rgb_png
 from voidcode.plugins.files import create_plugin
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactPage, ArtifactReference
@@ -31,6 +30,9 @@ class FakeArtifactStore:
         self.media_types[sha256] = media_type
         self.spills.append(media_type)
         return ArtifactReference(sha256=sha256, bytes=len(raw), media_type=media_type)
+
+    def spill_artifact_stream(self, chunks, *, media_type="application/octet-stream"):
+        return self.spill_artifact(b"".join(chunks), media_type=media_type)
 
     def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
         try:
@@ -157,7 +159,7 @@ def test_invalid_artifact_id_is_refused(tmp_path: Path) -> None:
 
 def test_image_artifact_renders_as_attachment(tmp_path: Path) -> None:
     store = FakeArtifactStore()
-    png = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
+    png = rgb_png(16, 16)
     artifact = store.spill_artifact(png, media_type="image/png")
     sha256 = artifact.sha256
     uri = f"artifact://{sha256}"
@@ -165,19 +167,18 @@ def test_image_artifact_renders_as_attachment(tmp_path: Path) -> None:
     body, output = _read_attachment(store, tmp_path, path=uri)
 
     assert output.mime == "image/png"
-    assert output.data_uri == f"data:image/png;base64,{base64.b64encode(png).decode('ascii')}"
+    assert output.data_uri is None
     assert output.bounds.reference is not None
     assert output.bounds.reference.uri == uri
     assert output.bounds.truncated is False
     assert body == {"path": uri, "type": "attachment", "artifact": artifact.as_payload()}
-    # Inline bytes need no second write: the artifact is its own reference.
+    # The artifact is its own reference; reads never duplicate it.
     assert store.spills == ["image/png"]
 
 
 def test_large_image_artifact_reuses_stored_reference(tmp_path: Path) -> None:
     store = FakeArtifactStore()
-    # Above the inline bound and across two store pages.
-    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * (MAX_INLINE_ATTACHMENT_BYTES + MAX_RESOURCE_PAGE_BYTES)
+    png = rgb_png()
     artifact = store.spill_artifact(png, media_type="image/png")
     sha256 = artifact.sha256
     uri = f"artifact://{sha256}"

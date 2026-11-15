@@ -4,10 +4,13 @@ Delegated agent work is core-owned: a parent session starts child sessions, stee
 
 ## Durable facts
 
-- A child is a normal session with `parent_session_id`, `root_session_id`, and `depth`; only the direct parent may `join_child`, `send_child`, or `cancel_child`. The run-bound subtree cancellation below also permits ancestors within their own descendant tree. Depth (`DELEGATION_MAX_DEPTH`), the chain spawn budget (`DELEGATION_SPAWN_BUDGET`), and the parent's visible tool scope bound every spawn; a requested allowlist may only narrow.
+- A child is a normal session with `parent_session_id`, `root_session_id`, and `depth`; only the direct parent may `join_child`, `send_child`, or `cancel_child`. The run-bound subtree cancellation below also permits ancestors within their own descendant tree. Depth, the configured chain child quota (`policy.max_root_children`), and the parent's visible tool scope bound every spawn; a requested allowlist may only narrow.
 - `core.child_spawned` records the linkage, label, effective allowlist, and `notify_on_completion`. The notify flag is persisted in the fact so a restart reconstructs the request from the durable log, never from a thread-local argument.
 - `core.child_finished` is the terminal fact for exactly one `(child_session_id, run_id)`: status, error, stop cause, label, output (inline under `CHILD_INLINE_OUTPUT_BYTES`, otherwise a bounded preview plus `output_sha256`/`output_bytes` reachable through the artifact page API), and the immutable history snapshot (`sha256`, `bytes`).
 - Waiting on an authentic approval checkpoint and a recoverable interruption are parked, not terminal. Only a public resume or cancel publishes their terminal fact.
+- Child birth atomically captures its originating action's root id and optional finite authorization. Queued child sends and wakeups likewise capture that origin when registered; drivers never borrow a parent's later checkpoint. A local optional `max_steps` limits provider dispatches only. `None` does not refill captured finite root authorization, and a child cannot create a new root through `Core.run`.
+- Interrupted is not synonymous with cancelled: only committed `user_stop`/`owner_cancel` maps to `ChildOutcome.status="cancelled"`. Budget, shutdown, error, or unknown stops remain interrupted with their actual or unknown `stop_cause`.
+- SDK consumer gap: `ChildOutcome` retains `stop_cause`/`error`, but has no `BudgetExhaustion` field, unlike `RunResult`/`ContinuationResult`. Joined children therefore cannot carry typed budget dimension/source/limit/consumed/remaining. This API gap remains open; consumers must not invent those fields or infer cancellation/refill.
 
 ## Join and steering
 
@@ -33,7 +36,7 @@ Delegated agent work is core-owned: a parent session starts child sessions, stee
 
 - The readable renderer emits user messages, assistant turns with their tool calls, tool results, child facts, progress, and plugin events; core bookkeeping is omitted. Child payloads are included (`include_payload=True`) so a transcript is readable, never a payload-stripped skeleton.
 - Live history paging uses a byte cursor: request `after_sequence` plus `history_offset`, then continue from `next_after_sequence` and `next_event_offset`. One page is bounded by `PAGE_BYTES` (40 KiB); a single block larger than a page is split on a UTF-8 boundary, never clipped. Output paging uses `output_sha256` plus `output_offset` (default 8 KiB pages) and does not depend on the child still running.
-- Pages are sized to stay well under the core's 256 KiB context hard bound; a consumer pages instead of requesting the whole transcript.
+- Page bounds are caller/storage policies, not proof of a provider context limit. The obsolete global 256 KiB serialized-message reject is removed; adaptive active-model token/image headroom is still an explicit SDK/Core gap.
 
 ## Concurrency and recovery invariants
 

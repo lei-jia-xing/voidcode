@@ -17,6 +17,7 @@ from websockets.sync.client import ClientConnection, connect
 from websockets.typing import Origin, Subprotocol
 
 from voidcode.sdk.client import (
+    ArtifactPageWire,
     CancelReceipt,
     CommandCatalog,
     CommandResult,
@@ -38,6 +39,7 @@ from voidcode.sdk.client import (
 )
 from voidcode.sdk.commands import CommandInputSnapshot
 from voidcode.sdk.rpc import RPC_MAX_MESSAGE_BYTES, RPC_QUEUE_MESSAGES, RPC_SUBPROTOCOL, RpcFailure, RpcNotification, RpcSuccess
+from voidcode.sdk.services import ArtifactPage
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage, decode_context_history, decode_transcript_page
 
 _END = object()
@@ -222,25 +224,39 @@ class CoreRpcClient:
     def show(self, session_id: str, events: bool = False) -> Mapping[str, Any]:
         return self._call("session.show", {"session_id": session_id, "events": events})
 
+    def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
+        payload = self._call("artifact.read", {"sha256": sha256, "offset": offset, "limit": limit})
+        try:
+            wire = ArtifactPageWire.from_payload(payload)
+        except (TypeError, ValueError) as exc:
+            raise CoreClientError("malformed artifact page response", status_code=502, code="protocol_error") from exc
+        page = wire.as_page()
+        if page.artifact.sha256 != sha256 or page.offset != offset or len(page.data) > limit:
+            raise CoreClientError("malformed artifact page response", status_code=502, code="protocol_error")
+        return page
+
     def run(self, session_id: str, spec: RunSpec) -> RunResult:
-        params: dict[str, object] = {"session_id": session_id, "prompt": spec.prompt, "max_steps": spec.max_steps}
+        params: dict[str, object] = {"session_id": session_id, "prompt": spec.prompt}
+        if spec.max_steps is not None:
+            params["max_steps"] = spec.max_steps
+        if spec.root_action_budget is not None:
+            params["root_action_budget"] = spec.root_action_budget
         if spec.images:
             params["images"] = [img.as_payload() for img in spec.images]
         return RunResult.from_payload(self._call("session.run", params))
 
     def resume(self, session_id: str, spec: ResumeSpec | None = None) -> RunResult:
         active = spec or ResumeSpec()
-        return RunResult.from_payload(
-            self._call(
-                "session.resume",
-                {
-                    "session_id": session_id,
-                    "approval_request_id": active.approval_request_id,
-                    "decision": active.decision,
-                    "max_steps": active.max_steps,
-                },
-            )
-        )
+        params: dict[str, object] = {"session_id": session_id}
+        if active.approval_request_id is not None:
+            params["approval_request_id"] = active.approval_request_id
+            params["decision"] = active.decision
+        if active.max_steps is not None:
+            params["max_steps"] = active.max_steps
+        if active.extend_root_actions is not None:
+            params["extend_root_actions"] = active.extend_root_actions
+            params["root_action_grant_id"] = active.root_action_grant_id
+        return RunResult.from_payload(self._call("session.resume", params))
 
     def command_input(
         self, session_id: str, name: str, expected_revision: str, *, arguments: Mapping[str, object] | None = None

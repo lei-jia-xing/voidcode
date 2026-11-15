@@ -20,8 +20,9 @@ from pathlib import Path
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.bootstrap import open_core
+from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
+from voidcode.core.storage.store import BACKGROUND_ACTION_SOURCE
 
 PLUGIN_ID = "background-fixture"
 
@@ -115,6 +116,14 @@ def drive(context):
         return "first"
 
     context.invoke(first)
+    if note == "spawn-after-delay":
+        time.sleep(float(payload.get("delay_seconds", 0.6)))
+
+        def _spawn(_ctx, services):
+            return services.spawn_child("child under captured background root", label="background-origin-child")
+
+        context.invoke(_spawn)
+        return
     if note == "raise":
         raise ValueError("boom from driver")
     if note == "raise-base":
@@ -313,6 +322,57 @@ def test_keyed_spawn_returns_one_child_and_refuses_a_differing_spec(tmp_path: Pa
         assert core.join_child("parent", first, timeout_seconds=30).status == "completed"
 
 
+def test_delayed_background_spawn_keeps_its_original_root_authorization(tmp_path: Path) -> None:
+    with _server([_turn(output="first root done"), _turn(output="new unlimited root done")]) as server:
+        core = _open(tmp_path, server)
+        first = core.run("first root", session_id="parent", root_action_budget=1)
+        assert first.status == "completed", first.error
+        checkpoint = core.store.checkpoint("parent")
+        assert checkpoint is not None
+        original_root_id = str(checkpoint.payload["root_id"])
+        assert core.store.root_budget_state(original_root_id) == (1, 1)
+
+        action_id = "delayed-origin-action"
+        core.store.enqueue_continuation(
+            action_id,
+            PLUGIN_ID,
+            "parent",
+            BACKGROUND_ACTION_SOURCE,
+            first.run_id,
+            core.revision_id,
+            {
+                "action": {"note": "spawn-after-delay", "delay_seconds": 3.0},
+                "root_action_budget": 1,
+            },
+            root_id=original_root_id,
+            role="system",
+        )
+        core._notify_background_loop()  # noqa: SLF001 - seed the durable queue directly to isolate recovery.
+        _wait_for(lambda: "first:spawn-after-delay" in _marks(core, "parent"), what="background delay point")
+
+        second = core.run("new root", session_id="parent")
+        assert second.status == "completed", second.error
+        second_checkpoint = core.store.checkpoint("parent")
+        assert second_checkpoint is not None
+        new_root_id = str(second_checkpoint.payload["root_id"])
+        assert new_root_id != original_root_id
+
+        _wait_for(lambda: bool(core.list_descendants("parent")), what="delayed child reservation")
+        child = core.list_descendants("parent")[0]
+        _wait_for(lambda: core.session(child.session_id).status == "interrupted", what="old-root child exhaustion")
+        birth = core._delegation._birth_record(child.session_id)  # noqa: SLF001 - assert durable authorization at birth.
+        assert birth is not None
+        assert birth["root_id"] == original_root_id
+        assert birth["root_action_budget"] == 1
+        assert core.store.root_budget_state(original_root_id) == (1, 1)
+        _wait_for(
+            lambda: core.store.background_action(action_id) is not None and core.store.background_action(action_id).status == "completed",
+            what="background spawn completion",
+        )
+        assert core.store.root_budget_state(new_root_id) is None
+        assert len(server.requests) == 2
+
+
 def test_full_budget_still_refetches_a_keyed_child(tmp_path: Path) -> None:
     """At budget, a fresh key is refused but an existing key re-fetches without counting again."""
     with _server([_turn(output=f"child-{i}") for i in range(4)]) as server:
@@ -345,6 +405,7 @@ def test_message_and_action_share_one_key_without_swallowing(tmp_path: Path) -> 
             core.revision_id,
             {"kind": "background_action", "text": "ordinary message with a colliding kind"},
             idempotency_key="shared-key",
+            root_id="parent-root",
         )
         action_id = _enqueue(core, "parent", note="ns", key="shared-key", spins=0)
         assert action_id != "msg-ns-1"
@@ -563,3 +624,107 @@ def test_concurrent_same_key_spawns_start_exactly_one_initial_run(tmp_path: Path
         joined = core.join_child("parent", child, timeout_seconds=30)
         assert (joined.status, joined.output) == ("completed", "one winner")
         assert len(server.requests) == 1, "one initial run, not one per contender"
+
+
+def test_parallel_child_sessions_share_finite_captured_authorization_across_restart(tmp_path: Path) -> None:
+    source = tmp_path / "parallel_plugin"
+    source.mkdir()
+    (source / "__init__.py").write_text(
+        "from voidcode.sdk.plugin import Plugin\n"
+        "from voidcode.sdk.tools import ToolDefinition, ToolEffect, ToolSuccess, TextOutput\n"
+        "class Spawn:\n"
+        "    definition = ToolDefinition('spawn_parallel', 'Start two children', effects=frozenset({ToolEffect.SPAWN, ToolEffect.SESSION}))\n"
+        "    def invoke(self, call, *, context, services):\n"
+        "        ids = [services.spawn_child('parallel-budget-child-' + name, max_steps=None) for name in ('A', 'B')]\n"
+        "        for child in ids:\n"
+        "            outcome = services.join_child(child, timeout_seconds=30)\n"
+        "            if outcome.status != 'completed':\n"
+        "                raise RuntimeError(str(outcome.error))\n"
+        "        return ToolSuccess(call.tool_name, TextOutput('both independent children completed'))\n"
+        "def create_plugin(config):\n"
+        "    return Plugin(tools=(Spawn(),))\n",
+        encoding="utf-8",
+    )
+    entered = {name: threading.Event() for name in ("A", "B")}
+    release = threading.Event()
+    with _server([]) as server:
+
+        def reply(payload, _index):
+            text = json.dumps(payload["messages"])
+            for name in ("A", "B"):
+                if f"parallel-budget-child-{name}" in text:
+                    entered[name].set()
+                    assert release.wait(timeout=30)
+                    return _turn(output=f"child {name} complete")
+            return openai_response(
+                message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "parallel-spawn",
+                            "type": "function",
+                            "function": {"name": "spawn_parallel", "arguments": "{}"},
+                        }
+                    ],
+                },
+                finish="tool_calls",
+            )
+
+        server.before_reply = reply
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        plugins = {name: {"enabled": name == "providers"} for name in BUNDLED_PLUGIN_IDS}
+        plugins["parallel_fixture"] = {"path": str(source)}
+        (workspace / "voidcode.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "model": {"model": "endpoint/exact-model"},
+                    "policy": {"approval_mode": "yolo"},
+                    "providers": {"endpoint": {"api_key": "parallel-key", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
+                    "plugins": plugins,
+                }
+            ),
+            encoding="utf-8",
+        )
+        core = _open(tmp_path, server)
+        outcomes: list[object] = []
+        runner = threading.Thread(
+            target=lambda: outcomes.append(core.run("start parallel children", session_id="parent", root_action_budget=3)),
+            daemon=True,
+        )
+        try:
+            runner.start()
+            assert entered["A"].wait(timeout=30), core.list_descendants("parent")
+            assert entered["B"].wait(timeout=30), core.list_descendants("parent")
+            nodes = core.list_descendants("parent")
+            assert len(nodes) == 2 and len({node.session_id for node in nodes}) == 2
+            checkpoint = core.store.checkpoint("parent")
+            assert checkpoint is not None
+            root_id = checkpoint.payload["root_id"]
+            assert core.store.root_budget_state(root_id) == (3, 3)
+            for node in nodes:
+                birth = core._delegation._birth_record(node.session_id)
+                assert birth["root_id"] == root_id and birth["root_action_budget"] == 3
+        finally:
+            release.set()
+            runner.join(timeout=30)
+        assert not runner.is_alive() and outcomes[0].status == "interrupted"
+        assert outcomes[0].budget_exhaustion.dimension == "root_actions"
+        assert len(server.requests) == 3
+        assert all(core.session(node.session_id).status == "completed" for node in nodes)
+        core.close()
+        reopened = _open(tmp_path, server)
+        resumed = reopened.resume("parent")
+        assert resumed.status == "interrupted" and resumed.budget_exhaustion.consumed == 3
+        late = reopened.spawn_child(
+            "parent",
+            "child under exhausted original authorization",
+            max_steps=None,
+            root_action_id=root_id,
+            initial_root_budget=3,
+        )
+        assert reopened.join_child("parent", late, timeout_seconds=30).status == "interrupted"
+        assert reopened.store.root_budget_state(root_id) == (3, 3)
+        assert len(server.requests) == 3, "neither completed tool calls nor child dispatches replay on recovery"

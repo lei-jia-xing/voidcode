@@ -5,6 +5,7 @@ Smoke test verifying goal creation, multi-step autonomous task execution, and st
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from collections.abc import Iterator, Mapping
@@ -232,3 +233,62 @@ def test_goal_command_opens_create_then_details_and_prepared_edit_without_mutati
         assert len(committed) == 2
         result = CommandResult.from_payload(committed[-1].payload["result"])
         assert result.presentation == shown.presentation
+
+
+def test_long_model_goal_round_trips_after_restart_without_workspace_writes(tmp_path: Path) -> None:
+    objective = " \n" + "🎯 完全自动化端到端测试与真实验证。\n" * 5000 + "Final acceptance.\n\t"
+    expected_uri = "artifact://" + hashlib.sha256(objective.encode("utf-8")).hexdigest()
+    replies = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "create-long-goal",
+                        "type": "function",
+                        "function": {"name": "create_goal", "arguments": json.dumps({"objective": objective})},
+                    }
+                ],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "complete-long-goal",
+                        "type": "function",
+                        "function": {"name": "update_goal", "arguments": json.dumps({"status": "complete"})},
+                    }
+                ],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "long-goal-round-trip"}, finish="stop"),
+    ]
+    with _loopback_server(replies) as server:
+        core = _core_with_loopback(tmp_path, server)
+        core.auto_drain = False
+        workspace = tmp_path / "workspace"
+        before = {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*") if path.is_file()}
+        session = core.create_session().session_id
+        result = core.run("Create the explicitly requested goal and mark this storage check complete.", session_id=session)
+        assert result.status == "completed", result
+        shown = _invoke(core, session, "goal", {})
+        assert shown.data["goal"]["objective_file_ref"] == expected_uri
+        loaded = _invoke(core, session, "goal.load_objective", {})
+        assert loaded.status == "ok", loaded.error
+        assert loaded.data["objective"] == objective
+        assert {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*") if path.is_file()} == before
+        assert not (workspace / ".voidcode").exists()
+
+        core.close()
+        _CREATED_CORES.remove(core)
+        reopened = _core_with_loopback(tmp_path, server)
+        loaded = _invoke(reopened, session, "goal.load_objective", {})
+        assert loaded.status == "ok", loaded.error
+        assert loaded.data["objective"] == objective
+        assert {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*") if path.is_file()} == before

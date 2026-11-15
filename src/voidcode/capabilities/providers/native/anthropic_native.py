@@ -404,10 +404,23 @@ class AnthropicMessagesProvider:
                     append_message("assistant", block)
                 continue
             if message.role == "tool":
+                if message.images:
+                    tool_content: list[dict[str, object]] = []
+                    if message.content:
+                        tool_content.append({"type": "text", "text": message.content})
+                    for img in message.images:
+                        tool_content.append(
+                            {
+                                "type": "image",
+                                "source": {"type": "base64", "media_type": img.media_type, "data": img.data},
+                            }
+                        )
+                else:
+                    tool_content = message.content or ""
                 block: dict[str, object] = {
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id,
-                    "content": message.content or "",
+                    "content": tool_content,
                 }
                 if message.is_error:
                     block["is_error"] = True

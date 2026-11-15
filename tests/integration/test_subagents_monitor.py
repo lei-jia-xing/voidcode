@@ -16,7 +16,7 @@ from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.events import child_completion_notice_id
 from voidcode.core.history_renderer import iter_event_blocks
-from voidcode.sdk.views import ChoicesViewData, MarkdownViewData
+from voidcode.sdk.views import ChoicesViewData, MarkdownViewData, choices_dispatch
 
 _SUBAGENTS_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"
 
@@ -151,13 +151,15 @@ def test_monitor_browsing_consumes_no_notice_and_stays_descendant_bound(tmp_path
             assert _continuation_status(core, "root", notice_id) == "pending"
 
             roster = core.command_input("root", "subagents.monitor", expected_revision=rev)
-            options = ChoicesViewData.from_payload(roster.presentation.data).options
-            assert [option.id for option in options] == [child, grandchild]
+            choices = ChoicesViewData.from_payload(roster.presentation.data)
+            options = choices.options
+            assert len(options) == 2
             assert options[0].label.startswith("completed") and not options[0].label.startswith("  ")
             assert options[1].label.startswith("  completed")
-            detail = core.command_input("root", "subagents.monitor", arguments={"target_session_id": grandchild}, expected_revision=rev)
-            assert detail.presentation.view_type == "markdown"
-            again = core.command_input("root", "subagents.monitor", arguments={"target_session_id": grandchild}, expected_revision=rev)
+            action, arguments = choices_dispatch(choices, options[1].id)
+            detail = core.command_input("root", action, arguments=arguments, expected_revision=rev)
+            assert f"session {grandchild}\n" in MarkdownViewData.from_payload(detail.presentation.data).content
+            again = core.command_input("root", action, arguments=arguments, expected_revision=rev)
             assert again.presentation.view_type == "markdown"
             # Browsing twice leaves the pending notice durably pending: no acknowledge path ran.
             assert _continuation_status(core, "root", notice_id) == "pending"

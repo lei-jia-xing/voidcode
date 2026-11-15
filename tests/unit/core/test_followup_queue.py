@@ -70,7 +70,10 @@ def test_submitting_prompt_while_run_active_queues_without_altering_context(tmp_
         session_id = session.session_id
 
         # Start Turn 1 in background
-        t1 = threading.Thread(target=lambda: core.run("Turn 1 prompt", session_id=session_id), daemon=True)
+        t1 = threading.Thread(
+            target=lambda: core.run("Turn 1 prompt", session_id=session_id, root_action_budget=3),
+            daemon=True,
+        )
         t1.start()
 
         # Wait until Turn 1 is blocked in BLOCK_TOOL
@@ -84,6 +87,10 @@ def test_submitting_prompt_while_run_active_queues_without_altering_context(tmp_
         sess_record = core.store.session(session_id)
         assert sess_record.status == "running"
 
+        first_checkpoint = core.store.checkpoint(session_id)
+        assert first_checkpoint is not None
+        root_id = str(first_checkpoint.payload["root_id"])
+
         # Submit follow-up prompt while active
         queued_res = core.run("Turn 2 follow-up prompt", session_id=session_id)
         assert queued_res.status == "queued"
@@ -94,7 +101,8 @@ def test_submitting_prompt_while_run_active_queues_without_altering_context(tmp_
         kernel_pending = [c for c in pending if c.owner == "kernel"]
         assert len(kernel_pending) == 1
         assert kernel_pending[0].source == "user_message"
-        assert kernel_pending[0].payload == {"prompt": "Turn 2 follow-up prompt", "max_steps": 32}
+        assert kernel_pending[0].payload == {"prompt": "Turn 2 follow-up prompt", "root_action_budget": 3}
+        assert kernel_pending[0].root_id == root_id
 
         # Verify Turn 1 context does NOT contain Turn 2 prompt
         events = core.store.events(session_id)
@@ -115,8 +123,9 @@ def test_submitting_prompt_while_run_active_queues_without_altering_context(tmp_
         assert user_events_after[1].payload["content"] == "Turn 2 follow-up prompt"
 
         # Continuation is completed
-        status = core.store.continuation_status(kernel_pending[0].continuation_id)
-        assert status == "completed"
+        assert core.store.continuation_status(kernel_pending[0].continuation_id) == "completed"
+        assert core.store.root_budget_state(root_id) == (3, 3)
+        assert len(server.requests) == 3
         core.close()
 
 

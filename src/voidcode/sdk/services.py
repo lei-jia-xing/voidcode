@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
@@ -42,6 +42,18 @@ class QueryContractError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class BudgetExhaustion:
+    """One finite execution cap that stopped a run without claiming success."""
+
+    dimension: Literal["provider_turns", "root_actions"]
+    source: Literal["max_steps", "root_action_budget"]
+    limit: int
+    consumed: int
+    remaining: int
+    continue_with: Literal["resume_with_max_steps", "extend_root_actions"]
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuationResult:
     continuation_id: str
     owner: str
@@ -53,6 +65,7 @@ class ContinuationResult:
     output: str | None = None
     error: str | None = None
     stop_cause: str | None = None
+    budget_exhaustion: BudgetExhaustion | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", own_json_object(self.payload))
@@ -75,6 +88,15 @@ class ContinuationResult:
             result["error"] = self.error
         if self.stop_cause is not None:
             result["stop_cause"] = self.stop_cause
+        if self.budget_exhaustion is not None:
+            result["budget_exhaustion"] = {
+                "dimension": self.budget_exhaustion.dimension,
+                "source": self.budget_exhaustion.source,
+                "limit": self.budget_exhaustion.limit,
+                "consumed": self.budget_exhaustion.consumed,
+                "remaining": self.budget_exhaustion.remaining,
+                "continue_with": self.budget_exhaustion.continue_with,
+            }
         return result
 
     @staticmethod
@@ -580,23 +602,24 @@ class PluginServices(Protocol):
         *,
         label: str = "",
         tool_allowlist: tuple[str, ...] | None = None,
-        max_steps: int = 32,
+        max_steps: int | None = None,
         readonly: bool = False,
         notify_on_completion: bool = False,
         idempotency_key: str | None = None,
     ) -> str:
         """Start a delegated child session of the bound session; returns its durable session id.
 
+        `max_steps`, when supplied, is an explicit provider-turn cap for this child run. The child
+        inherits its root action authorization from its parent; it cannot create or extend it.
         The child can only be narrower than its parent: depth, the chain's spawn budget, the
-        parent's tool scope, and the parent's restrictive stance all bound it. A read-only lease
-        may therefore delegate read-only work, but never spawn a writable child; `readonly=True`
+        parent's tool scope, and the parent's restrictive stance bound it. A read-only lease may
+        therefore delegate read-only work, but never spawn a writable child; `readonly=True`
         records the child's stance durably on the child session (the core owns that record).
 
-        With `notify_on_completion` the core delivers one bounded completion notice to this
-        session when the child's run reaches a terminal state, even after this turn ends, and
-        the child's readable history is spilled to an immutable artifact. The notice is keyed by
-        the run, never by the child alone, so a follow-up run cannot be masked by an older one.
-        A synchronous join is the normal choice for immediate work and does not need a notice.
+        With `notify_on_completion` the core delivers one bounded, run-scoped notice to this
+        session when the child's run reaches a terminal state, even after this turn ends, and the
+        child's readable history is spilled to an immutable artifact. The notice is keyed by the
+        run, never by the child alone, so a follow-up run cannot be masked by an older one.
 
         With `idempotency_key` the identity is deterministic per parent, owner, and key: a retry
         with the same effective spec returns the existing child, while the same key with a
@@ -871,6 +894,15 @@ class PluginServices(Protocol):
         carrying a reference can never point at missing bytes. Spilling touches only the core's
         own store: a read-only lease may spill output it could not otherwise carry, a hook lease
         (an observer) may not.
+        """
+        ...
+
+    def spill_artifact_stream(self, chunks: Iterable[bytes], *, media_type: str = "application/octet-stream") -> ArtifactReference:
+        """Store a byte stream atomically under its digest.
+
+        The host validates each chunk, enforces its artifact-store bound while writing, and
+        discards an incomplete spill on cancellation, revocation, or producer failure. No
+        reference is returned until all chunks have been durably published.
         """
         ...
 

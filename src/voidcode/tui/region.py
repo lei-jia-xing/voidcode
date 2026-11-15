@@ -5,7 +5,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-__all__ = ["TuiFrame", "diff_rows"]
+__all__ = ["KittyImagePlacement", "TuiFrame", "diff_rows"]
+
+
+@dataclass(frozen=True, slots=True)
+class KittyImagePlacement:
+    sha256: str
+    row: int
+    column: int
+    columns: int
+    placement_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +22,7 @@ class TuiFrame:
     transcript_rows: tuple[str, ...] = ()
     chrome_rows: tuple[str, ...] = ()
     cursor: tuple[int, int] | None = None
+    image: KittyImagePlacement | None = None
 
     @property
     def rows(self) -> tuple[str, ...]:

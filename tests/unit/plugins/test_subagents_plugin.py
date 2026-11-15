@@ -216,7 +216,7 @@ def test_profile_spawn_materializes_the_prompt_and_applies_its_scope(tmp_path: P
             "prompt": f"{_builtin_body(tmp_path, 'explore')}\n\nmap the retry paths",
             "label": "explore",
             "tool_allowlist": None,
-            "max_steps": 32,
+            "max_steps": None,
             "readonly": True,
             "notify_on_completion": True,
         }
@@ -590,7 +590,7 @@ def test_batch_spawns_the_whole_group_and_records_it(tmp_path: Path) -> None:
     assert len(group_id) == 32
     assert payload == {"operation": "spawn", "parallel_group_id": group_id, "task_ids": ["child-1", "child-2"], "partial": False}
     assert services.spawn_calls == [
-        {"prompt": "one", "label": "a", "tool_allowlist": None, "max_steps": 32, "readonly": False, "notify_on_completion": True},
+        {"prompt": "one", "label": "a", "tool_allowlist": None, "max_steps": None, "readonly": False, "notify_on_completion": True},
         {"prompt": "two", "label": "", "tool_allowlist": None, "max_steps": 7, "readonly": False, "notify_on_completion": True},
     ]
     assert services.join_calls == []
@@ -702,11 +702,11 @@ def test_batch_items_select_their_own_profiles(tmp_path: Path) -> None:
             "prompt": f"{_builtin_body(tmp_path, 'research')}\n\nread the docs",
             "label": "",
             "tool_allowlist": None,
-            "max_steps": 32,
+            "max_steps": None,
             "readonly": True,
             "notify_on_completion": True,
         },
-        {"prompt": "plain", "label": "", "tool_allowlist": None, "max_steps": 32, "readonly": False, "notify_on_completion": True},
+        {"prompt": "plain", "label": "", "tool_allowlist": None, "max_steps": None, "readonly": False, "notify_on_completion": True},
     ]
     assert _stored(services).children == {
         "child-1": ChildRecord(group_id=group_id, subagent_type="research"),

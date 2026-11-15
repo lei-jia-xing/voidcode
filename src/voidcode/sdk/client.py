@@ -8,19 +8,20 @@ no storage, no ``Core`` — the outer layer implements the Protocol.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import Base64Bytes, BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from .commands import CommandCatalog, CommandInputSnapshot, CommandResult
 from .hooks import StopCause
 from .json_values import json_wire_object, own_json_object
 from .limits import CLIENT_PROMPT_MAX_BYTES
 from .provider import ImageAttachment
-from .services import ContinuationResult, SessionUsageReport
+from .services import ArtifactPage, ArtifactReference, BudgetExhaustion, ContinuationResult, SessionUsageReport
 from .transcript import ContextHistory, TranscriptEntry, TranscriptEntryWire, TranscriptPage
 from .views import ViewsSnapshot
 
@@ -29,6 +30,63 @@ def _decode[T](adapter: TypeAdapter[T], payload: Mapping[str, object], label: st
     if not isinstance(payload, Mapping):
         raise ValueError(f"{label} payload must be an object")
     return adapter.validate_json(json.dumps(json_wire_object(payload), allow_nan=False), strict=True, extra="forbid")
+
+
+class ArtifactPageWire(BaseModel):
+    """JSON-RPC artifact page; ``data`` is base64 on the wire and bytes in Python."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    artifact: ArtifactReference
+    offset: int = Field(ge=0)
+    data: Base64Bytes
+    eof: bool
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def validate_base64(cls, value: object) -> object:
+        if not isinstance(value, str):
+            raise ValueError("artifact page data must be a base64 string")
+        try:
+            base64.b64decode(value, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("artifact page data is not valid base64") from exc
+        return value.encode("ascii")
+
+    @model_validator(mode="after")
+    def validate_page(self) -> ArtifactPageWire:
+        reference = self.artifact
+        if len(reference.sha256) != 64 or any(char not in "0123456789abcdef" for char in reference.sha256):
+            raise ValueError("artifact page has an invalid sha256 digest")
+        if type(reference.bytes) is not int or reference.bytes < 0:
+            raise ValueError("artifact page has an invalid total byte count")
+        end = self.offset + len(self.data)
+        if self.data and end > reference.bytes:
+            raise ValueError("artifact page exceeds the source byte range")
+        if self.offset < reference.bytes and not self.data:
+            raise ValueError("non-final artifact page must make positive progress")
+        if self.eof is not (end >= reference.bytes):
+            raise ValueError("artifact page eof does not match the source byte range")
+        return self
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> ArtifactPageWire:
+        return _decode(_ARTIFACT_PAGE_WIRE_ADAPTER, payload, "artifact page")
+
+    @classmethod
+    def from_page(cls, page: ArtifactPage) -> ArtifactPageWire:
+        return cls(
+            artifact=page.artifact,
+            offset=page.offset,
+            data=base64.b64encode(page.data).decode("ascii"),
+            eof=page.eof,
+        )
+
+    def as_page(self) -> ArtifactPage:
+        return ArtifactPage(artifact=self.artifact, offset=self.offset, data=bytes(self.data), eof=self.eof)
+
+
+_ARTIFACT_PAGE_WIRE_ADAPTER: TypeAdapter[ArtifactPageWire] = TypeAdapter(ArtifactPageWire)
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,16 +195,10 @@ class CoreClientError(ValueError):
         return CoreClientError(envelope.error, status_code=status_code, code=envelope.code)
 
 
-#: Shared client ingress bounds: exactly the HTTP transport's. The byte bound
-#: is the neutral sdk/limits value the core ingress guard also enforces.
+# Shared client ingress bounds: exactly the HTTP transport's. The byte bound
+# is the neutral sdk/limits value the core ingress guard also enforces.
 MAX_PROMPT_CHARS = 65536
 MAX_PROMPT_BYTES = CLIENT_PROMPT_MAX_BYTES
-MAX_STEPS = 1024
-
-
-def _validated_steps(max_steps: int) -> None:
-    if type(max_steps) is not int or not 1 <= max_steps <= MAX_STEPS:
-        raise ValueError(f"max_steps must be an integer in 1..{MAX_STEPS}")
 
 
 def _validated_prompt(prompt: str) -> None:
@@ -156,17 +208,40 @@ def _validated_prompt(prompt: str) -> None:
         raise ValueError(f"prompt must be within {MAX_PROMPT_CHARS} chars and {MAX_PROMPT_BYTES // 1024} KiB")
 
 
+def _validated_steps(max_steps: int | None) -> None:
+    if max_steps is not None and (type(max_steps) is not int or max_steps < 1):
+        raise ValueError("max_steps must be a positive integer or null")
+
+
+def _validated_root_action_budget(budget: int | None) -> None:
+    if budget is not None and (type(budget) is not int or not 0 <= budget <= 9_223_372_036_854_775_807):
+        raise ValueError("root_action_budget must fit a non-negative SQLite INTEGER or be null")
+
+
+def _validated_grant(amount: int | None, grant_id: str | None) -> None:
+    if amount is None:
+        if grant_id is not None:
+            raise ValueError("root_action_grant_id requires extend_root_actions")
+        return
+    if type(amount) is not int or not 1 <= amount <= 9_223_372_036_854_775_807:
+        raise ValueError("extend_root_actions must be a positive SQLite INTEGER")
+    if not isinstance(grant_id, str) or not grant_id or len(grant_id) > 128 or "\0" in grant_id:
+        raise ValueError("root_action_grant_id must be nonempty text within 128 characters")
+
+
 @dataclass(frozen=True, slots=True)
 class RunSpec:
     """One agent-turn request."""
 
     prompt: str
-    max_steps: int = 32
+    max_steps: int | None = None
+    root_action_budget: int | None = None
     images: tuple[ImageAttachment, ...] = ()
 
     def __post_init__(self) -> None:
         _validated_prompt(self.prompt)
         _validated_steps(self.max_steps)
+        _validated_root_action_budget(self.root_action_budget)
         if not isinstance(self.images, tuple):
             object.__setattr__(self, "images", tuple(self.images))
         for img in self.images:
@@ -176,11 +251,13 @@ class RunSpec:
 
 @dataclass(frozen=True, slots=True)
 class ResumeSpec:
-    """One resume request, optionally resolving a native tool approval."""
+    """One resume request; omitted `max_steps` retains the checkpoint's total provider-turn cap."""
 
     approval_request_id: str | None = None
     decision: Literal["allow", "deny"] | None = None
-    max_steps: int = 32
+    max_steps: int | None = None
+    extend_root_actions: int | None = None
+    root_action_grant_id: str | None = None
 
     def __post_init__(self) -> None:
         if (self.approval_request_id is None) != (self.decision is None):
@@ -188,6 +265,7 @@ class ResumeSpec:
         if self.decision is not None and self.decision not in ("allow", "deny"):
             raise ValueError("decision must be 'allow' or 'deny'")
         _validated_steps(self.max_steps)
+        _validated_grant(self.extend_root_actions, self.root_action_grant_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +280,7 @@ class RunResult:
     error: str | None = None
     pending_approval: Mapping[str, object] | None = None
     stop_cause: StopCause | None = None
+    budget_exhaustion: BudgetExhaustion | None = None
 
     def __post_init__(self) -> None:
         if self.pending_approval is not None:
@@ -223,6 +302,15 @@ class RunResult:
         }
         if self.stop_cause is not None:
             payload["stop_cause"] = self.stop_cause
+        if self.budget_exhaustion is not None:
+            payload["budget_exhaustion"] = {
+                "dimension": self.budget_exhaustion.dimension,
+                "source": self.budget_exhaustion.source,
+                "limit": self.budget_exhaustion.limit,
+                "consumed": self.budget_exhaustion.consumed,
+                "remaining": self.budget_exhaustion.remaining,
+                "continue_with": self.budget_exhaustion.continue_with,
+            }
         return payload
 
 
@@ -495,6 +583,8 @@ class SessionClient(Protocol):
 
     def show(self, session_id: str, events: bool = False) -> Mapping[str, Any]: ...
 
+    def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage: ...
+
     def run(self, session_id: str, spec: RunSpec) -> RunResult: ...
 
     def resume(self, session_id: str, spec: ResumeSpec | None = None) -> RunResult: ...
@@ -542,6 +632,7 @@ class SessionClient(Protocol):
 
 
 __all__ = [
+    "BudgetExhaustion",
     "CancelReceipt",
     "ClientWireModel",
     "CoreClientError",
@@ -557,7 +648,6 @@ __all__ = [
     "ImageAttachment",
     "MAX_PROMPT_BYTES",
     "MAX_PROMPT_CHARS",
-    "MAX_STEPS",
     "RestartFrame",
     "RestartFrameWire",
     "ResumeSpec",

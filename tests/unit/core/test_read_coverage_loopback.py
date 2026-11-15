@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from tests.fixtures.s5_plugin import PROBE_TOOL
 from tests.unit.core.test_nested_tools import _call, _configure, _open, _server, _turn
+from voidcode.core.coverage import read_artifact_content
+from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.hooks import InvocationFinishedFact
+from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 
 
 @pytest.mark.parametrize("flags", [{"partial": True}, {"truncated": True}, {"clipped": True}, {"output_bytes": 52 * 1024}])
@@ -39,4 +43,12 @@ def test_read_observations_preserve_output_bounds_in_public_facts(tmp_path: Path
             if "output_bytes" in flags:
                 assert observed.truncated is True and observed.reads[0].clipped is True
                 messages = server.requests[1]["messages"]
-                assert any("model projection truncated" in str(message.get("content")) for message in messages if message.get("role") == "tool")
+                projection = next(message["content"] for message in messages if message.get("role") == "tool")
+                document = json.loads(projection)
+                assert len(projection.encode()) <= TOOL_OUTPUT_BYTES
+                assert document["partial"] and len(document["text"].encode()) < flags["output_bytes"]
+                completed = next(event for event in core.events_after(result.session_id) if event.event_type == "core.tool_completed")
+                reference = decode_tool_result(completed.payload["result"]).result_reference
+                assert reference is not None and document["result_uri"] == reference.uri
+                original = json.loads(read_artifact_content(reference, core._artifact_page))
+                assert len(original["output"]["text"].encode()) == flags["output_bytes"]

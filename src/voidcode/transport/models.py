@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
+from voidcode.core.artifacts import MAX_PAGE_BYTES
 from voidcode.sdk.client import SessionFrameWire, SessionRow
 from voidcode.sdk.rpc import RpcModel
 from voidcode.sdk.services import ContinuationResult
@@ -22,6 +23,12 @@ class AuthenticateParams(RpcModel):
 
 class SessionParams(RpcModel):
     session_id: str = Field(min_length=1, max_length=128, pattern=r"^[^/\x00]+$")
+
+
+class ArtifactReadParams(RpcModel):
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=65536, ge=1, le=MAX_PAGE_BYTES)
 
 
 class ListSessionsParams(RpcModel):
@@ -44,19 +51,24 @@ class ImageAttachmentPayload(RpcModel):
 
 class RunRequest(SessionParams):
     prompt: str = Field(min_length=1, max_length=65536)
-    max_steps: int = Field(default=32, ge=1, le=1024)
+    max_steps: int | None = Field(default=None, ge=1)
+    root_action_budget: int | None = Field(default=None, ge=0, le=9_223_372_036_854_775_807)
     images: list[ImageAttachmentPayload] = Field(default_factory=list)
 
 
 class ResumeRequest(SessionParams):
     approval_request_id: str | None = Field(default=None, min_length=1, max_length=128)
     decision: Literal["allow", "deny"] | None = None
-    max_steps: int = Field(default=32, ge=1, le=1024)
+    max_steps: int | None = Field(default=None, ge=1)
+    extend_root_actions: int | None = Field(default=None, gt=0, le=9_223_372_036_854_775_807)
+    root_action_grant_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[^\x00]+$")
 
     @model_validator(mode="after")
-    def paired_decision(self) -> ResumeRequest:
+    def paired_decision_and_grant(self) -> ResumeRequest:
         if (self.approval_request_id is None) != (self.decision is None):
             raise ValueError("approval_request_id and decision travel together")
+        if (self.extend_root_actions is None) != (self.root_action_grant_id is None):
+            raise ValueError("extend_root_actions and root_action_grant_id travel together")
         return self
 
 

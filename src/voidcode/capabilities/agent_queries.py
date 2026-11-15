@@ -125,12 +125,12 @@ def apply_agent_profile(
     profile: AgentDefinition | None,
     prompt: str,
     tool_allowlist: tuple[str, ...] | None,
-    max_steps: int,
-) -> tuple[str, bool, tuple[str, ...] | None, int]:
-    """Effective child prompt, stance, scope, and budget behind an optional agent profile."""
+    max_steps: int | None,
+) -> tuple[str, bool, tuple[str, ...] | None, int | None]:
+    """Apply profile text and stance; max_turns only narrows an assigned cap."""
     if profile is None:
         return prompt, False, tool_allowlist, max_steps
     body = f"{profile.prompt}\n\n{prompt}"
-    if profile.max_turns is not None:
+    if max_steps is not None and profile.max_turns is not None:
         max_steps = min(max_steps, profile.max_turns)
     return body, profile.readonly, tool_allowlist, max_steps

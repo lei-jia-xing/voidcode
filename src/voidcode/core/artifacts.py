@@ -173,7 +173,7 @@ class ArtifactStore:
 
     def resolve(self, sha256: str) -> Path:
         """The path of one stored artifact, refused for anything that is not a digest."""
-        if not isinstance(sha256, str) or not SHA256_PATTERN.match(sha256):
+        if not isinstance(sha256, str) or SHA256_PATTERN.fullmatch(sha256) is None:
             raise ArtifactError("artifact reference must be a lowercase sha256 digest")
         path = self.root / sha256
         try:
@@ -198,12 +198,14 @@ class ArtifactStore:
 
     def read(self, sha256: str, *, offset: int, limit: int) -> tuple[bytes, int, bool, str]:
         """Read one bounded page; returns `(data, total_bytes, eof, media_type)`."""
-        if offset < 0:
-            raise ArtifactError("artifact offset must not be negative")
-        if limit <= 0 or limit > MAX_PAGE_BYTES:
-            raise ArtifactError(f"artifact page limit must be between 1 and {MAX_PAGE_BYTES}")
+        if type(offset) is not int or offset < 0:
+            raise ArtifactError("artifact offset must be a non-negative integer")
+        if type(limit) is not int or limit <= 0 or limit > MAX_PAGE_BYTES:
+            raise ArtifactError(f"artifact page limit must be an integer between 1 and {MAX_PAGE_BYTES}")
         path = self.resolve(sha256)
         total = path.stat().st_size
+        if offset >= total:
+            return b"", total, True, self.media_type(sha256)
         with path.open("rb") as handle:
             handle.seek(offset)
             data = handle.read(limit)

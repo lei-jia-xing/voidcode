@@ -34,7 +34,6 @@ from voidcode.sdk.tools import (
 from .profiles.registry import AgentRegistry, load_agent_registry
 
 SCHEMA_VERSION = 1
-DEFAULT_MAX_STEPS = 32
 DEFAULT_JOIN_TIMEOUT_MS = 300_000
 DEFAULT_JOIN_TIMEOUT_SECONDS = DEFAULT_JOIN_TIMEOUT_MS / 1000.0
 MAX_BATCH_SIZE = 100
@@ -190,7 +189,7 @@ class _TaskArgs:
     prompt: str | None = None
     label: str = ""
     tool_allowlist: tuple[str, ...] | None = None
-    max_steps: int = DEFAULT_MAX_STEPS
+    max_steps: int | None = None
     run_in_background: bool = True
     operation: str | None = None
     task_id: str | None = None
@@ -208,7 +207,7 @@ class _BatchItem:
     prompt: str
     label: str = ""
     tool_allowlist: tuple[str, ...] | None = None
-    max_steps: int = DEFAULT_MAX_STEPS
+    max_steps: int | None = None
     subagent_type: str | None = None
 
 
@@ -256,9 +255,9 @@ def _resolve_subagent(registry: AgentRegistry, subagent_type: str, *, where: str
     return manifest
 
 
-def _parse_max_steps(raw: object, *, where: str) -> int:
+def _parse_max_steps(raw: object, *, where: str) -> int | None:
     if raw is None:
-        return DEFAULT_MAX_STEPS
+        return None
     if type(raw) is not int or raw < 1:
         raise ValueError(f"{where} max_steps must be a positive integer")
     return raw
@@ -535,7 +534,7 @@ def _spawn_child(
     *,
     prompt: str,
     label: str,
-    max_steps: int,
+    max_steps: int | None,
     profile: AgentDefinition | None,
     tool_allowlist: tuple[str, ...] | None,
     notify_on_completion: bool,
@@ -734,7 +733,7 @@ TASK_DESCRIPTION = (
     "keeps the child read-only.\n"
     "- tool_allowlist narrows the child's tools and can never widen your own scope; it can be combined with "
     "subagent_type.\n"
-    "- max_steps caps the child's steps (default 32).\n"
+    "- max_steps is an optional explicit provider-turn cap for the child.\n"
     "- run_in_background=true (default) starts the child and returns its task_id immediately. Its "
     "completion is then delivered to this session automatically as an untrusted notice; do not "
     "poll. false waits in this same call.\n"
@@ -817,7 +816,7 @@ class TaskTool:
                     "items": {"type": "string", "minLength": 1},
                     "description": "Optional tool names the child may use; never wider than your own scope.",
                 },
-                "max_steps": {"type": "integer", "minimum": 1, "default": DEFAULT_MAX_STEPS, "description": "Step cap for the child session."},
+                "max_steps": {"type": "integer", "minimum": 1, "description": "Optional provider-turn cap for the child session."},
                 "run_in_background": {
                     "type": "boolean",
                     "default": True,
@@ -1147,8 +1146,7 @@ class TaskBatchTool:
                             "max_steps": {
                                 "type": "integer",
                                 "minimum": 1,
-                                "default": DEFAULT_MAX_STEPS,
-                                "description": "Step cap for this child session.",
+                                "description": "Optional provider-turn cap for this child session.",
                             },
                         },
                         "required": ["prompt"],

@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from voidcode import __version__
+from voidcode.core.artifacts import ArtifactError
 from voidcode.core.storage.store import SessionRecord, StoredEvent
 from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.json_values import json_wire_object
@@ -155,6 +156,10 @@ def core_error_status(error: Exception) -> tuple[int, str | None]:
     if "is stale; refresh the catalog" in message:
         return 409, "stale_revision"
     if "expected_revision must be the revision the client displayed" in message:
+        return 400, "invalid_params"
+    if isinstance(error, FileNotFoundError):
+        return 404, "not_found"
+    if isinstance(error, ArtifactError):
         return 400, "invalid_params"
     if isinstance(error, KeyError) or "unknown session" in message or "does not exist" in message:
         return 404, None

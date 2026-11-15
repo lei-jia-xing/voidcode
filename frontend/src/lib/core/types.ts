@@ -26,6 +26,15 @@ export type ToolCall = Schemas["ToolCallWire"];
 export type ToolResult = Schemas["ToolResultWire"];
 export type ToolExecution = Schemas["ExecutionWire"];
 export type ToolOutput = ToolResult["output"];
+export type ArtifactReference = Required<Schemas["ArtifactReference"]>;
+/** Binary data is base64 only in the generated wire DTO, never UTF-8 decoded. */
+export type ArtifactPage = Omit<
+  Schemas["ArtifactPageWire"],
+  "data" | "artifact"
+> & {
+  artifact: ArtifactReference;
+  data: Uint8Array;
+};
 
 export type NoticeViewData = Schemas["NoticeViewData"];
 export type MarkdownViewData = Schemas["MarkdownViewData"];

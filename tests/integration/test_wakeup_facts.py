@@ -74,7 +74,7 @@ def test_claim_fact_is_live_before_dispatch_and_recovery_delivers_it_once(tmp_pa
             core.tick = lambda now_ms=None: {"fired": None}
             live = core.create_session("live").session_id
             armed = core.invoke_command(live, "arm", {"due": due}, expected_revision=core.revision_id)
-            assert armed.status == "ok"
+            assert armed.status == "ok", armed.error
             assert tick(now_ms=due)["fired"] == armed.data["wakeup_id"]
             fact = _fact(core, live)
             assert fact.owner == "probe" and fact.wakeup_id == armed.data["wakeup_id"]

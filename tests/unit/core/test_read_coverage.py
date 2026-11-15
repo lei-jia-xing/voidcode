@@ -7,13 +7,8 @@ from typing import cast
 
 import pytest
 
-from voidcode.core.coverage import (
-    MODEL_PROJECTION_MARKER,
-    canonical_path,
-    model_result_text,
-)
+from voidcode.core.coverage import canonical_path
 from voidcode.sdk.codec import decode_tool_result, encode_tool_result
-from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.tools import OpaqueToolBody, OutputBounds, ReadObservation, TextOutput, ToolFailure, ToolSuccess
 
 DIGEST_A = "a" * 64
@@ -42,19 +37,6 @@ def test_tool_result_coverage_roundtrips_and_rejects_invalid_claims() -> None:
     failure["coverage"] = observations
     with pytest.raises(ValueError):
         decode_tool_result(failure)
-
-
-# --- model projection ----------------------------------------------------------------------
-
-
-def test_model_result_text_bounds_and_marks_the_projection() -> None:
-    assert model_result_text(_read_success("a.txt", DIGEST_A, (1,), 1, text="short")) == ("short", False)
-    text, clipped = model_result_text(_read_success("a.txt", DIGEST_A, (1,), 1, text="x" * (TOOL_OUTPUT_BYTES + 10)))
-    assert clipped is True
-    assert text is not None and text.endswith(MODEL_PROJECTION_MARKER)
-    assert len(text.encode("utf-8")) < TOOL_OUTPUT_BYTES + len(MODEL_PROJECTION_MARKER.encode("utf-8")) + 1
-    assert model_result_text(ToolSuccess("read", TextOutput(""), OpaqueToolBody({"a": 1}))) == ('{"a": 1}\n', False)
-    assert model_result_text(ToolFailure("read", "boom", TextOutput("partial"))) == ("boom\npartial", False)
 
 
 # --- resource paths ------------------------------------------------------------------------

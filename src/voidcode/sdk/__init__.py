@@ -10,7 +10,7 @@ still applies: this package imports only the standard library plus
 from .client import (
     MAX_PROMPT_BYTES,
     MAX_PROMPT_CHARS,
-    MAX_STEPS,
+    BudgetExhaustion,
     CancelReceipt,
     CoreClientError,
     ErrorEnvelope,
@@ -235,6 +235,7 @@ from .views import (
 )
 
 __all__ = [
+    "BudgetExhaustion",
     "CHILD_PROMPT_MAX_BYTES",
     "DIAGNOSTIC_DEPTH",
     "DIAGNOSTIC_ITEMS",
@@ -242,7 +243,6 @@ __all__ = [
     "EXTERNAL_MUTATION_EFFECTS",
     "MAX_PROMPT_BYTES",
     "MAX_PROMPT_CHARS",
-    "MAX_STEPS",
     "MAX_VIEW_DATA_BYTES",
     "PAGE_BYTES",
     "RESTRICTED_DENIAL_EFFECTS",

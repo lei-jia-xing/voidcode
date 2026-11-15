@@ -132,11 +132,13 @@ class DelegationManager:
         *,
         label: str = "",
         tool_allowlist: tuple[str, ...] | None = None,
-        max_steps: int = 32,
+        max_steps: int | None = None,
         readonly: bool = False,
         notify_on_completion: bool = False,
         owner: str = "",
         idempotency_key: str | None = None,
+        root_action_id: str | None = None,
+        initial_root_budget: int | None = None,
         admission_guard: Callable[[], bool] | None = None,
     ) -> str:
         """Create and start a delegated child session under `parent_session_id`.
@@ -166,11 +168,46 @@ class DelegationManager:
             raise ValueError(f"delegation depth limit exceeded: depth {depth} exceeds max {DELEGATION_MAX_DEPTH}")
         budget = self.core.config.max_root_children
         scope = self._child_tool_scope(parent, tool_allowlist)
-        spec_hash = self._spawn_spec_hash(prompt, scope, max_steps, bool(readonly) or False)
+        if not isinstance(root_action_id, str) or not root_action_id or "\0" in root_action_id:
+            raise ValueError("captured root action identity is required at child reservation")
+        if initial_root_budget is not None and (type(initial_root_budget) is not int or initial_root_budget < 0):
+            raise ValueError("captured root action budget must be a non-negative integer or null")
+        existing_birth = None
         if idempotency_key is None:
             child_id = uuid4().hex
+            retry_root_id = None
+            retry_root_budget = None
         else:
             child_id = self._keyed_child_id(parent.session_id, owner, idempotency_key)
+            existing_birth = self._birth_record(child_id)
+            retry_root_id = None if existing_birth is None else existing_birth.get("root_id")
+            retry_root_budget = None if existing_birth is None else existing_birth.get("root_action_budget")
+            if existing_birth is not None and "root_action_budget" not in existing_birth:
+                raise StoreConflict("keyed child birth has no captured root budget state")
+            if existing_birth is not None and (not isinstance(retry_root_id, str) or not retry_root_id):
+                raise ValueError("keyed child birth has no captured root action identity")
+        if retry_root_id is not None and retry_root_id != root_action_id:
+            raise StoreConflict("keyed child retry carries a different captured root action identity")
+        if existing_birth is not None and retry_root_budget != initial_root_budget:
+            raise StoreConflict("keyed child retry carries a different captured root action budget")
+        root_id = root_action_id
+        root_cap = initial_root_budget
+        root_state = self.core.store.root_budget_state(root_id)
+        if root_cap is not None and (root_state is None or root_state[0] < root_cap):
+            raise StoreConflict("captured finite root authorization has no matching durable budget row")
+        if root_cap is None and root_state is not None:
+            raise StoreConflict("captured uncapped root authorization conflicts with a finite budget row")
+        spec_hash = self._spawn_spec_hash(
+            prompt,
+            scope,
+            max_steps,
+            bool(readonly),
+            root_id,
+            root_cap,
+            label,
+            notify_on_completion,
+        )
+        if idempotency_key is not None:
             recovery = self._recover_keyed_spawn(
                 parent.session_id,
                 child_id,
@@ -184,23 +221,29 @@ class DelegationManager:
                 prompt=prompt,
                 owner=owner,
                 idempotency_key=idempotency_key,
+                root_id=root_id,
             )
             if recovery is not None:
                 return recovery
-        birth: dict[str, object] | None = None
+        birth: dict[str, object] = {
+            "child_session_id": child_id,
+            "parent_session_id": parent.session_id,
+            "root_id": root_id,
+            "root_action_budget": root_cap,
+            "label": label,
+            "depth": depth,
+            "tool_allowlist": list(scope) if scope is not None else None,
+            "notify_on_completion": notify_on_completion,
+            "readonly": bool(readonly),
+        }
         if idempotency_key is not None:
-            birth = {
-                "child_session_id": child_id,
-                "parent_session_id": parent.session_id,
-                "label": label,
-                "depth": depth,
-                "tool_allowlist": list(scope) if scope is not None else None,
-                "notify_on_completion": notify_on_completion,
-                "spawn_owner": owner,
-                "idempotency_key": idempotency_key,
-                "spec_hash": spec_hash,
-                "readonly": bool(readonly),
-            }
+            birth.update(
+                {
+                    "spawn_owner": owner,
+                    "idempotency_key": idempotency_key,
+                    "spec_hash": spec_hash,
+                }
+            )
         # Capture the immutable ancestor chain and fast pre-check; the
         # authoritative fence decision happens inside the store transaction
         # via _guard_fence, so a fence installed between here and commit still
@@ -248,6 +291,7 @@ class DelegationManager:
                 prompt=prompt,
                 owner=owner,
                 idempotency_key=idempotency_key,
+                root_id=root_id,
             )
             if recovery is None:  # pragma: no cover - the colliding row vanished mid-race
                 raise sqlite3.IntegrityError("child session id collision")
@@ -258,11 +302,11 @@ class DelegationManager:
             self.core.store.set_session_overlay(child_id, "kernel")
         spawned_payload: dict[str, object] = {
             "child_session_id": child_id,
+            "root_id": root_id,
+            "root_action_budget": root_cap,
             "label": label,
             "depth": depth,
             "tool_allowlist": list(scope) if scope is not None else None,
-            # Durable across restarts: a crash before publication rebuilds the notice
-            # request from this fact, never from the child thread's local argument.
             "notify_on_completion": notify_on_completion,
         }
         if idempotency_key is not None:
@@ -271,12 +315,7 @@ class DelegationManager:
             spawned_payload["spec_hash"] = spec_hash
         self.core._commit_control_event(
             parent.session_id,
-            EventDraft(
-                EventType.CHILD_SPAWNED,
-                "kernel",
-                "plugin",
-                spawned_payload,
-            ),
+            EventDraft(EventType.CHILD_SPAWNED, "kernel", "plugin", spawned_payload),
         )
         self._start_child_run(parent.session_id, child_id, prompt, max_steps, label, notify_on_completion)
         return child_id
@@ -288,9 +327,29 @@ class DelegationManager:
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _spawn_spec_hash(prompt: str, scope: tuple[str, ...] | None, max_steps: int, readonly: bool) -> str:
-        """The immutable effective spec a keyed retry must match: prompt, scope, budget, stance."""
-        encoded = canonical_json({"prompt": prompt, "scope": None if scope is None else list(scope), "max_steps": max_steps, "readonly": readonly})
+    def _spawn_spec_hash(
+        prompt: str,
+        scope: tuple[str, ...] | None,
+        max_steps: int | None,
+        readonly: bool,
+        root_id: str,
+        root_action_budget: int | None,
+        label: str,
+        notify_on_completion: bool,
+    ) -> str:
+        """Fingerprint stable child spec and captured root authorization, never usage counters."""
+        encoded = canonical_json(
+            {
+                "prompt": prompt,
+                "scope": None if scope is None else list(scope),
+                "max_steps": max_steps,
+                "readonly": readonly,
+                "root_id": root_id,
+                "root_action_budget": root_action_budget,
+                "label": label,
+                "notify_on_completion": notify_on_completion,
+            }
+        )
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _spawned_fact(self, parent_session_id: str, child_id: str) -> dict[str, object] | None:
@@ -310,6 +369,18 @@ class DelegationManager:
             if event.sequence == 1 and event.event_type == EventType.CHILD_RESERVED:
                 return dict(event.payload)
         return None
+
+    def _captured_child_root_id(self, child_id: str) -> str:
+        """Return the immutable root action identity committed at child reservation."""
+        birth = self._birth_record(child_id)
+        root_id = None if birth is None else birth.get("root_id")
+        if not isinstance(root_id, str) or not root_id:
+            raise StoreConflict(f"child {child_id!r} has no captured root action identity")
+        return root_id
+
+    def _root_action_id_for_send(self, child: SessionRecord) -> str:
+        """Child sends retain the root authorization captured at the child's birth."""
+        return self._captured_child_root_id(child.session_id)
 
     def _keyed_child(self, parent_session_id: str, owner: str, idempotency_key: str) -> str | None:
         """The child id already mapped under one parent, owner, and key; None when unmapped.
@@ -348,13 +419,14 @@ class DelegationManager:
         depth: int,
         label: str,
         scope: tuple[str, ...] | None,
-        max_steps: int,
+        max_steps: int | None,
         readonly: bool,
         notify_on_completion: bool,
         spec_hash: str,
         prompt: str,
         owner: str,
         idempotency_key: str,
+        root_id: str,
     ) -> str | None:
         """Return the existing keyed child when the id already maps; None means create it now.
 
@@ -373,6 +445,8 @@ class DelegationManager:
         if fact is not None:
             if fact.get("spawn_owner") != owner or fact.get("idempotency_key") != idempotency_key:
                 raise ValueError("spawn idempotency key collides with another owner's child")
+            if fact.get("root_id") != root_id:
+                raise ValueError("spawn idempotency key was already used with a different root action authorization")
             if fact.get("spec_hash") != spec_hash:
                 raise ValueError("spawn idempotency key was already used with a different spec")
             pristine = child.status == "idle" and child.run_id is None
@@ -398,6 +472,8 @@ class DelegationManager:
             raise ValueError("spawn idempotency key maps to a child with no verifiable origin; refusing to adopt it")
         if birth.get("spawn_owner") != owner or birth.get("idempotency_key") != idempotency_key:
             raise ValueError("spawn idempotency key collides with another owner's child")
+        if birth.get("root_id") != root_id:
+            raise ValueError("spawn idempotency key was already used with a different root action authorization")
         if birth.get("spec_hash") != spec_hash:
             raise ValueError("spawn idempotency key was already used with a different spec")
         if birth.get("readonly") is True and "read-only" not in self.core.store.session_overlays(child_id):
@@ -414,6 +490,7 @@ class DelegationManager:
                 "plugin",
                 {
                     "child_session_id": child_id,
+                    "root_id": root_id,
                     "label": label,
                     "depth": depth,
                     "tool_allowlist": list(scope) if scope is not None else None,
@@ -427,7 +504,15 @@ class DelegationManager:
         self._start_child_run(parent_session_id, child_id, prompt, max_steps, label, notify_on_completion)
         return child_id
 
-    def _start_child_run(self, parent_session_id: str, child_id: str, prompt: str, max_steps: int, label: str, notify_on_completion: bool) -> bool:
+    def _start_child_run(
+        self,
+        parent_session_id: str,
+        child_id: str,
+        prompt: str,
+        max_steps: int | None,
+        label: str,
+        notify_on_completion: bool,
+    ) -> bool:
         """Start one child driver thread; False when this process already drives it.
 
         The check-and-claim is atomic under the publication lock, so concurrent retries
@@ -468,15 +553,21 @@ class DelegationManager:
         parent_session_id: str,
         child_id: str,
         prompt: str,
-        max_steps: int,
+        max_steps: int | None,
         label: str,
         notify_on_completion: bool,
     ) -> None:
         """Drive one spawn run. Waiting is NOT terminal: only a later resume/cancel publishes."""
         run_id = ""
         try:
+            root_id = self._captured_child_root_id(child_id)
             result = self.core._run(
-                prompt, session_id=child_id, max_steps=max_steps, prompt_max_bytes=CHILD_PROMPT_MAX_BYTES, _refuse_reserved_cancelled=True
+                prompt,
+                session_id=child_id,
+                max_steps=max_steps,
+                prompt_max_bytes=CHILD_PROMPT_MAX_BYTES,
+                _root_id=root_id,
+                _refuse_reserved_cancelled=True,
             )
             run_id = result.run_id
             status = _child_run_status(result)
@@ -587,8 +678,7 @@ class DelegationManager:
             raise PermissionError("a read-only parent cannot steer a child that is not durably read-only")
         message_id = uuid4().hex
         attributed = "[Follow-up from your parent agent; delegated agent input, not a direct user message]\n\n" + prompt
-        outstanding = self._child_has_outstanding_work(child)
-        self.core.store.ensure_root_budget(message_id, 32)
+        root_id = self._root_action_id_for_send(child)
         # Fast pre-check on a captured chain; the authoritative fence decision
         # happens inside the store transaction via _guard_fence.
         chain = self._chain_of(parent_session_id)
@@ -611,13 +701,14 @@ class DelegationManager:
                     "label": label,
                     "notify_on_completion": notify_on_completion,
                 },
-                root_id=message_id,
+                root_id=root_id,
                 role="user",
                 caller_chain=chain,
                 admission_guard=admission_guard,
             )
         except FencedSubtree as exc:
             raise PermissionError(str(exc)) from exc
+        outstanding = child.status in ("running", "waiting")
         delivery: Literal["started", "queued"] = "queued"
         started_run: str | None = None
         if not outstanding:
@@ -628,7 +719,7 @@ class DelegationManager:
                     run_id,
                     uuid4().hex,
                     revision_id=self.core.revision_id,
-                    initial_root_budget=32,
+                    initial_root_budget=None,
                     continuation_id=message_id,
                     caller_chain=chain,
                 )
@@ -957,6 +1048,7 @@ class DelegationManager:
 
     def _child_status_outcome(self, child: SessionRecord) -> ChildOutcome:
         status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"]
+        stop_cause = self.core.store.latest_stop_cause(child.session_id, child.run_id)
         if child.status == "completed":
             status = "completed"
         elif child.status == "failed":
@@ -966,10 +1058,10 @@ class DelegationManager:
         elif child.status == "running":
             status = "running"
         elif child.status == "interrupted":
-            status = "cancelled"
+            status = "cancelled" if stop_cause in ("user_stop", "owner_cancel") else "interrupted"
         else:
             status = "interrupted"
-        return ChildOutcome(child_session_id=child.session_id, status=status, run_id=child.run_id)
+        return ChildOutcome(child_session_id=child.session_id, status=status, run_id=child.run_id, stop_cause=stop_cause)
 
     def _child_wait_outcome(self, child: SessionRecord) -> ChildOutcome:
         if child.status == "waiting":
@@ -1419,7 +1511,7 @@ class DelegationManager:
             return
         try:
             if continuation_id is None:
-                self.core._drive_pending(session_id, 32)
+                self.core._drive_pending(session_id, limit=32)
             else:
                 self.core.drain_continuations(session_id, limit=1, continuation_id=continuation_id, _automatic=True)
         except Exception:
