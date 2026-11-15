@@ -216,8 +216,11 @@ never reconstruct a cursor from trimmed display text.
   each `context.invoke(callback)` runs the callback exactly once under a fresh
   owner/revision-bound lease and commits its staged work atomically, so progress
   is durable invoke by invoke. Services from one invoke must never escape into
-  another. See [background actions](./background-actions.md) for the claim,
-  status, cancel, wait, and liveness contract.
+  another. `PluginServices.invoke_tool` returns a receipt; only the driver may
+  call `context.wait_tool(receipt)`, after that callback lease has returned. See
+  the [typed wait contract](./background-actions.md#awaiting-a-deferred-tool)
+  and [background actions](./background-actions.md) for its result, scope,
+  approval, cancellation, and liveness semantics.
 - Sessions are commit-once ledgers over append-only facts: no fork, undo,
   revert, or import. `read_only` and approval are SDK invocation contracts
   over declared effects — not OS isolation.

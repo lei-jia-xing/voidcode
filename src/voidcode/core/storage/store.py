@@ -3643,6 +3643,8 @@ class SqliteStore:
                     "action": action,
                     "root_action_budget": root_budget,
                 }
+                if "tool_wait_authority" in payload:
+                    envelope["tool_wait_authority"] = payload["tool_wait_authority"]
                 claimed = self._connection.execute(
                     """
                     UPDATE continuations SET status = 'claimed', updated_at = ?, payload_json = ?

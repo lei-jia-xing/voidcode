@@ -114,6 +114,8 @@ RESERVED_TOOL_NAMES: frozenset[str] = frozenset({"core_reload"})
 MAX_QUERY_RESULT_BYTES: Final[int] = 256 * 1024
 #: The invocation-cancel watcher polls the caller's abort signal at this cadence.
 _POLL_SECONDS: Final[float] = 0.05
+_ACTIVE_LEASE_THREADS_LOCK = threading.Lock()
+_ACTIVE_LEASE_THREADS: dict[int, int] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +146,9 @@ class LeaseContext:
     readonly: bool
     root_action_id: str | None = None
     initial_root_budget: int | None = None
-    #: Provenance of the invocation that created this lease ("model", "client", "user", "plugin").
+    origin_visible_tools: tuple[str, ...] | None = None
+    origin_readonly: bool | None = None
+    background_action_id: str | None = None
     actor: str = "model"
     #: Hook leases cannot start nested work.
     hook: bool = False
@@ -160,6 +164,7 @@ class LeaseContext:
     revoked: bool = False
     op_counter: int = 0
     abort_signal: ProviderAbortSignal | None = None
+    opened_thread_id: int = field(default_factory=threading.get_ident, init=False, repr=False)
 
     @property
     def internal_restricted(self) -> bool:
@@ -625,6 +630,12 @@ class PluginRuntime:
             raise RuntimeError("artifact store is not attached to this runtime")
         return self._artifacts
 
+    @staticmethod
+    def current_thread_has_active_lease() -> bool:
+        """Whether this thread is inside any plugin callback lease, across generations."""
+        with _ACTIVE_LEASE_THREADS_LOCK:
+            return _ACTIVE_LEASE_THREADS.get(threading.get_ident(), 0) > 0
+
     def _open_lease(
         self,
         *,
@@ -639,6 +650,9 @@ class PluginRuntime:
         invocation_depth: int = 0,
         root_action_id: str | None = None,
         initial_root_budget: int | None = None,
+        origin_visible_tools: tuple[str, ...] | None = None,
+        origin_readonly: bool | None = None,
+        background_action_id: str | None = None,
         abort_signal: ProviderAbortSignal | None = None,
     ) -> LeaseContext:
         lease = LeaseContext(
@@ -653,6 +667,9 @@ class PluginRuntime:
             abort_signal=abort_signal,
             root_action_id=root_action_id,
             initial_root_budget=initial_root_budget,
+            origin_visible_tools=origin_visible_tools,
+            origin_readonly=origin_readonly,
+            background_action_id=background_action_id,
             actor=actor,
             hook=hook,
             internal_work=internal_work,
@@ -660,16 +677,25 @@ class PluginRuntime:
         )
         with self._lease_lock:
             self._active_leases[lease.token] = lease
+        with _ACTIVE_LEASE_THREADS_LOCK:
+            _ACTIVE_LEASE_THREADS[lease.opened_thread_id] = _ACTIVE_LEASE_THREADS.get(lease.opened_thread_id, 0) + 1
         return lease
 
     def _revoke_lease(self, lease: LeaseContext) -> None:
         with self._lease_lock:
+            active = self._active_leases.pop(lease.token, None) is not None
             lease.revoked = True
-            self._active_leases.pop(lease.token, None)
             self._cancel_events.pop(lease.token, None)
             self._claimed_services.pop(lease.token, None)
-        if self._artifacts is not None:
-            self._artifacts.discard_owner(lease.token)
+        if active:
+            with _ACTIVE_LEASE_THREADS_LOCK:
+                count = _ACTIVE_LEASE_THREADS.get(lease.opened_thread_id, 0)
+                if count <= 1:
+                    _ACTIVE_LEASE_THREADS.pop(lease.opened_thread_id, None)
+                else:
+                    _ACTIVE_LEASE_THREADS[lease.opened_thread_id] = count - 1
+            if self._artifacts is not None:
+                self._artifacts.discard_owner(lease.token)
 
     def _staged_changes(self, lease: LeaseContext) -> _Staged:
         owner_schema_ver = self.state_schema_version(lease.owner)
@@ -1026,6 +1052,9 @@ class PluginRuntime:
             invocation_depth=context.invocation_depth,
             root_action_id=context.root_action_id,
             initial_root_budget=context.initial_root_budget,
+            origin_visible_tools=context.origin_visible_tools,
+            origin_readonly=context.origin_readonly,
+            background_action_id=context.background_action_id,
             abort_signal=context.abort_signal,
         )
         services = RuntimeServices(self, lease)
@@ -1175,6 +1204,9 @@ class PluginRuntime:
             internal_work=(not readonly) or ToolEffect.SESSION in cmd_definition.effects,
             root_action_id=context.root_action_id,
             initial_root_budget=context.initial_root_budget,
+            origin_visible_tools=context.origin_visible_tools,
+            origin_readonly=context.origin_readonly,
+            background_action_id=context.background_action_id,
             abort_signal=context.abort_signal,
         )
         services = RuntimeServices(self, lease)

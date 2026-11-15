@@ -772,12 +772,23 @@ class RuntimeServices:
             # both stage before either commits return the SAME id, and the store keeps one row.
             cid = uuid4().hex if key is None else hashlib.sha256("\0".join((lease.session_id, lease.owner, key)).encode("utf-8")).hexdigest()
             lease.op_counter += 1
+            authority = None
+            if lease.origin_visible_tools is not None and lease.origin_readonly is not None:
+                authority = {
+                    "visible_tools": list(lease.origin_visible_tools),
+                    "readonly": lease.origin_readonly,
+                    "revision_id": lease.revision_id,
+                }
             lease.staged_continuations.append(
                 StagedContinuationDraft(
                     continuation_id=cid,
                     owner=lease.owner,
                     source=BACKGROUND_ACTION_SOURCE,
-                    payload={"action": owned, "root_action_budget": lease.initial_root_budget},
+                    payload={
+                        "action": owned,
+                        "root_action_budget": lease.initial_root_budget,
+                        "tool_wait_authority": authority,
+                    },
                     idempotency_key=key,
                     ordinal=lease.op_counter,
                     root_id=lease.root_action_id,
@@ -1028,31 +1039,35 @@ class RuntimeServices:
             raise ValueError("invoke_tool expected_revision differs from the active revision")
         if not isinstance(arguments, Mapping) and arguments is not None:
             raise ValueError("invoke_tool arguments must be an object")
+        if lease.background_action_id is not None and (
+            lease.origin_visible_tools is None or lease.origin_readonly is None or not lease.root_action_id
+        ):
+            raise PermissionError("background tool requests require captured origin tool, stance, and root authorization")
         request_id = uuid4().hex
         depth = lease.invocation_depth + 1
         call = ToolCall(name, own_json_object(dict(arguments or {})), tool_call_id=request_id)
-        store = self._runtime.store
-        checkpoint = None if store is None else store.checkpoint(lease.session_id)
-        root_id = "" if checkpoint is None or checkpoint.kind == "terminal" else str(checkpoint.payload.get("root_id", ""))
+        root_id = lease.root_action_id or ""
+        payload: dict[str, object] = {
+            "request_id": request_id,
+            "call": encode_tool_call(call),
+            "expected_revision": expected_revision,
+            "requester": lease.owner,
+            "root_id": root_id,
+            "root_action_budget": lease.initial_root_budget,
+            "caller_invocation_id": lease.invocation_id,
+            "depth": depth,
+        }
+        if lease.origin_visible_tools is not None:
+            payload["origin_visible_tools"] = list(lease.origin_visible_tools)
+        if lease.origin_readonly is not None:
+            payload["origin_readonly"] = lease.origin_readonly
+        if lease.background_action_id is not None:
+            payload["background_action_id"] = lease.background_action_id
+            payload["result_delivery"] = "requester"
         with self._runtime.lease_lock:
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
-            lease.staged_events.append(
-                EventDraft(
-                    EventType.TOOL_DEFERRED,
-                    "core",
-                    "plugin",
-                    {
-                        "request_id": request_id,
-                        "call": encode_tool_call(call),
-                        "expected_revision": expected_revision,
-                        "requester": lease.owner,
-                        "root_id": root_id,
-                        "caller_invocation_id": lease.invocation_id,
-                        "depth": depth,
-                    },
-                )
-            )
+            lease.staged_events.append(EventDraft(EventType.TOOL_DEFERRED, "core", "plugin", payload))
         return ToolInvocationReceipt(request_id=request_id, tool_name=name, depth=depth)
 
     def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:

@@ -157,6 +157,7 @@ from .services import (
     QueryUnavailable,
     SessionInfo,
     SessionUsageReport,
+    ToolAwaitResult,
     ToolInvocationReceipt,
 )
 from .tools import (
@@ -254,6 +255,7 @@ __all__ = [
     "ApprovalRequested",
     "BackgroundActionStatus",
     "BackgroundContext",
+    "ToolAwaitResult",
     "ArtifactPage",
     "ArtifactReference",
     "AttachmentOutput",

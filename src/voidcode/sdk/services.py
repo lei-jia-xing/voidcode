@@ -16,11 +16,11 @@ from .json_values import json_wire_object, own_json_object
 
 if TYPE_CHECKING:
     from .history import HistoryPage
-    from .hooks import FactPage
+    from .hooks import FactPage, StopCause
     from .invocation import ToolContext
     from .observed_effects import ObservedEffects
     from .resources import ResourcePage, ResourceReadRequest
-    from .tools import ToolDefinition
+    from .tools import ExecutionObservation, ToolDefinition, ToolResult
     from .transcript import ContextHistory, TranscriptPage
 
 
@@ -466,6 +466,74 @@ class ToolInvocationReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolAwaitResult:
+    """One exact background tool request's durable terminal outcome.
+
+    A request cancelled before execution or lost with its in-memory driver has no
+    `ToolResult`; the host never invents a success/failure for work that did not run.
+    """
+
+    request_id: str
+    owner: str
+    action_id: str
+    session_id: str
+    revision_id: str
+    tool_name: str
+    status: Literal["completed", "interrupted", "cancelled", "kernel_lost", "budget_exhausted"]
+    result: ToolResult | None
+    terminal_sequence: int
+    stop_cause: StopCause | None = None
+    budget_exhaustion: BudgetExhaustion | None = None
+    execution: ExecutionObservation | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("request_id", "owner", "action_id", "session_id", "revision_id", "tool_name"):
+            if not isinstance(getattr(self, name), str) or not getattr(self, name):
+                raise ValueError(f"tool await result requires a non-empty {name}")
+        if self.status not in ("completed", "interrupted", "cancelled", "kernel_lost", "budget_exhausted"):
+            raise ValueError(f"unknown tool await terminal status {self.status!r}")
+        if type(self.terminal_sequence) is not int or self.terminal_sequence < 1:
+            raise ValueError("tool await terminal sequence must be a positive integer")
+        if self.status == "completed" and self.result is None:
+            raise ValueError("completed tool await must carry its actual result")
+        if self.status == "budget_exhausted" and self.budget_exhaustion is None:
+            raise ValueError("budget-exhausted tool await must carry its typed exhaustion")
+
+    def as_payload(self) -> dict[str, object]:
+        from .codec import encode_tool_result
+
+        return {
+            "request_id": self.request_id,
+            "owner": self.owner,
+            "action_id": self.action_id,
+            "session_id": self.session_id,
+            "revision_id": self.revision_id,
+            "tool_name": self.tool_name,
+            "status": self.status,
+            "result": None if self.result is None else encode_tool_result(self.result),
+            "terminal_sequence": self.terminal_sequence,
+            "stop_cause": self.stop_cause,
+            "budget_exhaustion": None
+            if self.budget_exhaustion is None
+            else {
+                "dimension": self.budget_exhaustion.dimension,
+                "source": self.budget_exhaustion.source,
+                "limit": self.budget_exhaustion.limit,
+                "consumed": self.budget_exhaustion.consumed,
+                "remaining": self.budget_exhaustion.remaining,
+                "continue_with": self.budget_exhaustion.continue_with,
+            },
+            "execution": None
+            if self.execution is None
+            else {
+                "cancellation_signalled": self.execution.cancellation_signalled,
+                "execution_stopped": self.execution.execution_stopped,
+                "side_effect_state": self.execution.side_effect_state,
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SessionUsageReport:
     """Truthful aggregate token and cost usage computed strictly from core facts."""
 
@@ -552,6 +620,14 @@ class BackgroundContext(Protocol):
         returns, so a crash loses at most the in-flight callback. The services object must not
         escape the callback. When the abort signal is set, invoke raises `InterruptedError`
         and commits nothing.
+        """
+        ...
+
+    def wait_tool(self, receipt: ToolInvocationReceipt) -> ToolAwaitResult:
+        """Wait outside a callback lease for this action's exact deferred tool request.
+
+        The implementation releases the callback/activation guards before waiting. Calling
+        this reentrantly from an `invoke` callback is refused rather than deadlocking.
         """
         ...
 

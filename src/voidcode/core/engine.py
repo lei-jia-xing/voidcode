@@ -18,7 +18,7 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 import jsonschema
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..sdk.client import BudgetExhaustion
 from ..sdk.codec import (
@@ -53,8 +53,12 @@ from ..sdk.services import (
     DescendantNode,
     PluginBudget,
     SessionUsageReport,
+    ToolAwaitResult,
+    ToolInvocationReceipt,
 )
 from ..sdk.tools import (
+    ConfirmedStop,
+    ExecutionObservation,
     ResourceChange,
     TextOutput,
     ToolCall,
@@ -63,6 +67,7 @@ from ..sdk.tools import (
     ToolFailure,
     ToolResult,
     ToolSuccess,
+    UnconfirmedStop,
     denied_under_restriction,
     has_external_mutations,
 )
@@ -77,7 +82,7 @@ from .activation import (
     write_private_snapshot,
 )
 from .artifacts import ArtifactNotFoundError, ArtifactStore
-from .coverage import ProjectionRequiresReference, _target_paths, canonical_path, project_tool_result
+from .coverage import ProjectionRequiresReference, _target_paths, canonical_path, project_tool_result, read_artifact_content
 from .delegation import (
     DELEGATION_SPAWN_BUDGET as DELEGATION_SPAWN_BUDGET,
 )
@@ -112,25 +117,44 @@ from .storage.store import (
 
 
 class Cancellation:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        linked_event: threading.Event | None = None,
+        *,
+        linked_reason: str = "background action cancelled",
+        linked_stop_cause: StopCause = "owner_cancel",
+        linked_stop_cause_provider: Callable[[], StopCause] | None = None,
+    ) -> None:
         self._event = Event()
         self._reason: str | None = None
         self._lock = threading.Lock()
         self._stop_cause: StopCause = "user_stop"
+        self._linked_event = linked_event
+        self._linked_reason = linked_reason
+        self._linked_stop_cause_provider = linked_stop_cause_provider
+        self._linked_stop_cause = linked_stop_cause
 
     @property
     def cancelled(self) -> bool:
-        return self._event.is_set()
+        return self._event.is_set() or (self._linked_event is not None and self._linked_event.is_set())
 
     @property
     def reason(self) -> str | None:
         with self._lock:
-            return self._reason
+            if self._event.is_set():
+                return self._reason
+        return self._linked_reason if self._linked_event is not None and self._linked_event.is_set() else None
 
     @property
     def stop_cause(self) -> StopCause:
         with self._lock:
-            return self._stop_cause
+            if self._event.is_set():
+                return self._stop_cause
+        if self._linked_event is None or not self._linked_event.is_set():
+            return "user_stop"
+        if self._linked_stop_cause_provider is not None:
+            return self._linked_stop_cause_provider()
+        return self._linked_stop_cause
 
     def set_cancelled(self, value: bool, *, reason: str | None = None, stop_cause: StopCause = "user_stop") -> None:
         with self._lock:
@@ -193,6 +217,8 @@ class _BackgroundContext:
         revision_id: str,
         root_action_id: str,
         initial_root_budget: int | None,
+        origin_visible_tools: tuple[str, ...] | None,
+        origin_readonly: bool | None,
         abort: threading.Event,
     ) -> None:
         self._core = core
@@ -203,6 +229,8 @@ class _BackgroundContext:
         self._revision_id = revision_id
         self._root_action_id = root_action_id
         self._initial_root_budget = initial_root_budget
+        self._origin_visible_tools = origin_visible_tools
+        self._origin_readonly = origin_readonly
         self._abort = abort
 
     @property
@@ -226,8 +254,13 @@ class _BackgroundContext:
             revision_id=self._revision_id,
             root_action_id=self._root_action_id,
             initial_root_budget=self._initial_root_budget,
+            origin_visible_tools=self._origin_visible_tools,
+            origin_readonly=self._origin_readonly,
             abort=self._abort,
         )
+
+    def wait_tool(self, receipt: ToolInvocationReceipt) -> ToolAwaitResult:
+        return self._core._await_background_tool(self, receipt)
 
 
 class ActivationFenced(RuntimeError):
@@ -536,9 +569,12 @@ class _Cursor(BaseModel):
     next_call: int = Field(default=0, ge=0)
     intent_sequence: int | None = Field(default=None, ge=1)
     approval_sequence: int | None = Field(default=None, ge=1)
-    #: A plugin-requested call, executed only after its caller's callback has returned.
     deferred_sequence: int | None = Field(default=None, ge=1)
     deferred_depth: int = Field(default=0, ge=0)
+    deferred_action_id: str | None = None
+    deferred_origin_tools: tuple[str, ...] | None = None
+    deferred_origin_readonly: bool | None = None
+    deferred_authority_missing: bool = False
     deferred_only: bool = False
     #: Optional provider-turn cap for this logical run; independent of shared root actions.
     max_steps: int | None = None
@@ -551,6 +587,11 @@ class _Cursor(BaseModel):
     root_id: str = ""
     #: Staged continuation this session owes itself: an activation request id or an upgrade pause id.
     resume_intent: str = ""
+
+    @field_validator("deferred_origin_tools", mode="before")
+    @classmethod
+    def _decode_deferred_origin_tools(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
 
 
 @dataclass(frozen=True, slots=True)
@@ -636,14 +677,18 @@ class Core:
         # workspace flock (`another process owns this workspace`), so a claimed row this
         # process does not drive is necessarily stale, never a live foreign claim.
         self._background_live: set[str] = set()
+        self._background_claiming = 0
         self._background_aborts: dict[str, threading.Event] = {}
+        self._background_abort_causes: dict[str, StopCause | None] = {}
         self._background_cond = threading.Condition()
+        self._tool_wait_cond = threading.Condition()
         self._background_identity = {"pid": os.getpid(), "core": uuid4().hex}
         # One pointer per capability generation, plus short-critical-section call accounting.
         # The activation fence rejects new dispatches and reports foreign in-flight calls as
         # busy instead of blocking any run, and no lock is ever held across an RPC.
         self._calls_lock = threading.Condition()
         self._active_calls: dict[str, str] = {}
+        self._active_dispatch_threads: dict[int, int] = {}
         self._activating_thread: int | None = None
         # ponytail: bounded in-process cache of per-revision observed_facts; a large
         # multi-revision workspace could grow it, then key it by revision only.
@@ -780,6 +825,10 @@ class Core:
         with self._background_cond:
             self._background_cond.notify_all()
 
+    def _notify_tool_waiters(self) -> None:
+        with self._tool_wait_cond:
+            self._tool_wait_cond.notify_all()
+
     def _background_claim_live(self, record: ContinuationRecord) -> bool:
         """Whether one claimed background row is driven by this process right now.
 
@@ -798,10 +847,11 @@ class Core:
         """
         _ = reason
         with self._background_cond:
-            aborts = list(self._background_aborts.values())
-            for abort in aborts:
+            for action_id, abort in self._background_aborts.items():
+                self._background_abort_causes[action_id] = "shutdown"
                 abort.set()
             self._background_cond.notify_all()
+        self._notify_tool_waiters()
         deadline = time.monotonic() + 30.0
         with self._background_cond:
             while self._background_live and time.monotonic() < deadline:
@@ -871,13 +921,33 @@ class Core:
             if self._activating_thread is not None and self._activating_thread != threading.get_ident():
                 raise ActivationFenced("capability activation is in progress; retry")
             snapshot = self._snapshot
+            thread_id = threading.get_ident()
             self._active_calls[call_id] = description
+            self._active_dispatch_threads[thread_id] = self._active_dispatch_threads.get(thread_id, 0) + 1
         try:
             yield snapshot
         finally:
             with self._calls_lock:
                 self._active_calls.pop(call_id, None)
+                dispatch_count = self._active_dispatch_threads.get(thread_id, 0)
+                if dispatch_count <= 1:
+                    self._active_dispatch_threads.pop(thread_id, None)
+                else:
+                    self._active_dispatch_threads[thread_id] = dispatch_count - 1
                 self._calls_lock.notify_all()
+
+    def _assert_background_wait_unleased(self) -> None:
+        """Refuse waits from any active plugin lease or Core dispatch on this thread."""
+        thread_id = threading.get_ident()
+        if PluginRuntime.current_thread_has_active_lease():
+            raise RuntimeError("background tool wait is unavailable inside an active plugin callback")
+        with self._calls_lock:
+            if self._active_dispatch_threads.get(thread_id, 0) or self._activating_thread == thread_id:
+                raise RuntimeError("background tool wait is unavailable inside an active Core dispatch")
+
+    def _background_abort_stop_cause(self, action_id: str) -> StopCause:
+        with self._background_cond:
+            return self._background_abort_causes.get(action_id) or "shutdown"
 
     def __enter__(self) -> Core:
         return self
@@ -1050,10 +1120,19 @@ class Core:
             if self._closed:
                 return
             self._closed = True
+        with self._background_cond:
+            for action_id, abort in self._background_aborts.items():
+                self._background_abort_causes[action_id] = "shutdown"
+                abort.set()
+            self._background_cond.notify_all()
+        self._notify_tool_waiters()
         self._delegation.close()
         # No new session work can start (run/resume check `_closed` under their lock), so
         # draining every session lock now waits only for work that was already admitted.
         self._drain_session_locks()
+        with self._background_cond:
+            while self._background_live or self._background_claiming:
+                self._background_cond.wait()
         snapshot = self._snapshot
         if snapshot is not None:
             # The core's own shutdown is an owner shutdown: supervised background processes end
@@ -1404,6 +1483,7 @@ class Core:
             with self._aborts_lock:
                 self._session_aborts[session_id] = (run_abort_id, abort)
             resumed_notice: tuple[str, str] | None = None
+            stopped_result: CoreResult | None = None
             try:
                 session = self.store.session(session_id)
                 self._check_session(session)
@@ -1425,6 +1505,17 @@ class Core:
                 cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
                 if not isinstance(cursor.root_id, str) or not cursor.root_id:
                     raise ValueError("checkpoint has no captured root action identity")
+                if cursor.deferred_action_id is not None:
+                    with self._background_cond:
+                        action_abort = self._background_aborts.get(cursor.deferred_action_id)
+                    if action_abort is not None:
+                        abort = Cancellation(
+                            action_abort,
+                            linked_reason="background action stopped",
+                            linked_stop_cause_provider=lambda action_id=cursor.deferred_action_id: self._background_abort_stop_cause(action_id),
+                        )
+                        with self._aborts_lock:
+                            self._session_aborts[session_id] = (run_abort_id, abort)
                 root_state = self.store.root_budget_state(cursor.root_id)
                 if cursor.initial_root_budget is None:
                     if root_state is not None:
@@ -1487,18 +1578,21 @@ class Core:
                         definition = self._snapshot.definition_of(call.tool_name)
                         if definition is None:
                             raise ValueError("approved tool is not in the active capability revision")
-                        resume_read_only = self._session_read_only(execution.session.session_id)
-                        denial = self._denial(call, definition, read_only=resume_read_only)
+                        resume_read_only = self._session_read_only(execution.session.session_id) or cursor.deferred_origin_readonly is True
+                        visible = {tool.name for tool in self._visible_tools(execution, self._snapshot)}
+                        denial = (
+                            "tool is outside the current or captured origin scope"
+                            if call.tool_name not in visible
+                            else self._denial(call, definition, read_only=resume_read_only)
+                        )
                         if denial is None:
-                            # The gate is re-asked on the approval path too: consent to run a
-                            # tool never overrides a gate that refuses it.
+                            # Approval is not authority: the current tool gate is re-asked.
                             denial = self._gate_denial(execution, self._snapshot, call, readonly=resume_read_only)
                         if denial:
                             self._report(execution, call, ToolFailure(call.tool_name, denial))
                         else:
                             stopped = self._invoke(execution, call, definition)
-                            if stopped is not None:
-                                return stopped
+                            stopped_result = stopped
                 elif cursor.abandon_batch:
                     self._interrupt_batch(execution)
                 elif cursor.intent_sequence is not None:
@@ -1509,7 +1603,7 @@ class Core:
                     if intent.payload["replay_policy"] == "never":
                         self._interrupt_batch(execution)
                     # A safe read reuses the durable invocation identity below.
-                result = self._drive(execution)
+                result = stopped_result if stopped_result is not None else self._drive(execution)
                 if session.parent_session_id is not None and _terminal_run_result(result):
                     child_now = self.store.session(session_id)
                     notify = self._delegation._notify_requested(child_now, self.store.events(session_id))
@@ -1535,6 +1629,8 @@ class Core:
                     self._session_aborts.pop(session_id, None)
         if resumed_notice is not None:
             self._delegation._deliver_child_notice(*resumed_notice)
+        self._drain_deferred_requests(session_id)
+        self._drain_pending_background_tool_waits(session_id)
         self._drive_pending(session_id)
         return result
 
@@ -1568,31 +1664,105 @@ class Core:
             if results[-1].run_status not in ("completed", "idle"):
                 return
 
-    def _drain_deferred_requests(self, session_id: str) -> None:
-        """A command's callback has returned; run its committed requests without a model call."""
+    def _drain_deferred_requests(
+        self,
+        session_id: str,
+        *,
+        background_action_id: str | None = None,
+        action_abort: threading.Event | None = None,
+    ) -> None:
+        """Run committed deferred requests after their caller's callback lease has returned."""
         with self._session_lock(session_id):
-            self._ensure_open()
-            session = self.session(session_id)
-            if not self._admits_fresh_work(session):
-                return
-            root_id = uuid4().hex
-            execution = _Execution(
-                session,
-                _Cursor(root_id=root_id, deferred_only=True, logical_turn=uuid4().hex),
-                list(self.store.events(session_id)),
-                uuid4().hex,
-            )
-            if self._next_deferred(execution) is None:
-                return
-            abort = Cancellation()
-            with self._aborts_lock:
-                self._session_aborts[session_id] = (execution.run_id, abort)
-            try:
-                self._commit(execution, "running", "ready")
-                self._drive(execution)
-            finally:
+            while True:
+                self._ensure_open()
+                session = self.session(session_id)
+                if not self._admits_fresh_work(session):
+                    return
+                events = list(self.store.events(session_id))
+                completed_sequences = {
+                    event.payload.get("batch_sequence")
+                    for event in events
+                    if event.event_type in {EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED} and event.payload.get("deferred") is True
+                }
+                terminal_request_ids = {event.payload.get("request_id") for event in events if event.event_type == EventType.TOOL_DEFERRED_CANCELLED}
+                request = next(
+                    (
+                        event
+                        for event in events
+                        if event.event_type == EventType.TOOL_DEFERRED
+                        and event.sequence not in completed_sequences
+                        and event.payload.get("request_id") not in terminal_request_ids
+                        and (
+                            event.payload.get("background_action_id") == background_action_id
+                            if background_action_id is not None
+                            else event.payload.get("background_action_id") is None
+                        )
+                    ),
+                    None,
+                )
+                if request is None:
+                    return
+                raw_action_id = request.payload.get("background_action_id")
+                request_action_id = raw_action_id if isinstance(raw_action_id, str) else None
+                if action_abort is not None and action_abort.is_set():
+                    if request_action_id is not None:
+                        with self._background_cond:
+                            action_stop_cause = self._background_abort_causes.get(request_action_id)
+                        status = "cancelled" if action_stop_cause == "owner_cancel" else "interrupted"
+                        self._cancel_background_tool_requests(
+                            session_id,
+                            request_action_id,
+                            status=status,
+                            stop_cause=action_stop_cause,
+                            reason="background action stopped before deferred dispatch",
+                        )
+                    return
+                raw_root = request.payload.get("root_id")
+                root_id = raw_root if isinstance(raw_root, str) and raw_root else ("" if request_action_id else uuid4().hex)
+                raw_budget = request.payload.get("root_action_budget")
+                root_budget = raw_budget if type(raw_budget) is int and raw_budget >= 0 else None
+                raw_tools = request.payload.get("origin_visible_tools")
+                origin_tools = (
+                    tuple(raw_tools) if isinstance(raw_tools, (list, tuple)) and all(isinstance(name, str) and name for name in raw_tools) else None
+                )
+                raw_readonly = request.payload.get("origin_readonly")
+                origin_readonly = raw_readonly if type(raw_readonly) is bool else None
+                authority_missing = request_action_id is not None and (
+                    not root_id or "root_action_budget" not in request.payload or origin_tools is None or origin_readonly is None
+                )
+                execution = _Execution(
+                    session,
+                    _Cursor(
+                        root_id=root_id,
+                        initial_root_budget=root_budget,
+                        deferred_only=True,
+                        deferred_action_id=request_action_id,
+                        deferred_origin_tools=origin_tools,
+                        deferred_origin_readonly=origin_readonly,
+                        deferred_authority_missing=authority_missing,
+                        logical_turn=uuid4().hex,
+                    ),
+                    events,
+                    uuid4().hex,
+                )
+                if action_abort is None:
+                    abort = Cancellation()
+                else:
+                    abort = Cancellation(
+                        action_abort,
+                        linked_reason="background action stopped",
+                        linked_stop_cause_provider=lambda action_id=request_action_id or "": self._background_abort_stop_cause(action_id),
+                    )
                 with self._aborts_lock:
-                    self._session_aborts.pop(session_id, None)
+                    self._session_aborts[session_id] = (execution.run_id, abort)
+                try:
+                    self._commit(execution, "running", "ready")
+                    result = self._drive(execution)
+                finally:
+                    with self._aborts_lock:
+                        self._session_aborts.pop(session_id, None)
+                if result.status not in ("completed", "idle"):
+                    return
 
     def command_catalog(self) -> CommandCatalog:
         """Command catalog captured together with the revision that admits it.
@@ -2066,6 +2236,8 @@ class Core:
             logical_turn=uuid4().hex,
             root_action_id=root_action_id,
             initial_root_budget=initial_root_budget,
+            origin_visible_tools=self._visible_tool_names_for_session(session_id, self._snapshot),
+            origin_readonly=self._session_read_only(session_id),
         )
         with self._dispatch(f"command:{name}"), self._command_abort(context) as context:
             outcome = self.plugin_runtime.invoke_command(
@@ -2219,6 +2391,8 @@ class Core:
             logical_turn=uuid4().hex,
             root_action_id=root_action_id,
             initial_root_budget=initial_root_budget,
+            origin_visible_tools=self._visible_tool_names_for_session(session_id, self._snapshot),
+            origin_readonly=self._session_read_only(session_id),
         )
 
         with self._dispatch(f"command:{rec.command_name}"), self._command_abort(context) as context:
@@ -3064,21 +3238,39 @@ class Core:
         action never blocks another session's actions or any model turn. Claimed rows
         reported as `interrupted` — and are never auto-replayed.
         """
-        while not self._closed:
+        while True:
+            with self._background_cond:
+                if self._closed:
+                    return
+                self._background_claiming += 1
             try:
                 claimed = self.store.claim_background_action(workspace=str(self.workspace), claim_identity=self._background_identity)
             except StoreConflict:
                 # Lost a claim race; back off and retry. Anything else is a real
                 # store/contract failure and stays visible instead of idling as "no work".
                 claimed = None
+            except BaseException:
+                with self._background_cond:
+                    self._background_claiming -= 1
+                    self._background_cond.notify_all()
+                raise
             if claimed is None:
                 with self._background_cond:
+                    self._background_claiming -= 1
+                    self._background_cond.notify_all()
+                    if self._closed:
+                        return
                     self._background_cond.wait(timeout=1.0)
                 continue
             abort = threading.Event()
             with self._background_cond:
                 self._background_live.add(claimed.continuation_id)
                 self._background_aborts[claimed.continuation_id] = abort
+                self._background_abort_causes[claimed.continuation_id] = "shutdown" if self._closed else None
+                if self._closed:
+                    abort.set()
+                self._background_claiming -= 1
+                self._background_cond.notify_all()
             self._snapshot.plugin_runtime.background_live_actions.add(claimed.continuation_id)
             worker = threading.Thread(
                 target=self._drive_background_action,
@@ -3094,6 +3286,8 @@ class Core:
         terminal: Literal["completed", "failed", "cancelled"] = "completed"
         failure: str | None = None
         try:
+            if abort.is_set() or self._closed:
+                raise InterruptedError(f"background action {action_id!r} was cancelled before dispatch")
             action = _wire_object(claimed.payload.get("action"), f"background action {action_id!r} envelope")
             root_action_id = claimed.root_id
             root_budget = claimed.payload.get("root_action_budget")
@@ -3101,6 +3295,23 @@ class Core:
                 raise StoreConflict(f"background action {action_id!r} has no captured root authorization")
             if root_budget is not None and (type(root_budget) is not int or root_budget < 0):
                 raise StoreConflict(f"background action {action_id!r} has an invalid captured root budget")
+            raw_authority = claimed.payload.get("tool_wait_authority")
+            origin_visible_tools: tuple[str, ...] | None = None
+            origin_readonly: bool | None = None
+            if isinstance(raw_authority, Mapping):
+                raw_tools = raw_authority.get("visible_tools")
+                raw_readonly = raw_authority.get("readonly")
+                if (
+                    not isinstance(raw_tools, (list, tuple))
+                    or not all(isinstance(name, str) and name for name in raw_tools)
+                    or type(raw_readonly) is not bool
+                    or raw_authority.get("revision_id") != claimed.revision_id
+                ):
+                    raise StoreConflict(f"background action {action_id!r} has malformed captured tool-wait authority")
+                origin_visible_tools = tuple(raw_tools)
+                origin_readonly = raw_readonly
+            elif raw_authority is not None:
+                raise StoreConflict(f"background action {action_id!r} has malformed captured tool-wait authority")
             context = _BackgroundContext(
                 self,
                 action_id=action_id,
@@ -3110,6 +3321,8 @@ class Core:
                 revision_id=claimed.revision_id,
                 root_action_id=root_action_id,
                 initial_root_budget=root_budget,
+                origin_visible_tools=origin_visible_tools,
+                origin_readonly=origin_readonly,
                 abort=abort,
             )
             driver = self._snapshot.plugin_runtime.background_driver(claimed.owner)
@@ -3137,9 +3350,10 @@ class Core:
         finally:
             with self._background_cond:
                 self._background_live.discard(action_id)
-                self._background_aborts.pop(action_id, None)
+                self._background_abort_causes.pop(action_id, None)
                 self._background_cond.notify_all()
             self._snapshot.plugin_runtime.background_live_actions.discard(action_id)
+            self._notify_tool_waiters()
 
     def _invoke_background_action[T](
         self,
@@ -3151,21 +3365,17 @@ class Core:
         revision_id: str,
         root_action_id: str,
         initial_root_budget: int | None,
+        origin_visible_tools: tuple[str, ...] | None,
+        origin_readonly: bool | None,
         abort: threading.Event,
     ) -> T:
-        """Run one driver callback under a fresh lease and commit its staged work atomically.
-
-        The callback runs exactly once: it is never replayed. Only a `SequenceConflict`
-        retries, and then only by re-submitting the SAME staged proposal against the fresh
-        tip (bounded attempts) — no callback re-execution, no external work replay. Any
-        other conflict (state CAS, run id, revision) fails visibly so the driver sees the
-        real contention instead of a silently retried mutation. The commit never takes the
-        session run lock.
-        """
+        """Run one driver callback under a fresh lease and commit its staged work atomically."""
         from .services import RuntimeServices
 
         if abort.is_set() or self._closed:
             raise InterruptedError(f"background action {action_id!r} was cancelled")
+        staged_cancels: tuple[StagedCancellation, ...] = ()
+        staged_events: tuple[EventDraft, ...] = ()
         with self._dispatch(f"background:{owner}") as snapshot:
             if snapshot.revision_id != revision_id:
                 raise InterruptedError(f"background action {action_id!r} belongs to a retired revision")
@@ -3177,6 +3387,12 @@ class Core:
                 raise StoreConflict(f"background action {action_id!r} lost its captured finite root authorization")
             if initial_root_budget is None and root_state is not None:
                 raise StoreConflict(f"background action {action_id!r} captured an uncapped root with a finite budget row")
+            effective_origin_tools = None
+            effective_origin_readonly = origin_readonly
+            if origin_visible_tools is not None and origin_readonly is not None:
+                current_visible = set(self._visible_tool_names_for_session(session_id, snapshot))
+                effective_origin_tools = tuple(name for name in origin_visible_tools if name in current_visible)
+                effective_origin_readonly = origin_readonly or self._session_read_only(session_id)
             signal = _EventAbortSignal(abort)
             context = ToolContext(
                 workspace=self.workspace,
@@ -3188,6 +3404,9 @@ class Core:
                 logical_turn=action_id,
                 root_action_id=root_action_id,
                 initial_root_budget=initial_root_budget,
+                origin_visible_tools=effective_origin_tools,
+                origin_readonly=effective_origin_readonly,
+                background_action_id=action_id,
                 abort_signal=signal,
             )
             lease = runtime._open_lease(  # noqa: SLF001 - the core owns lease lifecycles
@@ -3195,11 +3414,14 @@ class Core:
                 session_id=session_id,
                 run_id=action_id,
                 invocation_id=context.invocation_id,
-                readonly=self._session_read_only(session_id),
+                readonly=self._session_read_only(session_id) or effective_origin_readonly is True,
                 actor="plugin",
                 internal_work=True,
                 root_action_id=root_action_id,
                 initial_root_budget=initial_root_budget,
+                origin_visible_tools=effective_origin_tools,
+                origin_readonly=effective_origin_readonly,
+                background_action_id=action_id,
                 abort_signal=signal,
             )
             services = RuntimeServices(runtime, lease)
@@ -3218,6 +3440,7 @@ class Core:
                 staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
             elif isinstance(staged_budget, PluginBudget):
                 staged_budget_updates.append(StagedBudgetUpdate(owner=staged_budget.owner, action="set", budget=staged_budget))
+            committed = False
             for _attempt in range(8):
                 if abort.is_set() or self._closed:
                     raise InterruptedError(f"background action {action_id!r} was cancelled")
@@ -3240,24 +3463,273 @@ class Core:
                     )
                 except SequenceConflict:
                     continue
-                if staged_cancels:
-                    self._owner_cancel_claimed_work(
-                        session_id,
-                        staged_cancels,
-                        f"owner {owner} cancelled its durable work",
-                    )
-                return result
-            raise SequenceConflict(f"background action {action_id!r} could not commit its staged work")
+                committed = True
+                break
+            if not committed:
+                raise SequenceConflict(f"background action {action_id!r} could not commit its staged work")
+        self._notify_tool_waiters()
+        if staged_cancels:
+            self._owner_cancel_claimed_work(
+                session_id,
+                staged_cancels,
+                f"owner {owner} cancelled its durable work",
+            )
+        if any(event.event_type == EventType.TOOL_DEFERRED and event.payload.get("background_action_id") == action_id for event in staged_events):
+            self._drain_deferred_requests(session_id, background_action_id=action_id, action_abort=abort)
+        return result
+
+    def _commit_tool_wait_events(
+        self,
+        session_id: str,
+        expected_session: SessionRecord,
+        events: Sequence[EventDraft],
+        *,
+        status: str | None = None,
+        checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None = None,
+        checkpoint_payload: Mapping[str, object] | None = None,
+    ) -> None:
+        events = self._stamp_fact_owners(events)
+        self.store.commit_staged(
+            session_id,
+            expected_sequence=expected_session.last_event_sequence,
+            expected_run_id=expected_session.run_id,
+            run_id=expected_session.run_id or uuid4().hex,
+            revision_id=expected_session.active_revision_id,
+            events=events,
+            status=expected_session.status if status is None else status,
+            checkpoint_kind=checkpoint_kind,
+            checkpoint_payload=checkpoint_payload,
+        )
+        self._notify_tool_waiters()
+
+    @staticmethod
+    def _terminal_background_tool_request_ids(events: Sequence[StoredEvent]) -> set[str]:
+        stop_keys = {
+            (event.payload.get("background_action_id"), event.payload.get("deferred_request_id"))
+            for event in events
+            if event.event_type == EventType.RUN_INTERRUPTED
+        }
+        stop_causes = {"completed", "error", "user_stop", "owner_cancel", "limit_reached", "shutdown"}
+        terminal: set[str] = set()
+        for event in events:
+            request_id = event.payload.get("request_id")
+            if not isinstance(request_id, str):
+                continue
+            if event.event_type == EventType.TOOL_DEFERRED_CANCELLED:
+                terminal.add(request_id)
+            elif event.event_type == EventType.TOOL_COMPLETED and event.payload.get("deferred") is True:
+                terminal.add(request_id)
+            elif (
+                event.event_type == EventType.TOOL_INTERRUPTED
+                and event.payload.get("deferred") is True
+                and (event.payload.get("stop_cause") in stop_causes or (event.payload.get("background_action_id"), request_id) in stop_keys)
+            ):
+                terminal.add(request_id)
+        return terminal
+
+    def _cancel_background_tool_requests(
+        self,
+        session_id: str,
+        action_id: str,
+        *,
+        status: Literal["cancelled", "interrupted", "kernel_lost", "budget_exhausted"],
+        stop_cause: StopCause | None,
+        reason: str,
+    ) -> None:
+        while True:
+            expected_session = self.store.session(session_id)
+            events = list(self.store.events(session_id))
+            terminal_request_ids = self._terminal_background_tool_request_ids(events)
+            requests = [
+                event
+                for event in events
+                if event.event_type == EventType.TOOL_DEFERRED
+                and event.payload.get("background_action_id") == action_id
+                and event.payload.get("result_delivery") == "requester"
+                and event.payload.get("request_id") not in terminal_request_ids
+            ]
+            if not requests:
+                return
+            terminal_events: list[EventDraft] = []
+            request_intents: dict[int, bool] = {}
+            for request in requests:
+                request_id = request.payload.get("request_id")
+                if not isinstance(request_id, str) or not request_id:
+                    continue
+                intent_exists = any(
+                    event.event_type == EventType.TOOL_INTENT and event.payload.get("batch_sequence") == request.sequence for event in events
+                )
+                request_intents[request.sequence] = intent_exists
+                if status == "cancelled" and intent_exists:
+                    continue
+                payload: dict[str, object] = {
+                    "request_id": request_id,
+                    "background_action_id": action_id,
+                    "owner": request.payload.get("requester", ""),
+                    "revision_id": request.payload.get("expected_revision", ""),
+                    "tool_name": decode_tool_call(_wire_object(request.payload["call"], "deferred tool call")).tool_name,
+                    "status": status,
+                    "reason": reason,
+                }
+                if stop_cause is not None:
+                    payload["stop_cause"] = stop_cause
+                if intent_exists and status in {"interrupted", "kernel_lost"}:
+                    payload["execution"] = {
+                        "cancellation_signalled": stop_cause in {"user_stop", "owner_cancel", "shutdown"},
+                        "execution_stopped": False,
+                        "side_effect_state": "unknown",
+                    }
+                terminal_events.append(EventDraft(EventType.TOOL_DEFERRED_CANCELLED, "kernel", "plugin", payload))
+            if not terminal_events:
+                return
+            checkpoint = self.store.checkpoint(session_id)
+            checkpoint_payload: Mapping[str, object] | None = None
+            checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None = None
+            new_status: str | None = None
+            if checkpoint is not None and checkpoint.kind != "terminal" and isinstance(checkpoint.payload, Mapping):
+                cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
+                current_request = next((request for request in requests if request.sequence == cursor.deferred_sequence), None)
+                if (
+                    current_request is not None
+                    and current_request.payload.get("background_action_id") == action_id
+                    and (not request_intents.get(current_request.sequence, False) or status == "kernel_lost")
+                ):
+                    approval_id: str | None = None
+                    if cursor.approval_sequence is not None:
+                        approval = next(
+                            (
+                                event
+                                for event in events
+                                if event.sequence == cursor.approval_sequence and event.event_type == EventType.APPROVAL_REQUESTED
+                            ),
+                            None,
+                        )
+                        raw_approval_id = None if approval is None else approval.payload.get("request_id")
+                        approval_id = raw_approval_id if isinstance(raw_approval_id, str) else None
+                    if approval_id is not None:
+                        terminal_events.append(
+                            EventDraft(
+                                EventType.APPROVAL_DECIDED,
+                                "kernel",
+                                "kernel",
+                                {"request_id": approval_id, "decision": "deny", "reason": reason},
+                            )
+                        )
+                    run_payload: dict[str, object] = {
+                        "reason": reason,
+                        "logical_turn": cursor.logical_turn,
+                        "deferred_request_id": current_request.payload.get("request_id"),
+                        "background_action_id": action_id,
+                    }
+                    if stop_cause is not None:
+                        run_payload["stop_cause"] = stop_cause
+                    terminal_events.append(EventDraft(EventType.RUN_INTERRUPTED, "kernel", "kernel", run_payload))
+                    cursor.batch_sequence = None
+                    cursor.next_call = 0
+                    cursor.intent_sequence = None
+                    cursor.approval_sequence = None
+                    cursor.deferred_sequence = None
+                    cursor.deferred_depth = 0
+                    cursor.deferred_action_id = None
+                    cursor.deferred_origin_tools = None
+                    cursor.deferred_origin_readonly = None
+                    cursor.deferred_authority_missing = False
+                    checkpoint_payload = cursor.model_dump(mode="json")
+                    checkpoint_kind = "terminal"
+                    new_status = "interrupted"
+            try:
+                self._commit_tool_wait_events(
+                    session_id,
+                    expected_session,
+                    terminal_events,
+                    status=new_status,
+                    checkpoint_kind=checkpoint_kind,
+                    checkpoint_payload=checkpoint_payload,
+                )
+                return
+            except SequenceConflict:
+                continue
+
+    def _reconcile_lost_background_tool_waits(self, session_id: str) -> None:
+        events = list(self.store.events(session_id))
+        terminal_ids = self._terminal_background_tool_request_ids(events)
+        action_ids = {
+            event.payload.get("background_action_id")
+            for event in events
+            if event.event_type == EventType.TOOL_DEFERRED
+            and event.payload.get("result_delivery") == "requester"
+            and event.payload.get("request_id") not in terminal_ids
+            and isinstance(event.payload.get("background_action_id"), str)
+        }
+        for raw_action_id in action_ids:
+            action_id = cast(str, raw_action_id)
+            record = self.store.background_action(action_id)
+            if record is not None and record.status == "pending":
+                continue
+            if record is not None and record.status == "claimed" and self._background_claim_live(record):
+                continue
+            if record is None or record.status in {"claimed", "interrupted"}:
+                status: Literal["cancelled", "interrupted", "kernel_lost", "budget_exhausted"] = "kernel_lost"
+                stop_cause: StopCause | None = None
+                reason = "background script was lost before its tool request reached a terminal result"
+            elif record.status == "cancelled":
+                status = "cancelled"
+                stop_cause = "owner_cancel"
+                reason = "background action was cancelled before its tool request completed"
+            elif record.status in {"failed", "completed"}:
+                status = "interrupted"
+                stop_cause = "error"
+                reason = "background driver settled before its tool request reached a terminal result"
+            else:
+                raise StoreConflict(f"background action {action_id!r} has unknown status {record.status!r}")
+            self._cancel_background_tool_requests(
+                session_id,
+                action_id,
+                status=status,
+                stop_cause=stop_cause,
+                reason=reason,
+            )
+
+    def _drain_pending_background_tool_waits(self, session_id: str) -> None:
+        while self._admits_fresh_work(self.store.session(session_id)):
+            events = list(self.store.events(session_id))
+            terminal_ids = self._terminal_background_tool_request_ids(events)
+            request = next(
+                (
+                    event
+                    for event in events
+                    if event.event_type == EventType.TOOL_DEFERRED
+                    and event.payload.get("result_delivery") == "requester"
+                    and event.payload.get("request_id") not in terminal_ids
+                    and isinstance(event.payload.get("background_action_id"), str)
+                ),
+                None,
+            )
+            if request is None:
+                return
+            action_id = cast(str, request.payload["background_action_id"])
+            record = self.store.background_action(action_id)
+            with self._background_cond:
+                action_abort = self._background_aborts.get(action_id)
+                live = action_id in self._background_live
+            if record is None or record.status != "claimed" or not live:
+                self._reconcile_lost_background_tool_waits(session_id)
+                record = self.store.background_action(action_id)
+                with self._background_cond:
+                    action_abort = self._background_aborts.get(action_id)
+                    live = action_id in self._background_live
+                if record is None or record.status != "claimed" or not live:
+                    return
+            if action_abort is None:
+                raise StoreConflict(f"live background action {action_id!r} has no cancellation binding")
+            before = self.store.session(session_id).last_event_sequence
+            self._drain_deferred_requests(session_id, background_action_id=action_id, action_abort=action_abort)
+            current = self.store.session(session_id)
+            if current.last_event_sequence <= before or not self._admits_fresh_work(current):
+                return
 
     def cancel_background_action(self, session_id: str, owner: str, action_id: str, reason: str = "owner cancellation") -> bool:
-        """Cancel one owner background action: signal its live driver and mark the row cancelled.
-
-        Pending rows are marked cancelled without ever running. A claimed row driven by this
-        process is signalled (the driver observes the abort and settles cancelled); a
-        claimed-but-unattended row is marked cancelled outright. Foreign owners' rows and
-        terminal rows are untouched; unknown ids return False.
-        """
-        _ = reason
+        """Cancel one owner action and only its own queued or in-flight tool requests."""
         self._ensure_open()
         record = self.store.background_action(action_id)
         if record is None or record.owner != owner or record.session_id != session_id:
@@ -3267,18 +3739,286 @@ class Core:
         with self._background_cond:
             abort = self._background_aborts.get(action_id)
             live = action_id in self._background_live
-        if live and abort is not None:
-            abort.set()
-            with self._background_cond:
+            if live and abort is not None:
+                self._background_abort_causes[action_id] = "owner_cancel"
+                abort.set()
                 self._background_cond.notify_all()
+        if live and abort is not None:
+            self._notify_tool_waiters()
+            self._cancel_background_tool_requests(
+                session_id,
+                action_id,
+                status="cancelled",
+                stop_cause="owner_cancel",
+                reason=reason,
+            )
             return True
+        self._cancel_background_tool_requests(
+            session_id,
+            action_id,
+            status="cancelled",
+            stop_cause="owner_cancel",
+            reason=reason,
+        )
         try:
             self.store.complete_background_action(action_id, status="cancelled")
         except StoreConflict:
             return False
         with self._background_cond:
             self._background_cond.notify_all()
+        self._notify_tool_waiters()
         return True
+
+    def _await_background_tool(self, context: _BackgroundContext, receipt: ToolInvocationReceipt) -> ToolAwaitResult:
+        self._assert_background_wait_unleased()
+        if not isinstance(receipt, ToolInvocationReceipt):
+            raise TypeError("background tool wait requires a ToolInvocationReceipt")
+        events = self.store.events(context._session_id)
+        request = next(
+            (event for event in events if event.event_type == EventType.TOOL_DEFERRED and event.payload.get("request_id") == receipt.request_id),
+            None,
+        )
+        if request is None:
+            raise ValueError(f"tool request {receipt.request_id!r} was not committed by this background action")
+        call = decode_tool_call(_wire_object(request.payload["call"], "deferred tool call"))
+        if (
+            request.payload.get("background_action_id") != context.action_id
+            or request.payload.get("requester") != context._owner
+            or request.payload.get("expected_revision") != context._revision_id
+            or request.payload.get("result_delivery") != "requester"
+            or call.tool_call_id != receipt.request_id
+            or call.tool_name != receipt.tool_name
+            or request.payload.get("depth") != receipt.depth
+        ):
+            raise ValueError("tool request receipt does not match this background action's captured identity")
+        while True:
+            outcome = self._background_tool_outcome(context, request)
+            if outcome is not None:
+                return outcome
+            record = self.store.background_action(context.action_id)
+            if record is None:
+                raise ValueError(f"background action {context.action_id!r} no longer exists")
+            if record.owner != context._owner or record.session_id != context._session_id:
+                raise ValueError("background action identity changed while awaiting its tool request")
+            if self._closed:
+                self._cancel_background_tool_requests(
+                    context._session_id,
+                    context.action_id,
+                    status="interrupted",
+                    stop_cause="shutdown",
+                    reason="core shutdown interrupted the background tool wait",
+                )
+            elif context.abort_signal.is_set():
+                with self._background_cond:
+                    stop_cause = self._background_abort_causes.get(context.action_id)
+                status = "cancelled" if stop_cause == "owner_cancel" else "interrupted"
+                self._cancel_background_tool_requests(
+                    context._session_id,
+                    context.action_id,
+                    status=status,
+                    stop_cause=stop_cause,
+                    reason="background action stopped",
+                )
+            elif record.status == "interrupted":
+                self._cancel_background_tool_requests(
+                    context._session_id,
+                    context.action_id,
+                    status="kernel_lost",
+                    stop_cause=None,
+                    reason="background driver did not survive the previous core process",
+                )
+            elif record.status == "failed":
+                self._cancel_background_tool_requests(
+                    context._session_id,
+                    context.action_id,
+                    status="interrupted",
+                    stop_cause="error",
+                    reason="background driver failed before completing its deferred tool wait",
+                )
+            elif record.status == "cancelled":
+                self._cancel_background_tool_requests(
+                    context._session_id,
+                    context.action_id,
+                    status="cancelled",
+                    stop_cause="owner_cancel",
+                    reason="background action was cancelled",
+                )
+            elif record.status == "completed":
+                self._cancel_background_tool_requests(
+                    context._session_id,
+                    context.action_id,
+                    status="interrupted",
+                    stop_cause="error",
+                    reason="background driver completed without a terminal result for its tool request",
+                )
+            with self._tool_wait_cond:
+                outcome = self._background_tool_outcome(context, request)
+                if outcome is not None:
+                    return outcome
+                self._tool_wait_cond.wait()
+
+    def _background_tool_outcome(self, context: _BackgroundContext, request: StoredEvent) -> ToolAwaitResult | None:
+        request_id = str(request.payload["request_id"])
+        request_call = decode_tool_call(_wire_object(request.payload["call"], "deferred tool call"))
+        events = self.store.events(context._session_id, after_sequence=request.sequence)
+        tool_event = next(
+            (
+                event
+                for event in events
+                if event.event_type in {EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED}
+                and event.payload.get("deferred") is True
+                and event.payload.get("request_id") == request_id
+                and event.payload.get("background_action_id") == context.action_id
+            ),
+            None,
+        )
+        cancellation = next(
+            (
+                event
+                for event in events
+                if event.event_type == EventType.TOOL_DEFERRED_CANCELLED
+                and event.payload.get("request_id") == request_id
+                and event.payload.get("background_action_id") == context.action_id
+            ),
+            None,
+        )
+        if (
+            tool_event is not None
+            and tool_event.event_type == EventType.TOOL_INTERRUPTED
+            and tool_event.payload.get("stop_cause") is None
+            and cancellation is not None
+            and not any(
+                event.event_type == EventType.RUN_INTERRUPTED
+                and event.payload.get("deferred_request_id") == request_id
+                and event.payload.get("background_action_id") == context.action_id
+                for event in events
+            )
+        ):
+            tool_event = None
+        if tool_event is not None:
+            if _wire_object(tool_event.payload["call"], "deferred result call") != _wire_object(request.payload["call"], "deferred request call"):
+                raise ValueError("deferred terminal result changed its request call")
+            if tool_event.event_type == EventType.TOOL_INTERRUPTED:
+                stop_event = next(
+                    (
+                        event
+                        for event in events
+                        if event.event_type == EventType.RUN_INTERRUPTED
+                        and event.payload.get("deferred_request_id") == request_id
+                        and event.payload.get("background_action_id") == context.action_id
+                    ),
+                    None,
+                )
+                stop_cause_value = tool_event.payload.get("stop_cause")
+                if stop_cause_value is not None:
+                    stop_cause = cast(StopCause | None, stop_cause_value)
+                elif stop_event is not None:
+                    stop_cause = cast(StopCause | None, stop_event.payload.get("stop_cause"))
+                else:
+                    return None
+                budget_value = tool_event.payload.get("budget_exhaustion")
+                if budget_value is None and stop_event is not None:
+                    budget_value = stop_event.payload.get("budget_exhaustion")
+                terminal_sequence = tool_event.sequence if stop_event is None else stop_event.sequence
+            else:
+                stop_cause = None
+                budget_value = None
+                terminal_sequence = tool_event.sequence
+            raw_result = _wire_object(tool_event.payload["result"], "deferred tool result")
+            result = decode_tool_result(raw_result)
+            if result.tool_name != request_call.tool_name:
+                raise ValueError("deferred terminal result changed its tool identity")
+            reference = result.result_reference
+            if reference is not None:
+                try:
+                    canonical = read_artifact_content(reference, self._artifact_page)
+                    complete = decode_tool_result(_wire_object(json.loads(canonical), "canonical tool result"))
+                    if complete.tool_name != request_call.tool_name:
+                        raise ValueError("canonical tool result changed tool identity")
+                    result = replace(complete, result_reference=reference)
+                except Exception as exc:
+                    raise RuntimeError(f"complete result for tool request {request_id!r} could not be hydrated: {exc}") from exc
+            budget = self._budget_exhaustion_from_payload(budget_value)
+            if tool_event.event_type == EventType.TOOL_COMPLETED:
+                status: Literal["completed", "interrupted", "cancelled", "kernel_lost", "budget_exhausted"] = "completed"
+            elif stop_cause == "limit_reached" and budget is not None:
+                status = "budget_exhausted"
+            elif stop_cause in {"user_stop", "owner_cancel"}:
+                status = "cancelled"
+            else:
+                status = "interrupted"
+            return ToolAwaitResult(
+                request_id=request_id,
+                owner=context._owner,
+                action_id=context.action_id,
+                session_id=context._session_id,
+                revision_id=context._revision_id,
+                tool_name=result.tool_name,
+                status=status,
+                result=result,
+                terminal_sequence=terminal_sequence,
+                stop_cause=stop_cause,
+                budget_exhaustion=budget,
+                execution=result.execution if isinstance(result, ToolFailure) else None,
+            )
+        if cancellation is None:
+            return None
+        payload = cancellation.payload
+        if (
+            payload.get("owner") != context._owner
+            or payload.get("revision_id") != context._revision_id
+            or payload.get("tool_name") != request_call.tool_name
+        ):
+            raise ValueError("background tool cancellation changed its owner, revision, or tool identity")
+        status_value = payload.get("status")
+        if status_value not in {"cancelled", "interrupted", "kernel_lost", "budget_exhausted"}:
+            raise ValueError("background tool cancellation event has an unknown terminal status")
+        status = cast(Literal["cancelled", "interrupted", "kernel_lost", "budget_exhausted"], status_value)
+        return ToolAwaitResult(
+            request_id=request_id,
+            owner=context._owner,
+            action_id=context.action_id,
+            session_id=context._session_id,
+            revision_id=context._revision_id,
+            tool_name=request_call.tool_name,
+            status=status,
+            result=None,
+            terminal_sequence=cancellation.sequence,
+            stop_cause=cast(StopCause | None, payload.get("stop_cause")),
+            budget_exhaustion=self._budget_exhaustion_from_payload(payload.get("budget_exhaustion")),
+            execution=self._execution_from_payload(payload.get("execution")),
+        )
+
+    @staticmethod
+    def _budget_exhaustion_from_payload(value: object) -> BudgetExhaustion | None:
+        if not isinstance(value, Mapping):
+            return None
+        try:
+            return BudgetExhaustion(
+                dimension=cast(Any, value["dimension"]),
+                source=cast(Any, value["source"]),
+                limit=cast(int, value["limit"]),
+                consumed=cast(int, value["consumed"]),
+                remaining=cast(int, value["remaining"]),
+                continue_with=cast(Any, value["continue_with"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("tool wait contains a malformed budget exhaustion") from exc
+
+    @staticmethod
+    def _execution_from_payload(value: object) -> ExecutionObservation | None:
+        if not isinstance(value, Mapping):
+            return None
+        signalled = value.get("cancellation_signalled")
+        stopped = value.get("execution_stopped")
+        side_effect_state = value.get("side_effect_state")
+        if type(signalled) is not bool or type(stopped) is not bool:
+            raise ValueError("tool wait contains malformed execution metadata")
+        if side_effect_state == "settled" and stopped:
+            return ConfirmedStop(cancellation_signalled=signalled)
+        if side_effect_state == "unknown" and not stopped:
+            return UnconfirmedStop(cancellation_signalled=signalled)
+        raise ValueError("tool wait contains inconsistent execution metadata")
 
     def wait_background_actions(
         self, session_id: str, *, action_id: str | None = None, timeout_seconds: float = 300.0
@@ -4203,6 +4943,7 @@ class Core:
             pinned_run_id=pinned_run_id,
             enforce_pin=enforce_pin,
         )
+        self._notify_tool_waiters()
         self._deliver_facts(execution, execution.events[known_before:], tolerate_conflicts=True)
         return new_events
 
@@ -4290,18 +5031,28 @@ class Core:
 
     def _next_deferred(self, execution: _Execution) -> StoredEvent | None:
         """Unsettled requests of this chain, in commit order; no synthetic provider turns."""
-        completed = {
-            event.payload["batch_sequence"]
+        completed_sequences = {
+            event.payload.get("batch_sequence")
             for event in execution.events
             if event.event_type in {EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED} and event.payload.get("deferred") is True
         }
+        terminal_request_ids = {
+            event.payload.get("request_id") for event in execution.events if event.event_type == EventType.TOOL_DEFERRED_CANCELLED
+        }
+        action_id = execution.cursor.deferred_action_id
         return next(
             (
                 event
                 for event in execution.events
                 if event.event_type == EventType.TOOL_DEFERRED
-                and event.sequence not in completed
+                and event.sequence not in completed_sequences
+                and event.payload.get("request_id") not in terminal_request_ids
                 and event.payload.get("root_id", "") in {"", execution.cursor.root_id}
+                and (
+                    event.payload.get("background_action_id") == action_id
+                    if action_id is not None
+                    else event.payload.get("background_action_id") is None
+                )
             ),
             None,
         )
@@ -4463,14 +5214,27 @@ class Core:
         return bool(self.store.session_overlays(session_id))
 
     def _visible_tools(self, execution: _Execution, snapshot: _Snapshot) -> tuple[ToolDefinition, ...]:
-        """The catalog this session may see: policy scope, then restrictive overlays."""
+        """The catalog this session may see: current scope intersected with captured origin authority."""
         tools = snapshot.tools
         scope = execution.session.tool_allowlist
         if scope is not None:
             tools = tuple(tool for tool in tools if tool.name in scope)
-        if self._session_read_only(execution.session.session_id):
+        if execution.cursor.deferred_origin_tools is not None:
+            allowed = set(execution.cursor.deferred_origin_tools)
+            tools = tuple(tool for tool in tools if tool.name in allowed)
+        restrictive = self._session_read_only(execution.session.session_id) or execution.cursor.deferred_origin_readonly is True
+        if restrictive:
             tools = tuple(tool for tool in tools if not denied_under_restriction(tool.effects))
         return tools
+
+    def _visible_tool_names_for_session(self, session_id: str, snapshot: _Snapshot) -> tuple[str, ...]:
+        session = self.store.session(session_id)
+        tools = snapshot.tools
+        if session.tool_allowlist is not None:
+            tools = tuple(tool for tool in tools if tool.name in session.tool_allowlist)
+        if self._session_read_only(session_id):
+            tools = tuple(tool for tool in tools if not denied_under_restriction(tool.effects))
+        return tuple(tool.name for tool in tools)
 
     def _visible_tool_definition(self, session_id: str, name: str, revision_id: str) -> tuple[Mapping[str, object] | None, str]:
         """One definition from the active revision's dispatch snapshot, with this session's filters.
@@ -4558,6 +5322,10 @@ class Core:
                 if request is not None:
                     cursor.deferred_sequence = request.sequence
                     cursor.deferred_depth = cast(int, request.payload["depth"])
+                    if cursor.deferred_authority_missing:
+                        call = decode_tool_call(_wire_object(request.payload["call"], "deferred tool call"))
+                        self._report(execution, call, ToolFailure(call.tool_name, "background tool request lacks captured origin authorization"))
+                        continue
                     try:
                         self._commit(
                             execution,
@@ -4575,6 +5343,8 @@ class Core:
                             continue_with="extend_root_actions",
                         )
                         message = f"root action budget exhausted: consumed {exc.reserved} of {exc.budget}, remaining 0"
+                        if request.payload.get("background_action_id") is not None and request.payload.get("result_delivery") == "requester":
+                            return self._stop(execution, message, stop_cause="limit_reached", budget_exhaustion=exhaustion)
                         cursor.deferred_sequence = None
                         cursor.deferred_depth = 0
                         return self._stop(execution, message, stop_cause="limit_reached", budget_exhaustion=exhaustion)
@@ -4879,17 +5649,16 @@ class Core:
                 continue
             scope = execution.session.tool_allowlist
             if scope is not None and call.tool_name not in scope:
-                self._report(
-                    execution,
-                    call,
-                    ToolFailure(call.tool_name, "tool is outside this session's profile scope"),
-                )
+                self._report(execution, call, ToolFailure(call.tool_name, "tool is outside this session's profile scope"))
+                continue
+            if cursor.deferred_origin_tools is not None and call.tool_name not in cursor.deferred_origin_tools:
+                self._report(execution, call, ToolFailure(call.tool_name, "tool is outside the captured origin scope"))
                 continue
             definition = self._snapshot.definition_of(call.tool_name)
             if definition is None:
                 self._report(execution, call, ToolFailure(call.tool_name, "tool is not in the active capability revision"))
                 continue
-            effective_read_only = self._session_read_only(execution.session.session_id)
+            effective_read_only = self._session_read_only(execution.session.session_id) or cursor.deferred_origin_readonly is True
             denial = self._denial(call, definition, read_only=effective_read_only)
             if denial is None:
                 denial = self._gate_denial(execution, snapshot, call, readonly=effective_read_only)
@@ -4925,6 +5694,14 @@ class Core:
     def _invoke(self, execution: _Execution, call: ToolCall, definition: ToolDefinition) -> CoreResult | None:
         with self._dispatch(f"tool:{call.tool_name}") as snapshot:
             cursor = execution.cursor
+            session_abort = None
+            with self._aborts_lock:
+                entry = self._session_aborts.get(execution.session.session_id)
+                session_abort = None if entry is None else entry[1]
+            effective_abort = session_abort or self._abort
+            if effective_abort.cancelled:
+                reason = effective_abort.reason or "cancelled"
+                return self._stop(execution, reason, stop_cause=effective_abort.stop_cause or "user_stop")
             if cursor.intent_sequence is None:
                 invocation_id = uuid4().hex
                 self._commit(
@@ -4953,12 +5730,6 @@ class Core:
             else:
                 intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
                 invocation_id = str(intent.payload["invocation_id"])
-
-            session_abort = None
-            with self._aborts_lock:
-                entry = self._session_aborts.get(execution.session.session_id)
-                session_abort = None if entry is None else entry[1]
-            effective_abort = session_abort or self._abort
 
             if call.tool_name in self._snapshot.native_tools:
                 # A core-owned tool only stages a durable, approved request; the switch itself
@@ -4990,6 +5761,9 @@ class Core:
                     ),
                 )
                 return None
+            current_readonly = self._session_read_only(execution.session.session_id)
+            origin_readonly = current_readonly or cursor.deferred_origin_readonly is True
+            origin_visible_tools = tuple(tool.name for tool in self._visible_tools(execution, snapshot))
             context = ToolContext(
                 workspace=self.workspace,
                 session_id=execution.session.session_id,
@@ -5002,13 +5776,16 @@ class Core:
                 invocation_depth=cursor.deferred_depth,
                 root_action_id=cursor.root_id,
                 initial_root_budget=cursor.initial_root_budget,
+                origin_visible_tools=origin_visible_tools,
+                origin_readonly=origin_readonly,
+                background_action_id=cursor.deferred_action_id,
             )
             try:
                 outcome = snapshot.plugin_runtime.invoke(
                     call,
                     context=context,
                     return_outcome=True,
-                    readonly=self._session_read_only(execution.session.session_id),
+                    readonly=origin_readonly,
                 )
                 if not isinstance(outcome, ToolInvocationOutcome):
                     raise TypeError("plugin runtime returned a bare tool result for an outcome request")
@@ -5151,6 +5928,7 @@ class Core:
         staged_conts: tuple[StagedContinuationDraft, ...] = (),
         staged_cancels: tuple[StagedCancellation, ...] = (),
         staged_budget: PluginBudget | None | Literal["clear"] = None,
+        budget_exhaustion: BudgetExhaustion | None = None,
         staged_observations: tuple[ObservedChange, ...] = (),
         pinned_run_id: str | None = None,
         enforce_pin: bool = False,
@@ -5178,6 +5956,8 @@ class Core:
         cursor = execution.cursor
         deferred = cursor.deferred_sequence is not None
         batch_sequence = cursor.deferred_sequence or cursor.batch_sequence
+        request = self._event(execution, batch_sequence or 0, EventType.TOOL_DEFERRED) if deferred else None
+        requester_only = request is not None and request.payload.get("result_delivery") == "requester"
         invocation_id: str | None = None
         intent: StoredEvent | None = None
         if cursor.intent_sequence is not None:
@@ -5198,7 +5978,7 @@ class Core:
             "model": model_event.payload.get("model") if model_event is not None else None,
             "argument_bytes": len(canonical_json(dict(call.arguments)).encode("utf-8")),
             "result_bytes": result_bytes,
-            "truncated": result.output.bounds.truncated or projection_content_clipped,
+            "truncated": result.output.bounds.truncated or (projection_content_clipped and not requester_only),
             "partial": result.output.bounds.partial,
             "error_kind": diagnostic.kind if diagnostic else None,
             "has_retry_guidance": bool(diagnostic and diagnostic.guidance),
@@ -5218,7 +5998,7 @@ class Core:
                 {
                     **item.as_payload(),
                     "path": canonical_path(self.workspace, item.path),
-                    "clipped": item.clipped or projection_content_clipped,
+                    "clipped": item.clipped or (projection_content_clipped and not requester_only),
                 }
                 for item in result.coverage
             ]
@@ -5253,10 +6033,18 @@ class Core:
             "logical_turn": execution.cursor.logical_turn,
         }
         if deferred:
-            request = self._event(execution, batch_sequence or 0, EventType.TOOL_DEFERRED)
+            assert request is not None
             payload["deferred"] = True
             payload["request_id"] = request.payload["request_id"]
             payload["depth"] = request.payload["depth"]
+            if isinstance(request.payload.get("background_action_id"), str):
+                payload["background_action_id"] = request.payload["background_action_id"]
+            if requester_only:
+                payload["result_delivery"] = "requester"
+            if interrupted and requester_only:
+                payload["stop_cause"] = execution.cursor.stop_cause or "error"
+                if budget_exhaustion is not None:
+                    payload["budget_exhaustion"] = asdict(budget_exhaustion)
         if invocation_id is not None:
             payload["invocation_id"] = invocation_id
         report_event = EventDraft(
@@ -5287,8 +6075,16 @@ class Core:
             enforce_pin=enforce_pin,
         )
 
-    def _interrupt_batch(self, execution: _Execution, *, pinned_run_id: str | None = None, enforce_pin: bool = False) -> None:
+    def _interrupt_batch(
+        self,
+        execution: _Execution,
+        *,
+        budget_exhaustion: BudgetExhaustion | None = None,
+        pinned_run_id: str | None = None,
+        enforce_pin: bool = False,
+    ) -> None:
         first = execution.cursor.intent_sequence is not None
+        bridge_request = execution.cursor.deferred_action_id is not None and execution.cursor.deferred_sequence is not None
         execution.cursor.abandon_batch = True
         while execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None:
             _, call = self._pending(execution)
@@ -5297,8 +6093,23 @@ class Core:
                 if first
                 else "not executed: prior batch member was interrupted"
             )
+            result = (
+                ToolFailure(
+                    call.tool_name,
+                    message,
+                    execution=UnconfirmedStop(cancellation_signalled=execution.cursor.stop_cause in ("user_stop", "owner_cancel", "shutdown")),
+                )
+                if bridge_request and first
+                else ToolFailure(call.tool_name, message)
+            )
             self._report(
-                execution, call, ToolFailure(call.tool_name, message), interrupted=True, pinned_run_id=pinned_run_id, enforce_pin=enforce_pin
+                execution,
+                call,
+                result,
+                interrupted=True,
+                budget_exhaustion=budget_exhaustion if bridge_request and first else None,
+                pinned_run_id=pinned_run_id,
+                enforce_pin=enforce_pin,
             )
             first = False
 
@@ -5375,6 +6186,8 @@ class Core:
                     request = self._event(execution, cast(int, event.payload["batch_sequence"]), EventType.TOOL_DEFERRED)
                     if event.payload["call"] != request.payload["call"]:
                         raise ValueError("deferred tool result does not match its committed request")
+                    if request.payload.get("result_delivery") == "requester":
+                        continue
                     result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
                     text, images, _clipped = project_tool_result(result, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page)
                     messages.append(
@@ -5453,6 +6266,7 @@ class Core:
             for session in self.store.sessions(workspace=str(self.workspace)):
                 if self._closed:
                     return
+                self._reconcile_lost_background_tool_waits(session.session_id)
                 if self._admits_fresh_work(session):
                     self._drain_deferred_requests(session.session_id)
                 checkpoint = self.store.checkpoint(session.session_id)
@@ -5581,35 +6395,81 @@ class Core:
         budget_exhaustion: BudgetExhaustion | None = None,
     ) -> CoreResult:
         """Stop a run without replaying an abandoned native batch."""
-        execution.cursor.stop_cause = stop_cause
+        cursor = execution.cursor
+        cursor.stop_cause = stop_cause
         deliberate = stop_cause in ("user_stop", "owner_cancel")
-        if deliberate and (execution.cursor.batch_sequence is not None or execution.cursor.deferred_sequence is not None):
-            self._interrupt_batch(execution)
+        bridge_request: StoredEvent | None = None
+        bridge_action_id: str | None = None
+        bridge_request_id: str | None = None
+        if cursor.deferred_sequence is not None and cursor.deferred_action_id is not None:
+            bridge_request = self._event(execution, cursor.deferred_sequence, EventType.TOOL_DEFERRED)
+            if bridge_request.payload.get("background_action_id") != cursor.deferred_action_id:
+                raise StoreConflict("deferred request action identity changed before stop")
+            bridge_action_id = cursor.deferred_action_id
+            bridge_request_id = str(bridge_request.payload["request_id"])
+        bridge_not_dispatched = bridge_request is not None and cursor.intent_sequence is None
+        if (
+            (deliberate or bridge_request is not None)
+            and not bridge_not_dispatched
+            and (cursor.batch_sequence is not None or cursor.deferred_sequence is not None)
+        ):
+            self._interrupt_batch(execution, budget_exhaustion=budget_exhaustion)
         checkpoint_kind = "terminal" if deliberate else "interrupted"
         self.store.cancel_pending_continuations(execution.session.session_id, "kernel")
-        stop_event = EventDraft(
-            EventType.RUN_INTERRUPTED,
-            "kernel",
-            "kernel",
-            {
+        stop_payload: dict[str, object] = {
+            "reason": message,
+            "stop_cause": stop_cause,
+            "logical_turn": cursor.logical_turn,
+            **({"budget_exhaustion": asdict(budget_exhaustion)} if budget_exhaustion is not None else {}),
+            **self._measured_run_elapsed_fields(execution),
+        }
+        if bridge_request_id is not None and bridge_action_id is not None:
+            stop_payload["deferred_request_id"] = bridge_request_id
+            stop_payload["background_action_id"] = bridge_action_id
+        stop_event = EventDraft(EventType.RUN_INTERRUPTED, "kernel", "kernel", stop_payload)
+        terminal_events: list[EventDraft] = []
+        if bridge_not_dispatched:
+            if budget_exhaustion is not None and stop_cause == "limit_reached":
+                terminal_status: Literal["cancelled", "interrupted", "budget_exhausted"] = "budget_exhausted"
+            elif stop_cause in ("user_stop", "owner_cancel"):
+                terminal_status = "cancelled"
+            else:
+                terminal_status = "interrupted"
+            terminal_payload: dict[str, object] = {
+                "request_id": bridge_request_id,
+                "background_action_id": bridge_action_id,
+                "owner": bridge_request.payload.get("requester", ""),
+                "revision_id": bridge_request.payload.get("expected_revision", ""),
+                "tool_name": decode_tool_call(_wire_object(bridge_request.payload["call"], "deferred tool call")).tool_name,
+                "status": terminal_status,
                 "reason": message,
                 "stop_cause": stop_cause,
-                "logical_turn": execution.cursor.logical_turn,
-                **({"budget_exhaustion": asdict(budget_exhaustion)} if budget_exhaustion is not None else {}),
-                **self._measured_run_elapsed_fields(execution),
-            },
-        )
-        if deliberate and execution.cursor.continuation_id is not None:
+            }
+            if budget_exhaustion is not None:
+                terminal_payload["budget_exhaustion"] = asdict(budget_exhaustion)
+            terminal_events.append(EventDraft(EventType.TOOL_DEFERRED_CANCELLED, "kernel", "plugin", terminal_payload))
+            cursor.deferred_sequence = None
+            cursor.deferred_depth = 0
+            cursor.deferred_action_id = None
+            cursor.deferred_origin_tools = None
+            cursor.deferred_origin_readonly = None
+            cursor.deferred_authority_missing = False
+            cursor.batch_sequence = None
+            cursor.next_call = 0
+            cursor.intent_sequence = None
+            cursor.approval_sequence = None
+        terminal_events.append(stop_event)
+        if deliberate and cursor.continuation_id is not None:
             self._commit(
                 execution,
                 "interrupted",
                 checkpoint_kind,
-                stop_event,
-                completed_continuation_id=execution.cursor.continuation_id,
+                *terminal_events,
+                completed_continuation_id=cursor.continuation_id,
                 completed_continuation_status="cancelled",
             )
         else:
-            self._commit(execution, "interrupted", checkpoint_kind, stop_event)
+            self._commit(execution, "interrupted", checkpoint_kind, *terminal_events)
         return self._result(
             execution,
             error=message,

@@ -27,6 +27,13 @@ class ToolContext:
     logical_turn: str = ""
     root_action_id: str | None = None
     initial_root_budget: int | None = None
+    #: Exact tool visibility captured when this invocation was admitted; None means unavailable,
+    #: never an unrestricted grant.
+    origin_visible_tools: tuple[str, ...] | None = None
+    #: Effective restrictive stance captured at admission; current restrictions may only narrow it.
+    origin_readonly: bool | None = None
+    #: Explicit background driver identity for host-retained scripted deferred requests.
+    background_action_id: str | None = None
     #: How many nested invocations separate this call from the session's own tool call: a nested
     #: request inherits its caller's depth plus one, so a deferred descendant is always counted.
     invocation_depth: int = 0
@@ -46,6 +53,16 @@ class ToolContext:
             type(self.initial_root_budget) is not int or not 0 <= self.initial_root_budget <= 9_223_372_036_854_775_807
         ):
             raise ValueError("initial root action budget must fit a non-negative SQLite INTEGER or be null")
+        if self.origin_visible_tools is not None and (
+            not isinstance(self.origin_visible_tools, tuple)
+            or not all(isinstance(name, str) and name for name in self.origin_visible_tools)
+            or len(set(self.origin_visible_tools)) != len(self.origin_visible_tools)
+        ):
+            raise ValueError("captured origin tool visibility must be unique tool names or null")
+        if self.origin_readonly is not None and type(self.origin_readonly) is not bool:
+            raise ValueError("captured origin stance must be boolean or null")
+        if self.background_action_id is not None and (not isinstance(self.background_action_id, str) or not self.background_action_id):
+            raise ValueError("background action identity must be nonempty text or null")
 
     def require_workspace(self) -> Path:
         if self.session_id:

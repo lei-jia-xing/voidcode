@@ -9,11 +9,10 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - Child spawn defaults to no local cap; profiles only narrow a caller-assigned cap. Core captures root identity and initial optional cap at child birth/queued-send reservation, shares finite authorization across descendants, rejects child-created roots, and appends explicit idempotent resume grants. SDK carries neutral semantics and no default policy.
   - No schema migration or guessed authority: legacy records without captured root identity fail visibly. Core implementation and boundary risks are tracked in [Core TODO](../core/TODO.md).
 
-- [ ] **可挂起、可等待结果的受治理工具调用。** 消费方：`eval`、动态工具编排。
-  - 现状：[`PluginServices.invoke_tool`](services.py) 返回 `ToolInvocationReceipt`，请求与当前回调结果一起提交，回调返回后才执行；不是返回 `ToolResult` 的同步调用，也没有公开的结果等待接口。不能把它直接包装成 `await tool.read(...)`，否则当前回调等待自己尚未提交的请求。
-  - 目标：明确请求、结果关联、审批等待、失败、取消和恢复的中立协议；宿主在安全边界挂起并释放 invocation lease，继续时重新取得合法 lease。脚本拿到结构化结果与资源引用，而非从 transcript 猜返回值。参考 OMP [eval 的 tool bridge、host waits 与 cancellation](omp://tools/eval.md)。
-  - 边界：沿用 session tool scope、revision、只读限制、pre-tool gates、审批和递归/预算计数；不直调插件 handler，不保留跨等待的 `PluginServices`，不把任意代码执行宣传成沙箱。明确同 session 可重入调度和递归限制，不用轮询解死锁。
-  - 验收：脚本读文件后根据返回数据发起编辑；审批期间 UI 可操作，允许后同一逻辑调用只执行一次，拒绝/取消成为脚本可处理的结果；重启后已发生的外部变更不重放，丢失的内核状态明确报告，旧 revision/隐藏工具不能借桥访问。
+- [x] **Lease-free same-session tool waits for background actions.** Consumers: scripted plugins and background workflows.
+  - `PluginServices.invoke_tool` remains receipt-only and commits its request with the callback result. The long-lived `BackgroundContext` adds `wait_tool(receipt)`, which waits only after the callback lease/dispatch guard is released; it never retains `PluginServices`, calls a handler directly, or polls.
+  - `ToolAwaitResult` correlates exact owner/action/request/session/revision/tool identity. It returns the actual complete `ToolResult` (canonical body/reference hydration included) or an explicit no-result terminal such as interrupted, cancelled, kernel-lost, or typed `BudgetExhaustion`. Only committed `user_stop`/`owner_cancel` is cancellation; missing captured root/visible-tool/stance authority is refused, and current policy can only narrow the captured origin.
+  - Evidence: `uv run pytest -q tests/unit/core/test_background_tool_wait.py` — 12 passed in 44.88s, including real Core external-SDK read→branch→edit on a >65,536-byte canonical result, approval/API responsiveness, allow/deny/late-cancel, queued approval wake, captured-root exhaustion, active-callback rejection, hidden/stale/legacy authority refusal, close/reload park, and abrupt subprocess loss without replay. Existing nested/native pairing and approval compatibility: 9 passed in 21.08s.
 
 - [x] **Authenticated, scoped byte-paged artifact reads.** Consumer: terminal full-output and image viewers.
   - Original evidence: the terminal viewer used `getattr(client, "read_artifact", None)` plus catch-all preview fallback while SessionClient/CoreRpcClient/RPC had no artifact reader; the old pager checkbox did not prove an end-to-end contract.
@@ -30,6 +29,10 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - Acceptance: derive a neutral caller allocation from known active model/context accounting, preserve complete-resource identities when shrinking, and report unknown limits/usage honestly rather than infer tokens from base64 or JSON byte counts.
 
 ## P1：URI、富结果与用户交互
+
+- [ ] **Foreground suspension and the complete `eval` product.**
+  - The background-action wait is not a foreground suspend API: ordinary `PluginServices.invoke_tool` remains receipt-only, and a normal tool/command/hook callback cannot block waiting for work it has not committed. No SDK contract retains or reconstructs an active Python frame across foreground suspension.
+  - Full `eval` remains P1 product work: expose a separately governed foreground composition lifecycle only if its owner, approval, lease, cancellation, persistence, and restart semantics can be represented without bypassing the ordinary tool pipeline. This bridge does not claim remote resources or arbitrary-code sandboxing.
 
 - [ ] **Discoverable tool-result/body schemas and content capabilities.** Consumers: eval/tool bridges and generated typed proxies.
   - Evidence: `ToolDefinition` declares `input_schema`, effects, path keys, replay policy and icon, but no result/body/output schema or returned content capability. A typed `ToolBody` and canonical `result_reference` preserve data; they do not let an unrelated consumer discover or validate that shape.

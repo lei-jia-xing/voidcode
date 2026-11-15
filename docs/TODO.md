@@ -3,7 +3,7 @@
 本文件集中跨模块取舍与导航；具体待办、现状证据和验收条件放在所属模块。新增项不代表功能已实现或已经实测。
 
 - [Core](../src/voidcode/core/TODO.md)：可选 provider-turn cap 与显式共享 root-action grant 已实现；adaptive model-headroom、输出投影及真实生产化边界继续按专属 TODO 跟踪。
-- [SDK](../src/voidcode/sdk/TODO.md)：typed artifact byte-page API 已贯通并有本地/认证 RPC 测试；仍有受治理 wait、adaptive headroom、typed child budget exhaustion、结果 schema 等表达力缺口。
+- [SDK](../src/voidcode/sdk/TODO.md)：`BackgroundContext.wait_tool` 的后台 action 结果等待已实现并经 Core/外部插件验证；普通前台 callback 的 suspend/恢复与完整 `eval` 产品仍属 P1。adaptive headroom、typed child budget exhaustion、结果 schema 等表达力缺口仍开放。
 - [插件](../src/voidcode/plugins/TODO.md)：仅记录已验证的具体整改与仍未收敛的图片/UI、生产化、URI、Agent、进程和检索任务，不宣称全插件审计。
 - [TUI](../src/voidcode/tui/TODO.md)：独立记录图片渲染与实时进度/交互边界；viewer/API 不替代每条路径的真实 PTY 验收。
 - [Web UI](../frontend/src/core/TODO.md)：artifact 查看/复制/导出与真实浏览器验收。
@@ -16,17 +16,17 @@
 
 当前已有 typed tool body、`OutputBounds`、内容寻址 artifact、可注册 `ResourceReader`、工具进度回调、子 Agent 跟进/完成通知、动态 workflow、命令表单，以及两端长输出分页；这些不是从零重建的待办。已完成项保持勾选，不把“图片输入已通”混同于“终端可以显示工具返回的图片”。
 
-已核实的关键断点：SDK 的 `invoke_tool` 只排队不等待结果；资源读者没有能力发现及实时 Agent/进程投影；`ToolOutput` 仍只表达一个文本或附件。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。仍开放 active-model 自适应投影 headroom 与 typed child budget exhaustion；真实浏览器 artifact、headless Kitty PTY 和真实 Core/live-progress PTY 已通过所记录路径，但物理 Kitty 像素及 PTY 场景中的取消/重连尚未证明，见所属模块 TODO。
+已核实的关键断点：普通 SDK `invoke_tool` 仍只排队；后台 action 可用 `BackgroundContext.wait_tool` 安全等待完整、request-correlated 结果，但这不是普通前台 callback 的 suspend API。资源读者仍缺能力发现及实时 Agent/进程投影；`ToolOutput` 仍只表达一个文本或附件。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。仍开放 active-model 自适应投影 headroom、typed child budget exhaustion 与结果 schema；真实浏览器 artifact、headless Kitty PTY 和真实 Core/live-progress PTY 已通过所记录路径，但物理 Kitty 像素及 PTY 场景中的取消/重连尚未证明，见所属模块 TODO。
 
 ## 优先级
 
 | 优先级 | 落地点 | 归属 |
 |---|---|---|
-| P0 | 自适应模型投影 headroom、资源完整读取与真实 UI/生产任务验收、受治理工具等待 | Core、SDK、插件、TUI/Web |
-| P1 | `eval` 工具桥、URI 跨工具复用、Agent 持续交互、富结果与结构化问答、后台执行收尾 | SDK/Core、插件、TUI/Web |
+| P0 | 自适应模型投影 headroom、资源完整读取与真实 UI/生产任务验收 | Core、插件、TUI/Web |
+| P1 | 前台 suspend/完整 `eval` 工具桥、URI 跨工具复用、Agent 持续交互、富结果与结构化问答、后台执行收尾 | SDK/Core、插件、TUI/Web |
 | P2 | 多格式读取、语义检索、结构化模型查询、语义重构闭环 | 插件、SDK |
 
-P0 图片链路与 SDK 工具等待协议可独立推进；`eval` 的工具组合依赖后者，混合图文结果与完整问答分别依赖 SDK 的组合输出、用户问答契约。按模块待办中的依赖落地，不先造一个覆盖所有场景的平台。
+后台 action 的 SDK 工具等待协议已实现；完整 `eval` 的普通前台 suspend/恢复仍属 P1。混合图文结果与完整问答分别依赖 SDK 的组合输出、用户问答契约。按模块待办中的依赖落地，不先造一个覆盖所有场景的平台。
 
 ## 实施约束
 
