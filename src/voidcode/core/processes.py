@@ -223,6 +223,7 @@ class _Background:
     """One supervised process: identity, group, stdin pipe, and its log targets."""
 
     process_id: str
+    owner: str
     session_id: str
     pid: int
     start_time: str
@@ -620,6 +621,7 @@ class ProcessRegistry:
         self,
         argv: Sequence[str],
         *,
+        owner: str,
         session_id: str,
         cwd: Path | None,
         env: Mapping[str, str] | None,
@@ -641,6 +643,8 @@ class ProcessRegistry:
         identifier = process_id or f"{'svc' if service else 'proc'}-{uuid4().hex[:16]}"
         with self._lock:
             existing = self._background.get(identifier) or self._services.get(identifier)
+            if existing is not None and (existing.owner != owner or existing.session_id != session_id):
+                raise ValueError(f"background process id {identifier!r} belongs to another owner or session")
             if existing is not None and existing.running():
                 raise ValueError(f"background process {identifier} is already running")
         for path in (stdout_path, stderr_path):
@@ -670,6 +674,7 @@ class ProcessRegistry:
             return self._spawn_service(
                 command,
                 identifier=identifier,
+                owner=owner,
                 session_id=session_id,
                 cwd=cwd,
                 child_env=child_env,
@@ -706,6 +711,7 @@ class ProcessRegistry:
                     pass
         entry = _Background(
             process_id=identifier,
+            owner=owner,
             session_id=session_id,
             pid=process.pid,
             start_time=process_start_identity(process.pid),
@@ -728,6 +734,7 @@ class ProcessRegistry:
         command: list[str],
         *,
         identifier: str,
+        owner: str,
         session_id: str,
         cwd: Path | None,
         child_env: dict[str, str] | None,
@@ -757,6 +764,7 @@ class ProcessRegistry:
             self._feed_frame(server, frame)
         entry = _Background(
             process_id=identifier,
+            owner=owner,
             session_id=session_id,
             pid=server.pid,
             start_time=process_start_identity(server.pid),
@@ -787,45 +795,42 @@ class ProcessRegistry:
         except (BrokenPipeError, OSError, ValueError) as exc:
             raise ValueError(f"sandbox spawn failed to deliver its plan: {exc}") from exc
 
-    def process_effects(self, process_id: str, *, session_id: str) -> ObservedEffects | None:
-        """Cumulative supervisor sidecar for one supervised process; None when unconfined."""
-        entry = self._supervised(process_id, session_id=session_id)
+    def process_effects(self, process_id: str, *, owner: str, session_id: str) -> ObservedEffects | None:
+        """Cumulative supervisor sidecar for one owner- and session-scoped process; None when unconfined."""
+        entry = self._supervised(process_id, owner=owner, session_id=session_id)
         if entry.effects_path is None:
             return None
         return read_effects_file(entry.effects_path, backend=native_backend())
 
-    def _supervised(self, process_id: str, *, session_id: str) -> _Background:
-        """One supervised entry (background or service), visible only to its own session."""
+    def _supervised(self, process_id: str, *, owner: str, session_id: str) -> _Background:
+        """One supervised entry, visible only to the owner and session that started it."""
         with self._lock:
             entry = self._background.get(process_id) or self._services.get(process_id)
-        if entry is None:
-            # Either it was never started here, or it belongs to another session, or it survived a
-            # core restart: all three are "not supervised by this core for this session", and
-            # the caller's persisted identity is what distinguishes them for the user.
-            raise ValueError(f"unknown background process for this session: {process_id}")
-        if entry.session_id != session_id:
-            raise ValueError(f"unknown background process for this session: {process_id}")
+        if entry is None or entry.owner != owner or entry.session_id != session_id:
+            raise ValueError(f"unknown background process for this owner and session: {process_id}")
         return entry
 
-    def background(self, process_id: str, *, session_id: str) -> _Background:
-        """One supervised process, visible only to the session that started it."""
-        return self._supervised(process_id, session_id=session_id)
+    def background(self, process_id: str, *, owner: str, session_id: str) -> _Background:
+        """One supervised process, visible only to its owner and session."""
+        return self._supervised(process_id, owner=owner, session_id=session_id)
 
-    def service_entry(self, process_id: str, *, session_id: str) -> _Background | None:
-        """One generation service entry, or None when this id is not a live service."""
+    def service_entry(self, process_id: str, *, owner: str, session_id: str) -> _Background | None:
+        """One generation service entry, or None when not owned by this owner and session."""
         with self._lock:
             entry = self._services.get(process_id)
-        if entry is None or entry.session_id != session_id:
+        if entry is None or entry.owner != owner or entry.session_id != session_id:
             return None
         return entry
 
-    def list_background(self, *, session_id: str) -> tuple[ProcessHandle, ...]:
+    def list_background(self, *, owner: str, session_id: str) -> tuple[ProcessHandle, ...]:
         with self._lock:
-            entries = [entry for entry in (*self._background.values(), *self._services.values()) if entry.session_id == session_id]
+            entries = [
+                entry for entry in (*self._background.values(), *self._services.values()) if entry.owner == owner and entry.session_id == session_id
+            ]
         return tuple(entry.handle() for entry in entries)
 
-    def write(self, process_id: str, data: bytes, *, session_id: str) -> int:
-        entry = self.background(process_id, session_id=session_id)
+    def write(self, process_id: str, data: bytes, *, owner: str, session_id: str) -> int:
+        entry = self.background(process_id, owner=owner, session_id=session_id)
         self._refresh_tree(entry)
         pipe = entry.process.stdin
         if pipe is None:
@@ -839,8 +844,17 @@ class ProcessRegistry:
             raise ValueError(f"background process {process_id} is not reading its stdin: {exc}") from exc
         return 0 if written is None else written
 
-    def read_output(self, process_id: str, *, stream: str, offset: int, limit: int, session_id: str) -> tuple[bytes, int, bool, bool]:
-        entry = self.background(process_id, session_id=session_id)
+    def read_output(
+        self,
+        process_id: str,
+        *,
+        stream: str,
+        offset: int,
+        limit: int,
+        owner: str,
+        session_id: str,
+    ) -> tuple[bytes, int, bool, bool]:
+        entry = self.background(process_id, owner=owner, session_id=session_id)
         self._refresh_tree(entry)
         if stream not in ("stdout", "stderr"):
             raise ValueError(f"unknown output stream: {stream!r}")
@@ -858,9 +872,9 @@ class ProcessRegistry:
             raise ValueError(f"background process {process_id} has no readable {stream}: {exc}") from exc
         return data, total, offset + len(data) >= total, entry.running()
 
-    def cancel(self, process_id: str, *, session_id: str) -> bool:
-        """Stop one supervised process and its owned descendants, reporting whether all are gone."""
-        entry = self.background(process_id, session_id=session_id)
+    def cancel(self, process_id: str, *, owner: str, session_id: str) -> bool:
+        """Stop one owner- and session-scoped process and its owned descendants."""
+        entry = self.background(process_id, owner=owner, session_id=session_id)
         descendants = self._refresh_tree(entry)
         leader_alive = entry.process.poll() is None or _pid_alive(entry.pid)
         if leader_alive:

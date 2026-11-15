@@ -146,8 +146,11 @@ class ChildOutcome:
     ``run_id`` identifies the logical turn this outcome belongs to; a follow-up run is a new
     ``run_id`` in the same child session, so a caller can never mistake an older terminal fact
     for the result of newer work. ``history_sha256`` names the immutable snapshot of the child's
-    readable history at that terminal point (``artifact://<sha256>``); the live,
-    paged view stays ``transcript://<child_session_id>``.
+    readable history at that terminal point (``artifact://<sha256>``); the live, paged history
+    stays ``transcript://<child_session_id>``. The plugin-provided ``agent://<child_session_id>``
+    resource is distinct: it projects current descendant status and the latest eligible
+    nonempty completed publication without consuming notices. VoidCode has no separate
+    accepted-yield marker, so this selection is not a claim of exact OMP yield equivalence.
     """
 
     child_session_id: str
@@ -161,7 +164,7 @@ class ChildOutcome:
     history_truncated: bool = False
     #: Bounded preview when the terminal output was too large to cross the runtime boundary inline.
     output_preview: str | None = None
-    #: Full output artifact, when the run produced more than the inline bound.
+    #: Full output artifact ref from publication or snapshot materialization for immutable resource paging.
     output_sha256: str | None = None
     output_bytes: int | None = None
 
@@ -247,6 +250,27 @@ class DescendantNode:
             "has_queued_followup": self.has_queued_followup,
             "awaiting_approval": self.awaiting_approval,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ChildSessionSnapshot:
+    """One caller-scoped current descendant row and its latest eligible published outcome.
+
+    Core snapshots select only committed completed outcomes with nonempty inline output or a
+    full output artifact; failed, interrupted, cancelled, empty, and preview-only outcomes do
+    not erase the prior result. Inline output is materialized as a deduplicated immutable
+    artifact for resource paging, without changing the committed event or join result. Current
+    lifecycle status and run identity remain on ``descendant`` and may identify a newer run.
+    The durable child fact has no explicit accepted-yield marker; this selection is a documented
+    approximation, not OMP-equivalent yield semantics.
+    """
+
+    descendant: DescendantNode
+    latest_outcome: ChildOutcome | None = None
+
+    def __post_init__(self) -> None:
+        if self.latest_outcome is not None and self.latest_outcome.child_session_id != self.descendant.session_id:
+            raise ValueError("child snapshot outcome must belong to its descendant")
 
 
 @dataclass(frozen=True, slots=True)

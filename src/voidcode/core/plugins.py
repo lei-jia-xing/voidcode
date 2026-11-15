@@ -71,6 +71,7 @@ from voidcode.sdk.provider import (
 from voidcode.sdk.resources import ResourceContractError, ResourcePage, ResourceReadCaller, ResourceReadRequest, ResourceUnavailable
 from voidcode.sdk.services import (
     CancelSubtreeReceipt,
+    ChildSessionSnapshot,
     DescendantNode,
     EventView,
     PluginBudget,
@@ -245,6 +246,7 @@ class PluginRuntime:
         send_child_callback: Callable[[str, str, str, str, bool, Callable[[], bool]], Mapping[str, object]] | None = None,
         cancel_child_callback: Callable[[str, str, str], bool] | None = None,
         list_descendants_callback: Callable[[str], tuple[DescendantNode, ...]] | None = None,
+        read_child_snapshot_callback: Callable[[str, str], ChildSessionSnapshot | None] | None = None,
         cancel_subtree_callback: Callable[[str, str, str | None, str], CancelSubtreeReceipt] | None = None,
         cancel_background_action_callback: Callable[[str, str, str, str], bool] | None = None,
         model_query_callback: Callable[[str, str, str | None, int | None, bool], str] | None = None,
@@ -269,6 +271,7 @@ class PluginRuntime:
         self.send_child_callback = send_child_callback
         self.cancel_child_callback = cancel_child_callback
         self.list_descendants_callback = list_descendants_callback
+        self.read_child_snapshot_callback = read_child_snapshot_callback
         self.cancel_subtree_callback = cancel_subtree_callback
         self.cancel_background_action_callback = cancel_background_action_callback
         self.model_query_callback = model_query_callback
@@ -772,7 +775,7 @@ class PluginRuntime:
             # cancellation a prompt plugin performs itself, just owned by the runtime so a reused
             # service cannot outlive the invocation that was using it.
             try:
-                self.processes.cancel(process_id, session_id=session_id)
+                self.processes.cancel(process_id, owner=lease.owner, session_id=session_id)
             except ValueError:
                 pass
 

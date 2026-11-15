@@ -173,6 +173,40 @@ def _python(*lines: str) -> list[str]:
     return [sys.executable, "-c", "\n".join(lines)]
 
 
+def test_supervised_process_lookup_requires_creator_owner_and_session(tmp_path: Path) -> None:
+    registry = ProcessRegistry()
+    process = registry.spawn(
+        _python("import time", "print('service-ready', flush=True)", "time.sleep(120)"),
+        owner="exec",
+        session_id="session-1",
+        cwd=tmp_path,
+        env=None,
+        stdin=True,
+        stdout_path=tmp_path / "service.stdout",
+        stderr_path=tmp_path / "service.stderr",
+        process_id="service-1",
+        service=True,
+    )
+    try:
+        assert process.running
+        for owner, session_id in (("other", "session-1"), ("exec", "session-2")):
+            assert registry.list_background(owner=owner, session_id=session_id) == ()
+            with pytest.raises(ValueError, match="owner and session"):
+                registry.read_output(
+                    process.process_id,
+                    stream="stdout",
+                    offset=0,
+                    limit=1,
+                    owner=owner,
+                    session_id=session_id,
+                )
+            with pytest.raises(ValueError, match="owner and session"):
+                registry.cancel(process.process_id, owner=owner, session_id=session_id)
+        assert registry.list_background(owner="exec", session_id="session-1")[0].running
+    finally:
+        assert registry.cancel(process.process_id, owner="exec", session_id="session-1")
+
+
 def test_run_process_returns_stdout_stderr_exit_code_and_stdin(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", process_tool=True)

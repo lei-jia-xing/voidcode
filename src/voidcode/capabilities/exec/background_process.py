@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.resources import ResourceReaderServices
 from voidcode.sdk.services import PluginServices, ProcessHandle
 from voidcode.sdk.tools import (
     ConfirmedStop,
@@ -47,7 +48,7 @@ _LOG_SCAN_BYTES = 8 * 1024 * 1024
 _READY_SCAN_BYTES = 64 * 1024
 #: Poll interval of the ready wait, as the legacy manager polled.
 _READY_POLL_SECONDS = 0.03
-#: Persisted workspace-state shape (versioned so a future shape can be migrated, not guessed).
+#: Current persisted process-record payload version; unsupported versions fail visibly.
 _STATE_VERSION = 1
 _EXTERNAL_MESSAGE = (
     "background process {process_id} is externally managed: this host does not supervise it "
@@ -150,6 +151,7 @@ class BackgroundProcessListBody:
 @dataclass(frozen=True, slots=True)
 class BackgroundProcessStartBody:
     process_id: str
+    resource_uri: str
     pid: int
     state: str
     command: str
@@ -167,6 +169,7 @@ class BackgroundProcessStartBody:
     def as_payload(self) -> dict[str, object]:
         return {
             "process_id": self.process_id,
+            "resource_uri": self.resource_uri,
             "pid": self.pid,
             "state": self.state,
             "command": self.command,
@@ -301,6 +304,7 @@ class _ProcessRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 
     process_id: NonEmptyProcessId
+    origin_session_id: str | None = Field(default=None, min_length=1)
     pid: int = Field(gt=0)
     start_time: str = Field(min_length=1)
     description: str
@@ -315,11 +319,11 @@ class _ProcessRecord(BaseModel):
 class _ProcessState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 
-    schema_version: int = Field(ge=_STATE_VERSION, le=_STATE_VERSION)
+    schema_version: int = Field(ge=1, le=1)
     processes: dict[str, _ProcessRecord]
 
 
-def _read_records(services: PluginServices) -> tuple[dict[str, _ProcessRecord], int]:
+def _read_records(services: PluginServices | ResourceReaderServices) -> tuple[dict[str, _ProcessRecord], int]:
     """Validate persisted identities once; malformed state is never an empty inventory."""
     state, version = services.get_state("workspace")
     if state is None:
@@ -364,9 +368,10 @@ def _with_exit(record: _ProcessRecord, *, exit_code: int | None) -> _ProcessReco
     return record.model_copy(update={"state": "exited", "exit_code": exit_code})
 
 
-def _identity_record(*, handle: ProcessHandle, command: str, description: str) -> _ProcessRecord:
+def _identity_record(*, handle: ProcessHandle, command: str, description: str, origin_session_id: str) -> _ProcessRecord:
     record = _ProcessRecord(
         process_id=handle.process_id,
+        origin_session_id=origin_session_id,
         pid=handle.pid,
         start_time=handle.start_time,
         description=description,
@@ -441,7 +446,11 @@ def _wait_for_ready(services: PluginServices, process_id: str, *, pattern: str |
 
 
 def _start_guidance(process_id: str) -> str:
-    return f"Track this process by process_id '{process_id}'. Use background_process with op=logs, send, or stop."
+    resource_uri = f"proc://{process_id}"
+    return (
+        f"Read {resource_uri} for status and stdout, or {resource_uri}/stderr for stderr; "
+        "use background_process with op=logs, send, or stop for line paging and process control."
+    )
 
 
 def _logs_guidance(*, running: bool) -> str:
@@ -530,6 +539,7 @@ class BackgroundProcessTool:
             handle=handle,
             command=args.command,
             description=args.description or "",
+            origin_session_id=context.session_id,
         )
         records[handle.process_id] = record
         version = _write_records(services, records, version)
@@ -542,6 +552,7 @@ class BackgroundProcessTool:
             record = _with_exit(record, exit_code=current.exit_code)
             records[handle.process_id] = record
             version = _write_records(services, records, version)
+        resource_uri = f"proc://{handle.process_id}"
         guidance = _start_guidance(handle.process_id)
         readiness = ""
         if args.ready_pattern is not None and ready is not True:
@@ -557,6 +568,7 @@ class BackgroundProcessTool:
             output=TextOutput(content),
             body=BackgroundProcessStartBody(
                 process_id=handle.process_id,
+                resource_uri=resource_uri,
                 pid=handle.pid,
                 state=state,
                 command=args.command,

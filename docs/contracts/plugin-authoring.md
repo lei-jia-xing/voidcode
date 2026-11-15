@@ -202,6 +202,10 @@ never reconstruct a cursor from trimmed display text.
   Queries follow the scoped read-only convention — no
   state mutation, writes, process starts, or other external effects
   (code-review contract, not an OS sandbox).
+- **Resource readers** register one ordinary `Plugin.resource_readers` scheme; there is no core URI table or fallback. Each handler gets `ResourceReaderServices` under a short read-only provider-owner lease while the caller's session/workspace/revision remain bound. `get_state` is the reader owner's state; child/process projections are caller-scoped and do not expose general `PluginServices`.
+  - `read_child_snapshot(child_session_id)` exposes only a visible descendant's current `DescendantNode` plus its latest eligible committed output. Nonexistent and out-of-scope ids both return `None`; reads never join, acknowledge completion notices, send, cancel, or replay work. Inline committed output is materialized as a deduplicated immutable text artifact for normal resource paging; the child fact and join result remain unchanged.
+  - `list_processes()` and `read_process_output()` are scoped to both the reader owner and caller session. `ResourceProcessStatus` omits backing paths; output is a bounded `ProcessOutput` whose captured-file `eof` is independent of `running`. The resource view has no process-control method and does not bind a service to read cancellation or stage process effects.
+  - Agent output pages continue through immutable `artifact://` references. Process output is a bounded page of currently captured bytes; its offset is relative to the captured stream and `eof` means the current captured end, independent of process liveness. Readers never return private writable spool paths.
 - Managed service processes (`spawn_service_process` + `write_process` /
   `read_process_output` / `cancel_process` / `list_processes`) run in their own
   foster-owned session group (never the core's group) and stop at runtime

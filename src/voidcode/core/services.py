@@ -19,6 +19,7 @@ from voidcode.sdk.history import PAGE_BYTES, HistoryPage
 from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import own_json_object
 from voidcode.sdk.observed_effects import ObservedEffects
+from voidcode.sdk.resources import ResourceProcessStatus
 from voidcode.sdk.services import (
     ArtifactPage,
     ArtifactReference,
@@ -26,6 +27,7 @@ from voidcode.sdk.services import (
     CancelSubtreeReceipt,
     ChildOutcome,
     ChildSendReceipt,
+    ChildSessionSnapshot,
     DescendantNode,
     EventView,
     PluginBudget,
@@ -231,9 +233,16 @@ class RuntimeServices:
         resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
         if cwd is not None and not resolved_cwd.is_dir():
             raise ValueError(f"spawn_process cwd is not a directory: {resolved_cwd}")
-        stdout_resolved, stderr_resolved = self._spool_paths(identifier, stdout_path, stderr_path, spool, service=False)
+        stdout_resolved, stderr_resolved = self._spool_paths(
+            identifier,
+            stdout_path,
+            stderr_path,
+            spool,
+            service=False,
+        )
         return self._runtime.processes.spawn(
             argv,
+            owner=lease.owner,
             session_id=lease.session_id,
             cwd=resolved_cwd,
             env=env,
@@ -260,9 +269,16 @@ class RuntimeServices:
         resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
         if cwd is not None and not resolved_cwd.is_dir():
             raise ValueError(f"spawn_service_process cwd is not a directory: {resolved_cwd}")
-        stdout_resolved, stderr_resolved = self._spool_paths(identifier, None, None, spool, service=True)
+        stdout_resolved, stderr_resolved = self._spool_paths(
+            identifier,
+            None,
+            None,
+            spool,
+            service=True,
+        )
         handle = self._runtime.processes.spawn(
             argv,
+            owner=lease.owner,
             session_id=lease.session_id,
             cwd=resolved_cwd,
             env=env,
@@ -280,10 +296,11 @@ class RuntimeServices:
     def write_process(self, process_id: str, data: bytes | str) -> int:
         self._require_writable_stance("write to background processes")
         payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+        lease = self._active_lease()
         # Bind before the potentially blocking pipe write: a reused server that stops reading
         # stdin must already be cancellable by this invocation, or the cancellation cannot reach it.
         self._mark_active_process(str(process_id))
-        return self._runtime.processes.write(str(process_id), payload, session_id=self._active_lease().session_id)
+        return self._runtime.processes.write(str(process_id), payload, owner=lease.owner, session_id=lease.session_id)
 
     def read_process_output(
         self,
@@ -302,12 +319,16 @@ class RuntimeServices:
             stream=stream,
             offset=int(offset),
             limit=int(limit),
+            owner=lease.owner,
             session_id=lease.session_id,
         )
         # User jobs stage their current cumulative effects; service reads never stage
         # (long-lived helper noise is not tool-observed change).
-        if self._runtime.processes.service_entry(str(process_id), session_id=lease.session_id) is None:
-            self._stage_observations(lease, self._runtime.processes.process_effects(str(process_id), session_id=lease.session_id))
+        if self._runtime.processes.service_entry(str(process_id), owner=lease.owner, session_id=lease.session_id) is None:
+            self._stage_observations(
+                lease,
+                self._runtime.processes.process_effects(str(process_id), owner=lease.owner, session_id=lease.session_id),
+            )
         return ProcessOutput(
             process_id=str(process_id),
             stream=stream,
@@ -322,15 +343,76 @@ class RuntimeServices:
         self._require_writable_stance("stop background processes")
         del reason  # the stop is by process group; a reason would only be a log line we do not own
         lease = self._active_lease()
-        gone = self._runtime.processes.cancel(str(process_id), session_id=lease.session_id)
+        gone = self._runtime.processes.cancel(str(process_id), owner=lease.owner, session_id=lease.session_id)
         # Stopping a user job stages its final cumulative effects (the committed prefix).
         # Service stops never stage.
-        if self._runtime.processes.service_entry(str(process_id), session_id=lease.session_id) is None:
-            self._stage_observations(lease, self._runtime.processes.process_effects(str(process_id), session_id=lease.session_id))
+        if self._runtime.processes.service_entry(str(process_id), owner=lease.owner, session_id=lease.session_id) is None:
+            self._stage_observations(
+                lease,
+                self._runtime.processes.process_effects(str(process_id), owner=lease.owner, session_id=lease.session_id),
+            )
         return gone
 
     def list_processes(self) -> tuple[ProcessHandle, ...]:
-        return self._runtime.processes.list_background(session_id=self._active_lease().session_id)
+        lease = self._active_lease()
+        return self._runtime.processes.list_background(owner=lease.owner, session_id=lease.session_id)
+
+    def _list_resource_processes(self) -> tuple[ResourceProcessStatus, ...]:
+        """Path-free process status for the current reader owner and caller session."""
+        lease = self._active_lease()
+        return tuple(
+            ResourceProcessStatus(process_id=handle.process_id, running=handle.running, exit_code=handle.exit_code)
+            for handle in self._runtime.processes.list_background(owner=lease.owner, session_id=lease.session_id)
+        )
+
+    def _read_resource_process_output(
+        self,
+        process_id: str,
+        *,
+        stream: Literal["stdout", "stderr"] = "stdout",
+        offset: int = 0,
+        limit: int = 65536,
+    ) -> ProcessOutput:
+        """Read process bytes without the ordinary service-read cancellation/effect side effects."""
+        lease = self._active_lease()
+        if not isinstance(process_id, str) or not process_id:
+            raise ValueError("process_id must be a non-empty string")
+        if stream not in ("stdout", "stderr"):
+            raise ValueError("stream must be 'stdout' or 'stderr'")
+        if type(offset) is not int or offset < 0:
+            raise ValueError("process output offset must be a non-negative integer")
+        if type(limit) is not int or limit < 1:
+            raise ValueError("process output limit must be a positive integer")
+        data, total, eof, running = self._runtime.processes.read_output(
+            process_id,
+            stream=stream,
+            offset=offset,
+            limit=limit,
+            owner=lease.owner,
+            session_id=lease.session_id,
+        )
+        return ProcessOutput(
+            process_id=process_id,
+            stream=stream,
+            offset=offset,
+            total_bytes=total,
+            data=data,
+            eof=eof,
+            running=running,
+        )
+
+    def _read_child_snapshot(self, child_session_id: str) -> ChildSessionSnapshot | None:
+        """Read one committed descendant snapshot through the core's caller-scoped callback."""
+        lease = self._active_lease()
+        if not isinstance(child_session_id, str) or not child_session_id:
+            raise ValueError("child_session_id must be a non-empty string")
+        callback = self._runtime.read_child_snapshot_callback
+        if callback is None:
+            raise RuntimeError("descendant snapshots are unavailable")
+        snapshot = callback(lease.session_id, child_session_id)
+        if snapshot is not None and (not isinstance(snapshot, ChildSessionSnapshot) or snapshot.descendant.session_id != child_session_id):
+            raise RuntimeError("runtime returned a malformed child session snapshot")
+        return snapshot
 
     def _mark_active_process(self, process_id: str) -> None:
         """Bind one live *service* id to this invocation so cancellation stops its tree.
@@ -339,7 +421,7 @@ class RuntimeServices:
         bound, so cancelling a log read cannot newly kill a user job.
         """
         lease = self._active_lease()
-        if self._runtime.processes.service_entry(str(process_id), session_id=lease.session_id) is None:
+        if self._runtime.processes.service_entry(str(process_id), owner=lease.owner, session_id=lease.session_id) is None:
             return
         self._runtime.claim_service(lease, str(process_id))
 
@@ -1189,10 +1271,10 @@ class _CancelledAbortSignal:
 class ResourceReaderServicesView:
     """The ``ResourceReaderServices`` protocol over one reader sub-lease.
 
-    A thin wrapper, not a second implementation: the four read verbs delegate
+    A thin wrapper, not a second implementation: narrow read methods delegate
     to the same ``RuntimeServices`` gates (lease liveness, lineage, visibility),
     and the sub-lease itself is read-only with no internal work. Staging,
-    spawn, process, and network methods do not exist here.
+    spawn, process-control, and network methods do not exist here.
     """
 
     def __init__(self, runtime: PluginRuntime, lease: LeaseContext) -> None:
@@ -1213,3 +1295,19 @@ class ResourceReaderServicesView:
 
     def read_session_history(self, session_id: str, *, after_sequence: int = 0, offset: int = 0, limit: int = 100) -> HistoryPage:
         return self._services.read_session_history(session_id, after_sequence=after_sequence, offset=offset, limit=limit)
+
+    def read_child_snapshot(self, child_session_id: str) -> ChildSessionSnapshot | None:
+        return self._services._read_child_snapshot(child_session_id)
+
+    def list_processes(self) -> tuple[ResourceProcessStatus, ...]:
+        return self._services._list_resource_processes()
+
+    def read_process_output(
+        self,
+        process_id: str,
+        *,
+        stream: Literal["stdout", "stderr"] = "stdout",
+        offset: int = 0,
+        limit: int = 65536,
+    ) -> ProcessOutput:
+        return self._services._read_resource_process_output(process_id, stream=stream, offset=offset, limit=limit)

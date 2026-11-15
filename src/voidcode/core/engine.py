@@ -731,6 +731,7 @@ class Core:
                 ).as_payload(),
                 cancel_child_callback=self.cancel_child,
                 list_descendants_callback=self.list_descendants,
+                read_child_snapshot_callback=self._delegation.read_child_snapshot,
                 cancel_subtree_callback=lambda bound, target, run, reason: self.cancel_descendant_subtree(
                     bound, target, expected_run_id=run, reason=reason
                 ),
@@ -2997,6 +2998,7 @@ class Core:
                 ).as_payload(),
                 cancel_child_callback=self.cancel_child,
                 list_descendants_callback=self.list_descendants,
+                read_child_snapshot_callback=self._delegation.read_child_snapshot,
                 cancel_subtree_callback=lambda bound, target, run, reason: self.cancel_descendant_subtree(
                     bound, target, expected_run_id=run, reason=reason
                 ),

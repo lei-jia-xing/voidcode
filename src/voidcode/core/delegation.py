@@ -11,13 +11,13 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
 from ..sdk.codec import decode_provider_result
 from ..sdk.limits import CHILD_PROMPT_MAX_BYTES
-from ..sdk.services import CancelSubtreeReceipt, ChildOutcome, ChildSendReceipt, DescendantNode
+from ..sdk.services import CancelSubtreeReceipt, ChildOutcome, ChildSendReceipt, ChildSessionSnapshot, DescendantNode
 from .child_history import spill_history
 from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
 from .storage.store import (
@@ -822,6 +822,58 @@ class DelegationManager:
                 )
             )
         return tuple(nodes)
+
+    def read_child_snapshot(self, caller_session_id: str, child_session_id: str) -> ChildSessionSnapshot | None:
+        """Read one caller-visible descendant and its latest eligible committed result.
+
+        Non-visible and nonexistent ids share ``None``. Terminal child events are append-only;
+        only a successful publication carrying nonempty inline output or a full output artifact
+        replaces the latest result. Failed, interrupted, cancelled, empty, and preview-only
+        publications do not erase a prior result. Inline committed output is materialized as a
+        deduplicated immutable artifact for resource paging; the committed event and join result
+        stay unchanged. The event contract has no separate OMP-style accepted-yield marker.
+        """
+        self.core._ensure_open()
+        initial_descendant = next(
+            (node for node in self.list_descendants(caller_session_id) if node.session_id == child_session_id),
+            None,
+        )
+        if initial_descendant is None:
+            return None
+
+        # Use the first scoped projection for authorization and the stable parent lookup. The
+        # current-run projection is refreshed after reading committed publications so a result
+        # published between these reads cannot be presented as newer than the sampled run.
+        parent_session_id = initial_descendant.parent_session_id
+
+        latest_outcome: ChildOutcome | None = None
+        if parent_session_id is not None:
+            for event in reversed(self.core.store.events(parent_session_id)):
+                payload = event.payload
+                if event.event_type != EventType.CHILD_FINISHED or payload.get("child_session_id") != child_session_id:
+                    continue
+                output = payload.get("output")
+                output_artifact = payload.get("output_sha256")
+                accepted = payload.get("status") == "completed" and (
+                    isinstance(output, str) and bool(output) or isinstance(output_artifact, str) and bool(output_artifact)
+                )
+                if accepted:
+                    latest_outcome = self._child_outcome(child_session_id, payload)
+                    if latest_outcome.output_sha256 is None and latest_outcome.output is not None:
+                        reference = self._spill_child_output(latest_outcome.output)
+                        digest = reference.get("sha256")
+                        if not isinstance(digest, str) or not digest:
+                            raise RuntimeError("inline child output did not produce an immutable artifact reference")
+                        latest_outcome = replace(latest_outcome, output_sha256=digest)
+                    break
+
+        descendant = next(
+            (node for node in self.list_descendants(caller_session_id) if node.session_id == child_session_id),
+            None,
+        )
+        if descendant is None:
+            return None
+        return ChildSessionSnapshot(descendant=descendant, latest_outcome=latest_outcome)
 
     def _fence_holds(self, chain: frozenset[str], child_id: str | None = None) -> str | None:
         """The active fence blocking spawn/send through this chain, if any (caller holds the lifecycle lock)."""

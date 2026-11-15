@@ -5,7 +5,8 @@ owns the ``scheme -> (handler, owner)`` map, rejects duplicate schemes at
 admission, and dispatches each ``scheme://`` URI to its owner's handler under
 a provider-owner sub-lease. The caller session, workspace, revision, and
 stance flow unchanged, so lineage and visibility gates apply as for a direct
-backend call.
+backend call. Child and process projections remain bound to the caller's
+authorized scope, not the provider owner's ambient visibility.
 """
 
 from __future__ import annotations
@@ -22,10 +23,29 @@ from .tools import AttachmentOutput, TextOutput
 if TYPE_CHECKING:
     from .history import HistoryPage
     from .provider import ProviderAbortSignal
-    from .services import ArtifactPage
+    from .services import ArtifactPage, ChildSessionSnapshot, ProcessOutput
     from .tools import ToolDefinition
 
-#: Registered schemes are lowercase URI schemes; incoming URIs may use any case.
+
+@dataclass(frozen=True, slots=True)
+class ResourceProcessStatus:
+    """Path-free status for one supervised process owned by this reader and caller session."""
+
+    process_id: str
+    running: bool
+    exit_code: int | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.process_id, str) or not self.process_id:
+            raise ValueError("resource process status requires a non-empty process id")
+        if type(self.running) is not bool:
+            raise ValueError("resource process status running must be a boolean")
+        if self.exit_code is not None and type(self.exit_code) is not int:
+            raise ValueError("resource process status exit_code must be an integer or None")
+        if self.running and self.exit_code is not None:
+            raise ValueError("a running resource process cannot have an exit code")
+
+
 _READER_SCHEME_PATTERN = re.compile(r"^[a-z][a-z0-9+.-]*$")
 _URI_SCHEME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
 
@@ -123,8 +143,8 @@ class ResourceReaderServices(Protocol):
 
     Owner-scoped (the registering provider), session-bound (the caller):
     ``get_state`` reads the provider's own state, while artifact, catalog,
-    and history reads see exactly what the caller session may see. There are
-    no staging, spawn, process, or network methods to misuse.
+    child-result, history, and process reads see only the caller-scoped data.
+    There are no staging, spawn, process-control, or network methods to misuse.
     """
 
     @property
@@ -146,6 +166,30 @@ class ResourceReaderServices(Protocol):
 
     def read_session_history(self, session_id: str, *, after_sequence: int = 0, offset: int = 0, limit: int = 100) -> HistoryPage:
         """Render one bounded Markdown transcript page for the bound session or an owned child."""
+        ...
+
+    def read_child_snapshot(self, child_session_id: str) -> ChildSessionSnapshot | None:
+        """Read one visible descendant's current status and latest eligible output without joining or acknowledging.
+
+        ``latest_outcome`` skips failed, interrupted, cancelled, empty, and preview-only
+        publications; current status/run identity stays separate. ``None`` covers both
+        nonexistent and out-of-scope ids, so this read is not an existence oracle.
+        """
+        ...
+
+    def list_processes(self) -> tuple[ResourceProcessStatus, ...]:
+        """List only this reader owner's supervised processes in the caller session; paths are omitted."""
+        ...
+
+    def read_process_output(
+        self,
+        process_id: str,
+        *,
+        stream: Literal["stdout", "stderr"] = "stdout",
+        offset: int = 0,
+        limit: int = 65536,
+    ) -> ProcessOutput:
+        """Read one owner- and caller-session-scoped page without binding service cancellation or staging effects."""
         ...
 
 

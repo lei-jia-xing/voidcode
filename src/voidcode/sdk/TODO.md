@@ -48,11 +48,12 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - `ChildOutcome` carries `stop_cause` and `error`, but unlike `RunResult`/`ContinuationResult` has no `BudgetExhaustion` field for dimension/source/limit/consumed/remaining. The new independent-child regression exposed the separate snapshot bug that mapped all interruptions to cancellation; that mapping is fixed using committed stop cause, but child joins still cannot express the typed finite-cap state.
   - Acceptance: retain the actual exhausted dimension and counters across join/recovery without inferring a refill or inventing cancellation. API extension is deliberately not bundled into media projection.
 
-- [ ] **可发现的资源能力与受限只读资源服务。** 消费方：`read`、资源检索、Agent/进程状态 URI、客户端资源查看器。
-  - 现状：[`ResourceReader`](resources.py) 只有 `scheme` 与同步 `handler`；`ResourceReadRequest` 已有分页参数，但没有资源枚举/搜索能力描述。`ResourceReaderServices` 只开放 owner state、artifact、tool definition 和 history，不能取得 Core 的实时 descendant/process 投影；不能为了 `agent://`/进程 URI 交出完整 `PluginServices`。
-  - 目标：按实际消费场景补最小的能力发现、列举/搜索与 caller-scoped 只读投影；明确文本、二进制、可枚举资源及可选的只读文件物化能力，不假设每个 URI 都是本地文件。继续使用同一注册入口和返回游标，不在各工具维护第二张 scheme 表。参考 OMP [read 的 internal URL router 与 locate/resolve](omp://tools/read.md)、[shell 的 URI filesystem 及外部进程限制](omp://bash-tool-runtime.md)。
-  - 边界：读者拿到 provider-owner 的窄只读 lease；所有新增方法保留 lineage/workspace/revision 隔离，不暴露 peer state、凭据、任意 SQL 或可变宿主路径。变更操作走受治理的工具/命令，不能塞进 resource reader。没有能力、没有资源、非法页与 handler 错误保持不同结果。
-  - 验收：第三方插件只依赖 SDK 即可提供子 Agent 状态/结果资源；`read` 与检索消费者看到同一资源身份及分页边界；禁用提供者立即失去能力，子 Agent 无法通过枚举或 URI 读取父、兄弟及无关会话；只读物化内容不能被外部进程改写原 artifact。
+- [ ] **资源能力发现/枚举与更多只读资源服务。** 消费方：`read`、资源检索、Agent/进程状态 URI、客户端资源查看器。
+  - 已完成的 SDK/Core 前置：`ResourceReaderServices.read_child_snapshot(child_session_id)` 返回 caller-scoped `ChildSessionSnapshot`；`list_processes()` 与 `read_process_output()` 返回 path-free `ResourceProcessStatus`/`ProcessOutput`，Core 强制 reader owner + caller session。资源视图只读，不暴露 process control；process 读取不绑定服务取消、不暂存 effects。共享已有 artifact byte page 与 `ResourceReadRequest` offset/byte offset。
+  - Agent snapshots come from current `DescendantNode` plus committed `CHILD_FINISHED` facts: only completed nonempty inline output or a full output artifact replaces the latest result; failed/interrupted/cancelled/empty/preview-only follow-ups do not erase it. Inline output is materialized to a deduplicated immutable artifact for generic paging without changing the event or join result. Current status/run/stop cause and published run id remain separate; the snapshot does not join, ack, or consume notices. Missing and invisible ids both return `None`.
+  - 仍缺通用资源能力发现、枚举/搜索契约；不假设所有 URI 是本地文件。VoidCode 的 child fact 没有 OMP accepted-yield 标记，上述选择是显式近似而非宣称等价。当前 `agent://<id>` 不支持 `/key/index` JSON path，也不支持新查询游标；结构化 child publication schema 是单独 SDK 缺口。
+  - 边界：不交出完整 `PluginServices`、peer state、凭据、任意 SQL 或可变宿主路径；process owner 在 spawn 时取自 lease，缺 owner/session 的 Core lookup 不作 unrestricted fallback。读者不能 join、ack、send、cancel 或 replay。
+  - 剩余验收：增加与真实消费者对应的资源能力声明/搜索前，先复用同一注册入口与分页 identity；provider disabled 立即移除 scheme，未知 scheme、不可见/不存在资源、非法页和 handler/storage 错误保持各自语义。外部进程只读物化能力仍未定义，不得直接提供 artifact 可写 backing path。
 
 - [ ] **组合工具内容与有界声明式展示。** 消费方：`eval` 的表格/图像、MCP 混合媒体、TUI/Web 工具结果卡。
   - 现状：[`ToolOutput`](tools.py) 是单个 `TextOutput | EmptyOutput | AttachmentOutput`，不能表达按序混合的文本和多张图片；`ToolBody` 已能表达结构化业务数据，不缺第二套 JSON body。[`ResourcePage`](resources.py) 同样只容纳单个文本或附件；[`views.py`](views.py) 的有限视图没有 table/JSON tree/media 类型。MCP [结果投影](../plugins/mcp/mcp_tool.py) 仅在恰好一张且足够小时选用附件输出，其余回退文本和 artifact 引用。
@@ -66,9 +67,9 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - 边界：一次答案只消费一次；断线、会话切换、超时、无人值守和用户主动取消有明确状态，未回答不能冒充同意。问题不会授予工具权限，回答不会绕过审批；资源图片沿用资源访问边界。
   - 验收：Agent 在同一问题中展示方案差异、图片和三个有校验字段；用户可修改、取消、重连后继续，所得答案保留布尔/数值/数组类型；无交互能力的客户端显式报告不支持，不编造默认回答、不挂死模型轮次。
 
-- [ ] **非阻塞子代快照与首个就绪等待。** 消费方：并行 `task`、批次聚合、Agent URI、monitor。
-  - 现状：[`join_child`](services.py) 只等待指定 child；`list_descendants` 返回当前状态，但 `DescendantNode` 没有终态输出/错误引用，结果信息分散在 `ChildOutcome` 与完成通知中。缺少在多个 caller-owned child 中等待任意结果的公开契约。
-  - 目标：在现有血缘与 run 身份下提供只读快照、首个就绪等待及结果消费/acknowledge 语义；复用 Core 完成条件与通知，不通过轮询或串行 join 实现。资源读者仅得到快照的窄只读部分，等待/消费不塞进 resource reader。参考 OMP [wait 的 first-settled 与去重](omp://tools/wait.md)。
+- [ ] **首个就绪等待与原子结果消费。** 消费方：并行 `task`、批次聚合、脚本。
+  - 只读 snapshot 已通过 `ChildSessionSnapshot` 提供单个 caller-visible descendant 的当前 status/run 与最近 eligible completed output；它不等待、不消费 completion notice。资源读取不能代替 join 或 ack。
+  - 仍缺多个 owned child 中的 first-settled wait，以及与 join/notice consumption 分离且可原子去重的消费协议；不能通过轮询或串行 join 实现。
   - 验收：三个 child 中后创建者先完成时立即返回该 run 的结果；取消/用户消息能中断等待，过期 run 不满足新等待；快照不消费通知，消费结果才原子去重；跨插件派生的可见 descendant 可读，但父/兄弟/无关会话不可读。
 
 ## P2：脚本化检索与批量判断
@@ -79,6 +80,6 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - 验收：声明 schema 的抽取返回经过校验的 JSON；非法结果、拒绝、取消与预算耗尽不可当作有效答案；批次内单项失败可定位，调用仍进入原有治理和用量统计。
 
 - [ ] **子任务输出 schema 与结构化结果身份。** 消费方：`task`、workflow、脚本中的 Agent 结果。
-  - 现状：[`spawn_child`/`ChildOutcome`](services.py) 没有输出 schema/已校验 JSON 结果字段，只有文本与 artifact；已有 typed tool body 不会自动解决 child 最终交付问题。
+  - 现状：[`spawn_child`/`ChildOutcome`](services.py) 没有输出 schema/已校验 JSON 结果字段；`agent://<id>` 只读完整文本/既有 artifact，不能依据字符串或 transcript 解析 `/key/index`。Core 的 `CHILD_FINISHED` 也没有独立的 accepted-yield 标记，当前 URI 对非空 completed output 的选择是有限近似。
   - 目标：为子任务声明可选输出契约，结果保留 schema 校验状态、run 身份和完整数据/引用；模型的最后一句话、部分进度与正式交付区分清楚。具体交付工具属于产品插件，SDK 不引入 OMP 专用 `yield` builtin，也不为此开放任意动态提权。
-  - 验收：结构化交付经过严格校验后被父任务和 workflow 同样读取；无效结果不能静默标为成功，修正仍遵守已授权预算、不暗设固定重试轮数；取消/超限保留部分成果但不满足成功 schema。
+  - 验收：结构化交付经过严格校验后被父任务和 workflow 同样读取；无效结果不能静默标为成功，修正仍遵守已授权预算、不暗设固定重试轮数；取消/超限保留部分成果但不满足成功 schema。准确区分 accepted yield 的协议须先由 Core/SDK 表达，再由 `agent://` 消费。

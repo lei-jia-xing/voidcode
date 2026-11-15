@@ -12,8 +12,13 @@ from collections.abc import Mapping
 from voidcode.sdk.plugin import Plugin
 
 from .background_process import BackgroundProcessTool, prepare_exec_deactivation
+from .process_reader import PROC_READER
 from .shell_exec import ShellExecTool
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
-    return Plugin(tools=(ShellExecTool(), BackgroundProcessTool()), prepare_deactivate=prepare_exec_deactivation)
+    return Plugin(
+        tools=(ShellExecTool(), BackgroundProcessTool()),
+        resource_readers=(PROC_READER,),
+        prepare_deactivate=prepare_exec_deactivation,
+    )

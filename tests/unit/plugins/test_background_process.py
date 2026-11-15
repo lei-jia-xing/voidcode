@@ -299,6 +299,7 @@ def test_start_launches_the_workspace_shell_and_persists_the_identity(tmp_path: 
     body = result.body
     assert isinstance(body, BackgroundProcessStartBody)
     assert body.process_id == handle.process_id
+    assert body.resource_uri == f"proc://{handle.process_id}"
     assert body.pid == handle.pid
     assert body.state == "running"
     assert body.description == "dev server"
@@ -307,7 +308,10 @@ def test_start_launches_the_workspace_shell_and_persists_the_identity(tmp_path: 
     assert body.ready is None
     assert body.ready_pattern is None
     assert body.exit_code is None
-    guidance = f"Track this process by process_id '{handle.process_id}'. Use background_process with op=logs, send, or stop."
+    guidance = (
+        f"Read proc://{handle.process_id} for status and stdout, or proc://{handle.process_id}/stderr for stderr; "
+        "use background_process with op=logs, send, or stop for line paging and process control."
+    )
     assert body.guidance == guidance
     started = f"Started background process {handle.process_id} (pid={handle.pid}) for command: python -m http.server."
     assert result.output.text == f"{started} Guidance: {guidance}"
@@ -319,6 +323,7 @@ def test_start_launches_the_workspace_shell_and_persists_the_identity(tmp_path: 
     record = services.state["processes"][handle.process_id]
     assert record == {
         **_persisted(handle, description="dev server", command="python -m http.server"),
+        "origin_session_id": "session-test",
         "started_at": record["started_at"],
     }
     assert isinstance(record["started_at"], str) and record["started_at"]
@@ -337,6 +342,8 @@ def test_a_later_start_keeps_the_identities_already_persisted(tmp_path: Path) ->
     records = services.state["processes"]
     assert set(records) == {"proc-first", services.spawn_handle.process_id}
     assert records["proc-first"]["description"] == "first"
+    assert "origin_session_id" not in records["proc-first"]
+    assert records[services.spawn_handle.process_id]["origin_session_id"] == "session-test"
     assert services.call("replace_state")["expected_version"] == 4
 
 
