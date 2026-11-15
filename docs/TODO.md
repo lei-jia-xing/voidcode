@@ -3,7 +3,7 @@
 本文件集中跨模块取舍与导航；具体待办、现状证据和验收条件放在所属模块。新增项不代表功能已实现或已经实测。
 
 - [Core](../src/voidcode/core/TODO.md)：可选 provider-turn cap 与显式共享 root-action grant 已实现；adaptive model-headroom、输出投影及真实生产化边界继续按专属 TODO 跟踪。
-- [SDK](../src/voidcode/sdk/TODO.md)：`BackgroundContext.wait_tool` 的后台 action 结果等待已实现并经 Core/外部插件验证；普通前台 callback 的 suspend/恢复与完整 `eval` 产品仍属 P1。adaptive headroom、typed child budget exhaustion、结果 schema 等表达力缺口仍开放。
+- [SDK](../src/voidcode/sdk/TODO.md)：`BackgroundContext.wait_tool` 的后台 action 结果等待已实现并经 Core/外部插件验证；普通前台 callback 的 suspend/恢复与完整 `eval` 产品仍属 P1。adaptive headroom、结果 schema 等表达力缺口仍开放；typed child budget outcome 已实现，见 SDK TODO 的事件来源与恢复边界。
 - [插件](../src/voidcode/plugins/TODO.md)：仅记录已验证的具体整改与仍未收敛的图片/UI、生产化、URI、Agent、进程和检索任务，不宣称全插件审计。
 - [TUI](../src/voidcode/tui/TODO.md)：独立记录图片渲染与实时进度/交互边界；viewer/API 不替代每条路径的真实 PTY 验收。
 - [Web UI](../frontend/src/core/TODO.md)：artifact 查看/复制/导出与真实浏览器验收。
@@ -16,7 +16,7 @@
 
 当前已有 typed tool body、`OutputBounds`、内容寻址 artifact、可注册 `ResourceReader`、工具进度回调、子 Agent 跟进/完成通知、动态 workflow、命令表单，以及两端长输出分页；这些不是从零重建的待办。已完成项保持勾选，不把“图片输入已通”混同于“终端可以显示工具返回的图片”。
 
-已核实的关键断点：普通 SDK `invoke_tool` 仍只排队；后台 action 可用 `BackgroundContext.wait_tool` 安全等待完整、request-correlated 结果，但这不是普通前台 callback 的 suspend API。`ResourceReaderServices` 已提供 caller-scoped child/process read projections；Subagents `agent://` 与 Exec `proc://` 复用注册、artifact 分页和 owner/session 边界。通用资源能力发现/枚举/搜索与 `ToolOutput` 组合仍开放。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。仍开放 active-model 自适应投影 headroom、typed child budget exhaustion 与结果 schema；真实浏览器 artifact、headless Kitty PTY 和真实 Core/live-progress PTY 已通过所记录路径，但物理 Kitty 像素及 PTY 场景中的取消/重连尚未证明，见所属模块 TODO。
+已核实的关键断点：普通 SDK `invoke_tool` 仍只排队；后台 action 可用 `BackgroundContext.wait_tool` 安全等待完整、request-correlated 结果，但这不是普通前台 callback 的 suspend API。`ResourceReaderServices` 已提供 caller-scoped child/process read projections；Subagents `agent://` 与 Exec `proc://` 复用注册、artifact 分页和 owner/session 边界。通用资源能力发现/枚举/搜索与 `ToolOutput` 组合仍开放。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。仍开放 active-model 自适应投影 headroom、结果 schema；typed child budget 已由精确 `RUN_INTERRUPTED` 事件贯通，并保留 reopened resume 边界，见 SDK TODO。首就绪等待/atomic delivery 与真实 UI 交付仍各见所属模块 TODO；真实浏览器 artifact、headless Kitty PTY 和真实 Core/live-progress PTY 已通过所记录路径，但物理 Kitty 像素及 PTY 场景中的取消/重连尚未证明。
 
 ## 优先级
 

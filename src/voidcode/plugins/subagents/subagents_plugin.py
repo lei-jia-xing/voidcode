@@ -423,6 +423,7 @@ class TaskBody:
     output: str | None = None
     error: str | None = None
     stop_cause: str | None = None
+    budget_exhaustion: Mapping[str, object] | None = None
     cancelled: bool | None = None
     subagent_type: str | None = None
     #: Send receipt facts (never a completion claim).
@@ -455,6 +456,7 @@ class TaskBody:
             "output",
             "error",
             "stop_cause",
+            "budget_exhaustion",
             "cancelled",
             "subagent_type",
             "delivery",
@@ -663,12 +665,16 @@ def _outcome_text(
     subagent_type: str | None = None,
     *,
     facts: _OutputFacts | None = None,
+    budget_exhaustion: Mapping[str, object] | None = None,
 ) -> str:
     lines = [f"{_header(task_id, label, subagent_type)} status={outcome.status} run_id={outcome.run_id or 'unknown'}"]
     if outcome.stop_cause:
         lines.append(f"stop_cause: {outcome.stop_cause}")
     if outcome.error:
         lines.append(f"error: {outcome.error}")
+    if budget_exhaustion is not None:
+        details = ", ".join(f"{key}={value}" for key, value in budget_exhaustion.items())
+        lines.append(f"budget_exhaustion: {details}")
     if facts is not None and facts.output:
         if facts.output_offset is not None and facts.output_bytes is not None:
             start = facts.output_offset
@@ -694,9 +700,19 @@ def _outcome_text(
 
 def _acknowledge(outcome: ChildOutcome, services: PluginServices) -> None:
     """Consume this run's completion notice atomically with the tool result that carries it."""
-    if outcome.run_id is None or outcome.status in ("running", "waiting"):
+    if outcome.run_id is None or outcome.status in ("running", "waiting") or outcome.budget_exhaustion is not None:
         return
     services.acknowledge_child_completion(outcome.child_session_id, outcome.run_id)
+
+
+def _budget_exhaustion_payload(outcome: ChildOutcome) -> dict[str, object] | None:
+    """Serialize the SDK's typed exhaustion without inferring it from stop_cause."""
+    payload = outcome.as_payload().get("budget_exhaustion")
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise RuntimeError("child outcome budget_exhaustion payload must be an object")
+    return dict(payload)
 
 
 def _batch_text(group_id: str, created: Sequence[_BatchChild], failed: Sequence[tuple[int, str]]) -> str:
@@ -725,6 +741,8 @@ def _group_text(group_id: str, entries: Sequence[Mapping[str, object]]) -> str:
             line += f" stop_cause={entry['stop_cause']}"
         if entry.get("error"):
             line += f" error={entry['error']}"
+        if entry.get("budget_exhaustion") is not None:
+            line += f" budget_exhaustion={entry['budget_exhaustion']}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -939,13 +957,23 @@ class TaskTool:
             )
         try:
             outcome = services.join_child(child_id, timeout_seconds=args.timeout_seconds)
+            budget_exhaustion = _budget_exhaustion_payload(outcome)
             facts = _output_facts(outcome, services, args.output_offset, args.output_limit)
             _acknowledge(outcome, services)
         except (ValueError, PermissionError, RuntimeError) as exc:
             return _failure(self.definition.name, str(exc))
         return ToolSuccess(
             self.definition.name,
-            TextOutput(_outcome_text(child_id, args.label, outcome, args.subagent_type, facts=facts)),
+            TextOutput(
+                _outcome_text(
+                    child_id,
+                    args.label,
+                    outcome,
+                    args.subagent_type,
+                    facts=facts,
+                    budget_exhaustion=budget_exhaustion,
+                )
+            ),
             body=TaskBody(
                 operation="spawn",
                 task_id=child_id,
@@ -954,6 +982,7 @@ class TaskTool:
                 output=facts.output,
                 error=outcome.error,
                 stop_cause=outcome.stop_cause,
+                budget_exhaustion=budget_exhaustion,
                 subagent_type=args.subagent_type,
                 run_id=outcome.run_id,
                 output_uri=facts.output_uri,
@@ -1113,10 +1142,20 @@ class TaskTool:
     ) -> ToolResult:
         outcome = services.join_child(task_id, timeout_seconds=args.timeout_seconds)
         facts = _output_facts(outcome, services, args.output_offset, args.output_limit)
+        budget_exhaustion = _budget_exhaustion_payload(outcome)
         _acknowledge(outcome, services)
         return ToolSuccess(
             self.definition.name,
-            TextOutput(_outcome_text(task_id, label, outcome, subagent_type, facts=facts)),
+            TextOutput(
+                _outcome_text(
+                    task_id,
+                    label,
+                    outcome,
+                    subagent_type,
+                    facts=facts,
+                    budget_exhaustion=budget_exhaustion,
+                )
+            ),
             body=TaskBody(
                 operation="output",
                 task_id=task_id,
@@ -1125,6 +1164,7 @@ class TaskTool:
                 output=facts.output,
                 error=outcome.error,
                 stop_cause=outcome.stop_cause,
+                budget_exhaustion=budget_exhaustion,
                 subagent_type=subagent_type,
                 run_id=outcome.run_id,
                 output_uri=facts.output_uri,
@@ -1279,6 +1319,7 @@ class TaskBatchTool:
         for child_id in members:
             try:
                 outcome = services.join_child(child_id, timeout_seconds=DEFAULT_JOIN_TIMEOUT_SECONDS)
+                budget_exhaustion = _budget_exhaustion_payload(outcome)
                 _acknowledge(outcome, services)
             except (ValueError, PermissionError, RuntimeError) as exc:
                 return _failure(self.definition.name, str(exc))
@@ -1297,6 +1338,8 @@ class TaskBatchTool:
                 entry["stop_cause"] = outcome.stop_cause
             if outcome.error:
                 entry["error"] = outcome.error
+            if budget_exhaustion is not None:
+                entry["budget_exhaustion"] = budget_exhaustion
             if outcome.history_sha256:
                 entry["history_sha256"] = outcome.history_sha256
             if outcome.output_bytes is not None:

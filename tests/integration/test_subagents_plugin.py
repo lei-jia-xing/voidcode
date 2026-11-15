@@ -283,6 +283,57 @@ def test_standard_markdown_agent_applies_its_prompt_and_turn_cap(tmp_path: Path)
         assert len(server.requests) == 3
 
 
+def test_task_output_preserves_provider_turn_budget_exhaustion(tmp_path: Path) -> None:
+    replies = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    _task_call(
+                        "budgeted-child",
+                        {
+                            "prompt": "Try one tool call, then stop at the provider-turn cap.",
+                            "max_steps": 1,
+                            "run_in_background": False,
+                        },
+                    )
+                ],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [_task_call("child-tool", {"operation": "output", "task_id": "unknown-child"})],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "delegation stopped at its cap"}, finish="stop"),
+    ]
+    with _loopback_server(replies) as server:
+        core = _core(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        result = core.run("delegate one capped task", session_id=parent)
+
+        assert result.status == "completed"
+        assert len(server.requests) == 3
+        tool_messages = [message for message in _messages(server.requests[2]) if message.get("role") == "tool"]
+        assert len(tool_messages) == 1
+        tool_text = str(tool_messages[0]["content"])
+        payload = json.loads(tool_text.splitlines()[0])
+        assert payload["status"] == "ok", "reporting a budget-interrupted child is a successful tool delivery"
+        projected_text = payload["text"]
+        assert isinstance(projected_text, str)
+        assert "status=interrupted" in projected_text
+        assert "stop_cause: limit_reached" in projected_text
+        assert (
+            "budget_exhaustion: dimension=provider_turns, source=max_steps, limit=1, consumed=1, remaining=0, continue_with=resume_with_max_steps"
+        ) in projected_text
+        assert "status=cancelled" not in projected_text
+
+
 def test_agent_snapshot_refreshes_current_run_after_concurrent_publication(tmp_path: Path) -> None:
     token = "publish-new-agent-run-during-read"
     second_output = "second accepted publication\n"

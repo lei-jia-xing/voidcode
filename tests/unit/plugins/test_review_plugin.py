@@ -22,6 +22,7 @@ from voidcode.plugins.review.workspace_review import WorkspaceReviewService, git
 from voidcode.sdk.commands import CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
+from voidcode.sdk.services import BudgetExhaustion, ChildOutcome
 from voidcode.sdk.tools import ToolEffect
 
 
@@ -351,6 +352,44 @@ def test_failed_child_is_reported_as_an_error(tmp_path: Path) -> None:
     assert result.status == "error"
     assert result.error == "provider exploded"
     assert result.data is not None and result.data["status"] == "failed"
+
+
+def test_budget_interrupted_child_preserves_typed_stop_in_review_result(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
+    budget = BudgetExhaustion(
+        dimension="provider_turns",
+        source="max_steps",
+        limit=1,
+        consumed=1,
+        remaining=0,
+        continue_with="resume_with_max_steps",
+    )
+    services = FakeServices()
+    services.join_status = "interrupted"
+    services.join_error = "provider turn cap exhausted"
+
+    def join_child(child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
+        _ = timeout_seconds
+        return ChildOutcome(
+            child_session_id=child_session_id,
+            status="interrupted",
+            error="provider turn cap exhausted",
+            stop_cause="limit_reached",
+            run_id="child-run",
+            budget_exhaustion=budget,
+        )
+
+    services.join_child = join_child  # type: ignore[method-assign]
+
+    result = _review(services, repo, {})
+
+    assert result.status == "error"
+    assert result.error == "provider turn cap exhausted"
+    assert result.data is not None
+    assert result.data["status"] == "interrupted"
+    assert result.data["stop_cause"] == "limit_reached"
+    assert result.data["budget_exhaustion"] == budget.as_payload()
 
 
 # --- Git surface (ported behavior) ---

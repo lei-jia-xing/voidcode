@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from ..sdk.codec import decode_provider_result
 from ..sdk.limits import CHILD_PROMPT_MAX_BYTES
-from ..sdk.services import CancelSubtreeReceipt, ChildOutcome, ChildSendReceipt, ChildSessionSnapshot, DescendantNode
+from ..sdk.services import BudgetExhaustion, CancelSubtreeReceipt, ChildOutcome, ChildSendReceipt, ChildSessionSnapshot, DescendantNode
 from .child_history import spill_history
 from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
 from .storage.store import (
@@ -91,6 +91,7 @@ class _ChildRunFacts:
     stop_cause: str | None
     label: str
     notify: bool
+    budget_exhaustion: BudgetExhaustion | None
 
 
 class DelegationManager:
@@ -559,6 +560,7 @@ class DelegationManager:
     ) -> None:
         """Drive one spawn run. Waiting is NOT terminal: only a later resume/cancel publishes."""
         run_id = ""
+        budget_exhaustion: BudgetExhaustion | None = None
         try:
             root_id = self._captured_child_root_id(child_id)
             result = self.core._run(
@@ -572,6 +574,7 @@ class DelegationManager:
             run_id = result.run_id
             status = _child_run_status(result)
             output, error, stop_cause = result.output, result.error, result.stop_cause
+            budget_exhaustion = result.budget_exhaustion
             terminal = _terminal_run_result(result)
         except Exception as exc:
             try:
@@ -598,6 +601,7 @@ class DelegationManager:
             label=label,
             notify=notify_on_completion,
             deliver=True,
+            budget_exhaustion=budget_exhaustion,
         )
 
     def join_child(self, parent_session_id: str, child_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
@@ -777,6 +781,7 @@ class DelegationManager:
                     stop_cause=facts.stop_cause,
                     label=facts.label,
                     notify=facts.notify,
+                    budget_exhaustion=facts.budget_exhaustion,
                     deliver=False,
                 )
         return cancelled or pending > 0
@@ -997,6 +1002,7 @@ class DelegationManager:
                             label=facts.label,
                             notify=facts.notify,
                             deliver=False,
+                            budget_exhaustion=facts.budget_exhaustion,
                         )
             return CancelSubtreeReceipt(
                 target_session_id=target_session_id,
@@ -1100,7 +1106,14 @@ class DelegationManager:
 
     def _child_status_outcome(self, child: SessionRecord) -> ChildOutcome:
         status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"]
-        stop_cause = self.core.store.latest_stop_cause(child.session_id, child.run_id)
+        stop_payload = self.core.store.latest_stop_payload(child.session_id, child.run_id)
+        stop_cause = None if stop_payload is None else stop_payload.get("stop_cause")
+        if not isinstance(stop_cause, str):
+            stop_cause = None
+        error = None
+        if child.status == "interrupted" and stop_payload is not None:
+            reason = stop_payload.get("reason")
+            error = reason if isinstance(reason, str) else None
         if child.status == "completed":
             status = "completed"
         elif child.status == "failed":
@@ -1113,7 +1126,19 @@ class DelegationManager:
             status = "cancelled" if stop_cause in ("user_stop", "owner_cancel") else "interrupted"
         else:
             status = "interrupted"
-        return ChildOutcome(child_session_id=child.session_id, status=status, run_id=child.run_id, stop_cause=stop_cause)
+        budget_exhaustion = (
+            BudgetExhaustion.from_payload(stop_payload.get("budget_exhaustion"))
+            if child.status == "interrupted" and stop_payload is not None
+            else None
+        )
+        return ChildOutcome(
+            child_session_id=child.session_id,
+            status=status,
+            run_id=child.run_id,
+            stop_cause=stop_cause,
+            error=error,
+            budget_exhaustion=budget_exhaustion,
+        )
 
     def _child_wait_outcome(self, child: SessionRecord) -> ChildOutcome:
         if child.status == "waiting":
@@ -1141,6 +1166,7 @@ class DelegationManager:
             output_preview=None if payload.get("output_preview") is None else str(payload["output_preview"]),
             output_sha256=None if payload.get("output_sha256") is None else str(payload["output_sha256"]),
             output_bytes=output_bytes if isinstance(output_bytes, int) else None,
+            budget_exhaustion=BudgetExhaustion.from_payload(payload.get("budget_exhaustion")),
         )
 
     # --- Terminal publication -------------------------------------------------
@@ -1158,6 +1184,7 @@ class DelegationManager:
         label: str,
         notify: bool,
         deliver: bool,
+        budget_exhaustion: BudgetExhaustion | None = None,
     ) -> None:
         """Publish one terminal child run exactly once: fact + immutable history + notice.
 
@@ -1201,6 +1228,7 @@ class DelegationManager:
                 label=resolved_label,
                 notify=notify,
                 notice_id=notice_id,
+                budget_exhaustion=budget_exhaustion,
             )
             notice = None
             if notify:
@@ -1261,6 +1289,7 @@ class DelegationManager:
         label: str,
         notify: bool,
         notice_id: str | None,
+        budget_exhaustion: BudgetExhaustion | None,
     ) -> dict[str, object]:
         payload: dict[str, object] = {
             "child_session_id": child_id,
@@ -1271,6 +1300,8 @@ class DelegationManager:
             "label": label,
             "notify_on_completion": notify,
         }
+        if budget_exhaustion is not None:
+            payload["budget_exhaustion"] = budget_exhaustion.as_payload()
         if notice_id is not None:
             payload["notice_id"] = notice_id
         if output is not None:
@@ -1509,6 +1540,7 @@ class DelegationManager:
             stop_cause=stop_cause,
             label=self._child_run_label(parent_id, session.session_id, run_id, events),
             notify=self._notify_requested(session, events, run_id=run_id),
+            budget_exhaustion=BudgetExhaustion.from_payload(terminal.payload.get("budget_exhaustion")),
         )
 
     def _reconstruct_child_outcome(self, child: SessionRecord) -> _ChildRunFacts | None:
@@ -1552,6 +1584,7 @@ class DelegationManager:
                     label=facts.label,
                     notify=notify,
                     deliver=False,
+                    budget_exhaustion=facts.budget_exhaustion,
                 )
                 if notify:
                     notices.append((parent_id, child_completion_notice_id(parent_id, session.session_id, run_id)))

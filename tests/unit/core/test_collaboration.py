@@ -665,6 +665,79 @@ def test_genuine_root_budget_exhaustion_still_reports_limit_reached(tmp_path: Pa
         assert len(server.requests) == 1, "one dispatch; the chain dies on the durable budget, not a race"
 
 
+def test_child_budget_stop_is_typed_from_exact_event_across_reopen_and_resume(tmp_path: Path) -> None:
+    replies = [
+        _turn(output="parent action completed"),
+        _turn(output="child completed after the budget extension"),
+    ]
+    with _server(replies) as server:
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        parent_run = core.run("establish a finite root", session_id=parent, root_action_budget=1)
+        assert parent_run.status == "completed", parent_run.error
+        checkpoint = core.store.checkpoint(parent)
+        assert checkpoint is not None
+        root_action_id = checkpoint.payload.get("root_id")
+        assert isinstance(root_action_id, str)
+        assert core.store.root_budget_state(root_action_id) == (1, 1)
+        child = core.spawn_child(
+            parent,
+            "budgeted child",
+            notify_on_completion=False,
+            root_action_id=root_action_id,
+            initial_root_budget=1,
+        )
+        stopped = core.join_child(parent, child, timeout_seconds=30)
+
+        assert stopped.status == "interrupted", stopped.as_payload()
+        assert stopped.run_id is not None
+        assert stopped.stop_cause == "limit_reached"
+        budget = stopped.budget_exhaustion
+        assert budget is not None
+        assert budget.as_payload() == {
+            "dimension": "root_actions",
+            "source": "root_action_budget",
+            "limit": 1,
+            "consumed": 1,
+            "remaining": 0,
+            "continue_with": "extend_root_actions",
+        }
+        assert stopped.as_payload()["budget_exhaustion"] == budget.as_payload()
+        stop_payload = core.store.latest_stop_payload(child, stopped.run_id)
+        assert stop_payload is not None
+        assert budget.as_payload() == stop_payload["budget_exhaustion"]
+        assert core.store.root_budget_state(root_action_id) == (1, 1)
+        assert stopped.error == stop_payload["reason"]
+        assert _child_facts(core, parent) == [], "a recoverable stop is not a terminal child fact"
+
+        run_id = stopped.run_id
+        core.close()
+        _CREATED.remove(core)
+
+        reopened = _open(tmp_path, server)
+        recovered = reopened.join_child(parent, child, timeout_seconds=0)
+        assert recovered.status == "interrupted"
+        assert recovered.run_id == run_id
+        assert recovered.budget_exhaustion == budget
+        assert recovered.error == stopped.error
+        assert reopened.store.root_budget_state(root_action_id) == (1, 1)
+
+        resumed = reopened.resume(child, extend_root_actions=1, root_action_grant_id="resume-child-budget")
+        assert resumed.status == "completed", resumed.error
+        assert resumed.run_id is not None and resumed.run_id != run_id, "public resume starts a new run identity"
+        assert reopened.store.root_budget_state(root_action_id) == (2, 2)
+        old_stop = reopened.store.latest_stop_payload(child, run_id)
+        assert old_stop is not None and old_stop["budget_exhaustion"] == budget.as_payload()
+        terminal = reopened.join_child(parent, child, timeout_seconds=0)
+        assert terminal.status == "completed"
+        assert terminal.run_id == resumed.run_id
+        assert terminal.budget_exhaustion is None
+        facts = _child_facts(reopened, parent)
+        assert len(facts) == 1 and facts[0]["run_id"] == resumed.run_id
+        assert "budget_exhaustion" not in facts[0], "the resumed terminal fact does not inherit the old pause"
+        assert len(server.requests) == 2, "the child resumes at the committed checkpoint without replay"
+
+
 def test_join_during_publication_waits_and_never_returns_an_empty_completed(tmp_path: Path) -> None:
     """A terminal child whose fact is in flight: join waits; timeout says running, not completed."""
     replies = [

@@ -17,7 +17,7 @@ from voidcode.plugins.workflows.workflows_plugin import (
     _ParkedNode,
 )
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import ChildOutcome
+from voidcode.sdk.services import BudgetExhaustion, ChildOutcome
 
 
 def _context(services: FakeServices) -> ToolContext:
@@ -134,6 +134,58 @@ def test_waiting_child_parks_and_cancelled_child_raises() -> None:
         asyncio.run(driver.agent("review", "look", key="a"))
     state = WorkflowState.from_payload(services.get_state("session")[0])
     assert state.runs[run_id].nodes[0].status == "cancelled"
+
+
+def test_budget_interruption_parks_with_typed_stop_without_acknowledging() -> None:
+    services = _agent_services()
+    budget = BudgetExhaustion(
+        dimension="provider_turns",
+        source="max_steps",
+        limit=1,
+        consumed=1,
+        remaining=0,
+        continue_with="resume_with_max_steps",
+    )
+    run_id = _seed(services)
+    context = _context(services)
+    driver = WorkflowContext(invoke=lambda callback: callback(context, services), run_id=run_id, task="t")
+
+    def interrupted(child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
+        _ = timeout_seconds
+        return ChildOutcome(
+            child_session_id=child_session_id,
+            status="interrupted",
+            error="provider turn cap exhausted",
+            stop_cause="limit_reached",
+            run_id=f"run-{child_session_id}",
+            budget_exhaustion=budget,
+        )
+
+    services.join_child = interrupted  # type: ignore[method-assign]
+    with pytest.raises(_ParkedNode, match="interrupted"):
+        asyncio.run(driver.agent("review", "look", key="a"))
+
+    state = WorkflowState.from_payload(services.get_state("session")[0])
+    run = state.runs[run_id]
+    node = run.node("a")
+    assert node is not None and node.status == "interrupted"
+    assert node.error == "provider turn cap exhausted"
+    assert node.budget_exhaustion == budget
+    assert services.acks == [], "a recoverable pause is not a terminal completion"
+    assert node.child_session_id is not None and node.run_id is not None
+    cancelled = ChildOutcome(
+        child_session_id=node.child_session_id,
+        status="cancelled",
+        error="owner cancellation",
+        run_id=node.run_id,
+    )
+    with pytest.raises(_CancelledNode):
+        driver.invoke(_FinishNode(run_id, "a", cancelled))
+    state = WorkflowState.from_payload(services.get_state("session")[0])
+    cancelled_node = state.runs[run_id].node("a")
+    assert cancelled_node is not None and cancelled_node.status == "cancelled"
+    assert cancelled_node.budget_exhaustion is None
+    assert services.acks == [(node.child_session_id, node.run_id)]
 
 
 def test_large_outcome_spills_to_artifact_and_rereads() -> None:

@@ -29,7 +29,15 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandP
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, json_wire_value, own_json_value
-from voidcode.sdk.services import BackgroundActionStatus, BackgroundContext, ChildOutcome, PluginServices, QueryContractError, QueryUnavailable
+from voidcode.sdk.services import (
+    BackgroundActionStatus,
+    BackgroundContext,
+    BudgetExhaustion,
+    ChildOutcome,
+    PluginServices,
+    QueryContractError,
+    QueryUnavailable,
+)
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 from voidcode.sdk.views import PluginViewDescriptor
 
@@ -57,7 +65,7 @@ def _node_semaphore_factory() -> threading.Semaphore:
 
 
 RunStatus = Literal["running", "paused", "parked", "completed", "failed", "cancelled"]
-NodeStatus = Literal["pending", "running", "waiting", "completed", "failed", "cancelled", "skipped"]
+NodeStatus = Literal["pending", "running", "waiting", "interrupted", "completed", "failed", "cancelled", "skipped"]
 
 _RUN_KEYS = frozenset(
     {
@@ -96,10 +104,12 @@ _NODE_KEYS = frozenset(
         "output_sha256",
         "output_bytes",
         "error",
+        "budget_exhaustion",
     }
 )
+_NODE_REQUIRED_KEYS = _NODE_KEYS - {"budget_exhaustion"}
 _RUN_STATUSES: frozenset[str] = frozenset({"running", "paused", "parked", "completed", "failed", "cancelled"})
-_NODE_STATUSES: frozenset[str] = frozenset({"pending", "running", "waiting", "completed", "failed", "cancelled", "skipped"})
+_NODE_STATUSES: frozenset[str] = frozenset({"pending", "running", "waiting", "interrupted", "completed", "failed", "cancelled", "skipped"})
 _TERMINAL_RUN: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
 
 
@@ -148,13 +158,14 @@ class WorkflowNode:
     output_sha256: str | None = None
     output_bytes: int | None = None
     error: str | None = None
+    budget_exhaustion: BudgetExhaustion | None = None
 
     @classmethod
     def from_payload(cls, raw: Mapping[str, object], *, run_id: str) -> WorkflowNode:
         unknown = sorted(str(key) for key in raw if key not in _NODE_KEYS)
         if unknown:
             raise ValueError(f"workflow run '{run_id}' node field '{unknown[0]}' is not supported")
-        missing = sorted(_NODE_KEYS - raw.keys())
+        missing = sorted(_NODE_REQUIRED_KEYS - raw.keys())
         if missing:
             raise ValueError(f"workflow run '{run_id}' node is missing field(s): " + ", ".join(missing))
         key = raw["key"]
@@ -167,6 +178,8 @@ class WorkflowNode:
             node_status = "running"
         elif status == "waiting":
             node_status = "waiting"
+        elif status == "interrupted":
+            node_status = "interrupted"
         elif status == "completed":
             node_status = "completed"
         elif status == "failed":
@@ -207,6 +220,7 @@ class WorkflowNode:
         error = raw["error"]
         if error is not None and not isinstance(error, str):
             raise ValueError(f"workflow run '{run_id}' node '{key}' error must be text or null")
+        budget_exhaustion = BudgetExhaustion.from_payload(raw.get("budget_exhaustion"))
         return cls(
             key=key,
             status=node_status,
@@ -220,10 +234,11 @@ class WorkflowNode:
             output_sha256=output_sha256,
             output_bytes=output_bytes,
             error=error,
+            budget_exhaustion=budget_exhaustion,
         )
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "key": self.key,
             "status": self.status,
             "depends_on": list(self.depends_on),
@@ -237,6 +252,9 @@ class WorkflowNode:
             "output_bytes": self.output_bytes,
             "error": self.error,
         }
+        if self.budget_exhaustion is not None:
+            payload["budget_exhaustion"] = self.budget_exhaustion.as_payload()
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -827,9 +845,24 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
     if run.status in _TERMINAL_RUN:
         # The run already settled; still record this node's own terminal truth so
         # no row keeps lying as running/waiting, then yield to the settled run.
-        terminal = "completed" if outcome.status == "completed" else "failed" if outcome.status == "failed" else "cancelled"
-        if node.status in ("pending", "running", "waiting"):
-            node = replace(node, status=terminal, run_id=outcome.run_id, error=outcome.error if terminal != "completed" else None)  # type: ignore[arg-type]
+        if outcome.status == "completed":
+            terminal: NodeStatus = "completed"
+        elif outcome.status == "failed":
+            terminal = "failed"
+        elif outcome.status == "cancelled":
+            terminal = "cancelled"
+        elif outcome.status == "interrupted":
+            terminal = "interrupted"
+        else:
+            raise ValueError(f"cannot finish workflow node '{key}' from child status {outcome.status!r}")
+        if node.status in ("pending", "running", "waiting", "interrupted"):
+            node = replace(
+                node,
+                status=terminal,
+                run_id=outcome.run_id,
+                error=outcome.error if terminal != "completed" else None,
+                budget_exhaustion=outcome.budget_exhaustion,
+            )
             services.replace_state(state.with_run(run.with_node(node)).to_payload(), version, "session")
         if run.status == "cancelled":
             raise _CancelledNode(key)
@@ -838,6 +871,8 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
         raise ValueError(f"node '{key}' ends with {run.status} run '{run_id}'")
     if node.status == "completed" and node.output is not None and node.output_sha256 is None:
         return node.output
+    if outcome.status not in ("completed", "failed", "cancelled"):
+        raise ValueError(f"cannot finish workflow node '{key}' from child status {outcome.status!r}")
     if outcome.run_id is not None:
         services.acknowledge_child_completion(outcome.child_session_id, outcome.run_id)
     # A sha always wins: outcome.output is a bounded preview when the full bytes spilled.
@@ -852,10 +887,24 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
             output_bytes = reference.bytes
         else:
             output = text
-    status: NodeStatus = "completed" if outcome.status == "completed" else "failed" if outcome.status == "failed" else "cancelled"
+    if outcome.status == "completed":
+        status: NodeStatus = "completed"
+    elif outcome.status == "failed":
+        status = "failed"
+    else:
+        status = "cancelled"
     error = outcome.error if status != "completed" else None
     run = run.with_node(
-        replace(node, status=status, run_id=outcome.run_id, output=output, output_sha256=output_sha256, output_bytes=output_bytes, error=error)
+        replace(
+            node,
+            status=status,
+            run_id=outcome.run_id,
+            output=output,
+            output_sha256=output_sha256,
+            output_bytes=output_bytes,
+            error=error,
+            budget_exhaustion=outcome.budget_exhaustion,
+        )
     )
     services.replace_state(state.with_run(run).to_payload(), version, "session")
     if status == "failed":
@@ -874,8 +923,8 @@ def _park_node(context: ToolContext, services: PluginServices, run_id: str, key:
     node = run.node(key)
     if node is None or run.status in _TERMINAL_RUN:
         return
-    run = run.with_node(replace(node, status="waiting", run_id=outcome.run_id))
-    run = run.with_status("parked", f"node '{key}' parked: {outcome.status}")
+    status: NodeStatus = "interrupted" if outcome.status == "interrupted" else "waiting"
+    run = run.with_node(replace(node, status=status, run_id=outcome.run_id, error=outcome.error, budget_exhaustion=outcome.budget_exhaustion))
     services.replace_state(state.with_run(run).to_payload(), version, "session")
 
 
@@ -1029,7 +1078,7 @@ class _CompleteRun:
         run = state.runs.get(self.run_id)
         if run is None or run.status in _TERMINAL_RUN:
             return
-        pending = [node.key for node in run.nodes if node.status in ("pending", "running", "waiting")]
+        pending = [node.key for node in run.nodes if node.status in ("pending", "running", "waiting", "interrupted")]
         if pending:
             parked = run.with_status("parked", f"nodes still open: {', '.join(sorted(pending))}")
             services.replace_state(state.with_run(parked).to_payload(), version, "session")
@@ -1263,6 +1312,7 @@ def _run_row(run: WorkflowRun) -> dict[str, object]:
                 "agent": node.agent,
                 "child_session_id": node.child_session_id,
                 "error": node.error,
+                "budget_exhaustion": None if node.budget_exhaustion is None else node.budget_exhaustion.as_payload(),
             }
             for node in run.nodes[:STATUS_NODE_LIMIT]
         ],
@@ -1524,6 +1574,9 @@ class WorkflowStatusCommand(_WorkflowRunInput):
                 line += f" agent={node.agent}"
             if node.error:
                 line += f" error={node.error}"
+            if node.budget_exhaustion is not None:
+                budget = node.budget_exhaustion
+                line += f" budget={budget.dimension}/{budget.source} limit={budget.limit} consumed={budget.consumed} remaining={budget.remaining}"
             lines.append(line)
         if result_key is not None:
             node = run.node(result_key)
@@ -1541,9 +1594,16 @@ class WorkflowStatusCommand(_WorkflowRunInput):
                 "next_offset": result_offset + consumed,
                 "total_bytes": total,
                 "text": page,
+                "budget_exhaustion": None if node.budget_exhaustion is None else node.budget_exhaustion.as_payload(),
             }
             lines.append(f"result {result_key} ({node.status}, {total} bytes):")
             lines.append(page)
+            if node.budget_exhaustion is not None:
+                budget = node.budget_exhaustion
+                lines.append(
+                    f"budget exhaustion: {budget.dimension}/{budget.source} "
+                    f"limit={budget.limit} consumed={budget.consumed} remaining={budget.remaining}"
+                )
         if run.status == "completed":
             try:
                 summary, total = _run_result_page(services, run, 0)
@@ -1803,7 +1863,7 @@ class WorkflowCancelCommand(_WorkflowRunInput):
             return CommandResult(status="error", error=f"unknown workflow run: {raw!r}")
         if run.status in _TERMINAL_RUN:
             return CommandResult(status="error", error=f"workflow run '{raw}' is {run.status}")
-        live = [node.key for node in run.nodes if node.status in ("pending", "running", "waiting")]
+        live = [node.key for node in run.nodes if node.status in ("pending", "running", "waiting", "interrupted")]
         if live and invocation.context.actor != "user":
             request_id = uuid4().hex
             return CommandResult(
@@ -1857,7 +1917,10 @@ class WorkflowCancelCommand(_WorkflowRunInput):
             return CommandResult(status="error", error=f"unknown workflow run: {raw!r}")
         if run.status in _TERMINAL_RUN:
             return CommandResult(status="ok", output=f"run {raw} already {run.status}", data={"run_id": raw, "status": run.status})
-        nodes = tuple(replace(node, status="cancelled") if node.status in ("pending", "running", "waiting") else node for node in run.nodes)
+        nodes = tuple(
+            replace(node, status="cancelled", budget_exhaustion=None) if node.status in ("pending", "running", "waiting", "interrupted") else node
+            for node in run.nodes
+        )
         run = replace(run.with_status("cancelled", "owner cancellation"), nodes=nodes)
         try:
             services.replace_state(state.with_run(run).to_payload(), version, "session")

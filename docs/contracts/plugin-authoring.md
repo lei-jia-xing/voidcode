@@ -90,8 +90,10 @@ the existing model allocation; it does not relabel the stored media type.
 
 The same budget distinction applies to child joins: only a committed user or
 owner cancellation is `cancelled`; interrupted results retain their actual or
-unknown stop cause. `ChildOutcome` currently has no typed `BudgetExhaustion`
-field, so joined children cannot yet report its dimension/source/counters.
+unknown stop cause. `ChildOutcome.budget_exhaustion` carries optional typed
+`BudgetExhaustion` data from the exact run's committed stop/fact. A recoverable
+budget pause remains interrupted and is not a terminal child fact; consumers
+must not infer its fields from current counters or acknowledge it as completion.
 
 
 ## 4. Commands: revision binding, busy gate

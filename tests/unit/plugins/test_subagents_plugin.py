@@ -23,6 +23,7 @@ from voidcode.plugins.subagents.subagents_plugin import (
 )
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import (
+    BudgetExhaustion,
     ChildOutcome,
     ChildSendReceipt,
     EventView,
@@ -378,6 +379,36 @@ def test_output_reports_the_terminal_child_outcome(tmp_path: Path) -> None:
     assert payload["error"] == "child blew up"
     assert payload["stop_cause"] == "error"
     assert "child blew up" in res.output.text
+    assert "budget_exhaustion" not in payload
+
+
+def test_output_preserves_typed_budget_exhaustion(tmp_path: Path) -> None:
+    services = FakeServices()
+    _task(services, tmp_path, {"prompt": "budgeted work"})
+    outcome = ChildOutcome(
+        child_session_id="child-1",
+        status="interrupted",
+        stop_cause="limit_reached",
+        run_id="run-budget",
+        budget_exhaustion=BudgetExhaustion(
+            dimension="provider_turns",
+            source="max_steps",
+            limit=2,
+            consumed=2,
+            remaining=0,
+            continue_with="resume_with_max_steps",
+        ),
+    )
+    services.roster["child-1"] = outcome
+
+    result = _task(services, tmp_path, {"operation": "output", "task_id": "child-1"})
+
+    payload = _payload(result)
+    assert payload["status"] == "interrupted"
+    assert payload["stop_cause"] == "limit_reached"
+    assert payload["budget_exhaustion"] == outcome.as_payload()["budget_exhaustion"]
+    assert "budget_exhaustion: dimension=provider_turns" in result.output.text
+    assert services.acks == [], "recoverable budget stops are not completion notices"
 
 
 def test_send_maps_the_receipt_without_claiming_consumption(tmp_path: Path) -> None:
@@ -776,6 +807,39 @@ def test_batch_group_read_reports_each_child_profile(tmp_path: Path) -> None:
         {"task_id": "child-2", "status": "completed", "agent_uri": "agent://child-2", "history_uri": "transcript://child-2"},
     ]
     assert "profile=explore" in res.output.text
+
+
+def test_batch_group_read_preserves_typed_budget_exhaustion(tmp_path: Path) -> None:
+    services = FakeServices()
+    spawned = _batch(services, tmp_path, {"tasks": [{"prompt": "budgeted"}, {"prompt": "pending"}]})
+    group_id = str(_payload(spawned)["parallel_group_id"])
+    outcome = ChildOutcome(
+        child_session_id="child-1",
+        status="interrupted",
+        stop_cause="limit_reached",
+        run_id="run-budget",
+        budget_exhaustion=BudgetExhaustion(
+            dimension="root_actions",
+            source="root_action_budget",
+            limit=4,
+            consumed=4,
+            remaining=0,
+            continue_with="extend_root_actions",
+        ),
+    )
+    services.roster["child-1"] = outcome
+    services.roster["child-2"] = ChildOutcome(child_session_id="child-2", status="running", run_id="run-pending")
+
+    result = _batch(services, tmp_path, {"operation": "output", "parallel_group_id": group_id})
+
+    children = _payload(result)["children"]
+    assert children[0]["status"] == "interrupted"
+    assert children[0]["run_id"] == "run-budget"
+    assert children[0]["budget_exhaustion"] == outcome.as_payload()["budget_exhaustion"]
+    assert children[1]["status"] == "running"
+    assert "budget_exhaustion" not in children[1]
+    assert "budget_exhaustion=" in result.output.text
+    assert services.acks == [], "recoverable budget stops are not completion notices"
 
 
 def test_batch_item_with_unknown_profile_rejects_the_whole_batch(tmp_path: Path) -> None:

@@ -746,6 +746,7 @@ class RuntimeServices:
             )
 
     def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
+        from voidcode.sdk.services import BudgetExhaustion
         from voidcode.sdk.services import ChildOutcome as Outcome
 
         lease = self._active_lease()
@@ -778,6 +779,7 @@ class RuntimeServices:
             output_preview=None if payload.get("output_preview") is None else str(payload["output_preview"]),
             output_sha256=None if payload.get("output_sha256") is None else str(payload["output_sha256"]),
             output_bytes=output_bytes if isinstance(output_bytes, int) and not isinstance(output_bytes, bool) else None,
+            budget_exhaustion=BudgetExhaustion.from_payload(payload.get("budget_exhaustion")),
         )
 
     def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:

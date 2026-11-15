@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, cast, runtime_checkable
 
 from pydantic import TypeAdapter
 
@@ -51,6 +51,45 @@ class BudgetExhaustion:
     consumed: int
     remaining: int
     continue_with: Literal["resume_with_max_steps", "extend_root_actions"]
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "dimension": self.dimension,
+            "source": self.source,
+            "limit": self.limit,
+            "consumed": self.consumed,
+            "remaining": self.remaining,
+            "continue_with": self.continue_with,
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> BudgetExhaustion | None:
+        """Parse a committed typed cap fact; absent legacy data remains unknown."""
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise ValueError("budget exhaustion must be an object or null")
+        if set(value) != {"dimension", "source", "limit", "consumed", "remaining", "continue_with"}:
+            raise ValueError("budget exhaustion has missing or unknown fields")
+        dimension = value["dimension"]
+        source = value["source"]
+        continue_with = value["continue_with"]
+        counters = (value["limit"], value["consumed"], value["remaining"])
+        if any(type(counter) is not int or counter < 0 for counter in counters):
+            raise ValueError("budget exhaustion counters must be non-negative integers")
+        if (dimension, source, continue_with) not in (
+            ("provider_turns", "max_steps", "resume_with_max_steps"),
+            ("root_actions", "root_action_budget", "extend_root_actions"),
+        ):
+            raise ValueError("budget exhaustion has an unknown dimension, source, or continuation")
+        return cls(
+            dimension=cast(Literal["provider_turns", "root_actions"], dimension),
+            source=cast(Literal["max_steps", "root_action_budget"], source),
+            limit=counters[0],
+            consumed=counters[1],
+            remaining=counters[2],
+            continue_with=cast(Literal["resume_with_max_steps", "extend_root_actions"], continue_with),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,9 +187,11 @@ class ChildOutcome:
     for the result of newer work. ``history_sha256`` names the immutable snapshot of the child's
     readable history at that terminal point (``artifact://<sha256>``); the live, paged history
     stays ``transcript://<child_session_id>``. The plugin-provided ``agent://<child_session_id>``
-    resource is distinct: it projects current descendant status and the latest eligible
-    nonempty completed publication without consuming notices. VoidCode has no separate
-    accepted-yield marker, so this selection is not a claim of exact OMP yield equivalence.
+    resource is distinct: it projects current descendant status and the latest eligible nonempty
+    completed publication without consuming notices. VoidCode has no separate accepted-yield
+    marker, so this selection is not a claim of exact OMP yield equivalence. A recoverable
+    finite-cap interruption carries the cap facts committed in that run's stop event; it does
+    not claim terminal completion or changed authorization.
     """
 
     child_session_id: str
@@ -167,6 +208,7 @@ class ChildOutcome:
     #: Full output artifact ref from publication or snapshot materialization for immutable resource paging.
     output_sha256: str | None = None
     output_bytes: int | None = None
+    budget_exhaustion: BudgetExhaustion | None = None
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -186,6 +228,8 @@ class ChildOutcome:
             payload["output_sha256"] = self.output_sha256
             payload["output_bytes"] = self.output_bytes
             payload["output_preview"] = self.output_preview
+        if self.budget_exhaustion is not None:
+            payload["budget_exhaustion"] = self.budget_exhaustion.as_payload()
         return payload
 
 

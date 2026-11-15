@@ -161,7 +161,7 @@ def _target_input(args: _ReviewArgs) -> Mapping[str, object] | None:
 
 
 def _data(target: ReviewTarget, child_id: str, outcome: ChildOutcome) -> dict[str, object]:
-    return {
+    data: dict[str, object] = {
         "child_session_id": child_id,
         "status": outcome.status,
         "target_type": target.type,
@@ -169,6 +169,9 @@ def _data(target: ReviewTarget, child_id: str, outcome: ChildOutcome) -> dict[st
         "error": outcome.error,
         "stop_cause": outcome.stop_cause,
     }
+    if outcome.budget_exhaustion is not None:
+        data["budget_exhaustion"] = outcome.budget_exhaustion.as_payload()
+    return data
 
 
 def _outcome_result(target: ReviewTarget, child_id: str, outcome: ChildOutcome) -> CommandResult:

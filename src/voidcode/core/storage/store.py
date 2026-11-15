@@ -1300,8 +1300,8 @@ class SqliteStore:
             )
             return tuple(_session_record(row) for row in cursor.fetchall())
 
-    def latest_stop_cause(self, session_id: str, run_id: str | None) -> str | None:
-        """The committed stop cause of one run, or None when no terminal fact names one."""
+    def latest_stop_payload(self, session_id: str, run_id: str | None) -> Mapping[str, object] | None:
+        """Return the exact latest committed interruption payload for one run."""
         with self._lock:
             self._check_open()
             if not run_id:
@@ -1314,11 +1314,13 @@ class SqliteStore:
                 """,
                 (session_id, run_id, EventType.RUN_INTERRUPTED),
             ).fetchone()
-            if row is None:
-                return None
-            payload = own_json_object(json.loads(row[0]))
-            cause = payload.get("stop_cause")
-            return cause if isinstance(cause, str) and cause else None
+            return None if row is None else own_json_object(json.loads(row[0]))
+
+    def latest_stop_cause(self, session_id: str, run_id: str | None) -> str | None:
+        """The committed stop cause of one run, or None when no terminal fact names one."""
+        payload = self.latest_stop_payload(session_id, run_id)
+        cause = None if payload is None else payload.get("stop_cause")
+        return cause if isinstance(cause, str) and cause else None
 
     def has_queued_child_followup(self, session_id: str) -> bool:
         """Whether one session holds a pending core child follow-up (never notices or claims)."""

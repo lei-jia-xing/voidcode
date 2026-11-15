@@ -1619,6 +1619,7 @@ class Core:
                         label="",
                         notify=notify,
                         deliver=False,
+                        budget_exhaustion=result.budget_exhaustion,
                     )
                     if notify:
                         resumed_notice = (
@@ -2737,6 +2738,7 @@ class Core:
                                 label=str(cont_record.payload.get("label", "")),
                                 notify=notify,
                                 deliver=False,
+                                budget_exhaustion=run_res.budget_exhaustion,
                             )
                             if notify:
                                 parent_deliveries.append((parent_id, child_completion_notice_id(parent_id, session_id, run_res.run_id)))
