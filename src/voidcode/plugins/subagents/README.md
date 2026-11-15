@@ -11,6 +11,15 @@ The core owns child authority, lifecycle, budgets, and durable history; this plu
 - Command `subagents.monitor` (`READ`, shortcut `alt+a`, hidden from slash): live roster and detail inspection of running subagent sessions.
 - Command `subagents.monitor.cancel` (`SESSION`, hidden from slash): confirmed cancellation of a running subagent subtree.
 - Query `workspace.agent_definition` (default provider): resolves an effective named agent (`name`, `description`, `prompt`, `source_scope`, `source_path`, `readonly`, `max_turns`); `None` for an unknown name, a provider failure for an unloadable registry, `QueryUnavailable` with subagents disabled. Any admitted plugin may substitute the provider; consumers use `AGENT_DEFINITIONS.ask` and never import subagents.
+
+## Read-only latest-result URI
+
+- Each `task` receipt exposes `agent_uri: agent://<child_session_id>` separately from the existing `history_uri: transcript://<child_session_id>`. `task_batch` spawn and group receipts expose the same agent URI per child. `agent://` is a status/latest-output resource, never a transcript alias.
+- `read(agent://<id>)` reads only a caller-visible descendant. The root requires an id; there is no roster route, path, JSON subpath, or URI query. A nonexistent id and a parent/sibling/unrelated session are indistinguishable. Disabling this plugin removes the scheme without fallback.
+- The read is non-consuming: it never joins, acknowledges a completion notice, sends, cancels, or replays work. With no eligible output it shows current status/run and available progress. Otherwise it shows current status/run separately from the latest published-output run. A prior result is marked superseded only while a distinct newer run is active; failed, interrupted, cancelled, empty, and preview-only follow-ups do not erase the last nonempty completed result.
+- All eligible output, including inline publications, is exposed through the shared immutable artifact pager. Core materializes committed inline output as a deduplicated artifact without changing the child fact or join result. Ordinary line/UTF-8 byte selectors work; continue at the returned `artifact://` reference, not the mutable `agent://` root.
+- The current Core publication fact has no separate OMP accepted-yield marker. `agent://` therefore uses the documented completed/nonempty-output rule rather than claiming exact yield equivalence. `/key/index` remains unsupported until SDK/Core provide a typed structured child-publication contract.
+
 ## Agent definitions
 
 Agent files follow the [Claude Code subagent format](https://code.claude.com/docs/en/sub-agents): YAML metadata plus Markdown instructions. Required fields are `name` and `description`; identity comes from `name`, not the filename. Definitions load recursively from `.claude/agents/` in the workspace and `~/.claude/agents/` (`CLAUDE_CONFIG_DIR/agents/` when configured); project definitions override user and builtin definitions of the same name; duplicate names within one scope are errors naming both files.

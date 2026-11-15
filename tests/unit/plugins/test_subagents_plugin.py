@@ -173,10 +173,12 @@ def test_spawn_passes_arguments_through_and_records_roster_event(tmp_path: Path)
         "operation": "spawn",
         "task_id": "child-1",
         "label": "explore",
+        "agent_uri": "agent://child-1",
         "history_uri": "transcript://child-1",
     }
     assert "child-1" in res.output.text
     assert "background" in res.output.text
+    assert "Current status/latest published output: agent://child-1" in res.output.text
 
     state = _stored(services)
     assert state.children == {"child-1": ChildRecord(label="explore", group_id=None)}
@@ -226,6 +228,7 @@ def test_profile_spawn_materializes_the_prompt_and_applies_its_scope(tmp_path: P
         "task_id": "child-1",
         "label": "explore",
         "subagent_type": "explore",
+        "agent_uri": "agent://child-1",
         "history_uri": "transcript://child-1",
     }
     assert "profile=explore" in res.output.text
@@ -354,6 +357,7 @@ def test_output_joins_with_the_requested_timeout_and_surfaces_running(tmp_path: 
         "task_id": "child-1",
         "label": "long",
         "status": "running",
+        "agent_uri": "agent://child-1",
         "history_uri": "transcript://child-1",
     }
     assert "status=running" in res.output.text
@@ -397,6 +401,7 @@ def test_send_maps_the_receipt_without_claiming_consumption(tmp_path: Path) -> N
     assert payload["child_status"] == "running"
     assert payload["run_id"] == "run-2"
     assert payload["message_id"] == "msg-1"
+    assert payload["agent_uri"] == "agent://child-1"
     assert payload["history_uri"] == "transcript://child-1"
     assert isinstance(res.output, TextOutput)
     assert "started in the same session" in res.output.text
@@ -488,7 +493,13 @@ def test_cancel_reports_acceptance(tmp_path: Path) -> None:
     res = _task(services, tmp_path, {"operation": "cancel", "task_id": "child-1"})
     assert isinstance(res, ToolSuccess)
     assert services.cancel_calls == [("child-1", CANCEL_REASON)]
-    assert _payload(res) == {"operation": "cancel", "task_id": "child-1", "label": "cancel me", "cancelled": True}
+    assert _payload(res) == {
+        "operation": "cancel",
+        "task_id": "child-1",
+        "label": "cancel me",
+        "cancelled": True,
+        "agent_uri": "agent://child-1",
+    }
     assert "cancellation accepted" in res.output.text
 
     services.cancel_result = False
@@ -588,7 +599,16 @@ def test_batch_spawns_the_whole_group_and_records_it(tmp_path: Path) -> None:
     payload = _payload(res)
     group_id = str(payload["parallel_group_id"])
     assert len(group_id) == 32
-    assert payload == {"operation": "spawn", "parallel_group_id": group_id, "task_ids": ["child-1", "child-2"], "partial": False}
+    assert payload == {
+        "operation": "spawn",
+        "parallel_group_id": group_id,
+        "task_ids": ["child-1", "child-2"],
+        "partial": False,
+        "created": [
+            {"index": 0, "task_id": "child-1", "agent_uri": "agent://child-1"},
+            {"index": 1, "task_id": "child-2", "agent_uri": "agent://child-2"},
+        ],
+    }
     assert services.spawn_calls == [
         {"prompt": "one", "label": "a", "tool_allowlist": None, "max_steps": None, "readonly": False, "notify_on_completion": True},
         {"prompt": "two", "label": "", "tool_allowlist": None, "max_steps": 7, "readonly": False, "notify_on_completion": True},
@@ -618,9 +638,9 @@ def test_batch_partial_spawn_keeps_created_children(tmp_path: Path) -> None:
     assert payload["partial"] is True
     assert payload["task_ids"] == ["child-1", "child-2", "child-3"]
     assert payload["created"] == [
-        {"index": 0, "task_id": "child-1"},
-        {"index": 1, "task_id": "child-2"},
-        {"index": 3, "task_id": "child-3"},
+        {"index": 0, "task_id": "child-1", "agent_uri": "agent://child-1"},
+        {"index": 1, "task_id": "child-2", "agent_uri": "agent://child-2"},
+        {"index": 3, "task_id": "child-3", "agent_uri": "agent://child-3"},
     ]
     assert payload["failed"] == [{"index": 2, "error": "delegation spawn budget exhausted for this chain"}]
     assert "Started 3 of 4 child task(s)" in res.output.text
@@ -661,12 +681,13 @@ def test_batch_group_read_returns_bounded_per_child_statuses(tmp_path: Path) -> 
         "operation": "output",
         "parallel_group_id": group_id,
         "children": [
-            {"task_id": "child-1", "status": "running", "history_uri": "transcript://child-1"},
+            {"task_id": "child-1", "status": "running", "agent_uri": "agent://child-1", "history_uri": "transcript://child-1"},
             {
                 "task_id": "child-2",
                 "status": "failed",
                 "stop_cause": "error",
                 "error": "child blew up",
+                "agent_uri": "agent://child-2",
                 "history_uri": "transcript://child-2",
             },
         ],
@@ -696,7 +717,16 @@ def test_batch_items_select_their_own_profiles(tmp_path: Path) -> None:
     assert isinstance(res, ToolSuccess)
     payload = _payload(res)
     group_id = str(payload["parallel_group_id"])
-    assert payload == {"operation": "spawn", "parallel_group_id": group_id, "task_ids": ["child-1", "child-2"], "partial": False}
+    assert payload == {
+        "operation": "spawn",
+        "parallel_group_id": group_id,
+        "task_ids": ["child-1", "child-2"],
+        "partial": False,
+        "created": [
+            {"index": 0, "task_id": "child-1", "agent_uri": "agent://child-1", "subagent_type": "research"},
+            {"index": 1, "task_id": "child-2", "agent_uri": "agent://child-2"},
+        ],
+    }
     assert services.spawn_calls == [
         {
             "prompt": f"{_builtin_body(tmp_path, 'research')}\n\nread the docs",
@@ -721,7 +751,7 @@ def test_batch_combines_profile_and_caller_scope_and_preserves_spawn_failures(tm
     res = _batch(services, tmp_path, {"tasks": [{"prompt": "plan it", "subagent_type": "plan", "tool_allowlist": ["read"]}, {"prompt": "doomed"}]})
     payload = _payload(res)
     assert payload["partial"] is True
-    assert payload["created"] == [{"index": 0, "task_id": "child-1", "subagent_type": "plan"}]
+    assert payload["created"] == [{"index": 0, "task_id": "child-1", "agent_uri": "agent://child-1", "subagent_type": "plan"}]
     assert payload["failed"] == [{"index": 1, "error": "delegation spawn budget exhausted for this chain"}]
     assert [call["tool_allowlist"] for call in services.spawn_calls] == [("read",), None]
 
@@ -740,9 +770,10 @@ def test_batch_group_read_reports_each_child_profile(tmp_path: Path) -> None:
             "task_id": "child-1",
             "status": "running",
             "subagent_type": "explore",
+            "agent_uri": "agent://child-1",
             "history_uri": "transcript://child-1",
         },
-        {"task_id": "child-2", "status": "completed", "history_uri": "transcript://child-2"},
+        {"task_id": "child-2", "status": "completed", "agent_uri": "agent://child-2", "history_uri": "transcript://child-2"},
     ]
     assert "profile=explore" in res.output.text
 

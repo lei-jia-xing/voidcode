@@ -33,16 +33,16 @@
   - 验收：两个 cell 复用变量，批量读取后按结果发起不同工具调用，审批可暂停/继续，输出表格和图片可查看完整数据；父子 Agent 内核隔离，取消/崩溃/重启明确宣布状态丢失，不自动重跑已产生副作用的 cell；`tool.*` 不可访问隐藏工具或越过审批，任意 Python 自身仍按执行能力治理。
 
 - [ ] **让 URI 成为跨工具的资源身份，而不只是一条 `read` 特例。**
-  - 现状：[`files`](files/README.md) 已注册 `tool://`、`artifact://`、`transcript://`，web 另有快照资源；`read` 已按注册者分发。当前 [`grep`](../capabilities/files/grep_tool.py)/[`glob`](../capabilities/files/glob_tool.py) 基于 `Path.walk`，没有同一资源的搜索/枚举路径；`ResourceReader` 本身也没有能力发现契约。
+  - 现状：[`files`](files/README.md) 已注册 `tool://`、`artifact://`、`transcript://`，web 另有快照资源，`subagents` 现有 `agent://<child_session_id>`；`read` 已按注册者分发。当前 [`grep`](../capabilities/files/grep_tool.py)/[`glob`](../capabilities/files/glob_tool.py) 基于 `Path.walk`，没有同一资源的搜索/枚举路径；`ResourceReader` 本身也没有能力发现契约。
   - 目标：基于 SDK 资源能力统一 `read`、资源检索、脚本 helper 与客户端查看器；结果返回可继续使用的 URI 和真实分页游标。按需发现工具文档沿用已有 `tool://` 与当前可见 catalog，不复制 OMP 的整张 scheme/device 表，也不默认把所有工具永久塞进上下文。参考 OMP [read/router](omp://tools/read.md)、[find 的 URL scope](omp://tools/find.md)、[shell URI filesystem](omp://bash-tool-runtime.md)。
   - 边界：虚拟文本、不可变 artifact、本地可变文件不是一回事；外部命令确有需要时才用受限只读物化，不能直接交出 artifact 的可写 backing path。不给 mutation 加“读 URI”捷径，不用 shell 文本替换伪装 VFS。
   - 验收：同一份超长命令输出、网页快照或子 Agent 结果可以按 URI 阅读、检索和在脚本中处理，分页无丢字，UI 展开指向同一资源；禁用提供插件后明确不可用，不回退其他实现；不可枚举/不可搜索的资源说明能力限制，不静默给空结果。
 
 - [ ] **把现有子 Agent 生命周期做成持续交互、可寻址结果的闭环。**
   - 现状：已有 `task`/`task_batch`、SDK `send_child`/`join_child`、按 run 的完成通知、lineage-gated history 和 alt+a monitor；[`workflows`](./workflows/README.md) 已支持动态节点/依赖与持久化恢复。不是再造一套 spawn/send/wait，也不能把静态 DAG 当作当前能力上限。
-  - 目标：统一委派回执、当前 run、等待/审批/排队状态、最近一次已发布结果与历史资源入口；使创建后的跟进、状态查看、完整结果读取和取消在模型工具及 monitor 中都可发现。为拟议的 Agent URI 明确“实时进度 / 最近已发布结果 / 某 run 的不可变结果 / transcript”的区别。参考 OMP [task](omp://tools/task.md)、[wait](omp://tools/wait.md)、[agent hub](omp://agent-hub.md)、[agent/history URI](omp://tools/read.md)。
+  - 目标：统一委派回执、当前 run、等待/审批/排队状态、最近一次已发布结果与历史资源入口；使创建后的跟进、状态查看、完整结果读取和取消在模型工具及 monitor 中都可发现。`agent://` 已由 subagents 插件提供当前 status/run 与最近 eligible completed output；任务回执把 `agent_uri` 与 `history_uri=transcript://` 分开。Core 没有独立 accepted-yield 标记，`/key/index` 仍待 typed structured publication 契约。参考 OMP [task](omp://tools/task.md)、[wait](omp://tools/wait.md)、[agent hub](omp://agent-hub.md)、[agent/history URI](omp://tools/read.md)。
   - 边界：保留 parent/descendant 权限，不能照搬全局广播与任意 peer 读取；消息是带来源的数据而非 system 指令。batch 与 workflow 复用同一子会话机制、配额和只读限制，不失败后放宽 scope，不以进程存活或已有输出冒充本轮完成。
-  - 验收：并行委派后主 Agent 可继续工作、只给目标 child 跟进、阻塞时无轮询等待；终态结果仅交付一次，消费结果与通知去重一致；跟进启动的新 run 不被旧结果遮盖，长结果可按引用读全；取消精确绑定所见 run，重连/重启不重派已完成工作，未启动/审批中/失败均不显示为完成。Agent 状态 URI 所需的窄只读投影先列入 SDK TODO。
+  - 验收：并行委派后主 Agent 可继续工作、只给目标 child 跟进、阻塞时无轮询等待；终态结果仅交付一次，消费结果与通知去重一致；跟进启动的新 run 与已发布结果显式分 run，长 artifact 可按不可变引用读全；取消精确绑定所见 run，重连/重启不重派已完成工作，未启动/审批中/失败均不显示为完成。`ChildSessionSnapshot` 已提供不 join/ack 的 caller-scoped 只读投影；首个就绪等待和准确 accepted-yield 语义仍未实现。
   - 前置整改：Agent 的默认 32 及预算归属单列为 [Core P0](../core/TODO.md) 与 [SDK P0](../sdk/TODO.md)，不把任意轮次截断当作生命周期设计，也不假定父子共享额度已正确实现。
 
 - [ ] **统一有限命令、后台任务与长期服务的使用和收尾体验。**

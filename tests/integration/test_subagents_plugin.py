@@ -12,7 +12,8 @@ import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread, current_thread
+from unittest.mock import patch
 
 import pytest
 
@@ -280,3 +281,121 @@ def test_standard_markdown_agent_applies_its_prompt_and_turn_cap(tmp_path: Path)
         assert child.status == "completed" and child.tool_allowlist is None
         assert any(message.get("content") == "Inspect carefully.\n\ninspect" for message in _messages(server.requests[1]))
         assert len(server.requests) == 3
+
+
+def test_agent_snapshot_refreshes_current_run_after_concurrent_publication(tmp_path: Path) -> None:
+    token = "publish-new-agent-run-during-read"
+    second_output = "second accepted publication\n"
+    replies = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [_task_call("first-task", {"prompt": "produce first result", "run_in_background": False})],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "first accepted publication\n"}, finish="stop"),
+        openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
+    ]
+
+    def read_call(call_id: str, uri: str) -> dict[str, object]:
+        return {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": "read", "arguments": json.dumps({"path": uri})},
+        }
+
+    def tool_text(server: OpenAILoopbackServer) -> str:
+        tool_messages = [message for message in _messages(server.requests[-1]) if message.get("role") == "tool"]
+        assert tool_messages
+        payload = json.loads(str(tool_messages[-1]["content"]))
+        if isinstance(payload.get("text"), str):
+            return payload["text"]
+        output = payload.get("output")
+        assert isinstance(output, dict) and isinstance(output.get("text"), str), payload
+        return output["text"]
+
+    with _loopback_server(replies) as server:
+        core = _core(tmp_path, server, minimal=True)
+        parent = core.create_session("parent").session_id
+        assert core.run("create first child result", session_id=parent).status == "completed"
+        child = core.list_descendants(parent)[0].session_id
+        uri = f"agent://{child}"
+
+        server.replies.extend(
+            [
+                openai_response(
+                    message={"role": "assistant", "content": None, "tool_calls": [read_call("first-read", uri)]},
+                    finish="tool_calls",
+                ),
+                openai_response(message={"role": "assistant", "content": "read complete"}, finish="stop"),
+            ]
+        )
+        assert core.run("read first publication", session_id=parent).status == "completed"
+        first_text = tool_text(server)
+        first_run_line = next(line for line in first_text.splitlines() if line.startswith("Latest published output run_id: "))
+        first_run = first_run_line.split(": ", 1)[1].split(" ", 1)[0]
+        first_ref_line = next(line for line in first_text.splitlines() if line.startswith("Immutable output: "))
+        first_ref = first_ref_line[len("Immutable output: ") :].removesuffix(".")
+        assert first_run and first_ref.startswith("artifact://")
+
+        server.replies.extend(
+            [
+                openai_response(
+                    message={"role": "assistant", "content": None, "tool_calls": [read_call("racing-read", uri)]},
+                    finish="tool_calls",
+                ),
+                openai_response(message={"role": "assistant", "content": "read complete"}, finish="stop"),
+            ]
+        )
+        sampled = Event()
+        resume = Event()
+        reader: Thread | None = None
+        reader_results = []
+        original_list = core._delegation.list_descendants
+
+        def gated_list(session_id: str):
+            nodes = original_list(session_id)
+            if current_thread() is reader and session_id == parent and not sampled.is_set():
+                assert any(node.session_id == child and node.run_id == first_run for node in nodes), nodes
+                sampled.set()
+                if not resume.wait(timeout=20):
+                    raise TimeoutError("snapshot race barrier was not released")
+            return nodes
+
+        def run_read() -> None:
+            reader_results.append(core.run("read while child publishes", session_id=parent))
+
+        def reply_to_second_run(payload: dict[str, object], _ordinal: int) -> dict[str, object] | None:
+            messages = payload.get("messages")
+            if isinstance(messages, list) and any(
+                isinstance(message, dict) and message.get("role") == "user" and token in str(message.get("content", "")) for message in messages
+            ):
+                return openai_response(message={"role": "assistant", "content": second_output}, finish="stop")
+            return None
+
+        server.before_reply = reply_to_second_run
+        reader = Thread(target=run_read)
+        with patch.object(core._delegation, "list_descendants", side_effect=gated_list):
+            reader.start()
+            try:
+                assert sampled.wait(timeout=10), "agent read did not take its initial descendant sample"
+                sent = core.send_child(parent, child, token, notify_on_completion=False)
+                assert sent.delivery == "started" and sent.run_id and sent.run_id != first_run
+                published = core.join_child(parent, child, timeout_seconds=20)
+                assert (published.status, published.run_id, published.output) == ("completed", sent.run_id, second_output)
+            finally:
+                resume.set()
+                reader.join(timeout=20)
+        assert not reader.is_alive()
+        assert len(reader_results) == 1 and reader_results[0].status == "completed"
+
+        raced_text = tool_text(server)
+        assert "Current status: completed" in raced_text
+        assert f"Current run_id: {sent.run_id}" in raced_text
+        assert f"Latest published output run_id: {sent.run_id} (status=completed)." in raced_text
+        raced_ref_line = next(line for line in raced_text.splitlines() if line.startswith("Immutable output: "))
+        assert raced_ref_line.endswith(".") and raced_ref_line[len("Immutable output: ") : -1] != first_ref
+        assert "This previous output is superseded while the current run is active." not in raced_text
+        assert "This is the last published output, not the current session run's result." not in raced_text

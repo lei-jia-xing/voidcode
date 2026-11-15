@@ -16,7 +16,7 @@
 
 当前已有 typed tool body、`OutputBounds`、内容寻址 artifact、可注册 `ResourceReader`、工具进度回调、子 Agent 跟进/完成通知、动态 workflow、命令表单，以及两端长输出分页；这些不是从零重建的待办。已完成项保持勾选，不把“图片输入已通”混同于“终端可以显示工具返回的图片”。
 
-已核实的关键断点：普通 SDK `invoke_tool` 仍只排队；后台 action 可用 `BackgroundContext.wait_tool` 安全等待完整、request-correlated 结果，但这不是普通前台 callback 的 suspend API。资源读者仍缺能力发现及实时 Agent/进程投影；`ToolOutput` 仍只表达一个文本或附件。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。仍开放 active-model 自适应投影 headroom、typed child budget exhaustion 与结果 schema；真实浏览器 artifact、headless Kitty PTY 和真实 Core/live-progress PTY 已通过所记录路径，但物理 Kitty 像素及 PTY 场景中的取消/重连尚未证明，见所属模块 TODO。
+已核实的关键断点：普通 SDK `invoke_tool` 仍只排队；后台 action 可用 `BackgroundContext.wait_tool` 安全等待完整、request-correlated 结果，但这不是普通前台 callback 的 suspend API。`ResourceReaderServices` 已提供 caller-scoped child/process read projections；Subagents `agent://` 与 Exec `proc://` 复用注册、artifact 分页和 owner/session 边界。通用资源能力发现/枚举/搜索与 `ToolOutput` 组合仍开放。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。仍开放 active-model 自适应投影 headroom、typed child budget exhaustion 与结果 schema；真实浏览器 artifact、headless Kitty PTY 和真实 Core/live-progress PTY 已通过所记录路径，但物理 Kitty 像素及 PTY 场景中的取消/重连尚未证明，见所属模块 TODO。
 
 ## 优先级
 
@@ -39,7 +39,7 @@
 
 历史条目的 OMP 源码基线固定到 [v18.12.6（commit `45c35e40c46166dc726ccc52f5d27f40f2449f99`）](https://github.com/can1357/oh-my-pi/tree/45c35e40c46166dc726ccc52f5d27f40f2449f99)；当时隔离运行实际打开过 `/model` 选择器，其他对照仅为源码核对。
 
-本轮新增条目核对 VoidCode 当前源码/契约与当前会话可读取的 OMP 官方运行时文档（`omp://` 链接），不宣称这些新文档对应上述旧版本，也不宣称本轮实跑了 OMP 图像终端、`eval` 或 Agent 场景。各项中的“目标/验收”是后续实现要求，不是本轮验证结果；实施时应固定实际参考的 OMP 源码 revision。
+Agent `agent://` 对照固定到 OMP v18.20.2 源码 commit [`7c49c11aa5bbaf3f418406583096168ad5b8c6dc`](https://github.com/can1357/oh-my-pi/tree/7c49c11aa5bbaf3f418406583096168ad5b8c6dc)，并用当前官方 runtime 文档核对 `agent://` 最新 published output 与 `history://` 跨轮 transcript 的区别；不宣称本轮实跑 OMP。其他本轮新增条目核对 VoidCode 当前源码/契约与当前会话可读取的 OMP 官方运行时文档，不宣称这些新文档对应旧版 v18.12.6，也不宣称本轮实跑 OMP 图像终端或 `eval` 场景。
 
 ## 不以添加 MAX 代替设计
 
