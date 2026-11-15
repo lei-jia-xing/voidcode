@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 #: total. A child inherits the parent's policy unchanged, so delegation never widens it.
 DELEGATION_MAX_DEPTH = 3
 DELEGATION_SPAWN_BUDGET = 4
-#: A terminal child output larger than this is stored as an artifact; only a bounded preview
-#: crosses the runtime/service boundary (the stdio frame is 1 MiB).
+#: Larger terminal child output is represented by a full artifact reference and bounded preview;
+#: this threshold is an inline representation policy, not a transport-frame or total-output cap.
 CHILD_INLINE_OUTPUT_BYTES = 32 * 1024
 #: Preview carried by a completion notice when the output is artifact-backed.
 CHILD_OUTPUT_PREVIEW_BYTES = 4 * 1024

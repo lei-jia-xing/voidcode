@@ -13,6 +13,10 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - Verification recorded in the Core/SDK TODOs: uncapped real CLI drain beyond 32 dispatches, explicit/shared/restart budgets including independent children, valid decoded PNGs through real Core/native provider SDK routes, full >4 MiB captured-text readback, canonical result reopen, selected-file coverage/read→edit, and JSON web content in the real Core/provider projection (targeted proof: 2 passed in 5.56s). No blanket “all MAX” or all-plugin-audit claim.
 
 
+### Full artifact viewers and live tool progress
+- TUI and Web clients page immutable workspace-scoped artifacts without preview-as-full fallback. A real 346,073-byte, 384×300 decoded PNG passed Kitty PTY protocol/reflow/reopen proof; unsupported-terminal explicit open/export used mode 0600 and cleaned its temporary copy. Kitty proof is headless, so physical terminal pixels are not claimed; no Sixel/JPEG/WebP/GIF terminal support is claimed. Authenticated Chromium artifact/image surface: 1 passed/14.1s; Kitty CLI surface group: 6 passed/17.70s.
+- A real CLI PTY ran Core with a loopback provider and a socket-gated `shell_exec`: tool identity and independent stdout/stderr markers appeared before gate release; a narrow-viewport draft survived completion; the settled screen showed the provider result and artifact summary. Durable history contained exactly one tool intent and one completion; `Core.read_artifact` returned the exact full stdout/stderr bytes, and the draft did not create an extra provider request. The temporary smoke script was removed.
+
 ### Effectiveness plugin removed (BREAKING)
 - The bundled plugin and `/effectiveness` command are removed. Before upgrading from a build that bundled it, set `plugins.effectiveness.enabled` to `false` and run `/core reload` while still on the old build; restart restores the recorded revision, and no ledger/config conversion is performed.
 

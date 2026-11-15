@@ -16,7 +16,7 @@
 
 当前已有 typed tool body、`OutputBounds`、内容寻址 artifact、可注册 `ResourceReader`、工具进度回调、子 Agent 跟进/完成通知、动态 workflow、命令表单，以及两端长输出分页；这些不是从零重建的待办。已完成项保持勾选，不把“图片输入已通”混同于“终端可以显示工具返回的图片”。
 
-已核实的关键断点：SDK 的 `invoke_tool` 只排队不等待结果；资源读者没有能力发现及实时 Agent/进程投影；`ToolOutput` 仍只表达一个文本或附件。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。尚未解决的不是这些已证明行为，而是 active-model 自适应投影 headroom、typed child budget exhaustion 与各 UI/PTY/live-progress 收尾，见所属模块 TODO。
+已核实的关键断点：SDK 的 `invoke_tool` 只排队不等待结果；资源读者没有能力发现及实时 Agent/进程投影；`ToolOutput` 仍只表达一个文本或附件。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。仍开放 active-model 自适应投影 headroom 与 typed child budget exhaustion；真实浏览器 artifact、headless Kitty PTY 和真实 Core/live-progress PTY 已通过所记录路径，但物理 Kitty 像素及 PTY 场景中的取消/重连尚未证明，见所属模块 TODO。
 
 ## 优先级
 
@@ -55,3 +55,9 @@ P0 图片链路与 SDK 工具等待协议可独立推进；`eval` 的工具组�
 OMP 自己也有 request budget 与 preview 阈值；它们不自动构成 VoidCode 的合理默认值。新待办中的“有界”必须对应实际消费者或资源风险，不能成为继续机械添加 `MAX_*` 的理由。
 
 项目自己写下的帧大小、preview 或输入常量，不能反过来作为“这是协议硬限制”的证据；保留限制需要可核查的来源或资源风险，默认值也需要独立理由。
+
+## Hook 与 staged-tree 隔离观察
+
+首次 Core/SDK 阶段提交时，repo-wide pre-commit 会自动暂存 tracked unstaged diff，但 Ruff/ty 仍扫描工作树中的 untracked 新模块。实际失败是 `artifact_viewer.py` 已导入 `KittyImagePlacement`，而未暂存的 `region.py` 尚无该纯 frame placement 数据契约。通过把经审阅的 `region.py` 作为完整 foundation 文件提交，并修复有限格式问题后，所有原配置 hooks 均通过；未绕过或弱化检查。
+
+这是 staged-tree/worktree 隔离脆弱点，不是运行时或 SDK 缺陷。后续可研究 exact-staged-tree/isolation，但必须保留完整 Ruff、ty、API 检查；不得靠抑制导入或降低 hooks 规避依赖。

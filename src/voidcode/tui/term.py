@@ -14,6 +14,10 @@ Rendering model (mirrors oh-my-pi's ``HistoryBatch``/viewport split):
   the cursor hidden and autowrap off, so a frame is atomic on screen.
 * Full-screen overlays borrow the alternate screen only when its original state
   is known off; entry first reanchors the main-buffer caret.
+* PNG previews are trusted ``TuiFrame`` placements, not artifact escape text.
+  Kitty uploads request correlated success/error replies; placement errors are
+  correlated separately. Pixels are cached until close, placements are deleted
+  before commits/resizes, and an unconfirmed probe never claims image support.
 
 The live region is anchored at an owned origin. Before frame edits, commits,
 and resets, ``Terminal`` returns the cached native caret to that origin. After
@@ -36,12 +40,14 @@ from __future__ import annotations
 import ctypes
 import importlib
 import os
+import secrets
 import select
 import signal
 import sys
 import threading
 import time
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from io import StringIO
 from typing import Any
 
@@ -51,7 +57,16 @@ from rich.color import ColorSystem
 from rich.console import Console, OverflowMethod, RenderableType
 from rich.theme import Theme as RichTheme
 
-from .region import TuiFrame, diff_rows
+from .kitty_graphics import (
+    KITTY_PROBE_ID,
+    delete_image,
+    delete_placement,
+    parse_reply,
+    place_image,
+    probe_sequence,
+    transmit_png,
+)
+from .region import KittyImagePlacement, TuiFrame, diff_rows
 from .styles import color_system_name
 
 termios: Any = importlib.import_module("termios") if os.name != "nt" else None
@@ -59,6 +74,7 @@ tty: Any = importlib.import_module("tty") if os.name != "nt" else None
 
 __all__ = [
     "TerminalCapabilityError",
+    "TerminalKittyReply",
     "Terminal",
     "copy_to_clipboard",
     "crop_row_right",
@@ -388,6 +404,23 @@ def _detect_size(fd: int | None) -> tuple[int, int]:
         return _DEFAULT_SIZE
 
 
+def _detect_cell_pixel_size(fd: int | None) -> tuple[float, float] | None:
+    if fd is None or os.name == "nt" or termios is None or not hasattr(termios, "TIOCGWINSZ"):
+        return None
+    try:
+        import array
+        import fcntl
+
+        size = array.array("H", [0, 0, 0, 0])
+        fcntl.ioctl(fd, termios.TIOCGWINSZ, size, True)
+    except ImportError, OSError, ValueError:
+        return None
+    rows, columns, pixel_width, pixel_height = size
+    if min(rows, columns, pixel_width, pixel_height) <= 0:
+        return None
+    return pixel_width / columns, pixel_height / rows
+
+
 def _detect_color_system(is_tty: bool) -> ColorSystem | None:
     if os.environ.get("NO_COLOR") is not None:
         return None
@@ -407,6 +440,13 @@ def _detect_color_system(is_tty: bool) -> ColorSystem | None:
 
 class TerminalCapabilityError(RuntimeError):
     """The requested native terminal behavior cannot be queried safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalKittyReply:
+    sha256: str
+    operation: str
+    message: str
 
 
 class Terminal:
@@ -448,6 +488,16 @@ class Terminal:
         self._windows_kernel: Any = None
         self._suspended_alt = False
         self._pending_input = bytearray()
+        self._kitty_supported = False
+        self._kitty_probe_pending = False
+        self._kitty_input = bytearray()
+        self._kitty_replies: list[TerminalKittyReply] = []
+        self._kitty_uploads: dict[int, tuple[str, tuple[int, int]]] = {}
+        self._kitty_pending_placements: dict[tuple[int, int], str] = {}
+        self._kitty_images: dict[str, tuple[int, tuple[int, int]]] = {}
+        self._kitty_image_ids: dict[int, str] = {}
+        self._kitty_placements: dict[str, int] = {}
+        self._painted_image: KittyImagePlacement | None = None
         self._windows_input_record_type: Any = None
         self._windows_pending_high_surrogate: int | None = None
         self._keyboard_active = False
@@ -482,6 +532,7 @@ class Terminal:
                 terminal._enter_raw_mode()
                 if terminal.is_tty:
                     terminal._capture_private_modes()
+                    terminal._probe_kitty_graphics()
                     terminal._enter_application_mode()
                     terminal._install_winch()
                     terminal._install_termination_handlers()
@@ -506,6 +557,59 @@ class Terminal:
     def is_tty(self) -> bool:
         """Whether frames are written as escape sequences to a real terminal."""
         return self._is_tty
+
+    @property
+    def kitty_graphics_supported(self) -> bool:
+        return self._kitty_supported
+
+    @property
+    def cell_pixel_size(self) -> tuple[float, float] | None:
+        return _detect_cell_pixel_size(self._output_fd) if self._is_tty else None
+
+    def cached_kitty_image(self, sha256: str) -> tuple[int, int] | None:
+        cached = self._kitty_images.get(sha256)
+        return cached[1] if cached is not None else None
+
+    def kitty_placement_id(self, sha256: str) -> int | None:
+        if sha256 not in self._kitty_images:
+            return None
+        placement = self._kitty_placements.get(sha256)
+        if placement is None:
+            placement = self._new_kitty_id()
+            self._kitty_placements[sha256] = placement
+        return placement
+
+    def upload_kitty_png(self, sha256: str, png: bytes, dimensions: tuple[int, int]) -> int:
+        """Transmit trusted PNG bytes once; the correlated terminal reply validates decoding."""
+        if not self._kitty_supported:
+            raise TerminalCapabilityError("Kitty Graphics is not supported by the active terminal")
+        cached = self._kitty_images.get(sha256)
+        if cached is not None:
+            return cached[0]
+        for image_id, (pending_sha, _) in self._kitty_uploads.items():
+            if pending_sha == sha256:
+                return image_id
+        image_id = self._new_kitty_id()
+        self._kitty_uploads[image_id] = (sha256, dimensions)
+        self._kitty_image_ids[image_id] = sha256
+        try:
+            with self._lock:
+                for sequence in transmit_png(image_id, png):
+                    self._emit(sequence.decode("ascii"))
+        except BaseException:
+            self._kitty_uploads.pop(image_id, None)
+            self._kitty_image_ids.pop(image_id, None)
+            raise
+        if self._eof:
+            self._kitty_uploads.pop(image_id, None)
+            self._kitty_image_ids.pop(image_id, None)
+            raise TerminalCapabilityError("terminal disconnected during Kitty image upload")
+        return image_id
+
+    def drain_kitty_replies(self) -> tuple[TerminalKittyReply, ...]:
+        replies = tuple(self._kitty_replies)
+        self._kitty_replies.clear()
+        return replies
 
     @property
     def color_system(self) -> ColorSystem | None:
@@ -738,7 +842,7 @@ class Terminal:
             self._reset_live()
         row_width = self._frame_row_width()
         rows = [part for row in rows for part in wrap_row(row, row_width)]
-        parts = [self._paint_begin(), self._cursor_to_live_origin()]
+        parts = [self._paint_begin(), self._cursor_to_live_origin(), self._forget_painted_image()]
         if self._painted:
             parts.append(ERASE_BELOW)
         for row in rows:
@@ -751,7 +855,7 @@ class Terminal:
         self._painted_width = self.width
 
     def paint_frame(self, frame: TuiFrame) -> None:
-        """Paint one typed frame and place its optional native cursor."""
+        """Paint one typed frame and place its optional native cursor/image."""
         if self._closed:
             return
         if self._geometry_stale():
@@ -773,10 +877,17 @@ class Terminal:
         if cursor is not None:
             row, column = cursor
             cursor = (row - split, min(max(0, column), row_width - 1)) if split <= row < split + len(rendered) else None
+        image = frame.image
+        if image is not None:
+            if split <= image.row < split + len(rendered) and self._kitty_supported and image.sha256 in self._kitty_images:
+                image = KittyImagePlacement(image.sha256, image.row - split, image.column, image.columns, image.placement_id)
+            else:
+                image = None
         previous = self._painted
         changes = diff_rows(previous, rendered)
         shrink = len(previous) > len(rendered)
-        if not changes and not shrink and cursor == self._painted_cursor:
+        graphics_changed = image != self._painted_image
+        if not changes and not shrink and cursor == self._painted_cursor and not graphics_changed:
             return
         parts = [self._paint_begin(), self._cursor_to_live_origin()]
         parked_row = 0
@@ -793,6 +904,24 @@ class Terminal:
                 parts.append(f"\x1b[{parked_row - target}A")
             parts.append(CARRIAGE_RETURN + ERASE_BELOW)
             parked_row = target
+        if graphics_changed:
+            if parked_row:
+                parts.append(f"\x1b[{parked_row}A")
+            parts.append(CARRIAGE_RETURN)
+            parked_row = 0
+            parts.append(self._forget_painted_image())
+            if image is not None:
+                image_id = self._kitty_images[image.sha256][0]
+                self._kitty_pending_placements[(image_id, image.placement_id)] = image.sha256
+                if image.row:
+                    parts.append(f"\x1b[{image.row}B")
+                if image.column:
+                    parts.append(f"\x1b[{image.column + 1}G")
+                parts.append(place_image(image_id, image.placement_id, image.columns).decode("ascii"))
+                if image.row:
+                    parts.append(f"\x1b[{image.row}A")
+                parts.append(CARRIAGE_RETURN)
+            self._painted_image = image
         if parked_row:
             parts.append(f"\x1b[{parked_row}A")
         parts.append(CARRIAGE_RETURN)
@@ -811,7 +940,12 @@ class Terminal:
         """Borrow the alternate screen only when its original state is known off."""
         if self._closed or not self._is_tty or self._alt or os.name == "nt" or self._private_modes.get(1049) is not False:
             return
-        self._emit(self._cursor_to_live_origin() + ALTERNATE_SCREEN_ON + (HIDE_CURSOR if self._private_modes.get(25) is not None else ""))
+        self._emit(
+            self._forget_painted_image()
+            + self._cursor_to_live_origin()
+            + ALTERNATE_SCREEN_ON
+            + (HIDE_CURSOR if self._private_modes.get(25) is not None else "")
+        )
         self._alt = True
         self._painted = []
         self._painted_cursor = None
@@ -828,25 +962,38 @@ class Terminal:
         self._resize = True
         cursor = self._private_modes.get(25)
         restore_cursor = SHOW_CURSOR if cursor is True else HIDE_CURSOR if cursor is False else ""
-        self._emit(ALTERNATE_SCREEN_OFF + restore_cursor)
+        self._emit(self._forget_painted_image() + ALTERNATE_SCREEN_OFF + restore_cursor)
         self._reapply_cursor_style()
 
     def read_bytes(self, timeout: float | None = None) -> bytes:
-        """Read available input bytes, blocking at most ``timeout`` seconds."""
+        """Read available input while routing only correlated Kitty replies away."""
         if self._closed or self._input_fd is None:
             return b""
-        if self._pending_input:
-            data = bytes(self._pending_input[:_READ_CHUNK])
-            del self._pending_input[: len(data)]
-            return data
-        if self._eof:
-            return b""
-        data = self._read_input_chunk(timeout)
-        if data is None:
-            return b""
-        if not data:
-            self._eof = True
-        return data
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while True:
+            if self._pending_input:
+                data = bytes(self._pending_input[:_READ_CHUNK])
+                del self._pending_input[: len(data)]
+                return data
+            if self._eof:
+                return b""
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            data = self._read_input_chunk(remaining)
+            if data is None:
+                if self._kitty_input in (b"\x1b", b"\x1b_"):
+                    incomplete = bytes(self._kitty_input)
+                    self._kitty_input.clear()
+                    return incomplete
+                return b""
+            if not data:
+                self._eof = True
+                return b""
+            passthrough = self._filter_kitty_replies(data)
+            if passthrough:
+                self._pending_input.extend(passthrough[_READ_CHUNK:])
+                return passthrough[:_READ_CHUNK]
+            if deadline is not None and time.monotonic() >= deadline:
+                return b""
 
     def close(self) -> None:
         """Restore the terminal's captured protocol state and original termios."""
@@ -863,7 +1010,8 @@ class Terminal:
             if self._cursor_style_changed and self._original_cursor_style is not None:
                 self._set_cursor_style(self._original_cursor_style)
                 self._cursor_style_changed = False
-            parts.extend((self._paint_begin(), self._cursor_to_live_origin(), ERASE_BELOW, self._paint_end(), RESET_STYLE))
+            cleanup = "".join(delete_image(image_id).decode("ascii") for image_id in self._kitty_image_ids)
+            parts.extend((self._paint_begin(), self._cursor_to_live_origin(), cleanup, ERASE_BELOW, self._paint_end(), RESET_STYLE))
             cursor = self._private_modes.get(25)
             if cursor is not None:
                 parts.append(SHOW_CURSOR if cursor else HIDE_CURSOR)
@@ -874,6 +1022,12 @@ class Terminal:
                 self._keyboard_active = False
             self._painted = []
             self._painted_cursor = None
+            self._kitty_images.clear()
+            self._kitty_image_ids.clear()
+            self._kitty_uploads.clear()
+            self._kitty_pending_placements.clear()
+            self._kitty_placements.clear()
+            self._painted_image = None
             self._emit("".join(parts))
         self._restore_winch()
         self._restore_termination_handlers()
@@ -910,6 +1064,99 @@ class Terminal:
             self._pending_input.extend(received[cursor:start])
             cursor = end
         self._pending_input.extend(received[cursor:])
+
+    def _probe_kitty_graphics(self) -> None:
+        if not self._is_tty or self._input_fd is None:
+            return
+        self._kitty_probe_pending = True
+        self._emit(probe_sequence().decode("ascii"))
+        deadline = time.monotonic() + 0.12
+        while self._kitty_probe_pending and time.monotonic() < deadline:
+            chunk = self._read_input_chunk(max(0.0, deadline - time.monotonic()))
+            if chunk is None:
+                break
+            if not chunk:
+                self._eof = True
+                break
+            self._pending_input.extend(self._filter_kitty_replies(chunk))
+
+    def _filter_kitty_replies(self, data: bytes) -> bytes:
+        self._kitty_input.extend(data)
+        passthrough = bytearray()
+        marker = b"\x1b_G"
+        while self._kitty_input:
+            start = self._kitty_input.find(marker)
+            if start < 0:
+                keep = 0
+                for length in range(1, len(marker)):
+                    if self._kitty_input.endswith(marker[:length]):
+                        keep = length
+                passthrough.extend(self._kitty_input[:-keep] if keep else self._kitty_input)
+                if keep:
+                    del self._kitty_input[:-keep]
+                else:
+                    self._kitty_input.clear()
+                break
+            if start:
+                passthrough.extend(self._kitty_input[:start])
+                del self._kitty_input[:start]
+            end = self._kitty_input.find(b"\x1b\\", len(marker))
+            if end < 0:
+                break
+            sequence = bytes(self._kitty_input[: end + 2])
+            del self._kitty_input[: end + 2]
+            reply = parse_reply(sequence)
+            if reply is None or not self._route_kitty_reply(reply):
+                passthrough.extend(sequence)
+        return bytes(passthrough)
+
+    def _route_kitty_reply(self, reply: Any) -> bool:
+        image_id = reply.image_id
+        if image_id == KITTY_PROBE_ID and self._kitty_probe_pending:
+            self._kitty_supported = reply.message == "OK"
+            self._kitty_probe_pending = False
+            return True
+        if image_id is None:
+            return False
+        upload = self._kitty_uploads.pop(image_id, None)
+        if upload is not None:
+            sha256, dimensions = upload
+            if reply.message == "OK":
+                self._kitty_images[sha256] = (image_id, dimensions)
+                self._kitty_replies.append(TerminalKittyReply(sha256, "upload", reply.message))
+            else:
+                self._kitty_image_ids.pop(image_id, None)
+                self._kitty_replies.append(TerminalKittyReply(sha256, "upload", reply.message))
+            return True
+        placement_id = reply.placement_id
+        if placement_id is not None:
+            sha256 = self._kitty_pending_placements.pop((image_id, placement_id), None)
+            if sha256 is not None:
+                if reply.message != "OK":
+                    self._kitty_images.pop(sha256, None)
+                    self._kitty_image_ids.pop(image_id, None)
+                self._kitty_replies.append(TerminalKittyReply(sha256, "placement", reply.message))
+                return True
+        return image_id in self._kitty_image_ids
+
+    def _new_kitty_id(self) -> int:
+        used = set(self._kitty_image_ids) | set(self._kitty_placements.values()) | {KITTY_PROBE_ID}
+        while True:
+            value = secrets.randbelow(0xFFFFFFFF - 1) + 1
+            if value not in used:
+                return value
+
+    def _forget_painted_image(self) -> str:
+        image = self._painted_image
+        self._painted_image = None
+        if image is None:
+            return ""
+        cached = self._kitty_images.get(image.sha256)
+        if cached is None:
+            return ""
+        image_id = cached[0]
+        self._kitty_pending_placements[(image_id, image.placement_id)] = image.sha256
+        return delete_placement(image_id, image.placement_id).decode("ascii")
 
     def _frame_row_width(self) -> int:
         if not self._is_tty or self._private_modes.get(7) is not None:
@@ -968,7 +1215,7 @@ class Terminal:
 
     def _reset_live(self) -> None:
         if self._is_tty:
-            self._emit(self._paint_begin() + self._cursor_to_live_origin() + ERASE_BELOW + self._paint_end())
+            self._emit(self._paint_begin() + self._cursor_to_live_origin() + self._forget_painted_image() + ERASE_BELOW + self._paint_end())
         self._painted = []
         self._painted_cursor = None
         self._painted_width = self.width

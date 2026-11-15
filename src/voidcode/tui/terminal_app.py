@@ -6,11 +6,15 @@ import asyncio
 import contextlib
 import json
 import logging
+import mimetypes
 import os
 import queue
+import tempfile
 import threading
 import time
+import webbrowser
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -48,6 +52,7 @@ from voidcode.sdk.gates import (
 )
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.provider import ProviderMessage, ProviderTokenUsage, ProviderTurnResult
+from voidcode.sdk.services import ArtifactPage
 from voidcode.sdk.tools import (
     ToolEffect,
 )
@@ -69,6 +74,7 @@ from voidcode.sdk.views import (
     parse_view_data,
 )
 
+from .artifact_viewer import ArtifactSource, InteractiveArtifactViewer, artifact_sources, png_dimensions, read_artifact_bytes
 from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
 from .region import TuiFrame
@@ -80,6 +86,8 @@ from .views import (
     InteractiveConfirmation,
     InteractiveForm,
     InteractiveMarkdown,
+    render_active_tool,
+    render_active_tools_summary,
     render_assistant_markdown,
     render_plugin_view,
     render_thinking,
@@ -111,6 +119,56 @@ _BUILTIN_BANNER = (
 
 #: Immutable ctor/entry default: None at the boundary always means disabled.
 _DEFAULT_BANNER = BannerConfig()
+
+
+@dataclass
+class ActiveToolProgress:
+    invocation_id: str
+    tool_name: str
+    icon: Icon | None
+    start_time: float
+    session_id: str
+    run_id: str
+    revision_id: str
+    generation: int
+    lines: list[str] = field(default_factory=list)
+    pending_fragment: str = ""
+    last_stream: str | None = None
+
+    def append_chunk(self, stream_name: str, chunk: str, *, cols: int, rows: int) -> None:
+        """Incrementally append a text chunk, respecting stream changes and viewport capacity."""
+        if self.last_stream is not None and self.last_stream != stream_name and self.pending_fragment:
+            self.lines.append(self.pending_fragment)
+            self.pending_fragment = ""
+        self.last_stream = stream_name
+
+        text = self.pending_fragment + chunk
+        parts = text.split("\n")
+        cell_capacity = max(cols, cols * rows)
+
+        for line in parts[:-1]:
+            cleaned = line[:-1] if line.endswith("\r") else line
+            if len(cleaned) > cell_capacity:
+                cleaned = cleaned[-cell_capacity:]
+            self.lines.append(cleaned)
+
+        last = parts[-1]
+        if len(last) > cell_capacity:
+            last = last[-cell_capacity:]
+        self.pending_fragment = last
+
+        max_lines = max(1, rows)
+        if len(self.lines) > max_lines:
+            self.lines = self.lines[-max_lines:]
+
+    def visible_tail(self, count: int) -> list[str]:
+        """Return the last `count` lines including any pending partial line."""
+        if count <= 0:
+            return []
+        items = list(self.lines)
+        if self.pending_fragment:
+            items.append(self.pending_fragment)
+        return items[-count:]
 
 
 def _banner_rows(banner: BannerConfig | None, styles: Styles, *, width: int) -> list[str]:
@@ -543,8 +601,8 @@ class CoreTuiApp:
         self._escape_flush_at = 0.0
         self.event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._session_cursors: dict[str, int] = {}
-        #: Invocation ids whose tool-call header already committed (dedupes intent/result).
-        self._tool_headers: set[str] = set()
+        #: Active tools in flight, keyed by invocation id (displayed in Live region).
+        self._active_tools: dict[str, ActiveToolProgress] = {}
         self._generation = 0
         #: Last known server identity/liveness from /api/health. The fence bit
         #: pauses dispatch; the identity triple detects a replaced server.
@@ -563,7 +621,9 @@ class CoreTuiApp:
         #: second thread. Cleared on response, decided fact, or error.
         self._in_flight: set[str] = set()
         self._interaction_serial = 0
-        self.active_overlay: InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveMarkdown | None = None
+        self.active_overlay: (
+            InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveMarkdown | InteractiveArtifactViewer | None
+        ) = None
         #: Chord -> descriptor for this catalog revision, rebuilt on every catalog load.
         self._shortcut_bindings: dict[str, CommandDescriptor] = {}
         #: Chord -> claimant names when 2+ descriptors claim one chord (binds nobody).
@@ -613,7 +673,9 @@ class CoreTuiApp:
         self.latest_input_tokens: int | None = None
         self.cumulative_input_tokens: int = 0
         self.cumulative_output_tokens: int = 0
-        self._latest_truncated_artifact: tuple[str, str] | None = None
+        self._latest_tool_artifacts: tuple[str, tuple[ArtifactSource, ...]] | None = None
+        self._artifact_exports = tempfile.TemporaryDirectory(prefix="voidcode-artifact-")
+        self._artifact_ack_deadline: tuple[str, str, float] | None = None
 
     def run(self) -> int:
         self.running = True
@@ -634,6 +696,7 @@ class CoreTuiApp:
             finally:
                 if self._stream_thread and self._stream_thread.is_alive():
                     self._stream_thread.join(timeout=1.0)
+                self._artifact_exports.cleanup()
                 if self.owns_terminal:
                     self.terminal.close()
 
@@ -837,11 +900,19 @@ class CoreTuiApp:
         )
 
     def _border_status(self) -> str:
-        """`<spinner> working` while a run is active; idle borders stay clean."""
-        if not self._run_active:
+        """`<spinner> working` while a run or active tool is running; idle borders stay clean."""
+        if not self._run_active and not self._active_tools:
             return ""
         spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
-        label = "cancelling" if self._cancel_pending else "working · Esc to interrupt"
+        if self._active_tools:
+            first_tool = next(iter(self._active_tools.values()))
+            label = f"running {first_tool.tool_name}" if len(self._active_tools) == 1 else f"running {len(self._active_tools)} tools"
+            if self._cancel_pending:
+                label = f"cancelling {first_tool.tool_name}"
+            else:
+                label += " · Esc to interrupt"
+        else:
+            label = "cancelling" if self._cancel_pending else "working · Esc to interrupt"
         return f"{spinner} {label}" if spinner else label
 
     def _drain_events(self) -> None:
@@ -860,6 +931,9 @@ class CoreTuiApp:
                 continue  # a result for another session can never commit rows here
 
             kind = frame.get("kind")
+            if isinstance(kind, str) and kind.startswith("artifact_"):
+                self._handle_artifact_event(frame)
+                continue
             if not self._stream_ready and kind in ("stream_head", "stream_event", "server_restart", "error"):
                 # A frame on a not-ready stream means a (re)connection was just
                 # established: run the one reconciliation path. The worker
@@ -1144,13 +1218,19 @@ class CoreTuiApp:
                 # announced restart and a silent drop share one path — and no
                 # blocking request ever runs on this UI thread.
                 self.status_line = "Reconnecting…"
+                if isinstance(self.active_overlay, InteractiveArtifactViewer):
+                    self.active_overlay.connection_notice = "Core restarted/reconnecting; immutable source identity retained."
             elif kind == "error":
                 rows_to_commit.extend(_prefixed_rows("Error: event stream:", str(frame.get("error") or "Stream stopped"), self.styles, slot="error"))
+                if isinstance(self.active_overlay, InteractiveArtifactViewer):
+                    self.active_overlay.connection_notice = f"Core connection error: {frame.get('error') or 'stream stopped'}"
 
         if rows_to_commit:
             self.terminal.commit_rows(rows_to_commit)
 
     def _handle_stream_event(self, event: StreamEvent, rows: list[str]) -> None:
+        if event.session_id != self.session_id:
+            return  # Reject wrong-session events immediately without advancing this session's cursor
         committed = self._session_cursors.get(self.session_id, 0)
         if event.sequence <= committed:
             return  # Settled ledger: never replay already committed events
@@ -1170,16 +1250,30 @@ class CoreTuiApp:
         ):
             if isinstance(entry.content, ProviderTurnResult):
                 self._settle_stream(payload)
-            include_header = True
-            if isinstance(entry.content, TranscriptTool):
-                # The live header (TOOL_INTENT) and this settled block share one
-                # invocation id: pop it so the header commits exactly once.
+            content = entry.content
+            if isinstance(content, TranscriptTool):
                 invocation = payload.get("invocation_id")
-                if isinstance(invocation, str) and invocation:
-                    include_header = invocation not in self._tool_headers
-                    self._tool_headers.discard(invocation)
-                self._record_tool_artifact(entry.content)
-            rows.extend(_content_rows(entry.content, self.terminal.width, self.styles, include_tool_header=include_header))
+                active = None
+                if isinstance(invocation, str) and invocation in self._active_tools:
+                    tool_entry = self._active_tools[invocation]
+                    if (
+                        event.session_id == tool_entry.session_id
+                        and event.run_id == tool_entry.run_id
+                        and event.revision_id == tool_entry.revision_id
+                        and self._generation == tool_entry.generation
+                    ):
+                        active = self._active_tools.pop(invocation, None)
+                if active is not None and content.icon is None and active.icon is not None:
+                    content = TranscriptTool(
+                        content.call,
+                        content.result,
+                        interrupted=content.interrupted,
+                        batch_sequence=content.batch_sequence,
+                        deferred=content.deferred,
+                        icon=active.icon,
+                    )
+                self._record_tool_artifact(content)
+            rows.extend(_content_rows(content, self.terminal.width, self.styles, include_tool_header=True))
         if etype in (EventType.USER_MESSAGE, EventType.RUN_RESUMED):
             self._run_active = True
             self.status_line = ""
@@ -1191,18 +1285,45 @@ class CoreTuiApp:
             if isinstance(invocation, str) and invocation and isinstance(raw_call, Mapping):
                 call = decode_tool_call(raw_call)
                 icon = _tool_icon(payload.get("icon"))
-                if invocation not in self._tool_headers:
-                    self._tool_headers.add(invocation)
-                    rows.extend(
-                        render_tool_call(
-                            _safe(call.tool_name or "tool"),
-                            json_safe(call.arguments),
-                            self.terminal.width,
-                            self.styles,
-                            icon=icon,
-                        )
-                    )
+                self._active_tools[invocation] = ActiveToolProgress(
+                    invocation_id=invocation,
+                    tool_name=_safe(call.tool_name or "tool"),
+                    icon=icon,
+                    start_time=time.monotonic(),
+                    session_id=event.session_id,
+                    run_id=event.run_id,
+                    revision_id=event.revision_id,
+                    generation=self._generation,
+                )
+                self._run_active = True
+        elif etype == EventType.TOOL_PROGRESS:
+            invocation = payload.get("invocation_id")
+            raw_progress = payload.get("progress")
+            if isinstance(invocation, str) and invocation in self._active_tools and isinstance(raw_progress, Mapping):
+                active = self._active_tools[invocation]
+                if (
+                    event.session_id == active.session_id
+                    and self._generation == active.generation
+                    and event.run_id == active.run_id
+                    and event.revision_id == active.revision_id
+                ):
+                    text = raw_progress.get("text")
+                    stream_name = str(raw_progress.get("stream", "stdout"))
+                    if isinstance(text, str) and text:
+                        cols = max(1, self.terminal.width)
+                        rows_budget = max(1, getattr(self.terminal, "height", 24))
+                        active.append_chunk(stream_name, text, cols=cols, rows=rows_budget)
         elif etype in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
+            invocation = payload.get("invocation_id")
+            if isinstance(invocation, str) and invocation in self._active_tools:
+                tool_entry = self._active_tools[invocation]
+                if (
+                    event.session_id == tool_entry.session_id
+                    and event.run_id == tool_entry.run_id
+                    and event.revision_id == tool_entry.revision_id
+                    and self._generation == tool_entry.generation
+                ):
+                    self._active_tools.pop(invocation, None)
             if entry is None or not isinstance(entry.content, TranscriptTool):
                 self._record_tool_artifact(payload)
         elif etype == EventType.PROVIDER_PROGRESS:
@@ -1226,7 +1347,11 @@ class CoreTuiApp:
             # explicit-only, so activation never fetches or renders them.
             to_revision_id = str(payload.get("to_revision_id") or "")
             overlay = self.active_overlay
-            dropped = overlay is not None and getattr(overlay, "revision_id", "") != to_revision_id
+            if isinstance(overlay, InteractiveArtifactViewer):
+                overlay.mark_revision_changed(to_revision_id)
+            dropped = (
+                overlay is not None and not isinstance(overlay, InteractiveArtifactViewer) and getattr(overlay, "revision_id", "") != to_revision_id
+            )
             if dropped:
                 self._close_live_input()
                 self.active_overlay = None
@@ -1241,17 +1366,20 @@ class CoreTuiApp:
                 self._apply_gate_change(change)
         elif etype == EventType.RUN_INTERRUPTED:
             self._render_run_notice("interrupted", payload.get("reason"), rows, stop_cause=payload.get("stop_cause"))
+            self._clear_run_tools(event.session_id, event.run_id)
             for change in _gate_changes(event)[0]:
                 self._apply_gate_change(change)
             self._clear_stream()
             self._present_queued_confirmation()
         elif etype == EventType.RUN_FAILED:
             self._render_run_notice("failed", payload.get("error"), rows)
+            self._clear_run_tools(event.session_id, event.run_id)
             for change in _gate_changes(event)[0]:
                 self._apply_gate_change(change)
             self._clear_stream()
             self._present_queued_confirmation()
         elif etype == EventType.RUN_COMPLETED:
+            self._clear_run_tools(event.session_id, event.run_id)
             for change in _gate_changes(event)[0]:
                 self._apply_gate_change(change)
             self._clear_stream()
@@ -1294,89 +1422,169 @@ class CoreTuiApp:
         if out_tok is not None:
             self.cumulative_output_tokens += out_tok
 
+    def _handle_artifact_event(self, frame: Mapping[str, Any]) -> None:
+        viewer = self.active_overlay
+        if not isinstance(viewer, InteractiveArtifactViewer) or frame.get("viewer") != viewer.identity:
+            return
+        kind, request_id = frame.get("kind"), frame.get("request_id")
+        if not isinstance(request_id, int) or isinstance(request_id, bool):
+            return
+        if kind == "artifact_page":
+            page = frame.get("page")
+            if isinstance(page, ArtifactPage) and viewer.accept_page(request_id, page) and viewer.page is not None:
+                self._load_artifact_image(viewer)
+        elif kind == "artifact_error":
+            viewer.reject_page(request_id, str(frame.get("error") or "artifact page request failed"))
+        elif kind == "artifact_open":
+            viewer.finish_open(request_id, str(frame.get("message") or "external open failed"))
+        elif request_id == viewer.image_request_id and frame.get("sha256") == viewer.source.sha256:
+            sha256 = viewer.source.sha256
+            if kind == "artifact_image_progress":
+                viewer.update_image_progress(request_id, sha256, frame["received"])
+            elif kind == "artifact_image":
+                viewer.accept_image(request_id, sha256, frame["data"])
+                cached = self.terminal.cached_kitty_image(sha256)
+                if cached is not None:
+                    viewer.mark_image_cached(sha256, cached)
+            elif kind == "artifact_image_error":
+                viewer.fail_image(sha256, str(frame.get("error") or "image load failed"))
+            elif kind == "artifact_transmitted" and viewer.image_status == "transferring":
+                self._artifact_ack_deadline = (viewer.identity, sha256, time.monotonic() + 5.0)
+
     def _record_tool_artifact(self, target: Any) -> None:
-        tool_name = "tool"
-        output: Any = None
-        bounds: Any = None
         if isinstance(target, TranscriptTool):
             tool_name = target.call.tool_name or "tool"
-            output = target.result.output
-            bounds = getattr(output, "bounds", None)
+            result = encode_tool_result(target.result)
         elif isinstance(target, Mapping):
             call = target.get("call")
-            if isinstance(call, Mapping):
-                tool_name = str(call.get("tool_name") or "tool")
-            res = target.get("result")
-            if isinstance(res, Mapping):
-                output = res.get("output")
-                if isinstance(output, Mapping):
-                    bounds = output.get("bounds")
-
-        if output is None:
+            tool_name = str(call.get("tool_name") or "tool") if isinstance(call, Mapping) else "tool"
+            result = target.get("result")
+        else:
             return
-
-        is_truncated = False
-        ref = None
-        if bounds is not None:
-            if getattr(bounds, "truncated", False) or (isinstance(bounds, Mapping) and bounds.get("truncated")):
-                is_truncated = True
-            ref = getattr(bounds, "reference", None) if not isinstance(bounds, Mapping) else bounds.get("reference")
-            if ref:
-                is_truncated = True
-
-        raw_text = ""
-        if hasattr(output, "text") and isinstance(output.text, str):
-            raw_text = output.text
-        elif isinstance(output, Mapping) and "text" in output:
-            raw_text = str(output.get("text") or "")
-        elif hasattr(output, "presentation") and isinstance(output.presentation, str):
-            raw_text = output.presentation
-        elif isinstance(output, Mapping) and "presentation" in output:
-            raw_text = str(output.get("presentation") or "")
-
-        if not is_truncated and len(raw_text.splitlines()) > 8:
-            is_truncated = True
-
-        if not is_truncated:
-            return
-
-        content: str | None = None
-        artifact_id: str | None = None
-        if isinstance(ref, str):
-            artifact_id = ref[len("artifact://") :] if ref.startswith("artifact://") else ref
-        elif hasattr(ref, "sha256"):
-            artifact_id = ref.sha256
-        elif isinstance(ref, Mapping) and "sha256" in ref:
-            artifact_id = str(ref["sha256"])
-
-        reader = getattr(self.client, "read_artifact", None)
-        if artifact_id and callable(reader):
-            try:
-                page = reader(artifact_id)
-                if hasattr(page, "text"):
-                    content = page.text
-                elif isinstance(page, bytes):
-                    content = page.decode("utf-8", errors="replace")
-                elif isinstance(page, str):
-                    content = page
-            except Exception:
-                content = None
-
-        if content is None:
-            content = raw_text
-
-        self._latest_truncated_artifact = (tool_name, content)
+        if isinstance(result, Mapping):
+            sources = artifact_sources(result)
+            if sources:
+                self._latest_tool_artifacts = (tool_name, sources)
 
     def _show_truncated_output(self) -> None:
-        if self._latest_truncated_artifact is not None:
-            title, content = self._latest_truncated_artifact
-            self.active_overlay = InteractiveMarkdown(
-                MarkdownViewData(content=content),
-                revision_id=self._displayed_revision(),
-                title=f"Tool Output: {title}",
+        if self._latest_tool_artifacts is None:
+            self.terminal.commit_rows(
+                [
+                    self.styles.fg(
+                        "warning",
+                        "No immutable tool artifact is available; inline content is not a full-source fallback.",
+                    )
+                ]
             )
-        else:
-            self.terminal.commit_rows([self.styles.fg("warning", "No truncated tool output to expand.")])
+            return
+        title, sources = self._latest_tool_artifacts
+        self._close_live_input()
+        viewer = InteractiveArtifactViewer(
+            sources, revision_id=self._displayed_revision(), session_id=self.session_id, title=f"Tool artifacts: {title}"
+        )
+        self.active_overlay = viewer
+        self._load_artifact_page(viewer, 0)
+
+    def _artifact_context(self, viewer: InteractiveArtifactViewer) -> dict[str, object]:
+        return {"viewer": viewer.identity, "session_id": self.session_id, "generation": self._generation}
+
+    def _artifact_cancelled(self, viewer: InteractiveArtifactViewer, sha256: str) -> bool:
+        return (
+            self._stop_event.is_set() or self.active_overlay is not viewer or viewer.session_id != self.session_id or viewer.source.sha256 != sha256
+        )
+
+    def _load_artifact_page(self, viewer: InteractiveArtifactViewer, offset: int) -> None:
+        request_id = viewer.begin_loading(offset)
+        sha256 = viewer.source.sha256
+        context = self._artifact_context(viewer)
+
+        def worker() -> None:
+            try:
+                page = self.client.read_artifact(sha256, offset=offset)
+                self.event_queue.put({**context, "kind": "artifact_page", "request_id": request_id, "page": page})
+            except Exception as exc:
+                self.event_queue.put({**context, "kind": "artifact_error", "request_id": request_id, "error": str(exc)})
+
+        threading.Thread(target=worker, daemon=True, name="ArtifactPage").start()
+
+    def _load_artifact_image(self, viewer: InteractiveArtifactViewer) -> None:
+        if not viewer.is_png or viewer.image_status != "unavailable":
+            return
+        sha256 = viewer.source.sha256
+        cached = self.terminal.cached_kitty_image(sha256)
+        if cached is not None:
+            viewer.mark_image_cached(sha256, cached)
+            return
+        if not self.terminal.kitty_graphics_supported:
+            viewer.fail_image(sha256, "Kitty Graphics probe not confirmed; O explicitly opens a fetched original copy.")
+            return
+        if self.terminal.cell_pixel_size is None:
+            viewer.fail_image(sha256, "Terminal did not report pixel/cell geometry; O explicitly opens a fetched original copy.")
+            return
+        request_id = viewer.begin_image_load()
+        context = self._artifact_context(viewer)
+
+        def worker() -> None:
+            try:
+                data = read_artifact_bytes(
+                    self.client,
+                    sha256,
+                    progress=lambda received: self.event_queue.put(
+                        {
+                            **context,
+                            "kind": "artifact_image_progress",
+                            "request_id": request_id,
+                            "sha256": sha256,
+                            "received": received,
+                        }
+                    ),
+                    cancelled=lambda: self._artifact_cancelled(viewer, sha256),
+                )
+                dimensions = png_dimensions(data)
+                if dimensions is None:
+                    raise ValueError("PNG artifact has no valid IHDR geometry")
+                self.event_queue.put({**context, "kind": "artifact_image", "request_id": request_id, "sha256": sha256, "data": data})
+                if self._artifact_cancelled(viewer, sha256):
+                    return
+                self.terminal.upload_kitty_png(sha256, data, dimensions)
+                self.event_queue.put({**context, "kind": "artifact_transmitted", "request_id": request_id, "sha256": sha256})
+            except InterruptedError:
+                return
+            except Exception as exc:
+                self.event_queue.put({**context, "kind": "artifact_image_error", "request_id": request_id, "sha256": sha256, "error": str(exc)})
+
+        threading.Thread(target=worker, daemon=True, name="ArtifactImage").start()
+
+    def _open_artifact(self, viewer: InteractiveArtifactViewer) -> None:
+        request_id = viewer.begin_open()
+        sha256 = viewer.source.sha256
+        media_type = viewer.media_type.split(";", 1)[0]
+        context = self._artifact_context(viewer)
+
+        def worker() -> None:
+            path: Path | None = None
+            try:
+                data = read_artifact_bytes(self.client, sha256, cancelled=lambda: self._artifact_cancelled(viewer, sha256))
+                suffix = mimetypes.guess_extension(media_type) or ".bin"
+                fd, filename = tempfile.mkstemp(prefix=f"{sha256}-", suffix=suffix, dir=self._artifact_exports.name)
+                path = Path(filename)
+                with os.fdopen(fd, "wb") as target:
+                    target.write(data)
+                if self._artifact_cancelled(viewer, sha256):
+                    path.unlink(missing_ok=True)
+                    return
+                if not webbrowser.open_new_tab(path.as_uri()):
+                    raise RuntimeError("No external viewer accepted the immutable temporary copy")
+                message = f"Opened original copy: {path.as_uri()} (removed when this TUI closes)"
+            except InterruptedError:
+                return
+            except Exception as exc:
+                if path is not None:
+                    path.unlink(missing_ok=True)
+                message = f"External open failed: {exc}; source remains artifact://{sha256}"
+            self.event_queue.put({**context, "kind": "artifact_open", "request_id": request_id, "message": message})
+
+        threading.Thread(target=worker, daemon=True, name="ArtifactOpen").start()
 
     def _render_run_notice(self, status: str, detail: object, rows: list[str], *, stop_cause: object = None) -> None:
         if status == "failed":
@@ -1450,11 +1658,21 @@ class CoreTuiApp:
             self._stream_reasoning.clear()
             self._stream_dispatch = None
 
+    def _clear_run_tools(self, session_id: str, run_id: str | None = None) -> None:
+        to_remove = [
+            inv_id
+            for inv_id, tool in self._active_tools.items()
+            if tool.session_id == session_id and (run_id is None or tool.run_id is None or tool.run_id == run_id)
+        ]
+        for inv_id in to_remove:
+            self._active_tools.pop(inv_id, None)
+
     def _clear_stream(self) -> None:
         self._stream_buffers.clear()
         self._stream_reasoning.clear()
         self._stream_dispatch = None
-        self._run_active = False
+        if not self._active_tools:
+            self._run_active = False
         self._cancel_pending = False
         self.status_line = ""
 
@@ -1530,6 +1748,13 @@ class CoreTuiApp:
     def _process_input(self) -> None:
         now = time.monotonic()
         chunk = self.terminal.read_bytes(timeout=0.001)
+        for reply in self.terminal.drain_kitty_replies():
+            viewer = self.active_overlay
+            if isinstance(viewer, InteractiveArtifactViewer) and viewer.source.sha256 == reply.sha256:
+                if reply.message != "OK":
+                    viewer.fail_image(reply.sha256, f"Kitty {reply.operation} rejected image: {reply.message}")
+                elif reply.operation == "upload":
+                    viewer.mark_image_uploaded(reply.sha256)
         if self.terminal.eof:
             self.running = False
             return
@@ -1657,6 +1882,12 @@ class CoreTuiApp:
             self.active_overlay = None
             self.status_line = ""
             self._present_queued_confirmation()
+            return
+        if isinstance(self.active_overlay, InteractiveArtifactViewer):
+            if outcome.get("action") == "page":
+                self._load_artifact_page(self.active_overlay, int(outcome["offset"]))
+            elif outcome.get("action") == "open":
+                self._open_artifact(self.active_overlay)
             return
 
         if isinstance(self.active_overlay, InteractiveConfirmation):
@@ -2432,6 +2663,9 @@ class CoreTuiApp:
         nothing that was already settled in A; in-flight results from the
         previous session are dropped by the generation/session guard.
         """
+        if isinstance(self.active_overlay, InteractiveArtifactViewer):
+            self.terminal.commit_rows([self.styles.fg("warning", f"Artifact viewer closed on session switch: {self.active_overlay.source.uri}")])
+        self._artifact_ack_deadline = None
         self._generation += 1
         while True:
             try:
@@ -2443,12 +2677,12 @@ class CoreTuiApp:
         self.active_overlay = None
         self.queued_confirmations.clear()
         self._gates = GateState()
-        self._tool_headers.clear()
+        self._active_tools.clear()
         self._clear_stream()
         self.latest_input_tokens = None
         self.cumulative_input_tokens = 0
         self.cumulative_output_tokens = 0
-        self._latest_truncated_artifact = None
+        self._latest_tool_artifacts = None
         # A new stream is about to start: its first frame reconciles.
         self._stream_ready = False
         self.status_line = ""
@@ -2919,6 +3153,31 @@ class CoreTuiApp:
             rows = self.pending_approval.render_rows(width, self.styles)
             frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *footer_rows), cursor=None)
             self.terminal.paint_frame(frame)
+        elif isinstance(self.active_overlay, InteractiveArtifactViewer):
+            viewer = self.active_overlay
+            deadline = self._artifact_ack_deadline
+            if (
+                deadline is not None
+                and deadline[:2] == (viewer.identity, viewer.source.sha256)
+                and viewer.image_status == "transferring"
+                and time.monotonic() >= deadline[2]
+            ):
+                viewer.fail_image(viewer.source.sha256, "Kitty upload acknowledgement timed out; no terminal image success was observed.")
+                self._artifact_ack_deadline = None
+            available = max(1, self.terminal.height - len(footer_rows))
+            rows = viewer.render_rows(width, self.styles, max_rows=available)
+            placement_id = self.terminal.kitty_placement_id(viewer.source.sha256)
+            placement = (
+                viewer.image_placement(
+                    max_columns=width,
+                    max_rows=max(0, available - viewer.image_row),
+                    cell_pixels=self.terminal.cell_pixel_size,
+                    placement_id=placement_id,
+                )
+                if placement_id is not None
+                else None
+            )
+            self.terminal.paint_frame(TuiFrame(chrome_rows=(*rows, *footer_rows), image=placement))
         elif self.active_overlay is not None:
             overlay_rows = (
                 self.active_overlay.render_rows(width, self.styles, max_rows=max(6, getattr(self.terminal, "height", 24) - len(footer_rows)))
@@ -2937,10 +3196,56 @@ class CoreTuiApp:
                 border_status=self._border_status(),
             )
             cursor = self.composer.cursor_position
-            live = self._live_stream_rows(width)
             popup = list(self.composer.completion_rows(max_rows=max(1, min(6, available - len(composer_rows)))))
             live_space = max(0, available - len(composer_rows) - len(popup))
-            live = live[-live_space:] if live_space else []
+            live: list[str] = []
+            if live_space > 0:
+                tools = list(self._active_tools.values())
+                num_tools = len(tools)
+                if num_tools > 0:
+                    spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
+                    if num_tools > live_space:
+                        tool_pairs = [(t.tool_name, max(0.0, time.monotonic() - t.start_time)) for t in tools]
+                        summary_rows = render_active_tools_summary(tool_pairs, width, self.styles, spinner=spinner)
+                        live.extend(summary_rows)
+                        remaining = max(0, live_space - len(live))
+                        tools_to_show = tools[-remaining:] if remaining > 0 else []
+                        for t in tools_to_show:
+                            elapsed = max(0.0, time.monotonic() - t.start_time)
+                            live.extend(
+                                render_active_tool(
+                                    t.tool_name,
+                                    elapsed,
+                                    [],
+                                    width,
+                                    self.styles,
+                                    icon=t.icon,
+                                    spinner=spinner,
+                                    max_tail_rows=0,
+                                )
+                            )
+                    else:
+                        remaining_tail_space = live_space - num_tools
+                        for index, t in enumerate(tools):
+                            elapsed = max(0.0, time.monotonic() - t.start_time)
+                            is_latest = index == num_tools - 1
+                            tail_budget = remaining_tail_space if is_latest else 0
+                            live_tail = t.visible_tail(tail_budget) if tail_budget > 0 else []
+                            live.extend(
+                                render_active_tool(
+                                    t.tool_name,
+                                    elapsed,
+                                    live_tail,
+                                    width,
+                                    self.styles,
+                                    icon=t.icon,
+                                    spinner=spinner,
+                                    max_tail_rows=tail_budget,
+                                )
+                            )
+                else:
+                    stream_rows = self._live_stream_rows(width)
+                    live = stream_rows[-live_space:] if stream_rows else []
             if cursor is not None and (live or popup):
                 row, column = cursor
                 cursor = (row + len(live) + len(popup), column)

@@ -10,6 +10,9 @@ import { useTranslation } from "react-i18next";
 import { CoreClient, CoreApiError } from "../lib/core/client";
 import type { CommandCatalog } from "../lib/core/client";
 import type {
+  ArtifactPage,
+  ArtifactReference,
+  ToolResult,
   HealthStatus,
   FormField,
   Icon,
@@ -119,83 +122,449 @@ function toolExecutionCueKey(
   return null;
 }
 
+type ArtifactSource = {
+  label: string;
+  sha256: string;
+  reference?: ArtifactReference;
+};
+
+function artifactSources(result: ToolResult): ArtifactSource[] {
+  const sources: ArtifactSource[] = [];
+  const seen = new Set<string>();
+  const add = (label: string, value: unknown): boolean => {
+    let sha256: string | undefined;
+    let reference: ArtifactReference | undefined;
+    if (typeof value === "string" && value.startsWith("artifact://")) {
+      sha256 = value.slice(11);
+    } else if (value !== null && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      if (
+        typeof record.sha256 === "string" &&
+        Number.isSafeInteger(record.bytes) &&
+        (record.bytes as number) >= 0 &&
+        typeof record.media_type === "string"
+      ) {
+        sha256 = record.sha256;
+        reference = value as ArtifactReference;
+      }
+    }
+    if (!sha256 || !/^[0-9a-f]{64}$/.test(sha256)) return false;
+    if (!seen.has(sha256)) {
+      sources.push({ label, sha256, reference });
+      seen.add(sha256);
+    }
+    return true;
+  };
+  add("Original output source", result.output.bounds?.reference);
+  const visit = (value: unknown, path: string) => {
+    if (add(path, value)) return;
+    if (Array.isArray(value))
+      value.forEach((child, index) => visit(child, `${path}[${index}]`));
+    else if (value !== null && typeof value === "object")
+      Object.entries(value).forEach(([name, child]) =>
+        visit(child, `${path}.${name}`),
+      );
+  };
+  visit(result.body, "Result body");
+  add("Complete structured result JSON", result.result_reference);
+  return sources;
+}
+
+function decodeArtifactText(
+  data: Uint8Array,
+  carry: Uint8Array,
+  eof: boolean,
+): { text: string; carry: Uint8Array } {
+  let bytes = data;
+  if (carry.length) {
+    bytes = new Uint8Array(carry.length + data.length);
+    bytes.set(carry);
+    bytes.set(data, carry.length);
+  }
+  let end = bytes.length;
+  if (!eof && end) {
+    let start = end - 1;
+    while (start >= 0 && (bytes[start] & 0xc0) === 0x80) start--;
+    const lead = bytes[start];
+    const length =
+      lead >= 0xc2 && lead <= 0xdf
+        ? 2
+        : lead >= 0xe0 && lead <= 0xef
+          ? 3
+          : lead >= 0xf0 && lead <= 0xf4
+            ? 4
+            : 1;
+    if (start >= 0 && end - start < length) end = start;
+  }
+  return {
+    text: new TextDecoder("utf-8", { fatal: true }).decode(
+      bytes.subarray(0, end),
+    ),
+    carry: bytes.slice(end),
+  };
+}
+
+function ArtifactViewer({
+  client,
+  source,
+  revisionId,
+  coreStatus,
+}: {
+  client: CoreClient;
+  source: ArtifactSource;
+  revisionId: string;
+  coreStatus: string;
+}) {
+  const [initialRevision] = useState(revisionId);
+  const [offsets, setOffsets] = useState([0]);
+  const [index, setIndex] = useState(0);
+  const [reload, setReload] = useState(0);
+  const [pageResult, setPageResult] = useState<{
+    client: CoreClient;
+    sha256: string;
+    offset: number;
+    reload: number;
+    page: ArtifactPage | null;
+    text: string | null;
+    error: string | null;
+  } | null>(null);
+  const [reference, setReference] = useState<ArtifactReference | null>(
+    source.reference ?? null,
+  );
+  const metadata = useRef<ArtifactReference | null>(source.reference ?? null);
+  const decoderStates = useRef(
+    new Map<number, Uint8Array>([[0, new Uint8Array()]]),
+  );
+  const firstPage = useRef<ArtifactPage | null>(null);
+  const [firstPageReady, setFirstPageReady] = useState(false);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [imageProgress, setImageProgress] = useState<string>("");
+  const [imageDimensions, setImageDimensions] = useState<string>("");
+  const offset = offsets[index];
+  const mediaType = reference?.media_type ?? "application/octet-stream";
+  const isImage = mediaType.startsWith("image/");
+  const currentPageResult =
+    pageResult?.client === client &&
+    pageResult.sha256 === source.sha256 &&
+    pageResult.offset === offset &&
+    pageResult.reload === reload
+      ? pageResult
+      : null;
+  const page = currentPageResult?.page ?? null;
+  const text = currentPageResult?.text ?? null;
+  const error = currentPageResult?.error ?? null;
+  const loading = currentPageResult === null;
+
+  useEffect(() => {
+    let cancelled = false;
+    client
+      .readArtifact(source.sha256, { offset })
+      .then((next) => {
+        if (cancelled) return;
+        if (offset === 0) {
+          firstPage.current = next;
+          setFirstPageReady(true);
+        }
+        if (
+          metadata.current &&
+          (metadata.current.bytes !== next.artifact.bytes ||
+            metadata.current.media_type !== next.artifact.media_type)
+        )
+          throw new Error("Immutable artifact metadata changed between pages");
+        metadata.current = next.artifact;
+        setReference(next.artifact);
+        const media = next.artifact.media_type.split(";", 1)[0];
+        let decodedText: string | null = null;
+        let decodeError: string | null = null;
+        if (
+          media.startsWith("text/") ||
+          media === "application/json" ||
+          media.endsWith("+json") ||
+          media === "application/xml"
+        ) {
+          const carry = decoderStates.current.get(offset);
+          if (!carry)
+            throw new Error("UTF-8 page boundary state is unavailable");
+          try {
+            const decoded = decodeArtifactText(next.data, carry, next.eof);
+            decoderStates.current.set(
+              offset + next.data.byteLength,
+              decoded.carry,
+            );
+            decodedText = decoded.text;
+          } catch (failure) {
+            decodeError = `Source bytes are not valid UTF-8: ${String(failure)}. Raw bytes are shown in hex.`;
+          }
+        }
+        setPageResult({
+          client,
+          sha256: source.sha256,
+          offset,
+          reload,
+          page: next,
+          text: decodedText,
+          error: decodeError,
+        });
+      })
+      .catch((failure: unknown) => {
+        if (!cancelled) {
+          setPageResult({
+            client,
+            sha256: source.sha256,
+            offset,
+            reload,
+            page: null,
+            text: null,
+            error: String(failure),
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, source.sha256, offset, reload]);
+
+  useEffect(() => {
+    if (!isImage || !firstPageReady) return;
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    void (async () => {
+      const parts: ArrayBuffer[] = [];
+      let cursor = 0;
+      let reference: ArtifactReference | null = null;
+      while (!cancelled) {
+        const next =
+          cursor === 0 && firstPage.current
+            ? firstPage.current
+            : await client.readArtifact(source.sha256, { offset: cursor });
+        if (cancelled) return;
+        if (
+          reference &&
+          (next.artifact.bytes !== reference.bytes ||
+            next.artifact.media_type !== reference.media_type)
+        )
+          throw new Error("Immutable image metadata changed between pages");
+        reference = next.artifact;
+        parts.push(next.data.buffer as ArrayBuffer);
+        cursor += next.data.byteLength;
+        setImageProgress(
+          `Image pages: bytes [0, ${cursor}) / ${reference.bytes} · EOF ${next.eof ? "yes" : "no"}`,
+        );
+        if (next.eof) {
+          const blob = new Blob(parts, { type: reference.media_type });
+          const digest = Array.from(
+            new Uint8Array(
+              await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()),
+            ),
+            (byte) => byte.toString(16).padStart(2, "0"),
+          ).join("");
+          if (digest !== source.sha256)
+            throw new Error(
+              "Image bytes do not match the immutable SHA-256 identity",
+            );
+          // Chromium can fire img.onload with geometry but transparent pixels for
+          // a broken PNG. Force an actual raster decode before claiming a view.
+          const decoded = await createImageBitmap(blob);
+          decoded.close();
+          if (cancelled) return;
+          objectUrl = URL.createObjectURL(blob);
+          setImageUrl(objectUrl);
+          return;
+        }
+      }
+    })().catch((failure: unknown) => {
+      if (!cancelled) setImageError(String(failure));
+    });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [client, source.sha256, isImage, firstPageReady]);
+
+  const nextPage = () => {
+    if (!page || page.eof || !page.data.byteLength) return;
+    const nextOffset = page.offset + page.data.byteLength;
+    setOffsets((previous) => [...previous.slice(0, index + 1), nextOffset]);
+    setIndex(index + 1);
+  };
+  const hex =
+    page && text === null && !isImage
+      ? Array.from({ length: Math.ceil(page.data.length / 16) }, (_, row) => {
+          const start = row * 16;
+          return `${(page.offset + start).toString(16).padStart(8, "0")}  ${Array.from(page.data.subarray(start, start + 16), (byte) => byte.toString(16).padStart(2, "0")).join(" ")}`;
+        }).join("\n")
+      : null;
+  return (
+    <section
+      aria-label="Artifact viewer"
+      className="mt-2 border-t border-neutral-700 p-2 text-neutral-200"
+    >
+      <div className="select-all break-all">
+        URI: artifact://{source.sha256}
+      </div>
+      <div>Media type: {mediaType}</div>
+      <div>Core status: {coreStatus}</div>
+      {initialRevision !== revisionId && (
+        <div role="status">
+          Revision changed to {revisionId}; this immutable workspace source is
+          retained.
+        </div>
+      )}
+      <div data-testid="artifact-range">
+        {page
+          ? `Page ${index + 1} · bytes [${page.offset}, ${page.offset + page.data.byteLength}) / ${page.artifact.bytes} · EOF ${page.eof ? "yes" : "no"}`
+          : `Page ${index + 1} · requested offset ${offset}${loading ? " · loading…" : " · not loaded"}`}
+      </div>
+      <div className="flex gap-3 my-1">
+        <button
+          type="button"
+          disabled={loading || index === 0}
+          onClick={() => setIndex(index - 1)}
+        >
+          Back
+        </button>
+        <button
+          type="button"
+          disabled={loading || !page || page.eof}
+          onClick={nextPage}
+        >
+          Next
+        </button>
+        <button
+          type="button"
+          disabled={loading}
+          onClick={() => setReload((value) => value + 1)}
+        >
+          Reload page
+        </button>
+      </div>
+      {error && (
+        <div role="alert" className="text-red-400">
+          Artifact page load/decoding error: {error}
+        </div>
+      )}
+      {page && !isImage && (
+        <pre
+          data-testid="artifact-page-content"
+          className="whitespace-pre-wrap break-words max-h-96 overflow-auto"
+        >
+          {text ?? hex}
+        </pre>
+      )}
+      {isImage && (
+        <div>
+          <div>{imageProgress || "Fetching immutable image pages…"}</div>
+          {imageError && (
+            <div role="alert" className="text-red-400">
+              Image load/decode failed: {imageError}
+            </div>
+          )}
+          {imageUrl && !imageError && (
+            <img
+              src={imageUrl}
+              alt={`${source.label} artifact`}
+              className="max-w-full max-h-[70vh] object-contain"
+              onLoad={(event) =>
+                setImageDimensions(
+                  `${event.currentTarget.naturalWidth}×${event.currentTarget.naturalHeight}`,
+                )
+              }
+              onError={() =>
+                setImageError("Browser rejected the original image bytes")
+              }
+            />
+          )}
+          {imageDimensions && <div>Decoded image: {imageDimensions}</div>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ToolResultCard({
   evSequence,
   tool,
+  client,
+  sessionId,
+  revisionId,
+  coreStatus,
   t,
 }: {
   evSequence: number;
   tool: TranscriptTool;
+  client: CoreClient;
+  sessionId: string;
+  revisionId: string;
+  coreStatus: string;
   t: (key: string) => string;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [sourceIndex, setSourceIndex] = useState(0);
   const result = tool.result;
+  const sources = useMemo(() => artifactSources(result), [result]);
+  const source = sources[sourceIndex];
   const toolName =
     tool.call.tool_name ?? result.tool_name ?? t("core.unknownLabel");
   const text = toolOutputText(result.output);
   const failed = tool.interrupted === true || result.status === "error";
-  const errorMsg = result.error ?? null;
   const cueKey = toolExecutionCueKey(result.execution);
-
-  const bounds = result.output?.bounds;
-  const isTruncated = Boolean(bounds?.truncated || bounds?.reference);
-  const fullText = result.output?.type === "text" ? result.output.text : text;
-  const refId =
-    typeof bounds?.reference === "string"
-      ? bounds.reference
-      : bounds?.reference?.sha256;
-
   return (
     <div
-      key={evSequence}
       data-testid={`event-${evSequence}`}
-      className={`text-xs font-mono px-3 py-1.5 rounded border max-w-2xl ${
-        failed
-          ? "text-red-400 bg-red-950/20 border-red-900/50"
-          : "text-emerald-400 bg-emerald-950/20 border-emerald-900/50"
-      }`}
+      className={`text-xs font-mono px-3 py-1.5 rounded border max-w-2xl ${failed ? "text-red-400 bg-red-950/20 border-red-900/50" : "text-emerald-400 bg-emerald-950/20 border-emerald-900/50"}`}
     >
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div>
           {failed ? "✖" : "✔"} {toolIconText(tool.icon, "▷")}{" "}
           {t("core.toolLabel")} [{toolName}]:{" "}
-          {failed ? (errorMsg ?? text) : text}
+          {failed ? (result.error ?? text) : text}
           {cueKey && <span className="text-neutral-400"> ({t(cueKey)})</span>}
-          {isTruncated && (
+          {result.output.bounds?.truncated && (
             <span
               data-testid={`event-${evSequence}-truncated-tag`}
-              className="ml-1.5 px-1 py-0.5 rounded text-[10px] bg-amber-950/50 text-amber-400 border border-amber-800/50"
+              className="text-amber-400"
             >
-              [truncated
-              {refId
-                ? `: ${refId.startsWith("artifact://") ? refId.slice(11, 19) : refId.slice(0, 8)}…`
-                : ""}
-              ]
+              {" "}
+              [selected inline content; source available separately]
             </span>
           )}
         </div>
-        {isTruncated && (
+        {sources.length > 0 && (
           <button
             type="button"
             data-testid={`event-${evSequence}-toggle-output`}
-            onClick={() => setExpanded((prev) => !prev)}
-            className="text-[11px] underline text-cyan-400 hover:text-cyan-300 ml-auto cursor-pointer focus:outline-none"
+            onClick={() => setExpanded(!expanded)}
+            className="underline text-cyan-400"
           >
-            {expanded ? "Hide full output" : "View full output"}
+            {expanded ? "Hide artifacts" : "View artifacts"}
           </button>
         )}
       </div>
-      {isTruncated && expanded && (
-        <div
-          data-testid={`event-${evSequence}-full-output`}
-          className="mt-2 pt-2 border-t border-neutral-700/50 text-neutral-200 whitespace-pre-wrap break-words max-h-96 overflow-y-auto font-mono text-[11px] bg-neutral-900/60 p-2 rounded"
-        >
-          {refId && (
-            <div className="text-[10px] text-neutral-400 mb-1 select-all font-mono">
-              Artifact: {refId}
-            </div>
-          )}
-          {fullText}
+      {expanded && source && (
+        <div data-testid={`event-${evSequence}-full-output`}>
+          <label>
+            Artifact source{" "}
+            <select
+              aria-label="Artifact source"
+              value={sourceIndex}
+              onChange={(event) => setSourceIndex(Number(event.target.value))}
+              className="bg-neutral-900"
+            >
+              {sources.map((item, index) => (
+                <option key={item.sha256} value={index}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <ArtifactViewer
+            key={`${sessionId}:${source.sha256}`}
+            client={client}
+            source={source}
+            revisionId={revisionId}
+            coreStatus={coreStatus}
+          />
         </div>
       )}
     </div>
@@ -1897,9 +2266,13 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
               if (content?.kind === "tool") {
                 return (
                   <ToolResultCard
-                    key={ev.sequence}
+                    key={`${renderedClientKey}:${activeSessionId}:${ev.sequence}`}
                     evSequence={ev.sequence}
                     tool={content.body}
+                    client={client}
+                    sessionId={activeSessionId}
+                    revisionId={catalog.revisionId}
+                    coreStatus={statusMessage}
                     t={t}
                   />
                 );

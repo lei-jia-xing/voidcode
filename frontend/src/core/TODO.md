@@ -1,3 +1,3 @@
 # TODO
 
-- [x] Web tool 结果卡消费 `OutputBounds.reference` 并提供只读分页查看；当前 `CoreApp` 只呈 `toolOutputText(result.output)`，未暴露完整 artifact 或截断边界。保留已提交事件不变；参考 OMP [tool 输出展开](https://github.com/can1357/oh-my-pi/blob/45c35e40c46166dc726ccc52f5d27f40f2449f99/packages/coding-agent/src/modes/controllers/input-controller.ts#L2722-L2760)。
+- [x] Web `ToolResultCard` pages immutable `OutputBounds.reference` artifacts and decodes real binary image pages instead of expanding the same preview text. Authenticated Chromium against real Core/RPC passed the actual immutable PNG scene (1 passed/14.1s; 346,073 bytes, 384×300); the current browser screenshot was inspected. Page errors, source identity and byte ranges remain explicit.

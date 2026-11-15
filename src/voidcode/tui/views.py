@@ -115,6 +115,60 @@ def render_tool_call(name: str, arguments: object, width: int, styles: Styles | 
     return rows
 
 
+def render_active_tool(
+    name: str,
+    elapsed_seconds: float,
+    output_tail: list[str],
+    width: int,
+    styles: Styles | None = None,
+    icon: Icon | None = None,
+    spinner: str = "",
+    max_tail_rows: int = 0,
+) -> list[str]:
+    """Active tool in the Live region: 1-row header + allocated tail display rows."""
+    resolved = _styles_arg(styles)
+    glyph = render_icon(icon)
+    spin = f"{spinner} " if spinner else ""
+    elapsed = f" [{elapsed_seconds:.1f}s]"
+    header = Text.assemble(
+        (spin, resolved.style("accent")),
+        ((f"{glyph} " if glyph else ""), resolved.style("dim")),
+        (escape_terminal_controls(name), resolved.style("text", bold=True)),
+        (elapsed, resolved.style("dim")),
+    )
+    header_lines = render_lines(header, width, theme=markdown_theme(), color_system=resolved.color_system)
+    rows = [header_lines[0]] if header_lines else []
+
+    if max_tail_rows > 0 and output_tail:
+        tail_display_rows: list[str] = []
+        for line in output_tail:
+            styled_line = Text(f"  │ {escape_terminal_controls(line)}", style=resolved.style("dim"))
+            wrapped = render_lines(styled_line, width, theme=markdown_theme(), color_system=resolved.color_system)
+            tail_display_rows.extend(wrapped)
+        if tail_display_rows:
+            rows.extend(tail_display_rows[-max_tail_rows:])
+    return rows
+
+
+def render_active_tools_summary(
+    tools: list[tuple[str, float]],
+    width: int,
+    styles: Styles | None = None,
+    spinner: str = "",
+) -> list[str]:
+    """Compact summary when active tools exceed available viewport rows."""
+    resolved = _styles_arg(styles)
+    spin = f"{spinner} " if spinner else ""
+    names = ", ".join(f"{name} [{elapsed:.0f}s]" for name, elapsed in tools)
+    text = Text.assemble(
+        (spin, resolved.style("accent")),
+        (f"running {len(tools)} tools: ", resolved.style("text", bold=True)),
+        (escape_terminal_controls(names), resolved.style("dim")),
+    )
+    lines = render_lines(text, width, theme=markdown_theme(), color_system=resolved.color_system)
+    return [lines[0]] if lines else []
+
+
 def render_tool_result(
     result: Mapping[str, Any],
     width: int,
@@ -122,14 +176,14 @@ def render_tool_result(
     *,
     interrupted: bool = False,
 ) -> list[str]:
-    """Bound successful output previews; preserve failures and source bounds."""
+    """Preserve selected inline output; immutable source paging is a separate action."""
     resolved = _styles_arg(styles)
     failed = interrupted or result.get("status") == "error"
     rows: list[str] = []
     output = result.get("output")
     body = ""
     suffix = ""
-    truncated_bound = False
+    artifact_available = result.get("result_reference") is not None
     if isinstance(output, Mapping):
         output_type = str(output.get("type", ""))
         if output_type == "text":
@@ -137,11 +191,13 @@ def render_tool_result(
             body = str(presentation) if isinstance(presentation, str) and presentation else str(output.get("text", ""))
         elif output_type == "attachment":
             body = f"[{output.get('mime') or 'attachment'}]"
+        elif output_type == "empty":
+            presentation = output.get("presentation")
+            body = presentation if isinstance(presentation, str) else ""
         bounds = output.get("bounds")
         if isinstance(bounds, Mapping):
             flags = [key for key in ("truncated", "partial") if bounds.get(key) is True]
-            if bounds.get("truncated") is True:
-                truncated_bound = True
+            artifact_available = artifact_available or bounds.get("reference") is not None
             source = bounds.get("source")
             note = ", ".join([*flags, str(source)] if isinstance(source, str) and source else flags)
             if note:
@@ -165,13 +221,9 @@ def render_tool_result(
             theme=markdown_theme(),
             color_system=resolved.color_system,
         )
-        rows.extend(preview[:8])
-        if len(preview) > 8:
-            rows.append(resolved.fg("dim", f"… {len(preview) - 8} more lines · Ctrl+O / /tui output to expand"))
-        elif truncated_bound:
-            rows.append(resolved.fg("dim", "… output truncated · Ctrl+O / /tui output to expand"))
-    elif truncated_bound:
-        rows.append(resolved.fg("dim", "… output truncated · Ctrl+O / /tui output to expand"))
+        rows.extend(preview)
+    if artifact_available:
+        rows.append(resolved.fg("dim", "Artifacts: Ctrl+O / /tui output · original sources and structured result are separate"))
     if suffix:
         rows.append(resolved.fg("dim", suffix))
     return rows
