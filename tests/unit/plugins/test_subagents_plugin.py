@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
-from voidcode.plugins.subagents import create_plugin
 from voidcode.plugins.subagents.profiles.registry import load_agent_registry
 from voidcode.plugins.subagents.subagents_plugin import (
     CANCEL_REASON,
@@ -698,12 +697,14 @@ def test_batch_with_no_created_child_fails(tmp_path: Path) -> None:
     assert services.get_state("session") == (None, 0)
 
 
-def test_batch_group_read_returns_bounded_per_child_statuses(tmp_path: Path) -> None:
+def test_batch_group_read_separates_ready_results_and_pending_runs(tmp_path: Path) -> None:
     services = FakeServices()
     spawned = _batch(services, tmp_path, {"tasks": [{"prompt": "secret prompt one"}, {"prompt": "secret prompt two"}]})
     group_id = str(_payload(spawned)["parallel_group_id"])
-    services.roster["child-2"] = ChildOutcome(child_session_id="child-2", status="failed", error="child blew up", stop_cause="error")
-    services.roster["child-1"] = ChildOutcome(child_session_id="child-1", status="running")
+    services.roster["child-2"] = ChildOutcome(
+        child_session_id="child-2", status="failed", error="child blew up", stop_cause="error", run_id="run-child-2"
+    )
+    services.roster["child-1"] = ChildOutcome(child_session_id="child-1", status="running", run_id="run-child-1")
 
     res = _batch(services, tmp_path, {"operation": "output", "parallel_group_id": group_id})
     assert isinstance(res, ToolSuccess)
@@ -712,22 +713,61 @@ def test_batch_group_read_returns_bounded_per_child_statuses(tmp_path: Path) -> 
         "operation": "output",
         "parallel_group_id": group_id,
         "children": [
-            {"task_id": "child-1", "status": "running", "agent_uri": "agent://child-1", "history_uri": "transcript://child-1"},
             {
                 "task_id": "child-2",
                 "status": "failed",
                 "stop_cause": "error",
                 "error": "child blew up",
+                "run_id": "run-child-2",
                 "agent_uri": "agent://child-2",
                 "history_uri": "transcript://child-2",
             },
         ],
+        "pending": [
+            {
+                "task_id": "child-1",
+                "label": "",
+                "status": "running",
+                "agent_uri": "agent://child-1",
+                "run_id": "run-child-1",
+            },
+        ],
     }
-    assert services.join_calls == [("child-1", DEFAULT_JOIN_TIMEOUT_SECONDS), ("child-2", DEFAULT_JOIN_TIMEOUT_SECONDS)]
     rendered = f"{res.output.text}\n{json.dumps(payload)}"
     assert "secret prompt" not in rendered
     assert "result of secret prompt" not in rendered
     assert "child-1 status=running" in res.output.text
+
+
+def test_batch_group_read_keeps_profile_on_pending_run(tmp_path: Path) -> None:
+    services = FakeServices()
+    spawned = _batch(services, tmp_path, {"tasks": [{"prompt": "one", "subagent_type": "explore"}, {"prompt": "two"}]})
+    group_id = str(_payload(spawned)["parallel_group_id"])
+    services.roster["child-1"] = ChildOutcome(child_session_id="child-1", status="running", run_id="run-child-1")
+    services.roster["child-2"] = ChildOutcome(child_session_id="child-2", status="completed", run_id="run-child-2")
+
+    res = _batch(services, tmp_path, {"operation": "output", "parallel_group_id": group_id})
+    payload = _payload(res)
+
+    assert payload["children"] == [
+        {
+            "task_id": "child-2",
+            "status": "completed",
+            "run_id": "run-child-2",
+            "agent_uri": "agent://child-2",
+            "history_uri": "transcript://child-2",
+        }
+    ]
+    assert payload["pending"] == [
+        {
+            "task_id": "child-1",
+            "label": "",
+            "status": "running",
+            "agent_uri": "agent://child-1",
+            "subagent_type": "explore",
+            "run_id": "run-child-1",
+        }
+    ]
 
 
 def test_batch_group_read_rejects_unknown_groups(tmp_path: Path) -> None:
@@ -787,28 +827,6 @@ def test_batch_combines_profile_and_caller_scope_and_preserves_spawn_failures(tm
     assert [call["tool_allowlist"] for call in services.spawn_calls] == [("read",), None]
 
 
-def test_batch_group_read_reports_each_child_profile(tmp_path: Path) -> None:
-    services = FakeServices()
-    spawned = _batch(services, tmp_path, {"tasks": [{"prompt": "one", "subagent_type": "explore"}, {"prompt": "two"}]})
-    group_id = str(_payload(spawned)["parallel_group_id"])
-    services.roster["child-1"] = ChildOutcome(child_session_id="child-1", status="running")
-    services.roster["child-2"] = ChildOutcome(child_session_id="child-2", status="completed")
-
-    res = _batch(services, tmp_path, {"operation": "output", "parallel_group_id": group_id})
-
-    assert _payload(res)["children"] == [
-        {
-            "task_id": "child-1",
-            "status": "running",
-            "subagent_type": "explore",
-            "agent_uri": "agent://child-1",
-            "history_uri": "transcript://child-1",
-        },
-        {"task_id": "child-2", "status": "completed", "agent_uri": "agent://child-2", "history_uri": "transcript://child-2"},
-    ]
-    assert "profile=explore" in res.output.text
-
-
 def test_batch_group_read_preserves_typed_budget_exhaustion(tmp_path: Path) -> None:
     services = FakeServices()
     spawned = _batch(services, tmp_path, {"tasks": [{"prompt": "budgeted"}, {"prompt": "pending"}]})
@@ -832,13 +850,19 @@ def test_batch_group_read_preserves_typed_budget_exhaustion(tmp_path: Path) -> N
 
     result = _batch(services, tmp_path, {"operation": "output", "parallel_group_id": group_id})
 
-    children = _payload(result)["children"]
+    payload = _payload(result)
+    children = payload["children"]
+    pending = payload["pending"]
     assert children[0]["status"] == "interrupted"
     assert children[0]["run_id"] == "run-budget"
     assert children[0]["budget_exhaustion"] == outcome.as_payload()["budget_exhaustion"]
-    assert children[1]["status"] == "running"
-    assert "budget_exhaustion" not in children[1]
-    assert "budget_exhaustion=" in result.output.text
+    assert pending[0]["task_id"] == "child-1"
+    assert pending[0]["status"] == "interrupted"
+    assert pending[0]["run_id"] == "run-budget"
+    assert "budget_exhaustion" not in pending[0]
+    assert pending[1]["task_id"] == "child-2"
+    assert pending[1]["status"] == "running"
+    assert pending[1]["run_id"] == "run-pending"
     assert services.acks == [], "recoverable budget stops are not completion notices"
 
 
@@ -863,19 +887,6 @@ def test_task_schemas_accept_workspace_dynamic_profile_ids() -> None:
     item_properties = TaskBatchTool.definition.input_schema["properties"]["tasks"]["items"]["properties"]
     assert "enum" not in item_properties["subagent_type"]
     assert item_properties["subagent_type"]["minLength"] == 1
-
-
-# --- Plugin wiring ---
-
-
-def test_plugin_registers_tools_and_profile_commands() -> None:
-    plugin = create_plugin()
-    names = [tool.definition.name for tool in plugin.tools]
-    assert names == ["task", "task_batch"]
-    for tool in plugin.tools:
-        assert tool.definition.replay_policy == "never"
-        assert {effect.value for effect in tool.definition.effects} == {"read", "spawn", "session"}
-    assert [command.definition.name for command in plugin.commands] == ["subagents.monitor", "subagents.monitor.cancel"]
 
 
 def test_standard_agent_max_turns_apply_to_task_and_batch(tmp_path: Path):

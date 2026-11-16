@@ -24,6 +24,7 @@ from voidcode.sdk.services import (
     ArtifactPage,
     ArtifactReference,
     BackgroundActionStatus,
+    BudgetExhaustion,
     CancelSubtreeReceipt,
     ChildOutcome,
     ChildSendReceipt,
@@ -40,7 +41,7 @@ from voidcode.sdk.services import (
 )
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage
 
-from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
+from .events import CHILD_MESSAGE_OWNER, CHILD_OUTCOME_RECEIPT_OWNER, EventType
 from .history_renderer import render_history_page
 
 if TYPE_CHECKING:
@@ -720,7 +721,7 @@ class RuntimeServices:
         )
 
     def acknowledge_child_completion(self, child_session_id: str, run_id: str) -> None:
-        from .storage.store import StagedCancellation
+        from .storage.store import ObserverReceiptRecord, StagedCancellation
 
         lease = self._active_lease()
         self._check_hook("acknowledge_child_completion")
@@ -728,22 +729,183 @@ class RuntimeServices:
             raise ValueError("child_session_id must be a non-empty string")
         if not isinstance(run_id, str) or not run_id:
             raise ValueError("run_id must be a non-empty string")
-        child_record = self._runtime.require_store().session(child_session_id)
+        store = self._runtime.require_store()
+        child_record = store.session(child_session_id)
         if child_record.parent_session_id != lease.session_id:
             raise PermissionError("child session does not belong to this parent session")
+        callback = self._runtime.acknowledge_child_completion_callback
+        if callback is None:
+            raise RuntimeError("child completion acknowledgment is unavailable")
         with self._runtime.lease_lock:
             if lease.internal_restricted:
                 raise PermissionError("Cannot acknowledge child completions from a read-only service lease")
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
+        receipt = callback(lease.owner, lease.session_id, child_session_id, run_id)
+        if receipt is None:
+            return
+        if not isinstance(receipt, Mapping):
+            raise RuntimeError("runtime returned a malformed child completion receipt")
+        source_session_id = receipt.get("source_session_id")
+        event_sequence = receipt.get("event_sequence")
+        notice_id = receipt.get("notice_id")
+        if not isinstance(source_session_id, str) or source_session_id != lease.session_id or type(event_sequence) is not int or event_sequence <= 0:
+            raise RuntimeError("runtime returned an invalid terminal child fact identity")
+        if notice_id is not None and (not isinstance(notice_id, str) or not notice_id):
+            raise RuntimeError("runtime returned an invalid child completion notice identity")
+        with self._runtime.lease_lock:
+            if lease.revoked:
+                raise PermissionError("Service lease was revoked")
             lease.op_counter += 1
-            lease.staged_cancellations.append(
-                StagedCancellation(
-                    owner=CHILD_MESSAGE_OWNER,
-                    continuation_id=child_completion_notice_id(lease.session_id, child_session_id, run_id),
-                    ordinal=lease.op_counter,
+            lease.staged_observer_receipts.append(
+                ObserverReceiptRecord(
+                    session_id=source_session_id,
+                    event_sequence=event_sequence,
+                    owner=CHILD_OUTCOME_RECEIPT_OWNER,
                 )
             )
+            if notice_id is not None:
+                lease.staged_cancellations.append(
+                    StagedCancellation(
+                        owner=CHILD_MESSAGE_OWNER,
+                        continuation_id=notice_id,
+                        ordinal=lease.op_counter,
+                        only_if_unstarted=True,
+                    )
+                )
+
+    def wait_children(self, child_session_ids: Sequence[str]) -> tuple[ChildOutcome, ...]:
+        from .storage.store import ObserverReceiptRecord, StagedCancellation
+
+        lease = self._active_lease()
+        self._check_hook("wait_children")
+        if lease.internal_restricted:
+            raise PermissionError("Cannot consume child outcomes from a read-only service lease")
+        if isinstance(child_session_ids, (str, bytes)) or not isinstance(child_session_ids, Sequence):
+            raise ValueError("child_session_ids must be a sequence of session ids")
+        child_ids: list[str] = []
+        seen_children: set[str] = set()
+        store = self._runtime.require_store()
+        for child_session_id in child_session_ids:
+            if not isinstance(child_session_id, str) or not child_session_id:
+                raise ValueError("child_session_ids must contain non-empty strings")
+            if child_session_id in seen_children:
+                continue
+            child = store.session(child_session_id)
+            if child.parent_session_id != lease.session_id:
+                raise PermissionError("child session does not belong to this parent session")
+            seen_children.add(child_session_id)
+            child_ids.append(child_session_id)
+        callback = self._runtime.wait_children_callback
+        if callback is None:
+            raise RuntimeError("child outcome waiting is unavailable")
+        deliveries = callback(lease.owner, lease.session_id, tuple(child_ids), self._runtime.admission_guard(lease))
+        if not isinstance(deliveries, tuple):
+            raise RuntimeError("runtime returned a malformed child outcome delivery set")
+
+        parsed: list[tuple[ChildOutcome, str, int, str | None]] = []
+        seen_facts: set[tuple[str, int]] = set()
+        for delivery in deliveries:
+            if not isinstance(delivery, Mapping):
+                raise RuntimeError("runtime returned a malformed child outcome delivery")
+            raw_outcome = delivery.get("outcome")
+            if not isinstance(raw_outcome, Mapping):
+                raise RuntimeError("runtime returned a malformed child outcome")
+            child_session_id = raw_outcome.get("child_session_id")
+            if not isinstance(child_session_id, str) or child_session_id not in seen_children:
+                raise RuntimeError("runtime returned an outcome for an unselected child")
+            run_id = raw_outcome.get("run_id")
+            if not isinstance(run_id, str) or not run_id:
+                raise RuntimeError("runtime returned a child outcome without its exact run identity")
+            raw_status = raw_outcome.get("status")
+            if raw_status not in ("completed", "failed", "interrupted", "cancelled"):
+                raise RuntimeError(f"runtime returned a non-settled child outcome: {raw_status!r}")
+
+            def optional_text(name: str, outcome: Mapping[str, object] = raw_outcome) -> str | None:
+                value = outcome.get(name)
+                if value is not None and not isinstance(value, str):
+                    raise RuntimeError(f"runtime returned an invalid child outcome field: {name}")
+                return value
+
+            def optional_count(name: str, outcome: Mapping[str, object] = raw_outcome) -> int | None:
+                value = outcome.get(name)
+                if value is not None and (type(value) is not int or value < 0):
+                    raise RuntimeError(f"runtime returned an invalid child outcome field: {name}")
+                return value
+
+            history_sha256 = optional_text("history_sha256")
+            history_bytes = optional_count("history_bytes")
+            history_truncated = raw_outcome.get("history_truncated", False)
+            if type(history_truncated) is not bool:
+                raise RuntimeError("runtime returned an invalid child history truncation flag")
+            if (history_sha256 is None) != (history_bytes is None):
+                raise RuntimeError("runtime returned incomplete child history metadata")
+            output_sha256 = optional_text("output_sha256")
+            output_bytes = optional_count("output_bytes")
+            output_preview = optional_text("output_preview")
+            if (output_sha256 is None) != (output_bytes is None):
+                raise RuntimeError("runtime returned incomplete child output artifact metadata")
+            budget_payload = raw_outcome.get("budget_exhaustion")
+            budget_exhaustion = BudgetExhaustion.from_payload(budget_payload)
+            if budget_payload is not None and budget_exhaustion is None:
+                raise RuntimeError("runtime returned malformed child budget exhaustion facts")
+            outcome = ChildOutcome(
+                child_session_id=child_session_id,
+                status=raw_status,  # type: ignore[arg-type]
+                output=optional_text("output"),
+                error=optional_text("error"),
+                stop_cause=optional_text("stop_cause"),
+                run_id=run_id,
+                history_sha256=history_sha256,
+                history_bytes=history_bytes,
+                history_truncated=history_truncated,
+                output_preview=output_preview,
+                output_sha256=output_sha256,
+                output_bytes=output_bytes,
+                budget_exhaustion=budget_exhaustion,
+            )
+            source_session_id = delivery.get("source_session_id")
+            event_sequence = delivery.get("event_sequence")
+            notice_id = delivery.get("notice_id")
+            if (
+                not isinstance(source_session_id, str)
+                or source_session_id not in (lease.session_id, child_session_id)
+                or type(event_sequence) is not int
+                or event_sequence <= 0
+            ):
+                raise RuntimeError("runtime returned an invalid child result event identity")
+            if notice_id is not None and (not isinstance(notice_id, str) or not notice_id):
+                raise RuntimeError("runtime returned an invalid child completion notice identity")
+            fact_identity = (source_session_id, event_sequence)
+            if fact_identity in seen_facts:
+                raise RuntimeError("runtime returned the same child result event more than once")
+            seen_facts.add(fact_identity)
+            parsed.append((outcome, source_session_id, event_sequence, notice_id))
+
+        with self._runtime.lease_lock:
+            if lease.revoked:
+                raise PermissionError("Service lease was revoked")
+            for _outcome, source_session_id, event_sequence, notice_id in parsed:
+                lease.op_counter += 1
+                lease.staged_observer_receipts.append(
+                    ObserverReceiptRecord(
+                        session_id=source_session_id,
+                        event_sequence=event_sequence,
+                        owner=CHILD_OUTCOME_RECEIPT_OWNER,
+                        expected_run_id=_outcome.run_id if source_session_id != lease.session_id else None,
+                        require_interruption_source=source_session_id != lease.session_id,
+                    )
+                )
+                if notice_id is not None:
+                    lease.staged_cancellations.append(
+                        StagedCancellation(
+                            owner=CHILD_MESSAGE_OWNER,
+                            continuation_id=notice_id,
+                            ordinal=lease.op_counter,
+                            only_if_unstarted=True,
+                        )
+                    )
+        return tuple(outcome for outcome, _source, _sequence, _notice in parsed)
 
     def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
         from voidcode.sdk.services import BudgetExhaustion

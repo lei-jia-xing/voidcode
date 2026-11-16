@@ -15,6 +15,14 @@
   - Separate active delegation limits (not inherited root-action grants): depth 3 is a fixed Core constant checked at child reservation; `policy.max_root_children` defaults to 4 and is operator-configurable from 1–64 for the chain-wide child-session count. Workflow node concurrency is separately fixed at 8. Child output 32 KiB inline and 4 KiB notice-preview thresholds are fixed representation policies; larger output is artifact-backed, not rejected. The fixed 30-minute publication wait only bounds waiting for the parent's next commit; a durable child remains for startup recovery. The existing 256 MiB per-artifact store bound is a storage guard, not a root-action quota. None is widened by a finite root-action grant.
   - The `CHILD_INLINE_OUTPUT_BYTES` comment's “1 MiB stdio frame” justification is stale: this path carries artifact identity plus a bounded preview, and no corresponding 1 MiB stdio limit was found in the current consumer. Keep the existing threshold until its domain is separately justified; do not treat it as an output/storage maximum.
 
+## P0：首就绪 child wait 与原子结果交付
+
+- [x] `PluginServices.wait_children(child_session_ids)` 等待所选 owned child 的首个就绪 durable run 结果；复用现有 Condition 与父/子事件 cursor，不轮询、不增加 job registry。入口先 drain 每个未消费 `(child, run)` 事实，再绑定尚未结束的 reservation/current run；旧 run 可在新 follow-up 运行时按原 run id 交付，live 状态另列。
+  - Subagents 无参 `wait` 仅选择该插件在父 session 持久记录的 children。`task_batch.output` 先以 `join_child(timeout=0)` 读取当前 run，只有没有可报告结果时才 first-settled wait；返回完整 outcome/output ref 与独立 pending snapshot。分页继续使用该结果不可变 output URI + byte cursor。
+  - Wait delivery 在成功的 Core tool-result 事务内暂存精确 source session/event sequence receipt 和相应 pending-notice cancellation；只读 snapshot 不消费。有效回调返回的 `ToolFailure`（`status="error"`）也提交显式暂存的 delivery；抛出异常、invalid result 或 aborted invocation 不提交（包括 lease revocation/shutdown）。`notify_on_completion=False` 仍可从 durable facts 交付。
+  - 真实 Core proof：三个 gated child 的 first-ready、52,000 UTF-8 bytes 的 immutable URI/read/reread、去重和 reopen；窄回归覆盖 parent/child-ledger snapshot race、reservation 绑定、失败 child、approval resume、steering/cancel/shutdown、foreign-owner refusal。
+- Adjacent gap (unchanged): single-current-run `Core.join_child` still performs `Condition.wait(min(remaining, 0.2))` and SQL status checks; this first-settled wait does not fix that path. `ChildOutcome` also lacks the producer's committed `output_error`/`history_error` fields. Accepted-yield, generic peer/process waits, and top-level shared `task_batch` context remain open.
+
 ## P0：输出策略不制造新的业务 MAX
 
 - [ ] **分离原始结果、模型投影和 UI 折叠，删除层叠截断与重复载荷。**

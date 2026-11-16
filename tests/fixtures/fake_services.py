@@ -23,6 +23,7 @@ from voidcode.sdk.services import (
     ArtifactReference,
     ChildOutcome,
     ChildSendReceipt,
+    DescendantNode,
     EventView,
     PluginBudget,
     PluginServices,
@@ -82,6 +83,7 @@ class FakeServices(PluginServices):
     spawn_calls: list[dict[str, object]] = field(default_factory=list)
     spawn_failures: dict[int, str | Exception] = field(default_factory=dict)
     join_calls: list[tuple[str, float]] = field(default_factory=list)
+    wait_calls: list[tuple[str, ...]] = field(default_factory=list)
     join_status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"] = "completed"
     join_output: str | None = None
     join_error: str | None = None
@@ -339,6 +341,26 @@ class FakeServices(PluginServices):
             output=self.join_output,
             error=self.join_error,
             run_id=f"run-{child_session_id}",
+        )
+
+    def wait_children(self, child_session_ids: Sequence[str]) -> tuple[ChildOutcome, ...]:
+        selected = tuple(child_session_ids)
+        self.wait_calls.append(selected)
+        return tuple(
+            self.roster[child_id] for child_id in selected if child_id in self.roster and self.roster[child_id].status not in ("running", "waiting")
+        )
+
+    def list_descendants(self) -> tuple[DescendantNode, ...]:
+        return tuple(
+            DescendantNode(
+                session_id=child_id,
+                parent_session_id=self.session_id,
+                depth=1,
+                status=outcome.status,
+                run_id=outcome.run_id,
+                stop_cause=outcome.stop_cause,
+            )
+            for child_id, outcome in self.roster.items()
         )
 
     def acknowledge_child_completion(self, child_session_id: str, run_id: str) -> None:

@@ -16,6 +16,7 @@ provider requests. A gate wrapper never fabricates events, sequences, or results
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -31,12 +32,14 @@ from tests.fixtures.s5_plugin import write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import DELEGATION_SPAWN_BUDGET, Core
-from voidcode.core.events import child_completion_notice_id
+from voidcode.core.events import CHILD_OUTCOME_RECEIPT_OWNER, child_completion_notice_id
+from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.services import ChildOutcome, ChildSendReceipt
 
 PLUGIN_ID = "collaboration-fixture"
 ACK_TOOL = "collaboration_ack"
 PROBE_TOOL = "collaboration_probe"
+WAIT_TOOL = "collaboration_wait"
 
 _PLUGIN_CODE = '''
 """Fixture: spawn and join one child, acknowledge its completion, or park on a write probe."""
@@ -46,7 +49,15 @@ from __future__ import annotations
 import json
 
 from voidcode.sdk.plugin import Plugin
-from voidcode.sdk.tools import TextOutput, ToolDefinition, ToolEffect, ToolSuccess
+from voidcode.sdk.tools import TextOutput, ToolDefinition, ToolEffect, ToolFailure, ToolSuccess
+
+
+class FixtureBody:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def as_payload(self):
+        return self.payload
 
 
 class CollaborationTool:
@@ -56,6 +67,32 @@ class CollaborationTool:
     def invoke(self, call, *, context, services):
         if call.tool_name == "{probe}":
             return ToolSuccess(call.tool_name, TextOutput("probe ran"))
+        if call.tool_name == "{wait}":
+            action = call.arguments["action"]
+            if action == "spawn":
+                child = services.spawn_child(
+                    str(call.arguments["prompt"]),
+                    label="wait fixture",
+                    max_steps=call.arguments.get("max_steps"),
+                    notify_on_completion=False,
+                )
+                return ToolSuccess(call.tool_name, TextOutput(child), body=FixtureBody({{"child_id": child}}))
+            child_id = str(call.arguments["child_id"])
+            outcomes = services.wait_children((child_id,))
+            mode = call.arguments.get("mode", "success")
+            if mode == "raise":
+                raise RuntimeError("consumer failed after waiting")
+            if mode == "invalid":
+                return object()
+            payload = [outcome.as_payload() for outcome in outcomes]
+            if mode == "failure":
+                return ToolFailure(
+                    call.tool_name,
+                    error="consumer reported a child result",
+                    output=TextOutput("child result observed"),
+                    body=FixtureBody({{"outcomes": payload}}),
+                )
+            return ToolSuccess(call.tool_name, TextOutput(json.dumps(payload, sort_keys=True)), body=FixtureBody({{"outcomes": payload}}))
         child = services.spawn_child(str(call.arguments["prompt"]), label="delegated", notify_on_completion=True)
         outcome = services.join_child(child, timeout_seconds=30)
         if outcome.run_id is not None:
@@ -64,14 +101,13 @@ class CollaborationTool:
             call.tool_name,
             TextOutput(json.dumps({{"child": child, "status": outcome.status, "run_id": outcome.run_id}}, sort_keys=True)),
         )
-
-
 def create_plugin(config):
+    _ = config
     return Plugin(
         tools=(
             CollaborationTool(
                 ToolDefinition(
-                    name="collaboration_ack",
+                    name="{ack}",
                     description="Spawn one child, join it, and acknowledge the run it returned.",
                     input_schema={{
                         "type": "object",
@@ -90,6 +126,25 @@ def create_plugin(config):
                     effects=frozenset({{ToolEffect.WRITE}}),
                 )
             ),
+            CollaborationTool(
+                ToolDefinition(
+                    name="{wait}",
+                    description="Spawn an unnotified child or wait for its exact outcome.",
+                    input_schema={{
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {{
+                            "action": {{"type": "string", "enum": ["spawn", "wait"]}},
+                            "prompt": {{"type": "string"}},
+                            "child_id": {{"type": "string"}},
+                            "max_steps": {{"type": "integer", "minimum": 1}},
+                            "mode": {{"type": "string", "enum": ["success", "raise", "invalid", "failure"]}},
+                        }},
+                        "required": ["action"],
+                    }},
+                    effects=frozenset({{ToolEffect.READ, ToolEffect.SPAWN, ToolEffect.SESSION}}),
+                )
+            ),
         )
     )
 '''
@@ -97,7 +152,10 @@ def create_plugin(config):
 
 def _write_plugin(source: Path) -> None:
     source.mkdir(parents=True, exist_ok=True)
-    (source / "__init__.py").write_text(_PLUGIN_CODE.format(probe=PROBE_TOOL), encoding="utf-8")
+    (source / "__init__.py").write_text(
+        _PLUGIN_CODE.format(probe=PROBE_TOOL, wait=WAIT_TOOL, ack=ACK_TOOL),
+        encoding="utf-8",
+    )
 
 
 def _call(identity: str, name: str, **arguments: object) -> dict[str, object]:
@@ -170,6 +228,994 @@ def _wait_for(predicate: Callable[[], bool], *, timeout: float = 15.0, what: str
 
 def _child_facts(core: Core, parent: str) -> list[dict[str, object]]:
     return [dict(event.payload) for event in core.events_after(parent) if event.event_type == "core.child_finished"]
+
+
+def _tool_result_body(core: Core, request: Mapping[str, object], call_id: str) -> dict[str, object]:
+    messages = request.get("messages")
+    if not isinstance(messages, list):
+        raise AssertionError("provider request has no messages")
+    content = next(
+        (
+            message.get("content")
+            for message in messages
+            if isinstance(message, Mapping) and message.get("role") == "tool" and message.get("tool_call_id") == call_id
+        ),
+        None,
+    )
+    if not isinstance(content, str):
+        raise AssertionError(f"provider request has no result for tool call {call_id!r}")
+    projection = json.loads(content)
+    if not isinstance(projection, Mapping):
+        raise AssertionError(f"tool projection is not an object: {call_id!r}")
+    uri = projection.get("result_uri")
+    if not isinstance(uri, str) or not uri.startswith("artifact://"):
+        raise AssertionError(f"tool projection has no canonical result URI: {projection}")
+    digest = uri.removeprefix("artifact://")
+    chunks: list[bytes] = []
+    offset = 0
+    total: int | None = None
+    while True:
+        page = core.read_artifact(digest, offset=offset)
+        if page.offset != offset or page.artifact.sha256 != digest:
+            raise AssertionError(f"canonical result page identity changed at offset {offset}")
+        if total is None:
+            total = page.artifact.bytes
+        if page.artifact.bytes != total or (not page.data and not page.eof):
+            raise AssertionError(f"canonical result page did not advance at offset {offset}")
+        chunks.append(page.data)
+        offset += len(page.data)
+        if page.eof:
+            if offset != total:
+                raise AssertionError(f"canonical result ended at {offset} of {total} bytes")
+            break
+    canonical = b"".join(chunks)
+    if hashlib.sha256(canonical).hexdigest() != digest:
+        raise AssertionError("canonical result artifact digest does not match its URI")
+    payload = json.loads(canonical.decode("utf-8"))
+    if not isinstance(payload, Mapping):
+        raise AssertionError("canonical tool result is not an object")
+    result = decode_tool_result(payload)
+    if result.body is None:
+        raise AssertionError(f"canonical tool result has no body: {call_id!r}")
+    return dict(result.body.as_payload())
+
+
+def _last_user_text(request: Mapping[str, object]) -> str | None:
+    messages = request.get("messages")
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if isinstance(message, Mapping) and message.get("role") == "user":
+            content = message.get("content")
+            return content if isinstance(content, str) else None
+    return None
+
+
+def _last_message_role(request: Mapping[str, object]) -> str | None:
+    messages = request.get("messages")
+    if not isinstance(messages, list) or not messages or not isinstance(messages[-1], Mapping):
+        return None
+    role = messages[-1].get("role")
+    return role if isinstance(role, str) else None
+
+
+def test_wait_receipts_bind_exact_pause_then_resume_and_survive_failed_consumers_and_reopen(tmp_path: Path) -> None:
+    with _server([]) as server:
+        child_holder: dict[str, str] = {}
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            last_role = _last_message_role(request)
+            if prompt == "limited child":
+                if last_role == "user":
+                    return _turn(_call("budget-probe", PROBE_TOOL))
+                return _turn(output="resumed child result")
+            if prompt in ("create", "raise consumer", "invalid consumer", "valid failure consumer", "consume pause", "consume terminal", "reopen"):
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                if prompt == "create":
+                    arguments: dict[str, object] = {"action": "spawn", "prompt": "limited child", "max_steps": 1}
+                else:
+                    mode = (
+                        "raise"
+                        if prompt == "raise consumer"
+                        else "invalid"
+                        if prompt == "invalid consumer"
+                        else "failure"
+                        if prompt == "valid failure consumer"
+                        else "success"
+                    )
+                    arguments = {"action": "wait", "child_id": child_holder["child"], "mode": mode}
+                call_id = f"wait-{prompt.replace(' ', '-')}"
+                return _turn(_call(call_id, WAIT_TOOL, **arguments))
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        parent = core.create_session("parent").session_id
+        created = core.run("create", session_id=parent)
+        assert created.status == "completed", created.error
+        child = str(next(event.payload["child_session_id"] for event in core.store.events(parent) if event.event_type == "core.child_spawned"))
+        child_holder["child"] = child
+        paused = core.join_child(parent, child, timeout_seconds=15)
+        assert paused.status == "interrupted"
+        assert paused.run_id is not None
+        assert paused.budget_exhaustion is not None
+        assert paused.budget_exhaustion.as_payload() == {
+            "dimension": "provider_turns",
+            "source": "max_steps",
+            "limit": 1,
+            "consumed": 1,
+            "remaining": 0,
+            "continue_with": "resume_with_max_steps",
+        }
+        assert _child_facts(core, parent) == []
+        stop_event = next(event for event in core.store.events(child) if event.event_type == "core.run_interrupted")
+        assert stop_event.run_id == paused.run_id
+
+        for prompt in ("raise consumer", "invalid consumer"):
+            failed_consumer = core.run(prompt, session_id=parent)
+            assert failed_consumer.status == "completed", failed_consumer.error
+            assert not core.store.has_observer_receipt(child, stop_event.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+
+        valid_failure = core.run("valid failure consumer", session_id=parent)
+        assert valid_failure.status == "completed", valid_failure.error
+        failure_body = _tool_result_body(core, server.requests[-1], "wait-valid-failure-consumer")
+        pause_outcomes = failure_body.get("outcomes")
+        assert isinstance(pause_outcomes, list) and len(pause_outcomes) == 1
+        assert pause_outcomes[0]["run_id"] == paused.run_id
+        assert pause_outcomes[0]["budget_exhaustion"] == paused.budget_exhaustion.as_payload()
+        assert core.store.has_observer_receipt(child, stop_event.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+        repeated = core.run("consume pause", session_id=parent)
+        assert repeated.status == "completed", repeated.error
+        repeated_body = _tool_result_body(core, server.requests[-1], "wait-consume-pause")
+        assert repeated_body.get("outcomes") == []
+
+        resumed = core.resume(child, max_steps=3)
+        assert resumed.status == "completed", resumed.error
+        assert resumed.run_id != paused.run_id
+        terminal = next(event for event in core.store.events(parent) if event.event_type == "core.child_finished")
+        assert terminal.payload["run_id"] == resumed.run_id
+        assert terminal.payload["output"] == "resumed child result"
+
+        terminal_delivery = core.run("consume terminal", session_id=parent)
+        assert terminal_delivery.status == "completed", terminal_delivery.error
+        terminal_body = _tool_result_body(core, server.requests[-1], "wait-consume-terminal")
+        terminal_outcomes = terminal_body.get("outcomes")
+        assert isinstance(terminal_outcomes, list) and len(terminal_outcomes) == 1
+        assert terminal_outcomes[0]["run_id"] == resumed.run_id
+        assert "budget_exhaustion" not in terminal_outcomes[0]
+        assert core.store.has_observer_receipt(parent, terminal.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+        notice_id = child_completion_notice_id(parent, child, str(resumed.run_id))
+        assert core.store.continuation_status(notice_id) is None
+
+        core.close()
+        reopened = _open(tmp_path, server)
+        reopened.auto_drain = False
+        replay = reopened.run("reopen", session_id=parent)
+        assert replay.status == "completed", replay.error
+        replay_body = _tool_result_body(reopened, server.requests[-1], "wait-reopen")
+        assert replay_body.get("outcomes") == []
+
+
+def test_pause_receipt_commits_for_old_event_after_resume_and_restop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _server([]) as server:
+        child_holder: dict[str, str] = {}
+        child_turns = 0
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            nonlocal child_turns
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            last_role = _last_message_role(request)
+            if prompt == "limited child":
+                child_turns += 1
+                if child_turns <= 2:
+                    return _turn(_call(f"budget-probe-{child_turns}", PROBE_TOOL))
+                return _turn(output="resumed after old pause receipt")
+            if prompt == "create":
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                return _turn(_call("create-child", WAIT_TOOL, action="spawn", prompt="limited child", max_steps=1))
+            if prompt in ("deliver first pause", "deliver second pause", "deliver completion"):
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                return _turn(
+                    _call(
+                        prompt.replace(" ", "-"),
+                        WAIT_TOOL,
+                        action="wait",
+                        child_id=child_holder["child"],
+                    )
+                )
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        parent = core.create_session("parent").session_id
+        created = core.run("create", session_id=parent)
+        assert created.status == "completed", created.error
+        child = str(next(event.payload["child_session_id"] for event in core.store.events(parent) if event.event_type == "core.child_spawned"))
+        child_holder["child"] = child
+        first_pause = core.join_child(parent, child, timeout_seconds=15)
+        assert first_pause.status == "interrupted" and first_pause.run_id is not None
+        first_stop = next(event for event in core.store.events(child) if event.event_type == "core.run_interrupted")
+
+        entered = threading.Event()
+        release = threading.Event()
+        original_commit = core.store.commit_staged
+
+        def gate_commit(session_id: str, *args, **kwargs):  # type: ignore[no-untyped-def]
+            receipts = kwargs.get("observer_receipts", ())
+            if (
+                session_id == parent
+                and not entered.is_set()
+                and any(receipt.session_id == child and receipt.event_sequence == first_stop.sequence for receipt in receipts)
+            ):
+                entered.set()
+                if not release.wait(timeout=30):
+                    raise TimeoutError("parent receipt commit gate was not released")
+            return original_commit(session_id, *args, **kwargs)
+
+        monkeypatch.setattr(core.store, "commit_staged", gate_commit)
+        parent_results = []
+        parent_errors: list[str] = []
+
+        def consume_first_pause() -> None:
+            try:
+                parent_results.append(core.run("deliver first pause", session_id=parent))
+            except Exception as exc:  # noqa: BLE001 - record the actual Core invocation failure
+                parent_errors.append(f"{type(exc).__name__}: {exc}")
+
+        parent_thread = threading.Thread(target=consume_first_pause, daemon=True)
+        parent_thread.start()
+        try:
+            assert entered.wait(timeout=15), "wait delivery never reached its atomic receipt commit"
+            second_pause = core.resume(child, max_steps=1)
+            assert second_pause.status == "interrupted"
+            assert second_pause.run_id is not None and second_pause.run_id != first_pause.run_id
+            second_stop = [
+                event for event in core.store.events(child) if event.event_type == "core.run_interrupted" and event.run_id == second_pause.run_id
+            ][-1]
+            assert second_stop.sequence > first_stop.sequence
+            assert not core.store.has_observer_receipt(child, first_stop.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+        finally:
+            release.set()
+            parent_thread.join(timeout=30)
+        assert not parent_thread.is_alive(), "wait tool result commit did not finish"
+        assert not parent_errors, parent_errors
+        assert len(parent_results) == 1 and parent_results[0].status == "completed"
+        first_body = _tool_result_body(core, server.requests[-1], "deliver-first-pause")
+        first_outcomes = first_body.get("outcomes")
+        assert isinstance(first_outcomes, list) and [outcome["run_id"] for outcome in first_outcomes] == [first_pause.run_id]
+        assert core.store.has_observer_receipt(child, first_stop.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+        assert not core.store.has_observer_receipt(child, second_stop.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+
+        second_delivery = core.run("deliver second pause", session_id=parent)
+        assert second_delivery.status == "completed", second_delivery.error
+        second_body = _tool_result_body(core, server.requests[-1], "deliver-second-pause")
+        second_outcomes = second_body.get("outcomes")
+        assert isinstance(second_outcomes, list) and [outcome["run_id"] for outcome in second_outcomes] == [second_pause.run_id]
+        assert core.store.has_observer_receipt(child, second_stop.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+
+        resumed = core.resume(child, max_steps=3)
+        assert resumed.status == "completed", resumed.error
+        assert resumed.run_id is not None and resumed.run_id != second_pause.run_id
+        terminal = next(event for event in core.store.events(parent) if event.event_type == "core.child_finished")
+        assert terminal.payload["run_id"] == resumed.run_id
+        completion_delivery = core.run("deliver completion", session_id=parent)
+        assert completion_delivery.status == "completed", completion_delivery.error
+        terminal_body = _tool_result_body(core, server.requests[-1], "deliver-completion")
+        terminal_outcomes = terminal_body.get("outcomes")
+        assert isinstance(terminal_outcomes, list) and [outcome["run_id"] for outcome in terminal_outcomes] == [resumed.run_id]
+        assert core.store.has_observer_receipt(parent, terminal.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+
+
+def test_wait_rescans_completion_committed_after_parent_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _server([]) as server:
+        child_holder: dict[str, str] = {}
+        child_started = threading.Event()
+        release_child = threading.Event()
+        wait_scan_taken = threading.Event()
+        release_wait_scan = threading.Event()
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            last_role = _last_message_role(request)
+            if prompt == "gated child":
+                child_started.set()
+                if not release_child.wait(timeout=30):
+                    raise TimeoutError("child completion gate was not released")
+                return _turn(output="exact raced completion")
+            if prompt == "create":
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                return _turn(_call("create-race-child", WAIT_TOOL, action="spawn", prompt="gated child"))
+            if prompt in ("wait", "wait replay"):
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                call_id = "wait-race" if prompt == "wait" else "wait-replay"
+                return _turn(_call(call_id, WAIT_TOOL, action="wait", child_id=child_holder["child"]))
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        parent = core.create_session("parent").session_id
+        created = core.run("create", session_id=parent)
+        assert created.status == "completed", created.error
+        child = str(next(event.payload["child_session_id"] for event in core.store.events(parent) if event.event_type == "core.child_spawned"))
+        child_holder["child"] = child
+        assert child_started.wait(timeout=15), "child never reached its gated provider turn"
+        run_id = core.session(child).run_id
+        assert run_id is not None and core.session(child).status == "running"
+        parent_tip = max(event.sequence for event in core.store.events(parent))
+
+        original_events = core.store.events
+        original_registrations = core.store.child_wait_registrations
+        wait_registered = threading.Event()
+        scan_gated = False
+
+        def track_registrations(child_ids):
+            rows = original_registrations(child_ids)
+            wait_registered.set()
+            return rows
+
+        def gate_parent_snapshot(session_id: str, after_sequence: int = 0, limit: int | None = None):
+            nonlocal scan_gated
+            rows = original_events(session_id, after_sequence, limit)
+            if wait_registered.is_set() and session_id == parent and after_sequence > parent_tip and not scan_gated:
+                scan_gated = True
+                assert rows == (), rows
+                wait_scan_taken.set()
+                if not release_wait_scan.wait(timeout=30):
+                    raise TimeoutError("stale parent event snapshot gate was not released")
+            return rows
+
+        monkeypatch.setattr(core.store, "child_wait_registrations", track_registrations)
+        monkeypatch.setattr(core.store, "events", gate_parent_snapshot)
+        results: list[object] = []
+        errors: list[str] = []
+
+        def wait_for_child() -> None:
+            try:
+                results.append(core.run("wait", session_id=parent))
+            except Exception as exc:  # noqa: BLE001 - preserve the real Core invocation failure
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        parent_thread = threading.Thread(target=wait_for_child, daemon=True)
+        parent_thread.start()
+        try:
+            assert wait_scan_taken.wait(timeout=15), "wait did not reach the empty parent-event snapshot"
+            release_child.set()
+            outcome = core.join_child(parent, child, timeout_seconds=15)
+            assert outcome.status == "completed" and outcome.run_id == run_id
+            terminal = next(
+                event for event in core.store.events(parent) if event.event_type == "core.child_finished" and event.payload.get("run_id") == run_id
+            )
+            release_wait_scan.set()
+            parent_thread.join(timeout=30)
+            assert not parent_thread.is_alive(), "wait did not return after the committed child fact"
+            assert not errors, errors
+            assert len(results) == 1 and getattr(results[0], "status", None) == "completed", results
+            body = _tool_result_body(core, server.requests[-1], "wait-race")
+            outcomes = body.get("outcomes")
+            assert isinstance(outcomes, list) and len(outcomes) == 1, body
+            assert outcomes[0]["child_session_id"] == child and outcomes[0]["run_id"] == run_id, outcomes[0]
+            assert outcomes[0]["output"] == "exact raced completion", outcomes[0]
+            assert core.store.has_observer_receipt(parent, terminal.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+
+            replay = core.run("wait replay", session_id=parent)
+            assert replay.status == "completed", replay.error
+            replay_body = _tool_result_body(core, server.requests[-1], "wait-replay")
+            assert replay_body.get("outcomes") == []
+        finally:
+            release_child.set()
+            release_wait_scan.set()
+            parent_thread.join(timeout=30)
+
+
+def test_wait_binds_reserved_run_after_child_event_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _server([]) as server:
+        child_holder: dict[str, str] = {}
+        driver_entered = threading.Event()
+        release_driver = threading.Event()
+        child_provider_started = threading.Event()
+        release_child_provider = threading.Event()
+        child_scan_taken = threading.Event()
+        release_child_scan = threading.Event()
+        condition_waiting = threading.Event()
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            last_role = _last_message_role(request)
+            if prompt == "reserved child":
+                child_provider_started.set()
+                if not release_child_provider.wait(timeout=30):
+                    raise TimeoutError("reserved child provider gate was not released")
+                return _turn(output="reserved run completed")
+            if prompt == "create":
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                return _turn(_call("create-reserved-child", WAIT_TOOL, action="spawn", prompt="reserved child"))
+            if prompt in ("wait", "wait replay"):
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                call_id = "wait-reserved" if prompt == "wait" else "wait-reserved-replay"
+                return _turn(_call(call_id, WAIT_TOOL, action="wait", child_id=child_holder["child"]))
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        original_run_child = core._delegation._run_child
+
+        def gate_child_driver(*args, **kwargs):
+            driver_entered.set()
+            if not release_driver.wait(timeout=30):
+                raise TimeoutError("reserved child driver gate was not released")
+            return original_run_child(*args, **kwargs)
+
+        monkeypatch.setattr(core._delegation, "_run_child", gate_child_driver)
+        parent = core.create_session("parent").session_id
+        created = core.run("create", session_id=parent)
+        assert created.status == "completed", created.error
+        child = str(next(event.payload["child_session_id"] for event in core.store.events(parent) if event.event_type == "core.child_spawned"))
+        child_holder["child"] = child
+        assert driver_entered.wait(timeout=15), "child reservation never reached its gated driver"
+        assert core.session(child).run_id is None
+
+        original_events = core.store.events
+        original_registrations = core.store.child_wait_registrations
+        wait_registered = threading.Event()
+        child_event_reads = 0
+
+        def track_registrations(child_ids):
+            rows = original_registrations(child_ids)
+            wait_registered.set()
+            return rows
+
+        def gate_child_snapshot(session_id: str, after_sequence: int = 0, limit: int | None = None):
+            nonlocal child_event_reads
+            rows = original_events(session_id, after_sequence, limit)
+            if wait_registered.is_set() and session_id == child:
+                child_event_reads += 1
+                if child_event_reads == 2:
+                    assert rows == (), rows
+                    child_scan_taken.set()
+                    if not release_child_scan.wait(timeout=30):
+                        raise TimeoutError("reserved child event snapshot gate was not released")
+            return rows
+
+        monkeypatch.setattr(core.store, "child_wait_registrations", track_registrations)
+        monkeypatch.setattr(core.store, "events", gate_child_snapshot)
+        condition = core._delegation._child_finished_lock
+        original_condition_wait = condition.wait
+
+        def observe_condition_wait(timeout: float | None = None):
+            condition_waiting.set()
+            return original_condition_wait(timeout)
+
+        monkeypatch.setattr(condition, "wait", observe_condition_wait)
+        results: list[object] = []
+        errors: list[str] = []
+
+        def wait_for_child() -> None:
+            try:
+                results.append(core.run("wait", session_id=parent))
+            except Exception as exc:  # noqa: BLE001 - preserve the real Core invocation failure
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        parent_thread = threading.Thread(target=wait_for_child, daemon=True)
+        parent_thread.start()
+        try:
+            assert child_scan_taken.wait(timeout=15), "wait did not reach the empty child-event snapshot"
+            release_driver.set()
+            assert child_provider_started.wait(timeout=15), "reserved child did not start its captured run"
+            run_id = core.session(child).run_id
+            assert run_id is not None and core.session(child).status == "running"
+            release_child_scan.set()
+            assert condition_waiting.wait(timeout=15), "wait failed to bind and await the newly started child run"
+            assert parent_thread.is_alive()
+            release_child_provider.set()
+            parent_thread.join(timeout=30)
+            assert not parent_thread.is_alive(), "wait did not return after the bound child run completed"
+            assert not errors, errors
+            assert len(results) == 1 and getattr(results[0], "status", None) == "completed", results
+            body = _tool_result_body(core, server.requests[-1], "wait-reserved")
+            outcomes = body.get("outcomes")
+            assert isinstance(outcomes, list) and len(outcomes) == 1, body
+            assert outcomes[0]["child_session_id"] == child and outcomes[0]["run_id"] == run_id, outcomes[0]
+            assert outcomes[0]["output"] == "reserved run completed", outcomes[0]
+        finally:
+            release_driver.set()
+            release_child_scan.set()
+            release_child_provider.set()
+            parent_thread.join(timeout=30)
+
+
+def test_core_cancel_wakes_waiting_sdk_child_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _server([]) as server:
+        child_holder: dict[str, str] = {}
+        child_started = threading.Event()
+        release_child = threading.Event()
+        condition_waiting = threading.Event()
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            last_role = _last_message_role(request)
+            if prompt == "blocked child":
+                child_started.set()
+                if not release_child.wait(timeout=30):
+                    raise TimeoutError("blocked child provider gate was not released")
+                return _turn(output="cancelled child must not be reported as completed")
+            if prompt == "create":
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                return _turn(_call("create-blocked-child", WAIT_TOOL, action="spawn", prompt="blocked child"))
+            if prompt == "wait":
+                if last_role == "tool":
+                    return _turn(output="wait ended")
+                return _turn(_call("wait-cancelled", WAIT_TOOL, action="wait", child_id=child_holder["child"]))
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        parent = core.create_session("parent").session_id
+        created = core.run("create", session_id=parent)
+        assert created.status == "completed", created.error
+        child = str(next(event.payload["child_session_id"] for event in core.store.events(parent) if event.event_type == "core.child_spawned"))
+        child_holder["child"] = child
+        assert child_started.wait(timeout=15)
+
+        condition = core._delegation._child_finished_lock
+        original_wait = condition.wait
+
+        def observe_condition_wait(timeout: float | None = None):
+            condition_waiting.set()
+            return original_wait(timeout)
+
+        monkeypatch.setattr(condition, "wait", observe_condition_wait)
+        results: list[object] = []
+        errors: list[str] = []
+
+        def wait_for_child() -> None:
+            try:
+                results.append(core.run("wait", session_id=parent))
+            except Exception as exc:  # noqa: BLE001 - preserve the real Core cancellation result
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        parent_thread = threading.Thread(target=wait_for_child, daemon=True)
+        parent_thread.start()
+        try:
+            assert condition_waiting.wait(timeout=15), "SDK child wait did not block on the running child"
+            core.cancel("cancel blocked child wait", cause="user_stop")
+            parent_thread.join(timeout=15)
+            assert not parent_thread.is_alive(), "Core.cancel did not wake the SDK child wait"
+            assert not errors, errors
+            assert len(results) == 1 and getattr(results[0], "status", None) == "interrupted", results
+            assert getattr(results[0], "stop_cause", None) == "user_stop", results
+        finally:
+            release_child.set()
+            parent_thread.join(timeout=30)
+        cancelled = core.join_child(parent, child, timeout_seconds=15)
+        assert cancelled.status == "cancelled"
+        stop_event = next(event for event in core.store.events(child) if event.event_type == "core.run_interrupted")
+        assert not core.store.has_observer_receipt(child, stop_event.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+
+
+def test_wait_refuses_foreign_child_before_result_leak(tmp_path: Path) -> None:
+    with _server([]) as server:
+        child_holder: dict[str, str] = {}
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            last_role = _last_message_role(request)
+            if prompt == "secret child":
+                return _turn(output="secret foreign result")
+            if prompt == "create":
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                return _turn(_call("create-secret-child", WAIT_TOOL, action="spawn", prompt="secret child"))
+            if prompt == "foreign selection":
+                if last_role == "tool":
+                    return _turn(output="foreign request rejected")
+                return _turn(_call("foreign-wait", WAIT_TOOL, action="wait", child_id=child_holder["child"]))
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        owner = core.create_session("owner").session_id
+        created = core.run("create", session_id=owner)
+        assert created.status == "completed", created.error
+        child = str(next(event.payload["child_session_id"] for event in core.store.events(owner) if event.event_type == "core.child_spawned"))
+        child_holder["child"] = child
+        completed = core.join_child(owner, child, timeout_seconds=15)
+        assert completed.status == "completed" and completed.output == "secret foreign result"
+        terminal = next(event for event in core.store.events(owner) if event.event_type == "core.child_finished")
+
+        foreign_parent = core.create_session("foreign").session_id
+        result = core.run("foreign selection", session_id=foreign_parent)
+        assert result.status == "completed", result.error
+        request = server.requests[-1]
+        messages = request.get("messages")
+        assert isinstance(messages, list), request
+        tool_content = next(
+            (
+                message.get("content")
+                for message in messages
+                if isinstance(message, Mapping) and message.get("role") == "tool" and message.get("tool_call_id") == "foreign-wait"
+            ),
+            None,
+        )
+        assert isinstance(tool_content, str), "foreign wait produced no model-visible tool result"
+        projection = json.loads(tool_content)
+        assert isinstance(projection, Mapping), projection
+        assert projection.get("status") == "error", projection
+        assert "secret foreign result" not in tool_content
+        assert not core.store.has_observer_receipt(owner, terminal.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+
+
+def test_user_steering_wins_over_racing_child_completion_without_consuming_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _server([]) as server:
+        child_holder: dict[str, str] = {}
+        child_started = threading.Event()
+        release_child = threading.Event()
+        condition_waiting = threading.Event()
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            last_role = _last_message_role(request)
+            if prompt == "racing child":
+                child_started.set()
+                if not release_child.wait(timeout=30):
+                    raise TimeoutError("racing child provider gate was not released")
+                return _turn(output="completion must survive steering")
+            if prompt == "create":
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                return _turn(_call("create-racing-child", WAIT_TOOL, action="spawn", prompt="racing child"))
+            if prompt == "wait":
+                if last_role == "tool":
+                    return _turn(output="wait interrupted")
+                return _turn(_call("wait-steering", WAIT_TOOL, action="wait", child_id=child_holder["child"]))
+            if prompt == "user steering":
+                return _turn(output="steering processed")
+            if prompt == "wait replay":
+                if last_role == "tool":
+                    return _turn(output="child delivered")
+                return _turn(_call("wait-steering-replay", WAIT_TOOL, action="wait", child_id=child_holder["child"]))
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        created = core.run("create", session_id=parent)
+        assert created.status == "completed", created.error
+        child = str(next(event.payload["child_session_id"] for event in core.store.events(parent) if event.event_type == "core.child_spawned"))
+        child_holder["child"] = child
+        assert child_started.wait(timeout=15)
+        run_id = core.session(child).run_id
+        assert run_id is not None
+
+        condition = core._delegation._child_finished_lock
+        original_wait = condition.wait
+
+        def observe_condition_wait(timeout: float | None = None):
+            condition_waiting.set()
+            return original_wait(timeout)
+
+        monkeypatch.setattr(condition, "wait", observe_condition_wait)
+        results: list[object] = []
+        errors: list[str] = []
+
+        def wait_for_child() -> None:
+            try:
+                results.append(core.run("wait", session_id=parent))
+            except Exception as exc:  # noqa: BLE001 - preserve the real Core invocation failure
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        parent_thread = threading.Thread(target=wait_for_child, daemon=True)
+        parent_thread.start()
+        try:
+            assert condition_waiting.wait(timeout=15), "SDK wait did not block before steering"
+            queued = core.run("user steering", session_id=parent)
+            assert queued.status == "queued", queued
+            release_child.set()
+            parent_thread.join(timeout=30)
+            assert not parent_thread.is_alive(), "queued steering did not wake the SDK wait"
+            assert not errors, errors
+            assert len(results) == 1, results
+            terminal = next(
+                event for event in core.store.events(parent) if event.event_type == "core.child_finished" and event.payload.get("run_id") == run_id
+            )
+            assert not core.store.has_observer_receipt(parent, terminal.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+
+            replay = core.run("wait replay", session_id=parent)
+            assert replay.status == "completed", replay.error
+            body = _tool_result_body(core, server.requests[-1], "wait-steering-replay")
+            outcomes = body.get("outcomes")
+            assert isinstance(outcomes, list) and len(outcomes) == 1, body
+            assert outcomes[0]["child_session_id"] == child and outcomes[0]["run_id"] == run_id, outcomes[0]
+            assert outcomes[0]["output"] == "completion must survive steering", outcomes[0]
+            assert core.store.has_observer_receipt(parent, terminal.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+        finally:
+            release_child.set()
+            parent_thread.join(timeout=30)
+
+
+def test_core_shutdown_wakes_blocked_sdk_child_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _server([]) as server:
+        child_holder: dict[str, str] = {}
+        child_started = threading.Event()
+        release_child = threading.Event()
+        condition_waiting = threading.Event()
+        shutdown_entered = threading.Event()
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            last_role = _last_message_role(request)
+            if prompt == "blocked shutdown child":
+                child_started.set()
+                if not release_child.wait(timeout=30):
+                    raise TimeoutError("shutdown child provider gate was not released")
+                return _turn(output="shutdown must not report a child result")
+            if prompt == "create":
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                return _turn(_call("create-shutdown-child", WAIT_TOOL, action="spawn", prompt="blocked shutdown child"))
+            if prompt == "wait":
+                if last_role == "tool":
+                    return _turn(output="wait interrupted")
+                return _turn(_call("wait-shutdown", WAIT_TOOL, action="wait", child_id=child_holder["child"]))
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        parent = core.create_session("parent").session_id
+        created = core.run("create", session_id=parent)
+        assert created.status == "completed", created.error
+        child = str(next(event.payload["child_session_id"] for event in core.store.events(parent) if event.event_type == "core.child_spawned"))
+        child_holder["child"] = child
+        assert child_started.wait(timeout=15)
+
+        condition = core._delegation._child_finished_lock
+        original_wait = condition.wait
+
+        def observe_condition_wait(timeout: float | None = None):
+            condition_waiting.set()
+            return original_wait(timeout)
+
+        monkeypatch.setattr(condition, "wait", observe_condition_wait)
+        original_close = core._delegation.close
+
+        def observe_delegation_close() -> None:
+            shutdown_entered.set()
+            original_close()
+
+        monkeypatch.setattr(core._delegation, "close", observe_delegation_close)
+        results: list[object] = []
+        errors: list[str] = []
+
+        def wait_for_child() -> None:
+            try:
+                results.append(core.run("wait", session_id=parent))
+            except Exception as exc:  # noqa: BLE001 - shutdown must propagate, not strand the wait
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        parent_thread = threading.Thread(target=wait_for_child, daemon=True)
+
+        def close_core() -> None:
+            try:
+                core.close()
+            except Exception as exc:  # noqa: BLE001 - preserve shutdown failures for the assertion
+                errors.append(f"close {type(exc).__name__}: {exc}")
+
+        close_thread = threading.Thread(target=close_core, daemon=True)
+        parent_thread.start()
+        try:
+            assert condition_waiting.wait(timeout=15), "SDK child wait did not block before shutdown"
+            close_thread.start()
+            assert shutdown_entered.wait(timeout=15), "Core.close did not reach delegation shutdown"
+            release_child.set()
+            parent_thread.join(timeout=30)
+            close_thread.join(timeout=30)
+            assert not parent_thread.is_alive(), "Core shutdown stranded the SDK child wait"
+            assert not close_thread.is_alive(), "Core shutdown did not finish after releasing the child"
+            assert len(results) + len(errors) == 1, (results, errors)
+            if results:
+                assert getattr(results[0], "status", None) == "interrupted", results
+            else:
+                assert errors[0].startswith(("InterruptedError:", "RuntimeError:")), errors
+        finally:
+            release_child.set()
+            parent_thread.join(timeout=30)
+            if close_thread.ident is not None:
+                close_thread.join(timeout=30)
+
+
+def test_wait_delivers_failed_child_run_once(tmp_path: Path) -> None:
+    with _server([]) as server:
+        child_holder: dict[str, str] = {}
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            last_role = _last_message_role(request)
+            if prompt == "failed child":
+                raise ConnectionError("provider disconnected")
+            if prompt == "create":
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                return _turn(_call("create-failed-child", WAIT_TOOL, action="spawn", prompt="failed child"))
+            if prompt in ("wait", "wait again"):
+                if last_role == "tool":
+                    return _turn(output="wait complete")
+                call_id = "wait-failed" if prompt == "wait" else "wait-failed-again"
+                return _turn(_call(call_id, WAIT_TOOL, action="wait", child_id=child_holder["child"]))
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        parent = core.create_session("parent").session_id
+        created = core.run("create", session_id=parent)
+        assert created.status == "completed", created.error
+        child = str(next(event.payload["child_session_id"] for event in core.store.events(parent) if event.event_type == "core.child_spawned"))
+        child_holder["child"] = child
+
+        failed = core.join_child(parent, child, timeout_seconds=30)
+        assert failed.status == "failed", failed.as_payload()
+        assert failed.run_id is not None
+        delivered = core.run("wait", session_id=parent)
+        assert delivered.status == "completed", delivered.error
+        body = _tool_result_body(core, server.requests[-1], "wait-failed")
+        outcomes = body.get("outcomes")
+        assert isinstance(outcomes, list) and len(outcomes) == 1, body
+        assert outcomes[0]["child_session_id"] == child
+        assert outcomes[0]["run_id"] == failed.run_id
+        assert outcomes[0]["status"] == "failed"
+        assert isinstance(outcomes[0]["error"], str) and outcomes[0]["error"]
+
+        repeated = core.run("wait again", session_id=parent)
+        assert repeated.status == "completed", repeated.error
+        repeated_body = _tool_result_body(core, server.requests[-1], "wait-failed-again")
+        assert repeated_body.get("outcomes") == [], repeated_body
+        terminal = next(
+            event for event in core.store.events(parent) if event.event_type == "core.child_finished" and event.payload.get("run_id") == failed.run_id
+        )
+        assert core.store.has_observer_receipt(parent, terminal.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+
+
+def test_approval_parked_child_stays_pending_until_authorized_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _server([]) as server:
+        child_holder: dict[str, str] = {}
+        condition_waiting = threading.Event()
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            last_role = _last_message_role(request)
+            if prompt == "approval child":
+                if last_role == "tool":
+                    return _turn(output="approval child complete")
+                return _turn(_call("approval-probe", PROBE_TOOL))
+            if prompt == "create":
+                if last_role == "tool":
+                    return _turn(output="parent complete")
+                return _turn(_call("create-approval-child", WAIT_TOOL, action="spawn", prompt="approval child"))
+            if prompt == "wait":
+                if last_role == "tool":
+                    return _turn(output="wait complete")
+                return _turn(_call("wait-approval", WAIT_TOOL, action="wait", child_id=child_holder["child"]))
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server, approval_mode="ask")
+        core.auto_drain = False
+        parent = core.create_session("parent").session_id
+        created = core.run("create", session_id=parent)
+        assert created.status == "waiting", created
+        parent_approval = next(event for event in core.store.events(parent) if event.event_type == "core.approval_requested")
+        created = core.resume(parent, approval_request_id=str(parent_approval.payload["request_id"]), decision="allow")
+        assert created.status == "completed", created.error
+        child = str(next(event.payload["child_session_id"] for event in core.store.events(parent) if event.event_type == "core.child_spawned"))
+        child_holder["child"] = child
+
+        parked = core.join_child(parent, child, timeout_seconds=15)
+        assert parked.status == "waiting", parked.as_payload()
+        approval = next(event for event in core.store.events(child) if event.event_type == "core.approval_requested")
+
+        wait_pending = core.run("wait", session_id=parent)
+        assert wait_pending.status == "waiting", wait_pending
+        wait_approval = [event for event in core.store.events(parent) if event.event_type == "core.approval_requested"][-1]
+
+        condition = core._delegation._child_finished_lock
+        original_wait = condition.wait
+
+        def observe_condition_wait(timeout: float | None = None):
+            condition_waiting.set()
+            return original_wait(timeout)
+
+        monkeypatch.setattr(condition, "wait", observe_condition_wait)
+        results: list[object] = []
+        errors: list[str] = []
+
+        def resume_wait_tool() -> None:
+            try:
+                results.append(
+                    core.resume(
+                        parent,
+                        approval_request_id=str(wait_approval.payload["request_id"]),
+                        decision="allow",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve real invocation failures
+                errors.append(f"{type(exc).__name__}: {exc}")
+
+        parent_thread = threading.Thread(target=resume_wait_tool, daemon=True)
+        parent_thread.start()
+        try:
+            assert condition_waiting.wait(timeout=15), "wait did not remain parked on approval"
+            assert not results and not errors, (results, errors)
+            resumed = core.resume(
+                child,
+                approval_request_id=str(approval.payload["request_id"]),
+                decision="allow",
+            )
+            assert resumed.status == "completed", resumed.error
+            assert resumed.run_id is not None
+            parent_thread.join(timeout=30)
+            assert not parent_thread.is_alive(), "authorized resume did not wake the blocked wait"
+            assert not errors, errors
+            assert len(results) == 1 and getattr(results[0], "status", None) == "completed", results
+            wait_request = next(
+                request
+                for request in reversed(server.requests)
+                if isinstance(request.get("messages"), list)
+                and any(
+                    isinstance(message, Mapping) and message.get("role") == "tool" and message.get("tool_call_id") == "wait-approval"
+                    for message in request["messages"]
+                )
+            )
+            body = _tool_result_body(core, wait_request, "wait-approval")
+            outcomes = body.get("outcomes")
+            assert isinstance(outcomes, list) and len(outcomes) == 1, body
+            assert outcomes[0]["run_id"] == resumed.run_id
+            assert outcomes[0]["status"] == "completed"
+            assert outcomes[0]["output"] == "approval child complete"
+            terminal = next(
+                event
+                for event in core.store.events(parent)
+                if event.event_type == "core.child_finished" and event.payload.get("run_id") == resumed.run_id
+            )
+            assert core.store.has_observer_receipt(parent, terminal.sequence, CHILD_OUTCOME_RECEIPT_OWNER)
+        finally:
+            if parent_thread.is_alive():
+                core.cancel("abort approval wait test", cause="user_stop")
+            parent_thread.join(timeout=30)
 
 
 def _join(core: Core, parent: str, child: str, *, timeout: float = 30.0) -> ChildOutcome:

@@ -7,12 +7,12 @@ from voidcode.sdk.plugin import Plugin
 
 from .agent_reader import AGENT_READER
 from .monitor import MonitorCancelCommand, MonitorCommand
-from .subagents_plugin import TaskBatchTool, TaskTool, agent_definition, prepare_subagents_deactivation
+from .subagents_plugin import TaskBatchTool, TaskTool, WaitTool, agent_definition, prepare_subagents_deactivation
 
 
 def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
     return Plugin(
-        tools=(TaskTool(), TaskBatchTool()),
+        tools=(TaskTool(), TaskBatchTool(), WaitTool()),
         commands=(MonitorCommand(), MonitorCancelCommand()),
         queries=(AGENT_DEFINITIONS.bind(agent_definition),),
         resource_readers=(AGENT_READER,),

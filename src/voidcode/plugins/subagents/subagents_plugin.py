@@ -13,14 +13,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import ClassVar, cast
 from uuid import uuid4
 
 from voidcode.capabilities.agent_queries import AgentDefinition, AgentDefinitionRequest, apply_agent_profile
+from voidcode.capabilities.resource_pages import render_stored_artifact_page
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import PluginQueryCaller
-from voidcode.sdk.services import ChildOutcome, PluginServices
+from voidcode.sdk.resources import ResourceReadCaller, ResourceReaderServices
+from voidcode.sdk.services import ChildOutcome, DescendantNode, PluginServices
 from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
@@ -413,6 +415,21 @@ def _parse_batch_args(arguments: Mapping[str, object]) -> _BatchArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class WaitBody:
+    """Freshly delivered child outcomes plus the selected children still pending."""
+
+    children: tuple[Mapping[str, object], ...] = ()
+    pending: tuple[Mapping[str, object], ...] = ()
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "operation": "wait",
+            "children": [dict(child) for child in self.children],
+            "pending": [dict(child) for child in self.pending],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TaskBody:
     """One ``task`` outcome: a spawn, a join, a message receipt, a cancellation, or history."""
 
@@ -510,6 +527,7 @@ class BatchBody:
     created: tuple[dict[str, object], ...] = ()
     failed: tuple[dict[str, object], ...] = ()
     children: tuple[dict[str, object], ...] = ()
+    pending: tuple[dict[str, object], ...] = ()
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"operation": self.operation, "parallel_group_id": self.parallel_group_id}
@@ -521,6 +539,7 @@ class BatchBody:
                 payload["failed"] = [dict(entry) for entry in self.failed]
         else:
             payload["children"] = [dict(entry) for entry in self.children]
+            payload["pending"] = [dict(entry) for entry in self.pending]
         return payload
 
 
@@ -581,31 +600,6 @@ def _agent_uri(task_id: str) -> str:
     return f"agent://{task_id}"
 
 
-def _utf8_cut(raw: bytes, limit: int) -> int:
-    if limit >= len(raw):
-        return len(raw)
-    cut = limit
-    while cut > 0 and raw[cut] & 0xC0 == 0x80:
-        cut -= 1
-    if cut == 0:
-        cut = 1
-        while cut < len(raw) and raw[cut] & 0xC0 == 0x80:
-            cut += 1
-    return cut
-
-
-def _page_inline(text: str, offset: int, limit: int) -> tuple[str, int | None, int]:
-    """One UTF-8-safe page of an inline string; returns (page, next_offset, total_bytes)."""
-    raw = text.encode("utf-8")
-    total = len(raw)
-    if offset >= total:
-        return "", None, total
-    cut = _utf8_cut(raw[offset:], limit)
-    page = raw[offset : offset + cut].decode("utf-8")
-    next_offset = offset + cut if offset + cut < total else None
-    return page, next_offset, total
-
-
 @dataclass(frozen=True, slots=True)
 class _OutputFacts:
     """One bounded output page plus the durable references that reach the rest."""
@@ -621,38 +615,87 @@ class _OutputFacts:
     run_id: str | None = None
 
 
-def _output_facts(outcome: ChildOutcome, services: PluginServices, offset: int, limit: int) -> _OutputFacts:
+def _resource_caller(context: ToolContext) -> ResourceReadCaller:
+    return ResourceReadCaller(
+        session_id=context.require_session_id(),
+        workspace=context.workspace,
+        revision_id=context.revision_id,
+        run_id=context.run_id,
+        abort_signal=context.abort_signal,
+    )
+
+
+def _artifact_output_facts(
+    outcome: ChildOutcome,
+    services: PluginServices,
+    caller: ResourceReadCaller,
+    digest: str,
+    offset: int,
+    limit: int,
+) -> _OutputFacts:
+    uri = _artifact_uri(digest)
+    page = render_stored_artifact_page(
+        uri=uri,
+        digest=digest,
+        # The shared pager only calls read_artifact, which this plugin service also exposes.
+        services=cast(ResourceReaderServices, services),
+        caller=caller,
+        byte_offset=offset,
+        # Always make room for a complete UTF-8 scalar, even when a caller
+        # asks for a smaller page. The returned cursor counts decoded bytes.
+        byte_limit=max(limit, 4),
+    )
+    if page is None:
+        raise RuntimeError("committed child output artifact is missing")
+    if not isinstance(page.output, TextOutput):
+        raise RuntimeError("committed child output artifact is not text")
+    artifact = page.body.get("artifact")
+    raw_content = page.body.get("raw_content")
+    next_offset = page.body.get("next_byte_offset")
+    total_bytes = artifact.get("bytes") if isinstance(artifact, Mapping) else None
+    if type(total_bytes) is not int or not isinstance(raw_content, str):
+        raise RuntimeError("committed child output artifact page is malformed")
+    if next_offset is not None and (type(next_offset) is not int or next_offset <= offset):
+        raise RuntimeError("committed child output artifact page did not advance")
+    return _OutputFacts(
+        output=raw_content,
+        output_uri=uri,
+        output_offset=offset,
+        output_bytes=total_bytes,
+        next_output_offset=next_offset,
+        history_uri=_transcript_uri(outcome.child_session_id),
+        history_sha256=outcome.history_sha256,
+        run_id=outcome.run_id,
+    )
+
+
+def _output_facts(
+    outcome: ChildOutcome,
+    services: PluginServices,
+    caller: ResourceReadCaller,
+    offset: int,
+    limit: int,
+) -> _OutputFacts:
     """The bounded page plus its durable references; never a megabyte of inline output."""
-    history_uri = _transcript_uri(outcome.child_session_id)
     if outcome.output_sha256 is not None:
-        page = services.read_artifact(outcome.output_sha256, offset=offset, limit=limit)
-        page_text = page.data.decode("utf-8", errors="replace")
-        next_offset = None if page.eof else page.offset + len(page.data)
-        return _OutputFacts(
-            output=page_text,
-            output_uri=_artifact_uri(outcome.output_sha256),
-            output_offset=offset,
-            output_bytes=page.artifact.bytes,
-            next_output_offset=next_offset,
-            history_uri=history_uri,
-            history_sha256=outcome.history_sha256,
-            run_id=outcome.run_id,
-        )
+        return _artifact_output_facts(outcome, services, caller, outcome.output_sha256, offset, limit)
     if outcome.output is not None:
-        page_text, next_offset, total = _page_inline(outcome.output, offset, limit)
+        raw = outcome.output.encode("utf-8")
+        if offset > 0 or len(raw) > limit:
+            reference = services.spill_artifact(raw, media_type="text/plain; charset=utf-8")
+            return _artifact_output_facts(outcome, services, caller, reference.sha256, offset, limit)
         return _OutputFacts(
-            output=page_text,
-            output_offset=offset,
-            output_bytes=total,
-            next_output_offset=next_offset,
-            history_uri=history_uri,
+            output=outcome.output,
+            output_offset=0,
+            output_bytes=len(raw),
+            history_uri=_transcript_uri(outcome.child_session_id),
             history_sha256=outcome.history_sha256,
             run_id=outcome.run_id,
         )
     return _OutputFacts(
         output_preview=outcome.output_preview,
         output_bytes=outcome.output_bytes,
-        history_uri=history_uri,
+        history_uri=_transcript_uri(outcome.child_session_id),
         history_sha256=outcome.history_sha256,
         run_id=outcome.run_id,
     )
@@ -675,6 +718,8 @@ def _outcome_text(
     if budget_exhaustion is not None:
         details = ", ".join(f"{key}={value}" for key, value in budget_exhaustion.items())
         lines.append(f"budget_exhaustion: {details}")
+    if facts is not None and facts.output_uri is not None:
+        lines.append(f"Full immutable output for run_id={outcome.run_id or 'unknown'}: {facts.output_uri}.")
     if facts is not None and facts.output:
         if facts.output_offset is not None and facts.output_bytes is not None:
             start = facts.output_offset
@@ -683,7 +728,9 @@ def _outcome_text(
                 lines.append(f"output bytes {start}..{end} of {facts.output_bytes}")
         lines.append(facts.output)
         if facts.next_output_offset is not None:
-            lines.append(f'More output: task(operation="output", task_id="{task_id}", output_offset={facts.next_output_offset}).')
+            if facts.output_uri is None:
+                raise RuntimeError("paged child output has no immutable output URI")
+            lines.append(f'More output: read(path="{facts.output_uri}", byte_offset={facts.next_output_offset}).')
     elif facts is not None and facts.output_preview:
         lines.append(facts.output_preview)
         lines.append("(output preview only; the full output could not be stored as an artifact)")
@@ -698,21 +745,127 @@ def _outcome_text(
     return "\n".join(lines)
 
 
-def _acknowledge(outcome: ChildOutcome, services: PluginServices) -> None:
-    """Consume this run's completion notice atomically with the tool result that carries it."""
-    if outcome.run_id is None or outcome.status in ("running", "waiting") or outcome.budget_exhaustion is not None:
-        return
-    services.acknowledge_child_completion(outcome.child_session_id, outcome.run_id)
+def _outcome_entry(
+    task_id: str,
+    record: ChildRecord,
+    outcome: ChildOutcome,
+    services: PluginServices,
+    caller: ResourceReadCaller,
+) -> tuple[dict[str, object], str]:
+    budget_exhaustion = _budget_exhaustion_payload(outcome)
+    facts = _output_facts(outcome, services, caller, 0, OUTPUT_PAGE_BYTES)
+    body = TaskBody(
+        operation="output",
+        task_id=task_id,
+        label=record.label,
+        status=outcome.status,
+        output=facts.output,
+        error=outcome.error,
+        stop_cause=outcome.stop_cause,
+        budget_exhaustion=budget_exhaustion,
+        subagent_type=record.subagent_type,
+        run_id=outcome.run_id,
+        output_uri=facts.output_uri,
+        output_offset=facts.output_offset,
+        output_bytes=facts.output_bytes,
+        next_output_offset=facts.next_output_offset,
+        output_preview=facts.output_preview,
+        agent_uri=_agent_uri(task_id),
+        history_uri=_transcript_uri(task_id),
+        history_sha256=outcome.history_sha256,
+    ).as_payload()
+    body.pop("operation")
+    return body, _outcome_text(
+        task_id,
+        record.label,
+        outcome,
+        record.subagent_type,
+        facts=facts,
+        budget_exhaustion=budget_exhaustion,
+    )
+
+
+def _render_outcomes(
+    outcomes: Sequence[ChildOutcome],
+    state: DelegationState,
+    services: PluginServices,
+    caller: ResourceReadCaller,
+) -> tuple[tuple[dict[str, object], ...], tuple[str, ...]]:
+    children: list[dict[str, object]] = []
+    rendered: list[str] = []
+    seen_runs: set[tuple[str, str]] = set()
+    for outcome in outcomes:
+        task_id = outcome.child_session_id
+        run_id = outcome.run_id
+        if not isinstance(run_id, str) or not run_id:
+            raise RuntimeError("delivered child outcome has no exact run identity")
+        record = state.children.get(task_id)
+        if record is None:
+            raise RuntimeError("delivered child outcome is not in this plugin's managed state")
+        identity = (task_id, run_id)
+        if identity in seen_runs:
+            raise RuntimeError("child wait returned the same result more than once")
+        seen_runs.add(identity)
+        entry, text = _outcome_entry(task_id, record, outcome, services, caller)
+        children.append(entry)
+        rendered.append(text)
+    return tuple(children), tuple(rendered)
+
+
+def _is_reportable_current(outcome: ChildOutcome) -> bool:
+    return outcome.run_id is not None and outcome.status not in ("running", "waiting")
+
+
+def _pending_entries(
+    state: DelegationState,
+    descendants: Sequence[DescendantNode],
+    selected_task_ids: set[str],
+) -> tuple[dict[str, object], ...]:
+    pending: list[dict[str, object]] = []
+    known_statuses = {"idle", "pending", "running", "waiting", "interrupted", "completed", "failed"}
+    for descendant in descendants:
+        task_id = descendant.session_id
+        if task_id not in selected_task_ids:
+            continue
+        record = state.children.get(task_id)
+        if record is None:
+            continue
+        if descendant.status not in known_statuses:
+            raise RuntimeError(f"descendant returned an unknown wait status: {descendant.status!r}")
+        current_work = descendant.status in ("idle", "pending", "running", "waiting") or (
+            descendant.status == "interrupted" and descendant.stop_cause not in ("owner_cancel", "user_stop")
+        )
+        if not current_work and not descendant.has_queued_followup:
+            continue
+        entry: dict[str, object] = {
+            "task_id": task_id,
+            "label": record.label,
+            "status": descendant.status,
+            "agent_uri": _agent_uri(task_id),
+        }
+        if record.subagent_type:
+            entry["subagent_type"] = record.subagent_type
+        if descendant.run_id:
+            entry["run_id"] = descendant.run_id
+        if descendant.stop_cause:
+            entry["stop_cause"] = descendant.stop_cause
+        if descendant.activity:
+            entry["activity"] = descendant.activity
+        if descendant.has_queued_followup:
+            entry["has_queued_followup"] = True
+        if descendant.awaiting_approval:
+            entry["awaiting_approval"] = True
+        pending.append(entry)
+    return tuple(pending)
+
+
+def _pending_text(entries: Sequence[Mapping[str, object]]) -> list[str]:
+    return [f"- pending {entry['task_id']} status={entry['status']} run_id={entry.get('run_id') or 'none'}" for entry in entries]
 
 
 def _budget_exhaustion_payload(outcome: ChildOutcome) -> dict[str, object] | None:
     """Serialize the SDK's typed exhaustion without inferring it from stop_cause."""
-    payload = outcome.as_payload().get("budget_exhaustion")
-    if payload is None:
-        return None
-    if not isinstance(payload, Mapping):
-        raise RuntimeError("child outcome budget_exhaustion payload must be an object")
-    return dict(payload)
+    return None if outcome.budget_exhaustion is None else outcome.budget_exhaustion.as_payload()
 
 
 def _batch_text(group_id: str, created: Sequence[_BatchChild], failed: Sequence[tuple[int, str]]) -> str:
@@ -731,20 +884,18 @@ def _batch_text(group_id: str, created: Sequence[_BatchChild], failed: Sequence[
     return "\n".join(lines)
 
 
-def _group_text(group_id: str, entries: Sequence[Mapping[str, object]]) -> str:
-    lines = [f"Parallel group {group_id}: {len(entries)} child task(s)."]
-    for entry in entries:
-        line = f"- {entry['task_id']} status={entry['status']} run_id={entry.get('run_id') or 'unknown'} agent_uri={entry['agent_uri']}"
-        if entry.get("subagent_type"):
-            line += f" profile={entry['subagent_type']}"
-        if entry.get("stop_cause"):
-            line += f" stop_cause={entry['stop_cause']}"
-        if entry.get("error"):
-            line += f" error={entry['error']}"
-        if entry.get("budget_exhaustion") is not None:
-            line += f" budget_exhaustion={entry['budget_exhaustion']}"
-        lines.append(line)
+def _group_text(group_id: str, entries: Sequence[Mapping[str, object]], pending: Sequence[Mapping[str, object]]) -> str:
+    lines = [f"Parallel group {group_id}: {len(entries)} delivered child result(s), {len(pending)} pending child run(s)."]
+    lines.extend(f"- {entry['task_id']} status={entry['status']} run_id={entry.get('run_id') or 'unknown'}" for entry in entries)
+    lines.extend(_pending_text(pending))
     return "\n".join(lines)
+
+
+def _acknowledge(outcome: ChildOutcome, services: PluginServices) -> None:
+    """Consume this run's completion notice atomically with the tool result that carries it."""
+    if outcome.run_id is None or outcome.status in ("running", "waiting") or outcome.budget_exhaustion is not None:
+        return
+    services.acknowledge_child_completion(outcome.child_session_id, outcome.run_id)
 
 
 # --- Tools ---
@@ -764,8 +915,9 @@ TASK_DESCRIPTION = (
     "subagent_type.\n"
     "- max_steps is an optional explicit provider-turn cap for the child.\n"
     "- run_in_background=true (default) starts the child and returns its task_id immediately. Its "
-    "completion is then delivered to this session automatically as an untrusted notice; do not "
-    "poll. false waits in this same call.\n"
+    "completion is then delivered to this session automatically as an untrusted notice; use the "
+    "no-argument wait tool to receive the first undelivered owned child results, and do not poll.\n"
+    "- run_in_background=false waits in this same call.\n"
     "- Depth, the chain's spawn budget, and your own tool scope always bound the child.\n"
     "\n"
     "Control usage:\n"
@@ -773,7 +925,7 @@ TASK_DESCRIPTION = (
     "error, stop_cause, and a bounded output page. A follow-up queued after an earlier result is "
     "never masked by that earlier result. timeout bounds the wait in milliseconds (default 300000). "
     "Page large output with output_offset/output_limit; the full output stays in an immutable "
-    'artifact. operation="output" consumes that run\'s completion notice atomically.\n'
+    'artifact. operation="output" consumes that exact run\'s completion notice atomically.\n'
     '- operation="send" with task_id and prompt adds a follow-up in the SAME child session. The '
     "receipt says started or queued; it never claims consumption or completion. A running or "
     "approval-parked child takes the message at its next safe boundary. Your tool scope and "
@@ -804,9 +956,12 @@ TASK_BATCH_DESCRIPTION = (
     "recorded and are never retried or cancelled automatically.\n"
     "- Items must be independent: nested delegation, dependencies, keep-alive, and automatic "
     "whole-group cancellation are not supported. Each child's completion is delivered to this "
-    "session automatically as an untrusted notice; do not poll.\n"
-    '- Read the group with operation="output" and parallel_group_id: each child is joined once and '
-    "reported as a bounded per-child status. Page an individual child with task(operation="
+    "session automatically as an untrusted notice; use the no-argument wait tool to receive "
+    "undelivered results across owned children.\n"
+    '- Read the group with operation="output" and parallel_group_id: it first reports exact '
+    "current-run outcomes without waiting; if none are ready it waits for the first result. "
+    "Returned older runs keep their exact run_id while pending current runs are listed separately. "
+    "Output includes the immutable artifact URI and a bounded page; page an individual child with task(operation="
     '"history"|"output") and its task_id.\n'
     "\n"
     'Example: task_batch(tasks=[{"prompt":"Find the opening hours in the visitor guide"},'
@@ -907,7 +1062,7 @@ class TaskTool:
         except ValueError as exc:
             return _failure(self.definition.name, str(exc))
         if args.operation is not None:
-            return self._control(args, state, services)
+            return self._control(args, state, context, services)
         return self._spawn(args, state, version, context, services)
 
     def _spawn(self, args: _TaskArgs, state: DelegationState, version: int, context: ToolContext, services: PluginServices) -> ToolResult:
@@ -958,7 +1113,7 @@ class TaskTool:
         try:
             outcome = services.join_child(child_id, timeout_seconds=args.timeout_seconds)
             budget_exhaustion = _budget_exhaustion_payload(outcome)
-            facts = _output_facts(outcome, services, args.output_offset, args.output_limit)
+            facts = _output_facts(outcome, services, _resource_caller(context), args.output_offset, args.output_limit)
             _acknowledge(outcome, services)
         except (ValueError, PermissionError, RuntimeError) as exc:
             return _failure(self.definition.name, str(exc))
@@ -996,7 +1151,7 @@ class TaskTool:
             ),
         )
 
-    def _control(self, args: _TaskArgs, state: DelegationState, services: PluginServices) -> ToolResult:
+    def _control(self, args: _TaskArgs, state: DelegationState, context: ToolContext, services: PluginServices) -> ToolResult:
         task_id = args.task_id or ""
         if task_id not in state.children:
             return _failure(self.definition.name, f"unknown task: {task_id}")
@@ -1009,7 +1164,7 @@ class TaskTool:
                 return self._send(task_id, label, record.subagent_type, args, services)
             if args.operation == "history":
                 return self._history(task_id, label, record.subagent_type, args, services)
-            return self._output(task_id, label, record.subagent_type, args, services)
+            return self._output(task_id, label, record.subagent_type, args, context, services)
         except (ValueError, PermissionError, RuntimeError) as exc:
             return _failure(self.definition.name, str(exc))
 
@@ -1138,10 +1293,11 @@ class TaskTool:
         label: str,
         subagent_type: str | None,
         args: _TaskArgs,
+        context: ToolContext,
         services: PluginServices,
     ) -> ToolResult:
         outcome = services.join_child(task_id, timeout_seconds=args.timeout_seconds)
-        facts = _output_facts(outcome, services, args.output_offset, args.output_limit)
+        facts = _output_facts(outcome, services, _resource_caller(context), args.output_offset, args.output_limit)
         budget_exhaustion = _budget_exhaustion_payload(outcome)
         _acknowledge(outcome, services)
         return ToolSuccess(
@@ -1247,7 +1403,7 @@ class TaskBatchTool:
         except ValueError as exc:
             return _failure(self.definition.name, str(exc))
         if args.operation is not None:
-            return self._group_output(args.parallel_group_id or "", state, services)
+            return self._group_output(args.parallel_group_id or "", state, context, services)
         return self._spawn_group(args.tasks, state, version, context, services)
 
     def _spawn_group(
@@ -1311,44 +1467,89 @@ class TaskBatchTool:
             ),
         )
 
-    def _group_output(self, group_id: str, state: DelegationState, services: PluginServices) -> ToolResult:
+    def _group_output(
+        self,
+        group_id: str,
+        state: DelegationState,
+        context: ToolContext,
+        services: PluginServices,
+    ) -> ToolResult:
         members = state.groups.get(group_id)
         if members is None:
             return _failure(self.definition.name, f"unknown task group: {group_id}")
-        children: list[dict[str, object]] = []
+        current: list[ChildOutcome] = []
         for child_id in members:
             try:
-                outcome = services.join_child(child_id, timeout_seconds=DEFAULT_JOIN_TIMEOUT_SECONDS)
-                budget_exhaustion = _budget_exhaustion_payload(outcome)
-                _acknowledge(outcome, services)
+                outcome = services.join_child(child_id, timeout_seconds=0)
             except (ValueError, PermissionError, RuntimeError) as exc:
                 return _failure(self.definition.name, str(exc))
-            entry: dict[str, object] = {
-                "task_id": child_id,
-                "status": outcome.status,
-                "agent_uri": _agent_uri(child_id),
-                "history_uri": _transcript_uri(child_id),
-            }
-            subagent_type = state.children[child_id].subagent_type
-            if subagent_type:
-                entry["subagent_type"] = subagent_type
-            if outcome.run_id:
-                entry["run_id"] = outcome.run_id
-            if outcome.stop_cause:
-                entry["stop_cause"] = outcome.stop_cause
-            if outcome.error:
-                entry["error"] = outcome.error
-            if budget_exhaustion is not None:
-                entry["budget_exhaustion"] = budget_exhaustion
-            if outcome.history_sha256:
-                entry["history_sha256"] = outcome.history_sha256
-            if outcome.output_bytes is not None:
-                entry["output_bytes"] = outcome.output_bytes
-            children.append(entry)
+            if _is_reportable_current(outcome):
+                current.append(outcome)
+
+        fresh_delivery = not current
+        outcomes = tuple(current) if current else services.wait_children(members)
+        children, rendered = _render_outcomes(outcomes, state, services, _resource_caller(context))
+        if not fresh_delivery:
+            for outcome in outcomes:
+                _acknowledge(outcome, services)
+        descendants = services.list_descendants()
+        pending = _pending_entries(state, descendants, set(members))
+        lines = [_group_text(group_id, children, pending)]
+        lines.extend(rendered)
         return ToolSuccess(
             self.definition.name,
-            TextOutput(_group_text(group_id, children)),
-            body=BatchBody(operation="output", parallel_group_id=group_id, children=tuple(children)),
+            TextOutput("\n\n".join(lines)),
+            body=BatchBody(
+                operation="output",
+                parallel_group_id=group_id,
+                children=children,
+                pending=pending,
+            ),
+        )
+
+
+class WaitTool:
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="wait",
+        icon=Icon(glyph="⧉"),
+        description=(
+            "Wait for undelivered results from child sessions this parent started. "
+            "Takes no arguments and returns exact child/run results plus any still-pending current runs. "
+            "Approval-parked children remain pending; waiting never approves or marks them successful."
+        ),
+        input_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+            "required": [],
+        },
+        effects=frozenset({ToolEffect.READ, ToolEffect.SESSION}),
+        replay_policy="never",
+    )
+
+    def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
+        context.require_session_id()
+        if call.arguments:
+            return _failure(self.definition.name, "wait takes no arguments")
+        try:
+            state, _version = _load_state(services)
+        except ValueError as exc:
+            return _failure(self.definition.name, str(exc))
+        outcomes = services.wait_children(tuple(state.children))
+        children, rendered = _render_outcomes(outcomes, state, services, _resource_caller(context))
+        descendants = services.list_descendants()
+        pending = _pending_entries(state, descendants, set(state.children))
+        if not children and not pending:
+            text = "Nothing to wait for."
+        else:
+            lines = [f"Delivered {len(children)} child result(s); {len(pending)} current child run(s) remain pending."]
+            lines.extend(_pending_text(pending))
+            lines.extend(rendered)
+            text = "\n\n".join(lines)
+        return ToolSuccess(
+            self.definition.name,
+            TextOutput(text),
+            body=WaitBody(children=children, pending=pending),
         )
 
 

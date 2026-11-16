@@ -8,6 +8,7 @@ result with ``kernel.child_spawned``/``kernel.child_finished`` facts on the pare
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -20,7 +21,10 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
+from voidcode.core.events import child_completion_notice_id
 from voidcode.plugins.subagents.profiles.builtin import EXPLORE_AGENT
+from voidcode.plugins.subagents.subagents_plugin import OUTPUT_PAGE_BYTES
+from voidcode.sdk.codec import decode_tool_result
 
 _SUBAGENTS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
@@ -332,6 +336,235 @@ def test_task_output_preserves_provider_turn_budget_exhaustion(tmp_path: Path) -
             "budget_exhaustion: dimension=provider_turns, source=max_steps, limit=1, consumed=1, remaining=0, continue_with=resume_with_max_steps"
         ) in projected_text
         assert "status=cancelled" not in projected_text
+
+
+def test_wait_keeps_paged_inline_old_run_output_immutable_after_followup_starts(tmp_path: Path) -> None:
+    first_page_prefix = "a" * (OUTPUT_PAGE_BYTES - 1)
+    old_output = first_page_prefix + "🙂OLD_RUN_ONLY" + "z" * 512
+    child_holder: dict[str, str] = {}
+    child_a_started = Event()
+    release_child_a = Event()
+    child_b_started = Event()
+    release_child_b = Event()
+
+    def call(call_id: str, name: str, arguments: dict[str, object]) -> dict[str, object]:
+        return {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)},
+        }
+
+    def result_body(core: Core, request: dict[str, object], call_id: str) -> tuple[dict[str, object], dict[str, object]]:
+        content = next(
+            (message.get("content") for message in _messages(request) if message.get("role") == "tool" and message.get("tool_call_id") == call_id),
+            None,
+        )
+        assert isinstance(content, str), f"missing tool result {call_id!r}"
+        projection = json.loads(content)
+        assert isinstance(projection, dict), projection
+        uri = projection.get("result_uri")
+        assert isinstance(uri, str) and uri.startswith("artifact://"), projection
+        digest = uri.removeprefix("artifact://")
+        chunks: list[bytes] = []
+        offset = 0
+        total: int | None = None
+        while True:
+            page = core.read_artifact(digest, offset=offset)
+            assert page.offset == offset and page.artifact.sha256 == digest
+            if total is None:
+                total = page.artifact.bytes
+            assert page.artifact.bytes == total and (page.data or page.eof)
+            chunks.append(page.data)
+            offset += len(page.data)
+            if page.eof:
+                assert offset == total
+                break
+        canonical = b"".join(chunks)
+        assert hashlib.sha256(canonical).hexdigest() == digest
+        result = decode_tool_result(json.loads(canonical.decode("utf-8")))
+        assert result.body is not None
+        return dict(result.body.as_payload()), projection
+
+    with _loopback_server([]) as server:
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "test-model"}]}
+            messages = _messages(request)
+            last_role = messages[-1].get("role") if messages else None
+            last_user = next(
+                (str(message.get("content", "")) for message in reversed(messages) if message.get("role") == "user"),
+                "",
+            )
+            if last_user == "child A":
+                child_a_started.set()
+                if not release_child_a.wait(timeout=30):
+                    raise TimeoutError("child A provider gate was not released")
+                return openai_response(message={"role": "assistant", "content": old_output}, finish="stop")
+            if "child B" in last_user:
+                child_b_started.set()
+                if not release_child_b.wait(timeout=30):
+                    raise TimeoutError("child B provider gate was not released")
+                return openai_response(message={"role": "assistant", "content": "NEW_RUN_ONLY"}, finish="stop")
+            if last_user == "spawn A":
+                if last_role == "tool":
+                    return openai_response(message={"role": "assistant", "content": "spawned"}, finish="stop")
+                return openai_response(
+                    message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            call(
+                                "spawn-A",
+                                "task",
+                                {"prompt": "child A", "run_in_background": False, "timeout": 0},
+                            )
+                        ],
+                    },
+                    finish="tool_calls",
+                )
+            if last_user == "start B":
+                if last_role == "tool":
+                    return openai_response(message={"role": "assistant", "content": "sent"}, finish="stop")
+                return openai_response(
+                    message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [call("send-B", "task", {"operation": "send", "task_id": child_holder["id"], "prompt": "child B"})],
+                    },
+                    finish="tool_calls",
+                )
+            if last_user == "wait A":
+                if last_role == "tool":
+                    return openai_response(message={"role": "assistant", "content": "waited"}, finish="stop")
+                return openai_response(
+                    message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [call("wait-A", "wait", {})],
+                    },
+                    finish="tool_calls",
+                )
+            if last_user == "read A remainder":
+                if last_role == "tool":
+                    return openai_response(message={"role": "assistant", "content": "read"}, finish="stop")
+                return openai_response(
+                    message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            call(
+                                "read-A",
+                                "read",
+                                {
+                                    "path": child_holder["output_uri"],
+                                    "byte_offset": child_holder["next_offset"],
+                                },
+                            )
+                        ],
+                    },
+                    finish="tool_calls",
+                )
+            if last_user == "cancel B":
+                if last_role == "tool":
+                    return openai_response(message={"role": "assistant", "content": "cancelled"}, finish="stop")
+                return openai_response(
+                    message={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [call("cancel-B", "task", {"operation": "cancel", "task_id": child_holder["id"]})],
+                    },
+                    finish="tool_calls",
+                )
+            if last_user in ("wait B", "repeat B"):
+                if last_role == "tool":
+                    return openai_response(message={"role": "assistant", "content": "waited"}, finish="stop")
+                call_id = "wait-B" if last_user == "wait B" else "repeat-B"
+                return openai_response(
+                    message={"role": "assistant", "content": None, "tool_calls": [call(call_id, "wait", {})]},
+                    finish="tool_calls",
+                )
+            return openai_response(message={"role": "assistant", "content": f"unexpected prompt: {last_user!r}"}, finish="stop")
+
+        server.before_reply = reply
+        core = _core(tmp_path, server, minimal=True)
+        core.auto_drain = False
+        parent = core.create_session("parent").session_id
+        try:
+            spawned = core.run("spawn A", session_id=parent)
+            assert spawned.status == "completed", spawned.error
+            child = next(event.payload["child_session_id"] for event in core.events_after(parent) if event.event_type == "core.child_spawned")
+            child_holder["id"] = str(child)
+            assert child_a_started.wait(timeout=15), "foreground A did not reach its gated provider turn"
+            run_a = core.session(str(child)).run_id
+            assert run_a is not None and core.session(str(child)).status == "running"
+            release_child_a.set()
+            first = core.join_child(parent, str(child), timeout_seconds=30)
+            assert first.status == "completed" and first.output == old_output and first.run_id == run_a
+            notice_id = child_completion_notice_id(parent, str(child), run_a)
+            assert core.store.continuation_status(notice_id) is None
+
+            sent = core.run("start B", session_id=parent)
+            assert sent.status == "completed", sent.error
+            assert child_b_started.wait(timeout=15), "follow-up B never reached its gated provider turn"
+            run_b = core.session(str(child)).run_id
+            assert run_b is not None and run_b != run_a
+            assert core.session(str(child)).status == "running"
+
+            waited = core.run("wait A", session_id=parent)
+            assert waited.status == "completed", waited.error
+            wait_body, wait_projection = result_body(core, server.requests[-1], "wait-A")
+            children = wait_body.get("children")
+            pending = wait_body.get("pending")
+            assert isinstance(children, list) and len(children) == 1
+            assert isinstance(pending, list) and len(pending) == 1, (wait_body, core.list_descendants(parent))
+            child_result = children[0]
+            assert child_result["task_id"] == child and child_result["run_id"] == run_a
+            assert child_result["status"] == "completed"
+            assert child_result["output"] == first_page_prefix
+            assert child_result["output_bytes"] == len(old_output.encode("utf-8"))
+            output_uri = child_result.get("output_uri")
+            next_offset = child_result.get("next_output_offset")
+            assert isinstance(output_uri, str) and output_uri.startswith("artifact://")
+            assert type(next_offset) is int and next_offset > 0
+            assert pending[0]["task_id"] == child
+            assert pending[0]["run_id"] == run_b and pending[0]["status"] == "running"
+            projected_text = wait_projection.get("text")
+            assert isinstance(projected_text, str)
+            assert output_uri in projected_text
+            assert projected_text.index(output_uri) < projected_text.index(first_page_prefix)
+            child_holder.update({"output_uri": output_uri, "next_offset": next_offset})
+
+            read = core.run("read A remainder", session_id=parent)
+            assert read.status == "completed", read.error
+            read_body, _read_projection = result_body(core, server.requests[-1], "read-A")
+            remainder = read_body.get("raw_content")
+            assert isinstance(remainder, str)
+            assert first_page_prefix + remainder == old_output
+            cancel = core.run("cancel B", session_id=parent)
+            assert cancel.status == "completed", cancel.error
+            release_child_b.set()
+            cancelled = core.join_child(parent, str(child), timeout_seconds=30)
+            assert cancelled.status == "cancelled" and cancelled.run_id == run_b
+            cancelled_fact = next(
+                event for event in core.events_after(parent) if event.event_type == "core.child_finished" and event.payload.get("run_id") == run_b
+            )
+            assert cancelled_fact.payload["status"] == "cancelled"
+            notice_b = child_completion_notice_id(parent, str(child), run_b)
+            delivered = core.run("wait B", session_id=parent)
+            assert delivered.status == "completed", delivered.error
+            cancelled_body, _cancelled_projection = result_body(core, server.requests[-1], "wait-B")
+            cancelled_children = cancelled_body.get("children")
+            assert cancelled_children == []
+            assert cancelled_body.get("pending") == []
+            assert core.store.continuation_status(notice_b) == "completed"
+            replay = core.run("repeat B", session_id=parent)
+            assert replay.status == "completed", replay.error
+            replay_body, _replay_projection = result_body(core, server.requests[-1], "repeat-B")
+            assert replay_body.get("children") == []
+        finally:
+            release_child_a.set()
+            release_child_b.set()
 
 
 def test_agent_snapshot_refreshes_current_run_after_concurrent_publication(tmp_path: Path) -> None:

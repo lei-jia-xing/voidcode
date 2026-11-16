@@ -42,6 +42,8 @@ class EventType(StrEnum):
 
 CHILD_MESSAGE_OWNER = "@core/child"
 
+CHILD_OUTCOME_RECEIPT_OWNER = "@core/child-outcome"
+
 
 def child_completion_notice_id(parent_session_id: str, child_session_id: str, run_id: str) -> str:
     """The durable identity of one run's completion notice."""

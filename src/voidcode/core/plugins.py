@@ -86,6 +86,7 @@ from voidcode.sdk.tools import (
     ToolEffect,
     ToolFailure,
     ToolResult,
+    ToolSuccess,
     is_read_tier,
 )
 from voidcode.sdk.transcript import ContextHistory, TranscriptEntry, TranscriptPage
@@ -99,6 +100,7 @@ from .sandbox import SandboxBackend
 from .services import ResourceReaderServicesView, RuntimeServices
 from .storage.store import (
     EventDraft,
+    ObserverReceiptRecord,
     SessionRecord,
     SqliteStore,
     StagedCancellation,
@@ -160,6 +162,7 @@ class LeaseContext:
     staged_events: list[EventDraft] = field(default_factory=list)
     staged_continuations: list[StagedContinuationDraft] = field(default_factory=list)
     staged_cancellations: list[StagedCancellation] = field(default_factory=list)
+    staged_observer_receipts: list[ObserverReceiptRecord] = field(default_factory=list)
     staged_budget: PluginBudget | None | Literal["clear"] = None
     staged_observations: list[ObservedChange] = field(default_factory=list)
     revoked: bool = False
@@ -180,6 +183,7 @@ class ToolInvocationOutcome:
     staged_events: tuple[EventDraft, ...] = ()
     staged_continuations: tuple[StagedContinuationDraft, ...] = ()
     staged_cancellations: tuple[StagedCancellation, ...] = ()
+    staged_observer_receipts: tuple[ObserverReceiptRecord, ...] = ()
     staged_budget: PluginBudget | None | Literal["clear"] = None
     staged_observations: tuple[ObservedChange, ...] = ()
 
@@ -191,17 +195,19 @@ class CommandInvocationOutcome:
     staged_events: tuple[EventDraft, ...] = ()
     staged_continuations: tuple[StagedContinuationDraft, ...] = ()
     staged_cancellations: tuple[StagedCancellation, ...] = ()
+    staged_observer_receipts: tuple[ObserverReceiptRecord, ...] = ()
     staged_budget: PluginBudget | None | Literal["clear"] = None
     staged_observations: tuple[ObservedChange, ...] = ()
     cancelled: bool = False
 
 
-#: One invocation's staged side effects: state, events, continuations, cancellations, budget.
+#: One invocation's staged side effects: state, events, continuations, cancellations, receipts, budget.
 type _Staged = tuple[
     tuple[StagedStateUpdate, ...],
     tuple[EventDraft, ...],
     tuple[StagedContinuationDraft, ...],
     tuple[StagedCancellation, ...],
+    tuple[ObserverReceiptRecord, ...],
     PluginBudget | None | Literal["clear"],
 ]
 
@@ -243,6 +249,8 @@ class PluginRuntime:
         | None = None,
         find_child_callback: Callable[[str, str, str], str | None] | None = None,
         join_child_callback: Callable[[str, str, float], Mapping[str, object]] | None = None,
+        wait_children_callback: Callable[[str, str, tuple[str, ...], Callable[[], bool]], tuple[Mapping[str, object], ...]] | None = None,
+        acknowledge_child_completion_callback: Callable[[str, str, str, str], Mapping[str, object] | None] | None = None,
         send_child_callback: Callable[[str, str, str, str, bool, Callable[[], bool]], Mapping[str, object]] | None = None,
         cancel_child_callback: Callable[[str, str, str], bool] | None = None,
         list_descendants_callback: Callable[[str], tuple[DescendantNode, ...]] | None = None,
@@ -268,6 +276,9 @@ class PluginRuntime:
         self.spawn_child_callback = spawn_child_callback
         self.find_child_callback = find_child_callback
         self.join_child_callback = join_child_callback
+
+        self.wait_children_callback = wait_children_callback
+        self.acknowledge_child_completion_callback = acknowledge_child_completion_callback
         self.send_child_callback = send_child_callback
         self.cancel_child_callback = cancel_child_callback
         self.list_descendants_callback = list_descendants_callback
@@ -718,6 +729,7 @@ class PluginRuntime:
             tuple(lease.staged_events),
             tuple(lease.staged_continuations),
             tuple(lease.staged_cancellations),
+            tuple(lease.staged_observer_receipts),
             lease.staged_budget,
         )
 
@@ -1076,6 +1088,8 @@ class PluginRuntime:
         tool_threw = False
         try:
             result = tool_instance.invoke(call, context=context, services=services)
+            if not isinstance(result, (ToolSuccess, ToolFailure)):
+                raise TypeError(f"Tool {call.tool_name} returned an invalid ToolResult")
         except Exception as exc:
             tool_threw = True
             result = ToolFailure(
@@ -1098,13 +1112,14 @@ class PluginRuntime:
             # truth about the world, not tool claims, so the prefix survives the throw.
             staged = ToolInvocationOutcome(result=result, staged_observations=tuple(lease.staged_observations))
         else:
-            staged_state, staged_events, staged_conts, staged_cancels, staged_budget = self._staged_changes(lease)
+            staged_state, staged_events, staged_conts, staged_cancels, staged_receipts, staged_budget = self._staged_changes(lease)
             staged = ToolInvocationOutcome(
                 result=result,
                 staged_state=staged_state,
                 staged_events=staged_events,
                 staged_continuations=staged_conts,
                 staged_cancellations=staged_cancels,
+                staged_observer_receipts=staged_receipts,
                 staged_budget=staged_budget,
                 staged_observations=tuple(lease.staged_observations),
             )
@@ -1236,9 +1251,9 @@ class PluginRuntime:
         if cancelled:
             self._cancel_claimed_services(lease)
             result = CommandResult(status="error", error="command invocation was cancelled; external effects may be incomplete", output=result.output)
-            staged: _Staged = ((), (), (), (), None)
+            staged: _Staged = ((), (), (), (), (), None)
         elif cmd_threw:
-            staged = ((), (), (), (), None)
+            staged = ((), (), (), (), (), None)
         else:
             staged = self._staged_changes(lease)
         self._revoke_lease(lease)

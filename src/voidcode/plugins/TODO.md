@@ -8,6 +8,7 @@
   - 现状：已有[插件编写与诊断契约](../../../docs/contracts/plugin-authoring.md)以及[命令交互验收](../../../docs/command-ux.md)；缺的不是另一套 factory smoke，而是跨工具完成真实任务的产品验收。下面各项列出的断点作为首批整改对象，不笼统宣称所有插件都没有可用实现。
   - 目标：按插件记录“已完整可用 / 明确受限 / 待补”的能力与可运行场景；覆盖能力发现、结构化输入/结果、长输出/媒体、进度、取消、审批、禁用/重载、断线/重启、错误恢复。复用现有 SDK 和验收清单，不维护第二份命令表。
   - 验收：首批插件各有一个普通用户可完成的真实场景及关键失败场景，检查实际产物、持久化事实与 UI 状态；例如读真实截图、启动并停止服务、MCP 混合结果、LSP 重构落盘、Agent 跟进、workflow 中途暂停恢复。空结果、只印 ID、只检查“不抛异常”均不能算通过；缺依赖和不能恢复的边界须在入口说明。
+  - 已核实但本轮不实现的具体缺口：`review_plugin.py` 只复制 `ChildOutcome.output/error/stop_cause/budget_exhaustion`；长 review 的 Core outcome 可有 `output=None`、`output_sha256`/`output_bytes`/`output_preview` 与 `run_id`，review 当前却提示 completed without output 并丢失 artifact/run 身份。验收：普通长 review 返回精确 run 身份和不可变完整输出引用，可经现有 reader 读全；preview 不得当作空结果。
 
 - [ ] **让正常截图/图片读取真正可用，贯通工具结果和客户端显示。**
   - 现状：[`files/read`](../capabilities/files/read_tool.py) streams reference-backed raster originals without the former 50 KiB refusal. Core/native provider tests cover valid decoded PNGs above the 256 KiB page size; Core, local/authenticated RPC byte reads, real Chromium image paging, and Kitty CLI protocol/reflow/reopen checks have independently passed. The separate live-progress PTY proof now also passes; this is not an all-plugin audit.
@@ -40,9 +41,9 @@
 
 - [ ] **把现有子 Agent 生命周期做成持续交互、可寻址结果的闭环。**
   - 现状：已有 `task`/`task_batch`、SDK `send_child`/`join_child`、按 run 的完成通知、lineage-gated history 和 alt+a monitor；[`workflows`](./workflows/README.md) 已支持动态节点/依赖与持久化恢复。不是再造一套 spawn/send/wait，也不能把静态 DAG 当作当前能力上限。
-  - 目标：统一委派回执、当前 run、等待/审批/排队状态、最近一次已发布结果与历史资源入口；使创建后的跟进、状态查看、完整结果读取和取消在模型工具及 monitor 中都可发现。`agent://` 已由 subagents 插件提供当前 status/run 与最近 eligible completed output；任务回执把 `agent_uri` 与 `history_uri=transcript://` 分开。Core 没有独立 accepted-yield 标记，`/key/index` 仍待 typed structured publication 契约。参考 OMP [task](omp://tools/task.md)、[wait](omp://tools/wait.md)、[agent hub](omp://agent-hub.md)、[agent/history URI](omp://tools/read.md)。
+  - 已完成的生命周期底座：`wait_children`/无参 `wait` 提供 owned child first-settled result delivery；`task_batch.output` 返回准确 ready-run 输出/ref 与独立 pending 状态。`agent://` 仍是 latest eligible published output，不等价于某个当前或已等待 run。Core 没有独立 accepted-yield 标记，typed structured publication 与共享 context 仍未完成。
   - 边界：保留 parent/descendant 权限，不能照搬全局广播与任意 peer 读取；消息是带来源的数据而非 system 指令。batch 与 workflow 复用同一子会话机制、配额和只读限制，不失败后放宽 scope，不以进程存活或已有输出冒充本轮完成。
-  - 验收：并行委派后主 Agent 可继续工作、只给目标 child 跟进、阻塞时无轮询等待；终态结果仅交付一次，消费结果与通知去重一致；跟进启动的新 run 与已发布结果显式分 run，长 artifact 可按不可变引用读全；取消精确绑定所见 run，重连/重启不重派已完成工作，未启动/审批中/失败均不显示为完成。`ChildSessionSnapshot` 已提供不 join/ack 的 caller-scoped 只读投影；首个就绪等待和准确 accepted-yield 语义仍未实现。
+  - 验收：首个任务很慢、后续任务先成功/失败时，父 Agent 可立即取得该 exact run 的完整结果继续工作；长 artifact 按不可变 URI 读取，跟进新 run 不会换掉旧输出分页；取消、approval、failed、重连/重启状态不谎报成功或重复交付。first-ready/output/receipt 相关 Core 与插件窄 proof 已通过；accepted-yield、完整共享 context 和 generic peer/process waits 仍开放。
   - 前置整改：Agent 的默认 32 及预算归属单列为 [Core P0](../core/TODO.md) 与 [SDK P0](../sdk/TODO.md)，不把任意轮次截断当作生命周期设计，也不假定父子共享额度已正确实现。
 
 - [ ] **统一有限命令、后台任务与长期服务的使用和收尾体验。**
@@ -55,10 +56,14 @@
   - 目标：一次呈现必要上下文和一组相关问题，支持推荐值、单/多选、自由输入、校验及可选资源图片，两端消费同一声明；仅在用户必须决定实质取舍时提问。参考 OMP [ask](omp://tools/ask.md)。
   - 验收：用户能在同一表单比较方案并提交有类型的答案，取消/断线/无人值守不产生伪造答案；模型读到的是答案而非一段供它猜测的聊天回显；问答不授予执行权限，也不替代工具审批。
 
-- [ ] **提供首个就绪等待与真正可用的批次结果交付。**
-  - 现状：`task(operation="output")` 等待指定 child；[`task_batch._group_output`](subagents/subagents_plugin.py) 按成员顺序 `join_child(...300s)`，只返回状态、history URI 与 output 字节数，不交付实际 output、preview 或 output artifact 引用。批次解析也没有顶层共享 context。
-  - 目标：复用 SDK 首个就绪等待与非阻塞快照，区别“查看当前结果”与“等待后续事件”；批次返回每个已就绪结果/引用和未完成状态，共享上下文只声明一次并保留来源，不要求重复粘贴。参考 OMP [wait](omp://tools/wait.md)、[task batch/context 与结果资源](omp://tools/task.md)。
-  - 验收：首个任务很慢、后续任务先成功/失败时，父 Agent 可立即取得先就绪结果继续工作，不串行等完整个组、不为每个成员再补一次读取才能得到结论；完成消费与通知原子去重。长结果按资源读取，不再补一个任意的 PREVIEW_MAX 来冒充聚合交付。
+- [x] **首个就绪等待与批次实际结果交付。**
+  - Subagents 插件的无参 `wait` 只对该父 session 已记录 children 做新鲜结果交付；Core 用现有 condition/cursors 等待 undelivered durable `(child, run)` facts，返回精确 run 身份。旧 A 可在 B 当前运行时交付，B 的 pending live 状态独立列出。`notify_on_completion=False` 不排除事实；approval parked 不会被当成完成。
+  - `task_batch.output` 先非阻塞读取各成员当前 run；无当前可报告结果时才首就绪等待。结果携带实际完整 output/ref 和 URI，pending 状态独立；大/内联分页继续走不可变 URI 与 UTF-8-safe byte cursor。显式 output reread 仍可读当前 run；`agent://` latest publication 不代替具体 run 输出。
+  - Delivery receipt 与成功的 tool result 原子提交；只读 snapshot 不消费。有效 callback 返回的 `ToolFailure`（`status="error"`）仍提交显式暂存的 delivery；callback exception、invalid result、abort/revocation/shutdown 会回滚。Core proof 的三个 gated child、52,000 UTF-8 bytes、普通 URI read/reread、去重及 reopen 已通过；窄 lifecycle regression 覆盖 approval resume、cancel、steering、shutdown、foreign parent 与 failed outcome。
+  - 未包含：task_batch 顶层 shared context、accepted-yield、通用 peer/process waits；另外现有单 run `join_child` 的 0.2s SQL/Condition polling 未由此功能修复。
+- [ ] **task_batch 顶层共享 context。**
+  - 当前每项任务各自携带 prompt；本 slice 没有加入顶层 context 字段或把上下文重复拼接到每个 child。需要单独定义声明、来源与 prompt 合并语义后再实现。
+  - 验收：共同背景只声明一次，批次结果仍分别保留每个 child 的精确 run/output 身份；不掩盖 accepted-yield 或 permission/lineage 边界。
 
 ## P2：高频读写检索能力
 

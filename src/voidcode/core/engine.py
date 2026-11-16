@@ -721,6 +721,12 @@ class Core:
                 spawn_child_callback=self._spawn_child_callback,
                 find_child_callback=self._delegation.find_keyed_child,
                 join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
+                wait_children_callback=lambda _owner, parent, children, guard: self._delegation.wait_children(
+                    parent, children, admission_guard=guard
+                ),
+                acknowledge_child_completion_callback=lambda _owner, parent, child, run: self._delegation.acknowledge_child_completion(
+                    parent, child, run
+                ),
                 send_child_callback=lambda parent, child, prompt, label, notify, guard: self.send_child(
                     parent,
                     child,
@@ -1000,6 +1006,7 @@ class Core:
             for signal in signals:
                 signal.set_cancelled(True, reason=reason, stop_cause=cause)
         self.store.cancel_pending_continuations(session_id, "kernel")
+        self._delegation.notify_child_state_changed()
         # A bound call with no live abort for the bound run falls through to
         # the pinned parked settle; an unbound call keeps legacy behavior.
         settled = self._settle_parked_cancel(session_id, reason, cause, expected_run_id=bound, is_bound=is_bound) if abort is None else False
@@ -1114,6 +1121,7 @@ class Core:
             for commands in self._command_aborts.values():
                 for abort in commands.values():
                     abort.set_cancelled(True, reason=reason, stop_cause=cause)
+        self._delegation.notify_child_state_changed()
 
     def close(self) -> None:
         self.cancel("core shutdown", cause="shutdown")
@@ -1336,6 +1344,7 @@ class Core:
             root_id=root_id,
             role="user",
         )
+        self._delegation.notify_child_state_changed()
         return CoreResult(
             session_id=session.session_id,
             run_id=session.run_id or "",
@@ -1634,6 +1643,8 @@ class Core:
         self._drain_deferred_requests(session_id)
         self._drain_pending_background_tool_waits(session_id)
         self._drive_pending(session_id)
+        if session.parent_session_id is not None:
+            self._delegation.notify_child_state_changed()
         return result
 
     def _drive_pending(self, session_id: str, *, limit: int = 32) -> None:
@@ -2255,6 +2266,7 @@ class Core:
             staged_events = outcome.staged_events
             staged_continuations = outcome.staged_continuations
             staged_cancellations = outcome.staged_cancellations
+            staged_observer_receipts = outcome.staged_observer_receipts
             staged_budget = outcome.staged_budget
 
             if cmd_result.status == "pending_confirmation" and cmd_result.confirmation is not None:
@@ -2317,6 +2329,7 @@ class Core:
                     staged_continuations=staged_continuations,
                     staged_cancellations=staged_cancellations,
                     staged_budgets=tuple(staged_budget_updates),
+                    observer_receipts=staged_observer_receipts,
                 )
                 if self.auto_drain and staged_continuations:
                     latest_sess = self.store.session(session_id)
@@ -2411,6 +2424,7 @@ class Core:
             staged_events = outcome.staged_events
             staged_continuations = outcome.staged_continuations
             staged_cancellations = outcome.staged_cancellations
+            staged_observer_receipts = outcome.staged_observer_receipts
             staged_budget = outcome.staged_budget
 
             staged_budget_updates = []
@@ -2445,6 +2459,7 @@ class Core:
                     staged_continuations=staged_continuations,
                     staged_cancellations=staged_cancellations,
                     staged_budgets=tuple(staged_budget_updates),
+                    observer_receipts=staged_observer_receipts,
                 )
                 if self.auto_drain and staged_continuations:
                     latest_sess = self.store.session(session_id)
@@ -2990,6 +3005,12 @@ class Core:
                 spawn_child_callback=self._spawn_child_callback,
                 find_child_callback=self._delegation.find_keyed_child,
                 join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
+                wait_children_callback=lambda _owner, parent, children, guard: self._delegation.wait_children(
+                    parent, children, admission_guard=guard
+                ),
+                acknowledge_child_completion_callback=lambda _owner, parent, child, run: self._delegation.acknowledge_child_completion(
+                    parent, child, run
+                ),
                 send_child_callback=lambda parent, child, prompt, label, notify, guard: self.send_child(
                     parent,
                     child,
@@ -3438,7 +3459,7 @@ class Core:
             runtime._revoke_lease(lease)  # noqa: SLF001 - the core owns lease lifecycles
             if abort.is_set() or self._closed:
                 raise InterruptedError(f"background action {action_id!r} was cancelled")
-            staged_state, staged_events, staged_conts, staged_cancels, staged_budget = staged
+            staged_state, staged_events, staged_conts, staged_cancels, staged_receipts, staged_budget = staged
             staged_budget_updates: list[StagedBudgetUpdate] = []
             if staged_budget == "clear":
                 staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
@@ -3463,6 +3484,7 @@ class Core:
                         staged_state=staged_state,
                         staged_continuations=staged_conts,
                         staged_cancellations=staged_cancels,
+                        observer_receipts=staged_receipts,
                         staged_budgets=tuple(staged_budget_updates),
                     )
                 except SequenceConflict:
@@ -4604,7 +4626,7 @@ class Core:
                 return
             logical_turn = str(fact_payload.get("logical_turn", ""))
             obs_res = snapshot.plugin_runtime.notify_fact(fact_type, fact_payload, owners=tuple(active), logical_turn=logical_turn)
-            receipts = tuple(ObserverReceiptRecord(event_sequence=ev.sequence, owner=o) for o in active)
+            receipts = tuple(ObserverReceiptRecord(session_id=ev.session_id, event_sequence=ev.sequence, owner=o) for o in active)
             staged_events: list[EventDraft] = []
             staged_budget_updates: list[StagedBudgetUpdate] = []
             if obs_res:
@@ -4920,6 +4942,7 @@ class Core:
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
+        observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
         completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
         reserve_root: bool = False,
@@ -4941,6 +4964,7 @@ class Core:
             staged_continuations=staged_continuations,
             staged_cancellations=staged_cancellations,
             staged_budgets=staged_budgets,
+            observer_receipts=observer_receipts,
             completed_continuation_id=completed_continuation_id,
             completed_continuation_status=completed_continuation_status,
             start_turn=start_turn,
@@ -5798,6 +5822,7 @@ class Core:
                 staged_events = outcome.staged_events
                 staged_conts = outcome.staged_continuations
                 staged_cancels = outcome.staged_cancellations
+                staged_receipts = outcome.staged_observer_receipts
                 staged_budget = outcome.staged_budget
                 staged_observations = outcome.staged_observations
             except ActivationFenced as exc:
@@ -5811,6 +5836,7 @@ class Core:
                 staged_conts = ()
                 staged_cancels = ()
                 staged_budget = None
+                staged_receipts = ()
                 staged_observations = ()
 
             if result.tool_name != call.tool_name:
@@ -5832,6 +5858,7 @@ class Core:
                 staged_conts=staged_conts,
                 staged_cancels=staged_cancels,
                 staged_budget=staged_budget,
+                staged_receipts=staged_receipts,
                 staged_observations=staged_observations,
             )
             claim_id = execution.cursor.continuation_id
@@ -5932,6 +5959,7 @@ class Core:
         staged_conts: tuple[StagedContinuationDraft, ...] = (),
         staged_cancels: tuple[StagedCancellation, ...] = (),
         staged_budget: PluginBudget | None | Literal["clear"] = None,
+        staged_receipts: tuple[ObserverReceiptRecord, ...] = (),
         budget_exhaustion: BudgetExhaustion | None = None,
         staged_observations: tuple[ObservedChange, ...] = (),
         pinned_run_id: str | None = None,
@@ -6075,6 +6103,7 @@ class Core:
             staged_continuations=staged_conts,
             staged_cancellations=staged_cancels,
             staged_budgets=tuple(staged_budget_updates),
+            observer_receipts=staged_receipts,
             pinned_run_id=pinned_run_id,
             enforce_pin=enforce_pin,
         )

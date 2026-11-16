@@ -128,14 +128,7 @@ class ContinuationResult:
         if self.stop_cause is not None:
             result["stop_cause"] = self.stop_cause
         if self.budget_exhaustion is not None:
-            result["budget_exhaustion"] = {
-                "dimension": self.budget_exhaustion.dimension,
-                "source": self.budget_exhaustion.source,
-                "limit": self.budget_exhaustion.limit,
-                "consumed": self.budget_exhaustion.consumed,
-                "remaining": self.budget_exhaustion.remaining,
-                "continue_with": self.budget_exhaustion.continue_with,
-            }
+            result["budget_exhaustion"] = self.budget_exhaustion.as_payload()
         return result
 
     @staticmethod
@@ -791,10 +784,22 @@ class PluginServices(Protocol):
         ...
 
     def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
-        """Wait for the child's CURRENT run to reach a terminal state (no polling).
+        """Wait for the child's CURRENT run to reach a terminal state.
 
         While the child is running or has a queued follow-up, this waits instead of returning an
         older terminal fact. The result carries the run id it belongs to.
+        """
+        ...
+
+    def wait_children(self, child_session_ids: Sequence[str]) -> tuple[ChildOutcome, ...]:
+        """Wait for undelivered results from these directly owned child sessions.
+
+        Existing eligible results are returned before waiting; otherwise wait for the first
+        selected child result. Every outcome retains its exact child/run identity. The Core
+        stages delivery receipts and pending-notice cancellation with this invocation, so
+        callers must not acknowledge outcomes returned here. An empty tuple means no eligible
+        result or registered work remains; interruption, cancellation, and shutdown are not
+        represented as an empty success.
         """
         ...
 

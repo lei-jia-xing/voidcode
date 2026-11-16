@@ -280,6 +280,7 @@ class StagedCancellation:
     owner: str
     continuation_id: str | None = None
     ordinal: int = 0
+    only_if_unstarted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,8 +292,11 @@ class StagedBudgetUpdate:
 
 @dataclass(frozen=True, slots=True)
 class ObserverReceiptRecord:
+    session_id: str
     event_sequence: int
     owner: str
+    expected_run_id: str | None = None
+    require_interruption_source: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1302,19 +1306,36 @@ class SqliteStore:
 
     def latest_stop_payload(self, session_id: str, run_id: str | None) -> Mapping[str, object] | None:
         """Return the exact latest committed interruption payload for one run."""
+        event = self.latest_stop_event(session_id, run_id)
+        return None if event is None else event.payload
+
+    def latest_stop_event(self, session_id: str, run_id: str | None) -> StoredEvent | None:
+        """Return the exact latest committed interruption event for one run."""
         with self._lock:
             self._check_open()
             if not run_id:
                 return None
             row = self._connection.execute(
                 """
-                SELECT payload_json FROM session_events
+                SELECT sequence, source, actor, revision_id, payload_json
+                FROM session_events
                 WHERE session_id = ? AND run_id = ? AND event_type = ?
                 ORDER BY sequence DESC LIMIT 1
                 """,
                 (session_id, run_id, EventType.RUN_INTERRUPTED),
             ).fetchone()
-            return None if row is None else own_json_object(json.loads(row[0]))
+            if row is None:
+                return None
+            return StoredEvent(
+                session_id=session_id,
+                sequence=int(row[0]),
+                run_id=run_id,
+                event_type=EventType.RUN_INTERRUPTED,
+                source=str(row[1]),
+                actor=str(row[2]),
+                revision_id=str(row[3]),
+                payload=own_json_object(json.loads(row[4])),
+            )
 
     def latest_stop_cause(self, session_id: str, run_id: str | None) -> str | None:
         """The committed stop cause of one run, or None when no terminal fact names one."""
@@ -1334,6 +1355,50 @@ class SqliteStore:
                 LIMIT 1
                 """,
                 (session_id, CHILD_MESSAGE_OWNER),
+            ).fetchone()
+            return row is not None
+
+    def child_message_ids(self, session_id: str) -> tuple[str, ...]:
+        """Capture exact pending or claimed core child-message identities."""
+        with self._lock:
+            self._check_open()
+            rows = self._connection.execute(
+                """
+                SELECT continuation_id FROM continuations
+                WHERE session_id = ? AND status IN ('pending', 'claimed') AND owner = ?
+                ORDER BY rowid ASC
+                """,
+                (session_id, CHILD_MESSAGE_OWNER),
+            ).fetchall()
+            return tuple(str(row[0]) for row in rows)
+
+    def child_wait_registrations(self, child_session_ids: Sequence[str]) -> tuple[tuple[SessionRecord, tuple[str, ...]], ...]:
+        """Snapshot current child runs and their registered child messages atomically."""
+        with self._lock:
+            self._check_open()
+            self._connection.execute("BEGIN")
+            try:
+                snapshots = tuple(
+                    (self.session(child_session_id), self.child_message_ids(child_session_id)) for child_session_id in child_session_ids
+                )
+                self._connection.execute("COMMIT")
+                return snapshots
+            except BaseException:
+                if self._connection.in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
+
+    def has_pending_user_message(self, session_id: str) -> bool:
+        """Whether fresh user input is queued behind this session's active run."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                """
+                SELECT 1 FROM continuations
+                WHERE session_id = ? AND status = 'pending' AND owner = 'kernel' AND source = 'user_message'
+                LIMIT 1
+                """,
+                (session_id,),
             ).fetchone()
             return row is not None
 
@@ -1768,8 +1833,25 @@ class SqliteStore:
                                 SET status = 'cancelled', updated_at = ?
                                 WHERE session_id = ? AND owner = ? AND continuation_id = ?
                                   AND status IN ('pending', 'claimed') AND source <> ?
+                                  AND (
+                                      ? = 0 OR NOT EXISTS (
+                                          SELECT 1 FROM session_events
+                                          WHERE session_events.session_id = continuations.session_id
+                                            AND session_events.event_type = ?
+                                            AND json_extract(session_events.payload_json, '$.continuation_id')
+                                                = continuations.continuation_id
+                                      )
+                                  )
                                 """,
-                                (now, session_id, canc.owner, canc.continuation_id, BACKGROUND_ACTION_SOURCE),
+                                (
+                                    now,
+                                    session_id,
+                                    canc.owner,
+                                    canc.continuation_id,
+                                    BACKGROUND_ACTION_SOURCE,
+                                    int(canc.only_if_unstarted),
+                                    EventType.CONTINUATION_STARTED,
+                                ),
                             )
                         else:
                             # Background actions are cancelled through their own abort-aware path;
@@ -1891,12 +1973,24 @@ class SqliteStore:
 
                 # Apply observer receipts
                 for r in observer_receipts:
+                    if r.require_interruption_source:
+                        if not isinstance(r.expected_run_id, str) or not r.expected_run_id:
+                            raise StoreConflict("an interruption receipt has no exact child run identity")
+                        source = self._connection.execute(
+                            """
+                            SELECT event_type, run_id FROM session_events
+                            WHERE session_id = ? AND sequence = ?
+                            """,
+                            (r.session_id, r.event_sequence),
+                        ).fetchone()
+                        if source is None or source[0] != EventType.RUN_INTERRUPTED or source[1] != r.expected_run_id:
+                            raise StoreConflict("child interruption receipt does not match its exact source event")
                     self._connection.execute(
                         """
                         INSERT OR IGNORE INTO observer_receipts (session_id, event_sequence, owner, created_at)
                         VALUES (?, ?, ?, ?)
                         """,
-                        (session_id, r.event_sequence, r.owner, now),
+                        (r.session_id, r.event_sequence, r.owner, now),
                     )
 
                 # Update completed continuation
@@ -3559,6 +3653,21 @@ class SqliteStore:
                 (session_id, event_sequence, owner),
             )
             return cursor.fetchone() is not None
+
+    def continuation_started(self, session_id: str, continuation_id: str) -> bool:
+        """Whether the exact continuation input was committed into this session's event transcript."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                """
+                SELECT 1 FROM session_events
+                WHERE session_id = ? AND event_type = ?
+                  AND json_extract(payload_json, '$.continuation_id') = ?
+                LIMIT 1
+                """,
+                (session_id, EventType.CONTINUATION_STARTED, continuation_id),
+            ).fetchone()
+            return row is not None
 
     def cancel_pending_continuations(
         self, session_id: str, owner: str, *, continuation_id: str | None = None, expected_session: SessionRecord | None = None
