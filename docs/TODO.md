@@ -2,8 +2,8 @@
 
 本文件集中跨模块取舍与导航；具体待办、现状证据和验收条件放在所属模块。新增项不代表功能已实现或已经实测。
 
-- [Core](../src/voidcode/core/TODO.md)：可选 provider-turn cap 与显式共享 root-action grant 已实现；adaptive model-headroom、输出投影及真实生产化边界继续按专属 TODO 跟踪。
-- [SDK](../src/voidcode/sdk/TODO.md)：`BackgroundContext.wait_tool` 的后台 action 结果等待已实现并经 Core/外部插件验证；普通前台 callback 的 suspend/恢复与完整 `eval` 产品仍属 P1。adaptive headroom、结果 schema 等表达力缺口仍开放；typed child budget outcome 与 owned first-settled child wait/atomic delivery 已实现，含精确事件来源、重开恢复与相邻 `join_child` polling gap；typed child output/history capture errors 及 review/task/batch/wait/agent:// 透传与 workflow 持久化亦已实现，snapshot 当前-run 诊断为显式剩余缺口，见 SDK TODO。
+- [Core](../src/voidcode/core/TODO.md)：可选 provider-turn cap 与显式共享 root-action grant 已实现；adaptive model-headroom 已实现（per-dispatch 自适应收缩）；输出投影剩余事项及真实生产化边界继续按专属 TODO 跟踪。
+- [SDK](../src/voidcode/sdk/TODO.md)：`BackgroundContext.wait_tool` 的后台 action 结果等待已实现并经 Core/外部插件验证；普通前台 callback 的 suspend/恢复与完整 `eval` 产品仍属 P1。adaptive headroom 已实现，结果 schema 等表达力缺口仍开放；typed child budget outcome 与 owned first-settled child wait/atomic delivery 已实现，含精确事件来源、重开恢复与相邻 `join_child` polling gap 已修复（事件驱动）；typed child output/history capture errors 及 review/task/batch/wait/agent:// 透传与 workflow 持久化亦已实现，snapshot 当前-run 诊断为显式剩余缺口，见 SDK TODO。
 - [插件](../src/voidcode/plugins/TODO.md)：仅记录已验证的具体整改与仍未收敛的图片/UI、生产化、URI、Agent、进程和检索任务，不宣称全插件审计。
 - [TUI](../src/voidcode/tui/TODO.md)：独立记录图片渲染与实时进度/交互边界；viewer/API 不替代每条路径的真实 PTY 验收。
 - [Web UI](../frontend/src/core/TODO.md)：artifact 查看/复制/导出与真实浏览器验收。
@@ -16,13 +16,13 @@
 
 当前已有 typed tool body、`OutputBounds`、内容寻址 artifact、可注册 `ResourceReader`、工具进度回调、子 Agent 跟进/完成通知、动态 workflow、命令表单，以及两端长输出分页；这些不是从零重建的待办。已完成项保持勾选，不把“图片输入已通”混同于“终端可以显示工具返回的图片”。
 
-已核实的关键断点：普通 SDK `invoke_tool` 仍只排队；后台 action 可用 `BackgroundContext.wait_tool` 安全等待完整、request-correlated 结果，但这不是普通前台 callback 的 suspend API。`ResourceReaderServices` 已提供 caller-scoped child/process read projections；Subagents `agent://` 与 Exec `proc://` 复用注册、artifact 分页和 owner/session 边界。通用资源能力发现/枚举/搜索与 `ToolOutput` 组合仍开放。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。仍开放 active-model 自适应投影 headroom、结果 schema。Typed child budget 与 owned first-settled wait/atomic result delivery 已由精确 durable facts 贯通；native Core proof 覆盖三个 gated child、52,000 个 UTF-8 字节、不可变输出 URI/read/reread、去重与 reopen。等待事务只在有效 tool result 提交时保存精确 source event receipt；读快照不消费。Typed child output/history capture errors 已贯通 SDK outcome、review/task/batch/wait/agent:// 与 workflow 持久化，preview 独立于 artifact 发射；SDK TODO 明确记录未改的单 run `join_child` 仍有 0.2s SQL/Condition polling；accepted-yield、shared batch context、peer/process waits、snapshot 当前-run 诊断与真实 UI 交付仍开放。
+已核实的关键断点：普通 SDK `invoke_tool` 仍只排队；后台 action 可用 `BackgroundContext.wait_tool` 安全等待完整、request-correlated 结果，但这不是普通前台 callback 的 suspend API。`ResourceReaderServices` 已提供 caller-scoped child/process read projections；Subagents `agent://` 与 Exec `proc://` 复用注册、artifact 分页和 owner/session 边界。通用资源能力发现/枚举/搜索与 `ToolOutput` 组合仍开放。Core 已删除隐式 32-turn 默认和普通图片文件 50 KiB 拒绝，root-action grant 已持久共享并通过重启/并行 child 验收；`ArtifactPage` 已贯通 Core、SDK 本地/RPC。active-model 自适应投影 headroom 已实现，仍开放结果 schema。Typed child budget 与 owned first-settled wait/atomic result delivery 已由精确 durable facts 贯通；native Core proof 覆盖三个 gated child、52,000 个 UTF-8 字节、不可变输出 URI/read/reread、去重与 reopen。等待事务只在有效 tool result 提交时保存精确 source event receipt；读快照不消费。Typed child output/history capture errors 已贯通 SDK outcome、review/task/batch/wait/agent:// 与 workflow 持久化，preview 独立于 artifact 发射；单 run `join_child` 已改为事件驱动、无 polling；accepted-yield、shared batch context、peer/process waits、snapshot 当前-run 诊断与真实 UI 交付仍开放。
 
 ## 优先级
 
 | 优先级 | 落地点 | 归属 |
 |---|---|---|
-| P0 | 自适应模型投影 headroom、资源完整读取与真实 UI/生产任务验收 | Core、插件、TUI/Web |
+| P0 | 自适应模型投影 headroom（已实现）、资源完整读取与真实 UI/生产任务验收 | Core、插件、TUI/Web |
 | P1 | 前台 suspend/完整 `eval` 工具桥、URI 跨工具复用、Agent 持续交互、富结果与结构化问答、后台执行收尾 | SDK/Core、插件、TUI/Web |
 | P2 | 多格式读取、语义检索、结构化模型查询、语义重构闭环 | 插件、SDK |
 
