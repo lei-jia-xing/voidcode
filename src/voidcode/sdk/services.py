@@ -181,10 +181,14 @@ class ChildOutcome:
     readable history at that terminal point (``artifact://<sha256>``); the live, paged history
     stays ``transcript://<child_session_id>``. The plugin-provided ``agent://<child_session_id>``
     resource is distinct: it projects current descendant status and the latest eligible nonempty
-    completed publication without consuming notices. VoidCode has no separate accepted-yield
     marker, so this selection is not a claim of exact OMP yield equivalence. A recoverable
     finite-cap interruption carries the cap facts committed in that run's stop event; it does
-    not claim terminal completion or changed authorization.
+    not claim terminal completion or changed authorization. When the producer could not
+    capture that run's large output or history snapshot, ``output_error``/``history_error``
+    carry the committed capture cause verbatim; ``None`` means no committed failure
+    (including historical facts that predate the fields), never an inference. A present
+    ``output_preview`` without an artifact reference is a bounded prefix of otherwise
+    uncaptured output, not a completeness claim.
     """
 
     child_session_id: str
@@ -201,6 +205,10 @@ class ChildOutcome:
     #: Full output artifact ref from publication or snapshot materialization for immutable resource paging.
     output_sha256: str | None = None
     output_bytes: int | None = None
+    #: Committed capture cause when the exact run's large output could not be spilled; None is no committed failure.
+    output_error: str | None = None
+    #: Committed capture cause when the exact run's history snapshot could not be spilled; None is no committed failure.
+    history_error: str | None = None
     budget_exhaustion: BudgetExhaustion | None = None
 
     def as_payload(self) -> dict[str, object]:
@@ -220,7 +228,12 @@ class ChildOutcome:
         if self.output_sha256 is not None:
             payload["output_sha256"] = self.output_sha256
             payload["output_bytes"] = self.output_bytes
+        if self.output_preview is not None:
             payload["output_preview"] = self.output_preview
+        if self.output_error is not None:
+            payload["output_error"] = self.output_error
+        if self.history_error is not None:
+            payload["history_error"] = self.history_error
         if self.budget_exhaustion is not None:
             payload["budget_exhaustion"] = self.budget_exhaustion.as_payload()
         return payload

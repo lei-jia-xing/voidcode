@@ -845,6 +845,8 @@ class RuntimeServices:
             output_preview = optional_text("output_preview")
             if (output_sha256 is None) != (output_bytes is None):
                 raise RuntimeError("runtime returned incomplete child output artifact metadata")
+            output_error = optional_text("output_error")
+            history_error = optional_text("history_error")
             budget_payload = raw_outcome.get("budget_exhaustion")
             budget_exhaustion = BudgetExhaustion.from_payload(budget_payload)
             if budget_payload is not None and budget_exhaustion is None:
@@ -862,6 +864,8 @@ class RuntimeServices:
                 output_preview=output_preview,
                 output_sha256=output_sha256,
                 output_bytes=output_bytes,
+                output_error=output_error,
+                history_error=history_error,
                 budget_exhaustion=budget_exhaustion,
             )
             source_session_id = delivery.get("source_session_id")
@@ -941,6 +945,8 @@ class RuntimeServices:
             output_preview=None if payload.get("output_preview") is None else str(payload["output_preview"]),
             output_sha256=None if payload.get("output_sha256") is None else str(payload["output_sha256"]),
             output_bytes=output_bytes if isinstance(output_bytes, int) and not isinstance(output_bytes, bool) else None,
+            output_error=None if payload.get("output_error") is None else str(payload["output_error"]),
+            history_error=None if payload.get("history_error") is None else str(payload["history_error"]),
             budget_exhaustion=BudgetExhaustion.from_payload(payload.get("budget_exhaustion")),
         )
 

@@ -1479,6 +1479,8 @@ class DelegationManager:
             output_preview=None if payload.get("output_preview") is None else str(payload["output_preview"]),
             output_sha256=None if payload.get("output_sha256") is None else str(payload["output_sha256"]),
             output_bytes=output_bytes if isinstance(output_bytes, int) else None,
+            output_error=None if payload.get("output_error") is None else str(payload["output_error"]),
+            history_error=None if payload.get("history_error") is None else str(payload["history_error"]),
             budget_exhaustion=BudgetExhaustion.from_payload(payload.get("budget_exhaustion")),
         )
 
@@ -1693,6 +1695,14 @@ class DelegationManager:
         }
         if error is not None:
             notice["error"] = _utf8_preview(error, CHILD_OUTPUT_PREVIEW_BYTES)
+        # The exact run's capture causes, verbatim from the fact being committed:
+        # a hint only, never a second result truth; consumers read the joined outcome.
+        output_error = payload.get("output_error")
+        if isinstance(output_error, str) and output_error:
+            notice["output_error"] = output_error
+        history_error = payload.get("history_error")
+        if isinstance(history_error, str) and history_error:
+            notice["history_error"] = history_error
         if payload.get("output_sha256") is not None:
             notice["output_sha256"] = payload["output_sha256"]
         history = payload.get("history")
