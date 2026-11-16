@@ -103,11 +103,14 @@ _NODE_KEYS = frozenset(
         "output",
         "output_sha256",
         "output_bytes",
+        "output_preview",
+        "output_error",
+        "history_error",
         "error",
         "budget_exhaustion",
     }
 )
-_NODE_REQUIRED_KEYS = _NODE_KEYS - {"budget_exhaustion"}
+_NODE_REQUIRED_KEYS = _NODE_KEYS - {"budget_exhaustion", "output_preview", "output_error", "history_error"}
 _RUN_STATUSES: frozenset[str] = frozenset({"running", "paused", "parked", "completed", "failed", "cancelled"})
 _NODE_STATUSES: frozenset[str] = frozenset({"pending", "running", "waiting", "interrupted", "completed", "failed", "cancelled", "skipped"})
 _TERMINAL_RUN: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
@@ -157,6 +160,12 @@ class WorkflowNode:
     output: str | None = None
     output_sha256: str | None = None
     output_bytes: int | None = None
+    #: Bounded preview of a terminal output whose full bytes were not captured; never a completeness claim.
+    output_preview: str | None = None
+    #: Committed capture cause when the exact run's large output could not be spilled; None is no committed failure.
+    output_error: str | None = None
+    #: Committed capture cause when the exact run's history snapshot could not be spilled; None is no committed failure.
+    history_error: str | None = None
     error: str | None = None
     budget_exhaustion: BudgetExhaustion | None = None
 
@@ -217,6 +226,15 @@ class WorkflowNode:
         output_bytes = raw["output_bytes"]
         if output_bytes is not None and (not isinstance(output_bytes, int) or isinstance(output_bytes, bool) or output_bytes < 0):
             raise ValueError(f"workflow run '{run_id}' node '{key}' output_bytes must be a byte count or null")
+        output_preview = raw.get("output_preview")
+        if output_preview is not None and not isinstance(output_preview, str):
+            raise ValueError(f"workflow run '{run_id}' node '{key}' output_preview must be text or null")
+        output_error = raw.get("output_error")
+        if output_error is not None and not isinstance(output_error, str):
+            raise ValueError(f"workflow run '{run_id}' node '{key}' output_error must be text or null")
+        history_error = raw.get("history_error")
+        if history_error is not None and not isinstance(history_error, str):
+            raise ValueError(f"workflow run '{run_id}' node '{key}' history_error must be text or null")
         error = raw["error"]
         if error is not None and not isinstance(error, str):
             raise ValueError(f"workflow run '{run_id}' node '{key}' error must be text or null")
@@ -233,6 +251,9 @@ class WorkflowNode:
             output=output,
             output_sha256=output_sha256,
             output_bytes=output_bytes,
+            output_preview=output_preview,
+            output_error=output_error,
+            history_error=history_error,
             error=error,
             budget_exhaustion=budget_exhaustion,
         )
@@ -252,6 +273,12 @@ class WorkflowNode:
             "output_bytes": self.output_bytes,
             "error": self.error,
         }
+        if self.output_preview is not None:
+            payload["output_preview"] = self.output_preview
+        if self.output_error is not None:
+            payload["output_error"] = self.output_error
+        if self.history_error is not None:
+            payload["history_error"] = self.history_error
         if self.budget_exhaustion is not None:
             payload["budget_exhaustion"] = self.budget_exhaustion.as_payload()
         return payload
@@ -621,14 +648,25 @@ class WorkflowContext:
         while True:
             outcome = self.invoke(_JoinNode(child_id, JOIN_SLICE_SECONDS))
             if outcome.status in ("completed", "failed"):
-                return self._commit(_FinishNode(self.run_id, key, outcome))
+                finished = self._commit(_FinishNode(self.run_id, key, outcome))
+                # The node truth already committed inside the lease; control flow
+                # raises here so a terminal row is never lost to lease rollback.
+                if finished.cancelled:
+                    raise _CancelledNode(key)
+                if finished.error is not None:
+                    raise ValueError(finished.error)
+                assert finished.text is not None
+                return finished.text
             if outcome.status in ("waiting", "interrupted"):
                 self._commit(_ParkNode(self.run_id, key, outcome))
                 raise _ParkedNode(key, outcome.status, outcome.error)
             if outcome.status == "cancelled":
-                # _finish_node persists the cancellation, then raises _CancelledNode itself.
-                self._commit(_FinishNode(self.run_id, key, outcome))
-                raise AssertionError(f"node '{key}' finish swallowed its cancellation")
+                finished = self._commit(_FinishNode(self.run_id, key, outcome))
+                if finished.error is not None:
+                    raise ValueError(finished.error)
+                if not finished.cancelled:
+                    raise AssertionError(f"node '{key}' finish swallowed its cancellation")
+                raise _CancelledNode(key)
             # "running" past this slice: release the lease and re-drive.
 
     def _commit(self, callback: Any) -> Any:
@@ -671,7 +709,7 @@ class _FinishNode:
     key: str
     outcome: ChildOutcome
 
-    def __call__(self, context: ToolContext, services: PluginServices) -> str:
+    def __call__(self, context: ToolContext, services: PluginServices) -> _FinishedNode:
         return _finish_node(context, services, self.run_id, self.key, self.outcome)
 
 
@@ -789,6 +827,11 @@ def _stage_pending_node(
             return _StagedNode(node=existing, plan=None, settled=_read_full_artifact(services, existing.output_sha256))
         if existing.status == "completed" and existing.output is not None:
             return _StagedNode(node=existing, plan=None, settled=existing.output)
+        if existing.status == "completed" and existing.output_sha256 is None:
+            # Preview-only capture failure persisted by _finish_node: no full text
+            # exists to return, and redriving cannot manufacture it. Fail visibly
+            # here (nothing staged yet, so raising inside is safe).
+            raise ValueError(_unavailable_output_message(key, existing.run_id, existing.output_error))
         if existing.status in ("failed", "cancelled", "skipped"):
             raise ValueError(f"node '{key}' already ended as {existing.status}; refusing to replay it")
         return _StagedNode(node=existing, plan=plan, settled=None)
@@ -835,8 +878,32 @@ def _attach_node_child(_context: ToolContext, services: PluginServices, run_id: 
     return _NodePlan(node)
 
 
-def _finish_node(context: ToolContext, services: PluginServices, run_id: str, key: str, outcome: ChildOutcome) -> str:
-    """Persist one terminal node outcome and return its full text."""
+def _unavailable_output_message(key: str, run_id: str | None, output_error: str | None) -> str:
+    cause = output_error or "no full output was captured"
+    return f"node '{key}' completed but its full output is unavailable for run '{run_id or 'unknown'}': {cause}"
+
+
+@dataclass(frozen=True, slots=True)
+class _FinishedNode:
+    """The committed result of one finish callback; the driver raises control flow outside the lease."""
+
+    node: WorkflowNode
+    text: str | None
+    error: str | None = None
+    cancelled: bool = False
+
+
+def _finish_node(context: ToolContext, services: PluginServices, run_id: str, key: str, outcome: ChildOutcome) -> _FinishedNode:
+    """Persist one terminal node outcome; control-flow errors are returned, never raised after staging.
+
+    Core commits a leased callback's staged state only when the callback returns: raising
+    after ``replace_state`` revokes the lease and discards the row. Every terminal branch
+    below therefore stages the node's durable truth and returns it; the driver raises
+    ``ValueError``/``_CancelledNode`` after the commit landed. Only pre-stage validation
+    (unknown node/child, nonterminal outcome) raises here. A completed child whose full
+    output was not captured keeps its real completed status with the committed preview
+    and capture cause; only the ``str`` consumption fails, visibly, outside the lease.
+    """
     _ = context
     state, run, version = _require_run(services, run_id)
     node = run.node(key)
@@ -860,61 +927,83 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
                 node,
                 status=terminal,
                 run_id=outcome.run_id,
+                output_preview=outcome.output_preview,
+                output_error=outcome.output_error,
+                history_error=outcome.history_error,
                 error=outcome.error if terminal != "completed" else None,
                 budget_exhaustion=outcome.budget_exhaustion,
             )
             services.replace_state(state.with_run(run.with_node(node)).to_payload(), version, "session")
         if run.status == "cancelled":
-            raise _CancelledNode(key)
+            return _FinishedNode(node=node, text=None, cancelled=True)
         if run.status == "failed":
-            raise ValueError(f"node '{key}' ends with failed run '{run_id}'")
-        raise ValueError(f"node '{key}' ends with {run.status} run '{run_id}'")
+            return _FinishedNode(node=node, text=None, error=f"node '{key}' ends with failed run '{run_id}'")
+        return _FinishedNode(node=node, text=None, error=f"node '{key}' ends with {run.status} run '{run_id}'")
     if node.status == "completed" and node.output is not None and node.output_sha256 is None:
-        return node.output
+        return _FinishedNode(node=node, text=node.output)
     if outcome.status not in ("completed", "failed", "cancelled"):
         raise ValueError(f"cannot finish workflow node '{key}' from child status {outcome.status!r}")
     if outcome.run_id is not None:
         services.acknowledge_child_completion(outcome.child_session_id, outcome.run_id)
     # A sha always wins: outcome.output is a bounded preview when the full bytes spilled.
+    # Missing output (None) is not empty output (""): only persist "" when the child
+    # genuinely produced no text without a preview or capture cause.
     output: str | None = None
     output_sha256: str | None = outcome.output_sha256
     output_bytes: int | None = outcome.output_bytes
+    preview_only = False
     if output_sha256 is None:
-        text = outcome.output or ""
-        if len(text.encode("utf-8")) > INLINE_OUTPUT_BYTES:
-            reference = services.spill_artifact(text, media_type="text/plain; charset=utf-8")
-            output_sha256 = reference.sha256
-            output_bytes = reference.bytes
+        if outcome.output is None:
+            if outcome.output_preview is not None or outcome.output_error is not None:
+                preview_only = True
+            else:
+                output = ""
         else:
-            output = text
+            text = outcome.output
+            if len(text.encode("utf-8")) > INLINE_OUTPUT_BYTES:
+                reference = services.spill_artifact(text, media_type="text/plain; charset=utf-8")
+                output_sha256 = reference.sha256
+                output_bytes = reference.bytes
+            else:
+                output = text
     if outcome.status == "completed":
         status: NodeStatus = "completed"
     elif outcome.status == "failed":
         status = "failed"
     else:
         status = "cancelled"
+    # Read the full bytes BEFORE staging: a missing artifact raises here while
+    # nothing is staged, so the node row is never lost to lease rollback.
+    text: str | None = None
+    if status == "completed" and not preview_only:
+        if output_sha256 is not None:
+            text = _read_full_artifact(services, output_sha256)
+        else:
+            text = output
     error = outcome.error if status != "completed" else None
-    run = run.with_node(
-        replace(
-            node,
-            status=status,
-            run_id=outcome.run_id,
-            output=output,
-            output_sha256=output_sha256,
-            output_bytes=output_bytes,
-            error=error,
-            budget_exhaustion=outcome.budget_exhaustion,
-        )
+    node = replace(
+        node,
+        status=status,
+        run_id=outcome.run_id,
+        output=output,
+        output_sha256=output_sha256,
+        output_bytes=output_bytes,
+        output_preview=outcome.output_preview,
+        output_error=outcome.output_error,
+        history_error=outcome.history_error,
+        error=error,
+        budget_exhaustion=outcome.budget_exhaustion,
     )
+    run = run.with_node(node)
     services.replace_state(state.with_run(run).to_payload(), version, "session")
     if status == "failed":
-        raise ValueError(f"node '{key}' failed: {error or 'no error reported'}")
+        return _FinishedNode(node=node, text=None, error=f"node '{key}' failed: {error or 'no error reported'}")
     if status == "cancelled":
-        raise _CancelledNode(key)
-    if output is not None:
-        return output
-    assert output_sha256 is not None
-    return _read_full_artifact(services, output_sha256)
+        return _FinishedNode(node=node, text=None, cancelled=True)
+    if preview_only:
+        return _FinishedNode(node=node, text=None, error=_unavailable_output_message(key, outcome.run_id, outcome.output_error))
+    assert text is not None
+    return _FinishedNode(node=node, text=text)
 
 
 def _park_node(context: ToolContext, services: PluginServices, run_id: str, key: str, outcome: ChildOutcome) -> None:
@@ -924,7 +1013,22 @@ def _park_node(context: ToolContext, services: PluginServices, run_id: str, key:
     if node is None or run.status in _TERMINAL_RUN:
         return
     status: NodeStatus = "interrupted" if outcome.status == "interrupted" else "waiting"
-    run = run.with_node(replace(node, status=status, run_id=outcome.run_id, error=outcome.error, budget_exhaustion=outcome.budget_exhaustion))
+    # The parked run owns this row now: prior-run output and capture data must not linger.
+    run = run.with_node(
+        replace(
+            node,
+            status=status,
+            run_id=outcome.run_id,
+            output=None,
+            output_sha256=None,
+            output_bytes=None,
+            output_preview=outcome.output_preview,
+            output_error=outcome.output_error,
+            history_error=outcome.history_error,
+            error=outcome.error,
+            budget_exhaustion=outcome.budget_exhaustion,
+        )
+    )
     services.replace_state(state.with_run(run).to_payload(), version, "session")
 
 
