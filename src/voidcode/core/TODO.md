@@ -24,6 +24,11 @@
 - Adjacent gap (unchanged): single-current-run `Core.join_child` still performs `Condition.wait(min(remaining, 0.2))` and SQL status checks; this first-settled wait does not fix that path. Accepted-yield, generic peer/process waits, and top-level shared `task_batch` context remain open.
 - [x] **Typed child output/history capture errors (Core facts + mapping).** `CHILD_FINISHED` commits a verbatim `output_error`/`history_error` cause for the exact run it could not capture; `_child_outcome`, `wait_children`, and `join_child` expose both; completion notices carry the same hints. (`8824ba40`.)
   - Core evidence: 6 parser tests in `tests/unit/core/test_child_capture_errors.py`; real-Core lean proof incl. exact-run wait isolation + snapshot selection; workflow return-then-raise durability proof in `tests/unit/plugins/test_workflows_nodes.py`. Snapshot current-run diagnostics remain an explicit SDK gap.
+- [x] **Child-completion notices carry the birth-captured chain-shared root.**
+  - Cause: terminal publication staged notice continuations without the captured root id, so the drain failed every rootless notice; this surfaced as restart-recovery notice-delivery timeouts and `failed` notice statuses in the collaboration suite.
+  - Stamp rule: `_publish_child_terminal` resolves the birth-captured root via `_captured_child_root_id` and stamps it on the notice continuation; fact and notice still commit in one transaction.
+  - Legacy rule: a birth without captured root identity raises `StoreConflict` at resolution, so the fact publishes with notify off and no `notice_id` while the wake-up is suppressed for that publication only. The result stays readable via join/wait; no migration, no fresh budget, no retry.
+  - Known-uncovered: the store forbids persisting rootless births, so a true legacy-row end-to-end is untestable; coverage is at the `StoreConflict`-contract seam (`test_legacy_child_without_captured_root_publishes_fact_without_notice`).
 
 ## P0：输出策略不制造新的业务 MAX
 
@@ -42,5 +47,6 @@
   - Workflow `MAX_CONCURRENT_NODES=8` is a fixed driver concurrency policy. Child inline output (32 KiB) and notice preview (4 KiB) are representation policies; large outputs use full artifact references. The 30-minute publication wait bounds notification delivery only, after which startup recovery retains the durable child result.
   - The `CHILD_INLINE_OUTPUT_BYTES` “1 MiB stdio frame” rationale is stale: this path carries an artifact identity plus bounded preview, and no corresponding 1 MiB frame limit was found in the consumer. Confirm each policy's owner, authority, and purpose before changing it; a finite root-action grant does not widen or remove these separate controls.
 
-- [ ] **Undiagnosed adjacent observation (not a bug claim): follow-up notify delivery thread pile-up.**
-  - Observation only: a throwaway real-Core fixture that sent a follow-up with `notify_on_completion=True` while the parent sat in `join` hung with ~97 `CoreChildDeliver` threads piled on one `_session_lock` (drain child → deliver notice → drain parent). Not diagnosed and out of this slice; needs a minimal repro plus lock-ordering review before any claim or fix.
+- [x] **Adjacent observation resolved (mechanism mapped; no fix needed): follow-up notify delivery thread pile-up.**
+  - Mechanism: `CoreChildDeliver` threads pile on the parent `_session_lock` via `_deliver_child_notice`→drain; the child lock is released before the parent drain, so this is single-lock contention, not a lock-order cycle. `join` is unaffected (CAS read path, no drain). Post-fix reruns show a clean drain with no pile-up.
+  - Residual unknown: how one follow-up yielded ~97 threads is still unexplained; the throwaway fixture is gone, and one send constructs exactly one deliver thread, so that count was never reproduced minimally.
