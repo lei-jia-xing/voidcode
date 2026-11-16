@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES
 from voidcode.plugins.review import create_plugin
 from voidcode.plugins.review.review_plugin import (
     DEFAULT_JOIN_TIMEOUT_SECONDS,
@@ -390,6 +391,121 @@ def test_budget_interrupted_child_preserves_typed_stop_in_review_result(tmp_path
     assert result.data["status"] == "interrupted"
     assert result.data["stop_cause"] == "limit_reached"
     assert result.data["budget_exhaustion"] == budget.as_payload()
+
+
+def test_long_completed_review_returns_run_and_immutable_ref_instead_of_empty(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
+    services = FakeServices()
+    finding = "finding: the dirty line needs a test — 复查 🙂\n"
+    full_text = finding * 2000
+    full_bytes = full_text.encode("utf-8")
+    assert len(full_bytes) > MAX_RESOURCE_PAGE_BYTES, "the fixture must exceed one shared artifact page"
+    reference = services.spill_artifact(full_bytes, media_type="text/plain; charset=utf-8")
+    outcome = ChildOutcome(
+        child_session_id="child-1",
+        status="completed",
+        output=None,
+        run_id="run-long",
+        output_sha256=reference.sha256,
+        output_bytes=reference.bytes,
+        output_preview=full_text[:200],
+    )
+
+    def join_child(child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
+        _ = timeout_seconds
+        assert child_session_id == "child-1"
+        return outcome
+
+    services.join_child = join_child  # type: ignore[method-assign]
+
+    result = _review(services, repo, {})
+
+    assert result.status == "ok"
+    assert result.data is not None
+    assert result.data["status"] == "completed"
+    assert result.data["run_id"] == "run-long"
+    assert result.data["output_sha256"] == reference.sha256
+    assert result.data["output_bytes"] == reference.bytes
+    assert result.data["output_preview"] == full_text[:200]
+    uri = f"artifact://{reference.sha256}"
+    assert result.data["output_uri"] == uri
+    assert result.output is not None
+    assert "completed without output" not in result.output
+    assert "run-long" in result.output
+    assert uri in result.output
+    assert finding.strip() in result.output
+    assert len(result.output.encode("utf-8")) < len(full_bytes), "only the first bounded page is inline"
+    seen = bytearray()
+    offset = 0
+    while True:
+        page = services.read_artifact(reference.sha256, offset=offset)
+        seen += page.data
+        offset += len(page.data)
+        if page.eof:
+            break
+    assert bytes(seen) == full_bytes
+
+
+def test_preview_only_completed_review_fails_visibly_without_relabeling_the_run(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
+    services = FakeServices()
+    cause = "ArtifactStoreError: quota exceeded"
+    history_cause = "HistoryStoreError: snapshot write failed"
+    outcome = ChildOutcome(
+        child_session_id="child-1",
+        status="completed",
+        output=None,
+        run_id="run-capped",
+        output_preview="partial finding: the dirty line…",
+        output_error=cause,
+        history_error=history_cause,
+    )
+
+    def join_child(child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
+        _ = timeout_seconds
+        assert child_session_id == "child-1"
+        return outcome
+
+    services.join_child = join_child  # type: ignore[method-assign]
+
+    result = _review(services, repo, {})
+
+    assert result.status == "error"
+    assert result.data is not None
+    assert result.data["status"] == "completed", "a capture failure must not relabel the child run"
+    assert result.data["run_id"] == "run-capped"
+    assert result.data["output_preview"] == "partial finding: the dirty line…"
+    assert result.data["output_error"] == cause
+    assert result.data["history_error"] == history_cause
+    assert "output_uri" not in result.data, "no URI may be invented for uncaptured output"
+    assert result.error is not None
+    assert cause in result.error
+    assert "run-capped" in result.error
+    assert "artifact://" not in result.error
+
+
+def test_empty_completed_review_stays_ok_and_distinct_from_preview_only(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
+    services = FakeServices()
+
+    def join_child(child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
+        _ = timeout_seconds
+        return ChildOutcome(child_session_id=child_session_id, status="completed", output=None, run_id="run-empty")
+
+    services.join_child = join_child  # type: ignore[method-assign]
+
+    result = _review(services, repo, {})
+
+    assert result.status == "ok"
+    assert result.output is not None
+    assert result.data is not None
+    assert result.data["status"] == "completed"
+    assert result.data["run_id"] == "run-empty"
+    assert "output_uri" not in result.data
+    assert "output_error" not in result.data
 
 
 # --- Git surface (ported behavior) ---

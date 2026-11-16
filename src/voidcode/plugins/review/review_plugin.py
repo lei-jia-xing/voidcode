@@ -7,10 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal
 
+from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES, render_stored_artifact_page
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
+from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
+from voidcode.sdk.resources import ResourceReadCaller
 from voidcode.sdk.services import ChildOutcome, PluginServices
-from voidcode.sdk.tools import ToolEffect
+from voidcode.sdk.tools import TextOutput, ToolEffect
 
 from .workspace_review import GitStatusSnapshot, ReviewFileDiff, WorkspaceReviewService, git_status_snapshot
 
@@ -161,24 +164,123 @@ def _target_input(args: _ReviewArgs) -> Mapping[str, object] | None:
 
 
 def _data(target: ReviewTarget, child_id: str, outcome: ChildOutcome) -> dict[str, object]:
-    data: dict[str, object] = {
-        "child_session_id": child_id,
-        "status": outcome.status,
-        "target_type": target.type,
-        "output": outcome.output,
-        "error": outcome.error,
-        "stop_cause": outcome.stop_cause,
-    }
-    if outcome.budget_exhaustion is not None:
-        data["budget_exhaustion"] = outcome.budget_exhaustion.as_payload()
+    data: dict[str, object] = {"target_type": target.type, **outcome.as_payload()}
+    data.setdefault("child_session_id", child_id)
+    if outcome.output_sha256 is not None:
+        data["output_uri"] = f"artifact://{outcome.output_sha256}"
     return data
 
 
-def _outcome_result(target: ReviewTarget, child_id: str, outcome: ChildOutcome) -> CommandResult:
+def _first_output_page(services: PluginServices, context: ToolContext, digest: str) -> tuple[str, str, int | None]:
+    """Render the first bounded page of output bytes: content, immutable URI, continuation."""
+    uri = f"artifact://{digest}"
+    caller = ResourceReadCaller(
+        session_id=context.require_session_id(),
+        workspace=context.require_workspace(),
+        revision_id=context.revision_id,
+        run_id=context.run_id,
+        abort_signal=context.abort_signal,
+    )
+    page = render_stored_artifact_page(uri=uri, digest=digest, services=services, caller=caller, byte_offset=0)
+    if page is None:
+        raise RuntimeError("review output artifact is missing")
+    if not isinstance(page.output, TextOutput):
+        raise RuntimeError("review output artifact is not text")
+    raw_content = page.body.get("raw_content")
+    next_byte_offset = page.body.get("next_byte_offset")
+    if not isinstance(raw_content, str):
+        raise RuntimeError("review output artifact page is malformed")
+    if next_byte_offset is not None and (type(next_byte_offset) is not int or next_byte_offset <= 0):
+        raise RuntimeError("review output artifact page did not advance")
+    return raw_content, uri, next_byte_offset
+
+
+def _paged_output_text(
+    *,
+    child_id: str,
+    outcome: ChildOutcome,
+    content: str,
+    uri: str,
+    next_byte_offset: int | None,
+) -> str:
+    run = outcome.run_id or "unknown"
+    lines = [
+        f"review child {child_id} run_id={run} status={outcome.status}",
+        f"Full immutable output for run_id={run}: {uri}.",
+    ]
+    if outcome.output_error:
+        lines.append(f"output_error: {outcome.output_error}")
+    if outcome.history_error:
+        lines.append(f"history_error: {outcome.history_error}")
+    lines.append(content)
+    if next_byte_offset is not None:
+        lines.append(f'More output: read(path="{uri}", byte_offset={next_byte_offset}).')
+    return "\n".join(lines)
+
+
+def _unavailable_result(child_id: str, outcome: ChildOutcome, data: dict[str, object], cause: object) -> CommandResult:
+    """Fail the command visibly while the data keeps the actual completed child run."""
+    run = outcome.run_id or "unknown"
+    return CommandResult(
+        status="error",
+        error=(f"review child {child_id} run_id={run} completed but its full output is unavailable: {cause}"),
+        data=data,
+    )
+
+
+def _completed_result(
+    target: ReviewTarget,
+    child_id: str,
+    outcome: ChildOutcome,
+    services: PluginServices,
+    context: ToolContext,
+) -> CommandResult:
     data = _data(target, child_id, outcome)
+    if outcome.output_sha256 is not None:
+        try:
+            content, uri, next_byte_offset = _first_output_page(services, context, outcome.output_sha256)
+        except (ValueError, PermissionError, RuntimeError, OSError) as exc:
+            return _unavailable_result(child_id, outcome, data, exc)
+        return CommandResult(
+            status="ok",
+            output=_paged_output_text(child_id=child_id, outcome=outcome, content=content, uri=uri, next_byte_offset=next_byte_offset),
+            data=data,
+        )
+    if outcome.output is not None:
+        if len(outcome.output.encode("utf-8")) > MAX_RESOURCE_PAGE_BYTES:
+            try:
+                reference = services.spill_artifact(outcome.output.encode("utf-8"), media_type="text/plain; charset=utf-8")
+                content, uri, next_byte_offset = _first_output_page(services, context, reference.sha256)
+            except (ValueError, PermissionError, RuntimeError, OSError) as exc:
+                return _unavailable_result(child_id, outcome, data, exc)
+            data["output_uri"] = uri
+            return CommandResult(
+                status="ok",
+                output=_paged_output_text(child_id=child_id, outcome=outcome, content=content, uri=uri, next_byte_offset=next_byte_offset),
+                data=data,
+            )
+        return CommandResult(status="ok", output=outcome.output, data=data)
+    if outcome.output_preview is not None or outcome.output_error is not None:
+        cause = outcome.output_error if outcome.output_error else "no committed capture cause"
+        error = f"review child {child_id} run_id={outcome.run_id or 'unknown'} completed but its full output was not captured: {cause}"
+        if outcome.output_preview:
+            error += f"\n\nPreview:\n{outcome.output_preview}"
+        if outcome.history_error:
+            error += f"\nhistory_error: {outcome.history_error}"
+        return CommandResult(status="error", error=error, data=data)
+    return CommandResult(status="ok", output=f"review child {child_id} completed without output", data=data)
+
+
+def _outcome_result(
+    target: ReviewTarget,
+    child_id: str,
+    outcome: ChildOutcome,
+    services: PluginServices,
+    context: ToolContext,
+) -> CommandResult:
     if outcome.status == "completed":
-        text = outcome.output if outcome.output is not None else f"review child {child_id} completed without output"
-        return CommandResult(status="ok", output=text, data=data)
+        return _completed_result(target, child_id, outcome, services, context)
+    data = _data(target, child_id, outcome)
     if outcome.status in ("running", "waiting"):
         text = (
             f"review child {child_id} is still {outcome.status} after the {DEFAULT_JOIN_TIMEOUT_SECONDS:.0f}s wait. "
@@ -271,4 +373,4 @@ class ReviewCommand:
             outcome = services.join_child(child_id, timeout_seconds=DEFAULT_JOIN_TIMEOUT_SECONDS)
         except (ValueError, PermissionError, RuntimeError) as exc:
             return CommandResult(status="error", error=str(exc), data={"child_session_id": child_id, "target_type": target.type})
-        return _outcome_result(target, child_id, outcome)
+        return _outcome_result(target, child_id, outcome, services, invocation.context)

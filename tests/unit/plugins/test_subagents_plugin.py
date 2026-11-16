@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.plugins.subagents.agent_reader import read_agent_resource
 from voidcode.plugins.subagents.profiles.registry import load_agent_registry
 from voidcode.plugins.subagents.subagents_plugin import (
     CANCEL_REASON,
@@ -21,10 +22,13 @@ from voidcode.plugins.subagents.subagents_plugin import (
     TaskTool,
 )
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.resources import ResourceReadCaller, ResourceReadRequest
 from voidcode.sdk.services import (
     BudgetExhaustion,
     ChildOutcome,
     ChildSendReceipt,
+    ChildSessionSnapshot,
+    DescendantNode,
     EventView,
 )
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
@@ -408,6 +412,87 @@ def test_output_preserves_typed_budget_exhaustion(tmp_path: Path) -> None:
     assert payload["budget_exhaustion"] == outcome.as_payload()["budget_exhaustion"]
     assert "budget_exhaustion: dimension=provider_turns" in result.output.text
     assert services.acks == [], "recoverable budget stops are not completion notices"
+
+
+def test_output_preserves_typed_capture_errors_without_relabeling(tmp_path: Path) -> None:
+    services = FakeServices()
+    _task(services, tmp_path, {"prompt": "work"})
+    output_cause = "ArtifactStoreError: quota exceeded"
+    history_cause = "HistoryStoreError: snapshot write failed"
+    services.roster["child-1"] = ChildOutcome(
+        child_session_id="child-1",
+        status="completed",
+        output=None,
+        run_id="run-capped",
+        output_preview="partial result…",
+        output_bytes=40000,
+        output_error=output_cause,
+        history_error=history_cause,
+    )
+
+    res = _task(services, tmp_path, {"operation": "output", "task_id": "child-1"})
+
+    payload = _payload(res)
+    assert payload["status"] == "completed"
+    assert payload["run_id"] == "run-capped"
+    assert payload["output_preview"] == "partial result…"
+    assert payload["output_bytes"] == 40000
+    assert payload["output_error"] == output_cause
+    assert payload["history_error"] == history_cause
+    assert "output_uri" not in payload
+    assert isinstance(res.output, TextOutput)
+    assert output_cause in res.output.text
+    assert history_cause in res.output.text
+    assert "partial result…" in res.output.text
+
+
+def test_agent_reader_shows_only_the_publication_run_own_errors(tmp_path: Path) -> None:
+    services = FakeServices()
+    reference = services.spill_artifact("published findings", media_type="text/plain; charset=utf-8")
+    history_cause = "HistoryStoreError: snapshot write failed"
+    snapshot = ChildSessionSnapshot(
+        descendant=DescendantNode(
+            session_id="child-1",
+            parent_session_id="session-1",
+            depth=1,
+            status="running",
+            run_id="run-B",
+        ),
+        latest_outcome=ChildOutcome(
+            child_session_id="child-1",
+            status="completed",
+            output="published findings",
+            run_id="run-A",
+            output_sha256=reference.sha256,
+            output_bytes=reference.bytes,
+            history_error=history_cause,
+        ),
+    )
+
+    class _AgentServices:
+        def read_child_snapshot(self, child_session_id: str) -> ChildSessionSnapshot | None:
+            assert child_session_id == "child-1"
+            return snapshot
+
+        def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536):  # type: ignore[no-untyped-def]
+            return services.read_artifact(sha256, offset=offset, limit=limit)
+
+    page = read_agent_resource(
+        ResourceReadRequest(uri="agent://child-1"),
+        ResourceReadCaller(session_id="session-1", workspace=tmp_path, revision_id="rev-1", run_id="run-1"),
+        _AgentServices(),  # type: ignore[arg-type]
+    )
+
+    assert page is not None
+    assert isinstance(page.output, TextOutput)
+    assert "run-A" in page.output.text
+    assert "run-B" in page.output.text
+    assert history_cause in page.output.text
+    latest = page.body["latest_output"]
+    assert isinstance(latest, Mapping)
+    assert latest["run_id"] == "run-A"
+    assert latest["history_error"] == history_cause
+    assert latest["output_error"] is None
 
 
 def test_send_maps_the_receipt_without_claiming_consumption(tmp_path: Path) -> None:
@@ -864,6 +949,33 @@ def test_batch_group_read_preserves_typed_budget_exhaustion(tmp_path: Path) -> N
     assert pending[1]["status"] == "running"
     assert pending[1]["run_id"] == "run-pending"
     assert services.acks == [], "recoverable budget stops are not completion notices"
+
+
+def test_batch_group_read_preserves_typed_capture_errors(tmp_path: Path) -> None:
+    services = FakeServices()
+    spawned = _batch(services, tmp_path, {"tasks": [{"prompt": "capped"}]})
+    group_id = str(_payload(spawned)["parallel_group_id"])
+    output_cause = "ArtifactStoreError: quota exceeded"
+    services.roster["child-1"] = ChildOutcome(
+        child_session_id="child-1",
+        status="completed",
+        output=None,
+        run_id="run-capped",
+        output_preview="partial result…",
+        output_error=output_cause,
+    )
+
+    result = _batch(services, tmp_path, {"operation": "output", "parallel_group_id": group_id})
+
+    payload = _payload(result)
+    children = payload["children"]
+    assert children[0]["status"] == "completed"
+    assert children[0]["run_id"] == "run-capped"
+    assert children[0]["output_preview"] == "partial result…"
+    assert children[0]["output_error"] == output_cause
+    assert "output_uri" not in children[0]
+    assert isinstance(result.output, TextOutput)
+    assert output_cause in result.output.text
 
 
 def test_batch_item_with_unknown_profile_rejects_the_whole_batch(tmp_path: Path) -> None:

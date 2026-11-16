@@ -454,6 +454,8 @@ class TaskBody:
     output_bytes: int | None = None
     next_output_offset: int | None = None
     output_preview: str | None = None
+    output_error: str | None = None
+    history_error: str | None = None
     #: Current status/latest published output; distinct from the transcript.
     agent_uri: str | None = None
     #: Live transcript and immutable saved-history references.
@@ -485,6 +487,8 @@ class TaskBody:
             "output_bytes",
             "next_output_offset",
             "output_preview",
+            "output_error",
+            "history_error",
             "agent_uri",
             "history_uri",
             "history_sha256",
@@ -610,6 +614,8 @@ class _OutputFacts:
     output_bytes: int | None = None
     next_output_offset: int | None = None
     output_preview: str | None = None
+    output_error: str | None = None
+    history_error: str | None = None
     history_uri: str | None = None
     history_sha256: str | None = None
     run_id: str | None = None
@@ -665,6 +671,8 @@ def _artifact_output_facts(
         history_uri=_transcript_uri(outcome.child_session_id),
         history_sha256=outcome.history_sha256,
         run_id=outcome.run_id,
+        output_error=outcome.output_error,
+        history_error=outcome.history_error,
     )
 
 
@@ -690,6 +698,8 @@ def _output_facts(
             history_uri=_transcript_uri(outcome.child_session_id),
             history_sha256=outcome.history_sha256,
             run_id=outcome.run_id,
+            output_error=outcome.output_error,
+            history_error=outcome.history_error,
         )
     return _OutputFacts(
         output_preview=outcome.output_preview,
@@ -697,6 +707,8 @@ def _output_facts(
         history_uri=_transcript_uri(outcome.child_session_id),
         history_sha256=outcome.history_sha256,
         run_id=outcome.run_id,
+        output_error=outcome.output_error,
+        history_error=outcome.history_error,
     )
 
 
@@ -717,6 +729,10 @@ def _outcome_text(
     if budget_exhaustion is not None:
         details = ", ".join(f"{key}={value}" for key, value in budget_exhaustion.items())
         lines.append(f"budget_exhaustion: {details}")
+    if outcome.output_error:
+        lines.append(f"output_error: {outcome.output_error}")
+    if outcome.history_error:
+        lines.append(f"history_error: {outcome.history_error}")
     if facts is not None and facts.output_uri is not None:
         lines.append(f"Full immutable output for run_id={outcome.run_id or 'unknown'}: {facts.output_uri}.")
     if facts is not None and facts.output:
@@ -769,6 +785,8 @@ def _outcome_entry(
         output_bytes=facts.output_bytes,
         next_output_offset=facts.next_output_offset,
         output_preview=facts.output_preview,
+        output_error=outcome.output_error,
+        history_error=outcome.history_error,
         agent_uri=_agent_uri(task_id),
         history_uri=_transcript_uri(task_id),
         history_sha256=outcome.history_sha256,
@@ -1144,6 +1162,8 @@ class TaskTool:
                 output_bytes=facts.output_bytes,
                 next_output_offset=facts.next_output_offset,
                 output_preview=facts.output_preview,
+                output_error=outcome.output_error,
+                history_error=outcome.history_error,
                 agent_uri=_agent_uri(child_id),
                 history_uri=_transcript_uri(child_id),
                 history_sha256=outcome.history_sha256,
@@ -1327,6 +1347,8 @@ class TaskTool:
                 output_bytes=facts.output_bytes,
                 next_output_offset=facts.next_output_offset,
                 output_preview=facts.output_preview,
+                output_error=outcome.output_error,
+                history_error=outcome.history_error,
                 agent_uri=_agent_uri(task_id),
                 history_uri=_transcript_uri(task_id),
                 history_sha256=outcome.history_sha256,

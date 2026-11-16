@@ -336,3 +336,54 @@ def test_review_input_preparation_does_not_start_child_or_provider(tmp_path: Pat
         assert form.initial_values["target"] == "uncommitted"
         assert core.events_after(session) == before
         assert server.requests == []
+
+
+def _read_full_text(core: Core, digest: str) -> str:
+    chunks = bytearray()
+    offset = 0
+    while True:
+        page = core.read_artifact(digest, offset=offset)
+        chunks += page.data
+        offset += len(page.data)
+        if page.eof:
+            break
+    return bytes(chunks).decode("utf-8")
+
+
+def test_long_review_returns_immutable_ref_readable_in_full_across_followup(tmp_path: Path) -> None:
+    line = "finding: the dirty line needs a test — 复查 🙂\n"
+    long_text = line * 1200
+    assert len(long_text.encode("utf-8")) > 32 * 1024, "the answer must exceed the Core inline bound"
+    follow_text = "follow-up: confirmed the fix."
+    replies: list[dict[str, object]] = [
+        openai_response(message={"role": "assistant", "content": long_text}, finish="stop"),
+        openai_response(message={"role": "assistant", "content": follow_text}, finish="stop"),
+    ]
+    with _loopback_server(replies) as server:
+        core = _core(tmp_path, server)
+        parent_id = core.create_session("parent").session_id
+
+        result = _invoke_review(core, parent_id, {})
+
+        assert result.status == "ok", result.error
+        assert result.data is not None
+        run_id = result.data["run_id"]
+        child_id = result.data["child_session_id"]
+        uri = result.data["output_uri"]
+        assert isinstance(run_id, str) and run_id
+        assert isinstance(child_id, str) and child_id
+        assert isinstance(uri, str) and uri.startswith("artifact://")
+        assert result.output is not None
+        assert "completed without output" not in result.output
+        assert uri in result.output
+        assert run_id in result.output
+        assert len(result.output.encode("utf-8")) < len(long_text.encode("utf-8"))
+
+        digest = uri.removeprefix("artifact://")
+        assert _read_full_text(core, digest) == long_text
+
+        core.send_child(parent_id, child_id, "Now confirm the fix in one line.")
+        follow = core.join_child(parent_id, child_id, timeout_seconds=60.0)
+        assert follow.run_id != run_id
+        assert follow.output == follow_text
+        assert _read_full_text(core, digest) == long_text, "the exact old URI stays immutable across the follow-up"
