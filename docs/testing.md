@@ -91,3 +91,61 @@ bounded subscriptions with acknowledged cursors. `test_session_client_conformanc
 drives the same SDK behavior locally and remotely. Browser reconnect acceptance
 is `frontend/e2e/rpc-reconnect.spec.ts`; `frontend/src/lib/core/client.test.ts`
 covers lost replies and malformed messages through a JSON-RPC peer.
+
+
+## Known-red baseline @ `f16de0d1`
+
+33 unit failures pre-exist the join/headroom slices and reproduce identically
+at HEAD `3cd6afa1`. Established by running the full unit suite on both sides
+with the same command (`python -m pytest tests/unit -q -p no:cacheprovider
+--tb=no -rf`): tree 33 failed / 1807 passed, HEAD 33 failed / 1790 passed,
+identical 33/33 failure IDs; the +17 passed delta is this slice's new tests
+(2 join + 15 headroom). The two timing-sensitive `test_tui_stream_cancel`
+failures were additionally re-verified solo at HEAD. Session ids inside
+`unknown session` signatures are random per run; only the shape is stable.
+Do not fix here; re-baseline both sides when the list changes.
+
+- `tests/unit/core/test_artifacts.py` (6):
+  - `test_spill_writes_the_bytes_under_their_digest_before_the_result_commits` — KeyError: 'sha256'
+  - `test_pages_are_bounded_and_report_their_own_geometry` — KeyError: 'data'
+  - `test_spilling_the_same_bytes_again_is_free` — KeyError: 'sha256'
+  - `test_the_media_type_survives_the_reference` — KeyError: 'media_type'
+  - `test_empty_payloads_are_stored_and_read_back` — KeyError: 'sha256'
+  - `test_a_read_only_lease_may_spill_because_the_store_is_not_the_machine` — KeyError: 'sha256'
+- `tests/unit/core/test_background_actions.py` (5):
+  - `test_keyed_spawn_returns_one_child_and_refuses_a_differing_spec` — KeyError: 'unknown session: <id>'
+  - `test_full_budget_still_refetches_a_keyed_child` — KeyError: 'unknown session: <id>'
+  - `test_crash_between_child_row_and_parent_fact_stays_recoverable` — KeyError: 'unknown session: <id>'
+  - `test_cancel_before_first_run_is_never_started_late` — KeyError: 'unknown session: <id>'
+  - `test_concurrent_same_key_spawns_start_exactly_one_initial_run` — assert set() == {None}
+- `tests/unit/core/test_background_processes.py` (6, all KeyError: 'handle'):
+  - `test_a_supervised_process_outlives_the_call_and_lists_itself` — KeyError: 'handle'
+  - `test_pages_read_the_log_by_offset_and_report_liveness` — KeyError: 'handle'
+  - `test_written_stdin_reaches_the_process` — KeyError: 'handle'
+  - `test_a_live_id_cannot_be_started_twice_and_cancel_kills_the_group` — KeyError: 'handle'
+  - `test_another_session_cannot_see_or_stop_a_supervised_process` — KeyError: 'handle'
+  - `test_core_shutdown_stops_supervised_processes_by_group` — KeyError: 'handle'
+- `tests/unit/core/test_media_projection.py` (3, all KeyError: 'result_reference' at :320):
+  - `test_real_core_native_and_untrusted_deferred_images_reach_anthropic_sdk_wire[False-1]` — KeyError: 'result_reference'
+  - `test_real_core_native_and_untrusted_deferred_images_reach_anthropic_sdk_wire[True-1]` — KeyError: 'result_reference'
+  - `test_real_core_native_and_untrusted_deferred_images_reach_anthropic_sdk_wire[False-10]` — KeyError: 'result_reference'
+- `tests/unit/core/test_p2a_features.py` (1):
+  - `test_p2a_durable_continuation_executes_real_governed_run_and_recovers` — assert 'failed' == 'completed'
+- `tests/unit/core/test_process_lease.py` (4):
+  - `test_run_process_returns_stdout_stderr_exit_code_and_stdin` — KeyError: 'exit_code'
+  - `test_run_process_bounds_each_stream_and_reports_truncation` — KeyError: 'stdout'
+  - `test_run_process_timeout_kills_the_whole_group` — KeyError: 'timed_out'
+  - `test_read_only_lease_refuses_to_run_a_process` — KeyError: 'refused'
+- `tests/unit/core/test_session_reads.py` (3):
+  - `test_session_info_reports_one_running_session_and_its_chain_budget` — assert None == 16
+  - `test_child_event_reads_are_bounded_cursor_scoped_and_descendant_checked` — s5_probe body read is None, not a Mapping
+  - `test_post_tool_hook_reads_the_session_row_under_a_hook_lease` — assert None == 16
+- `tests/unit/core/test_tui_stream_cancel.py` (2, both Event.wait(5) timeout):
+  - `test_quit_cancels_an_idle_follow_stream_before_joining` — Event.wait(5) never set
+  - `test_session_switch_survives_a_late_old_stream_attach` — Event.wait(5) never set
+- `tests/unit/plugins/test_agent_profiles.py` (1):
+  - `test_subagents_plugin_surface` — surface lists extra 'wait' tool
+- `tests/unit/test_bundled_sources.py` (1):
+  - `test_bundle_dispatches_one_tool_per_tool_plugin` — 'bundle-ok' missing from shell_exec text
+- `tests/unit/test_core_tui.py` (1):
+  - `test_model_turn_updates_footer_context` — latest_input_tokens None, expected 5200
