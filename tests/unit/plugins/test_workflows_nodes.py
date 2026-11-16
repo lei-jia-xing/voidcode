@@ -127,7 +127,8 @@ def test_waiting_child_parks_and_cancelled_child_raises() -> None:
     with pytest.raises(_ParkedNode):
         asyncio.run(driver.agent("review", "look", key="a"))
     state = WorkflowState.from_payload(services.get_state("session")[0])
-    assert state.runs[run_id].status == "parked"
+    # Node-level park leaves the run row alone; drive_workflow_action marks it parked.
+    assert state.runs[run_id].status == "running"
     assert state.runs[run_id].nodes[0].status == "waiting"
 
     services.join_status = "cancelled"
