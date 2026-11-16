@@ -13,6 +13,8 @@ from contextlib import ExitStack
 from threading import Lock
 
 from voidcode.sdk.provider import (
+    ModelContextLimits,
+    ModelLimitsProvider,
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTurnRequest,
@@ -200,6 +202,26 @@ class RegisteredProvider:
             return None
         provider = self._provider_for(self._name)
         return provider.list_models() if isinstance(provider, OpenAIChatCompletionsProvider) else None
+
+    def model_limits(self, model_name: str) -> ModelContextLimits | None:
+        """Advertised limits for one model of this registered provider; ``None`` when unknown.
+
+        Limits are advisory input to projection sizing: an unusable provider or a
+        failing probe degrades to unknown rather than breaking dispatch assembly.
+        """
+        if not isinstance(model_name, str) or not model_name.strip():
+            return None
+        try:
+            provider = self._provider_for(self._name)
+        except ProviderExecutionError, ValueError:
+            return None
+        if not isinstance(provider, ModelLimitsProvider):
+            return None
+        try:
+            limits = provider.model_limits(model_name)
+        except Exception:
+            return None
+        return limits if isinstance(limits, ModelContextLimits) or limits is None else None
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         return price_result(request, self._selected(request).propose_turn(request))

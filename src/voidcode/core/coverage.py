@@ -6,14 +6,20 @@ import base64
 import codecs
 import hashlib
 import json
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, Protocol
 
-from ..sdk.provider import ImageAttachment
+from ..sdk.codec import decode_provider_result
+from ..sdk.hooks import RequestWindow
+from ..sdk.provider import ImageAttachment, ModelContextLimits
 from ..sdk.services import ArtifactPage, ArtifactReference
 from ..sdk.tools import AttachmentOutput, EmptyOutput, TextOutput, ToolFailure, ToolResult
 from .artifacts import MAX_PAGE_BYTES
+from .events import EventType
 
 MODEL_PROJECTION_MARKER = "partial model projection; complete result unchanged"
 RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
@@ -236,6 +242,206 @@ def project_tool_result(
         else:
             raise ValueError("image attachment has no readable original")
     return _json(document), images, clipped
+
+
+class CommittedEvent(Protocol):
+    """The committed-history surface the allocator pairs rates from (reopen-safe)."""
+
+    @property
+    def sequence(self) -> int: ...
+    @property
+    def event_type(self) -> str: ...
+    @property
+    def payload(self) -> Mapping[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionAllocation:
+    """One dispatch's tool-text sizing decision: fixed host policy or adaptive shrink.
+
+    ``per_tool_max_bytes`` is set only for ``adaptive`` and never exceeds the
+    host ceiling the caller passed in. ``fixed`` keeps current behavior exactly;
+    ``reason`` names why (``unknown_limits``, ``unknown_usage``,
+    ``images_present``, ``no_shrinkable``, ``within_ceiling``,
+    ``insufficient_budget``) or ``ok`` for adaptive.
+    """
+
+    policy: Literal["fixed", "adaptive"]
+    reason: str
+    limit_tokens: int | None
+    limit_source: str | None
+    rate_tokens_per_char: float | None
+    per_tool_max_bytes: int | None
+    tool_count: int
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "policy": self.policy,
+            "reason": self.reason,
+            "limit_tokens": self.limit_tokens,
+            "limit_source": self.limit_source,
+            "rate_tokens_per_char": self.rate_tokens_per_char,
+            "per_tool_max_bytes": self.per_tool_max_bytes,
+            "tool_count": self.tool_count,
+        }
+
+
+def effective_input_limit_tokens(limits: ModelContextLimits | None) -> tuple[int | None, str | None]:
+    """The honest input law from advertised limits, or unknown.
+
+    ``max_input_tokens`` is the input law when advertised. Otherwise the window
+    minus the advertised output maximum is usable for input — and when the
+    output maximum is unadvertised too, the reserve is unknowable, so the
+    answer is unknown rather than a guessed fraction of the window.
+    """
+    if limits is None:
+        return None, None
+    candidate = limits.max_input_tokens
+    if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate > 0:
+        return candidate, "max_input_tokens"
+    window = limits.context_window
+    output = limits.max_output_tokens
+    if (
+        isinstance(window, int)
+        and not isinstance(window, bool)
+        and window > 0
+        and isinstance(output, int)
+        and not isinstance(output, bool)
+        and output > 0
+        and window - output >= 1
+    ):
+        return window - output, "context_window_minus_max_output"
+    return None, None
+
+
+def _intent_windows(events: Sequence[CommittedEvent]) -> dict[int, RequestWindow]:
+    windows: dict[int, RequestWindow] = {}
+    for event in events:
+        if event.event_type != EventType.PROVIDER_INTENT:
+            continue
+        payload = event.payload
+        if not isinstance(payload, Mapping):
+            continue
+        window = payload.get("request_window")
+        if not isinstance(window, Mapping):
+            continue
+        try:
+            windows[int(event.sequence)] = RequestWindow.from_payload(window)
+        except ValueError, KeyError, TypeError:
+            continue
+    return windows
+
+
+def measured_tokens_per_character(events: Sequence[CommittedEvent], *, provider_name: str, model_name: str) -> float | None:
+    """Tokens per character from this session's own newest qualifying dispatch.
+
+    The pair is the provider's reported ``input_tokens`` on a committed
+    ``MODEL_TURN`` for the same provider/model and the exact dispatched
+    request's measured window. Only a zero-image dispatch qualifies: images
+    are absent from the character inventory, so any image presence (or a
+    pre-inventory ``None``) would pollute the rate. ``None`` means no usable
+    measurement — never a byte-guess fallback.
+    """
+    if not isinstance(provider_name, str) or not provider_name or not isinstance(model_name, str) or not model_name:
+        return None
+    windows = _intent_windows(events)
+    for event in reversed(events):
+        if event.event_type != EventType.MODEL_TURN:
+            continue
+        payload = event.payload
+        if not isinstance(payload, Mapping):
+            continue
+        if payload.get("provider") != provider_name or payload.get("model") != model_name:
+            continue
+        dispatch = payload.get("dispatch_sequence")
+        if type(dispatch) is not int:
+            continue
+        window = windows.get(dispatch)
+        if window is None or window.total_image_count != 0:
+            continue
+        characters = window.total_characters
+        if characters <= 0:
+            continue
+        result = payload.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        try:
+            turn = decode_provider_result(result)
+        except ValueError, KeyError, TypeError:
+            continue
+        tokens = None if turn.usage is None else turn.usage.input_tokens
+        if type(tokens) is not int or tokens <= 0:
+            continue
+        return tokens / characters
+    return None
+
+
+def allocate_tool_text_budget(
+    *,
+    tool_count: int,
+    fixed_characters: int,
+    tool_schema_characters: int,
+    images_present: bool,
+    limits: ModelContextLimits | None,
+    rate_tokens_per_char: float | None,
+    ceiling_bytes: int,
+) -> ProjectionAllocation:
+    """Size one dispatch's per-tool text budget: shrink-only under the host ceiling.
+
+    ``fixed_characters`` measures everything already assembled that is not a
+    shrinkable tool projection (message contents, reasoning, deferred labels).
+    The byte budget for a character share is the share itself: UTF-8 text that
+    fits in B bytes holds at most B characters, so the conversion is
+    conservative by construction (it may under-fill multibyte text, never
+    over-fill). Any unknown input keeps the fixed host policy explicitly.
+    """
+    if type(ceiling_bytes) is not int or ceiling_bytes < 1:
+        raise ValueError("projection ceiling must be a positive integer")
+    for name, value in (("tool_count", tool_count), ("fixed_characters", fixed_characters), ("tool_schema_characters", tool_schema_characters)):
+        if type(value) is not int or value < 0:
+            raise ValueError(f"projection allocation field {name} must be a non-negative integer")
+    limit_tokens, limit_source = effective_input_limit_tokens(limits)
+
+    def fixed(reason: str) -> ProjectionAllocation:
+        return ProjectionAllocation(
+            policy="fixed",
+            reason=reason,
+            limit_tokens=limit_tokens,
+            limit_source=limit_source,
+            rate_tokens_per_char=rate_tokens_per_char,
+            per_tool_max_bytes=None,
+            tool_count=tool_count,
+        )
+
+    if tool_count <= 0:
+        return fixed("no_shrinkable")
+    if images_present:
+        return fixed("images_present")
+    if limit_tokens is None:
+        return fixed("unknown_limits")
+    if (
+        rate_tokens_per_char is None
+        or isinstance(rate_tokens_per_char, bool)
+        or not isinstance(rate_tokens_per_char, (int, float))
+        or not math.isfinite(rate_tokens_per_char)
+        or rate_tokens_per_char <= 0
+    ):
+        return fixed("unknown_usage")
+    shrinkable = int(limit_tokens / rate_tokens_per_char) - fixed_characters - tool_schema_characters
+    if shrinkable < tool_count:
+        return fixed("insufficient_budget")
+    share = shrinkable // tool_count
+    if share >= ceiling_bytes:
+        return fixed("within_ceiling")
+    return ProjectionAllocation(
+        policy="adaptive",
+        reason="ok",
+        limit_tokens=limit_tokens,
+        limit_source=limit_source,
+        rate_tokens_per_char=rate_tokens_per_char,
+        per_tool_max_bytes=share,
+        tool_count=tool_count,
+    )
 
 
 def canonical_path(workspace: Path, path: str) -> str:

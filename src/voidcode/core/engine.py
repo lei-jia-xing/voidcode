@@ -82,7 +82,16 @@ from .activation import (
     write_private_snapshot,
 )
 from .artifacts import ArtifactNotFoundError, ArtifactStore
-from .coverage import ProjectionRequiresReference, _target_paths, canonical_path, project_tool_result, read_artifact_content
+from .coverage import (
+    ProjectionAllocation,
+    ProjectionRequiresReference,
+    _target_paths,
+    allocate_tool_text_budget,
+    canonical_path,
+    measured_tokens_per_character,
+    project_tool_result,
+    read_artifact_content,
+)
 from .delegation import (
     DELEGATION_SPAWN_BUDGET as DELEGATION_SPAWN_BUDGET,
 )
@@ -624,6 +633,15 @@ class CoreResult:
 
 
 @dataclass(slots=True)
+class _ShrinkableToolProjection:
+    """One ceiling-rendered tool message that adaptive sizing may re-project smaller."""
+
+    index: int
+    result: ToolResult
+    label: str | None
+
+
+@dataclass(slots=True)
 class _Execution:
     session: SessionRecord
     cursor: _Cursor
@@ -631,6 +649,8 @@ class _Execution:
     run_id: str
     lifecycle_started: bool = False
     ephemeral_steering: list[str] = field(default_factory=list)
+    projection_allocation: ProjectionAllocation | None = None
+    allocation_ineffective_tools: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -4177,7 +4197,7 @@ class Core:
         if include_context:
             session = self.store.session(session_id)
             execution = _Execution(session, _Cursor(), list(self.store.events(session_id)), session.run_id or uuid4().hex)
-            context = self._messages(execution, completed_only=True)
+            context = self._messages(execution, completed_only=True, model=selected)
         request = ProviderTurnRequest(
             messages=(*context, ProviderMessage("user", prompt)),
             available_tools=(),
@@ -5145,6 +5165,11 @@ class Core:
         )
 
     @staticmethod
+    def _tool_schema_characters(tools: tuple[ToolDefinition, ...]) -> int:
+        """Characters of the core-side neutral tool encoding this dispatch advertises."""
+        return sum(len(canonical_json(encode_tool_definition(tool))) for tool in tools)
+
+    @staticmethod
     def _request_window(
         messages: tuple[ProviderMessage, ...],
         tools: tuple[ToolDefinition, ...],
@@ -5153,6 +5178,7 @@ class Core:
 
         Per-segment facts are character counts and digests of the literal strings, so a client
         panel derives its view from measurements; token counts stay provider-reported usage.
+        Image inventory counts carried attachments and their base64-text bytes, never tokens.
         """
         segments: list[WindowSegment] = []
         message_characters = 0
@@ -5168,9 +5194,11 @@ class Core:
                     tool_calls=len(message.tool_calls),
                     tool_name=message.tool_name,
                     reasoning_characters=len(message.reasoning or ""),
+                    image_count=len(message.images),
+                    image_bytes=sum(len(image.data.encode("utf-8")) for image in message.images),
                 )
             )
-        tool_schema_characters = sum(len(canonical_json(encode_tool_definition(tool))) for tool in tools)
+        tool_schema_characters = Core._tool_schema_characters(tools)
         return RequestWindow(
             message_characters=message_characters,
             tool_schema_characters=tool_schema_characters,
@@ -5450,7 +5478,12 @@ class Core:
                     # already durable when the admission checks below read it.
                     self._settle_unsettled_dispatches(execution)
                     try:
-                        messages = self._messages(execution)
+                        visible_tools = self._visible_tools(execution, snapshot)
+                        messages = self._messages(
+                            execution,
+                            model=model,
+                            tool_schema_characters=self._tool_schema_characters(visible_tools),
+                        )
                     except ValueError as exc:
                         return self._fail(execution, str(exc))
                     except (OSError, RuntimeError) as exc:
@@ -5461,7 +5494,7 @@ class Core:
                     effective_abort = session_abort or self._abort
                     request = ProviderTurnRequest(
                         messages=messages,
-                        available_tools=self._visible_tools(execution, snapshot),
+                        available_tools=visible_tools,
                         raw_model=model,
                         provider_name=provider_name,
                         model_name=model_name,
@@ -5485,6 +5518,11 @@ class Core:
                     # tool reports, and resumes all attribute to the same turn.
                     cursor.logical_turn = uuid4().hex
                     window = self._request_window(messages, request.available_tools)
+                    allocation = execution.projection_allocation
+                    allocation_payload: dict[str, object] | None = None
+                    if allocation is not None:
+                        allocation_payload = dict(allocation.as_payload())
+                        allocation_payload["ineffective_tools"] = execution.allocation_ineffective_tools
                     try:
                         intent_events = self._commit(
                             execution,
@@ -5504,6 +5542,8 @@ class Core:
                                     # Measured inventory of this exact request: a client
                                     # panel reads facts here instead of estimating tokens.
                                     "request_window": window.as_payload(),
+                                    # The sizing decision behind the tool projections above.
+                                    "projection_allocation": allocation_payload,
                                 },
                             ),
                             reserve_root=True,
@@ -6149,12 +6189,23 @@ class Core:
             )
             first = False
 
-    def _messages(self, execution: _Execution, *, allow_pending: bool = False, completed_only: bool = False) -> tuple[ProviderMessage, ...]:
+    def _messages(
+        self,
+        execution: _Execution,
+        *,
+        allow_pending: bool = False,
+        completed_only: bool = False,
+        model: str | None = None,
+        tool_schema_characters: int = 0,
+    ) -> tuple[ProviderMessage, ...]:
         messages: list[ProviderMessage] = []
         pending_calls: tuple[ToolCall, ...] = ()
         pending_index = 0
         batch_start = 0
         batch_sequence: int | None = None
+        shrinkable: list[_ShrinkableToolProjection] = []
+        execution.projection_allocation = None
+        execution.allocation_ineffective_tools = 0
         # A verified projection replaces a committed prefix with its owner's summary, so a long
         # session keeps a bounded window without rewriting a single historical event.
         projection = self.store.window_projection(execution.session.session_id)
@@ -6226,15 +6277,13 @@ class Core:
                         continue
                     result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
                     text, images, _clipped = project_tool_result(result, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page)
-                    messages.append(
-                        ProviderMessage(
-                            "user",
-                            f"[Untrusted deferred tool result: {result.tool_name}; "
-                            f"invocation {event.payload.get('invocation_id', 'not-dispatched')}; "
-                            f"request {request.payload['request_id']}; caller {request.payload['caller_invocation_id']}]\n{text or ''}",
-                            images=images,
-                        )
+                    label = (
+                        f"[Untrusted deferred tool result: {result.tool_name}; "
+                        f"invocation {event.payload.get('invocation_id', 'not-dispatched')}; "
+                        f"request {request.payload['request_id']}; caller {request.payload['caller_invocation_id']}]\n"
                     )
+                    messages.append(ProviderMessage("user", label + (text or ""), images=images))
+                    shrinkable.append(_ShrinkableToolProjection(len(messages) - 1, result, label))
                     continue
                 if not pending_calls or event.payload["batch_sequence"] != batch_sequence:
                     raise ValueError("reported tool result crossed an unfinished native batch")
@@ -6253,11 +6302,13 @@ class Core:
                         images=images,
                     )
                 )
+                shrinkable.append(_ShrinkableToolProjection(len(messages) - 1, result, None))
                 pending_index += 1
                 if pending_index == len(pending_calls):
                     pending_calls = ()
         if pending_calls and completed_only:
             del messages[batch_start:]
+            shrinkable = [entry for entry in shrinkable if entry.index < len(messages)]
         elif pending_calls:
             if not allow_pending:
                 raise ValueError("cannot call the provider before completing the pending native batch")
@@ -6294,7 +6345,65 @@ class Core:
                 messages.append(ProviderMessage("system", "[Tool Guidance]\n" + "\n".join(execution.ephemeral_steering)))
                 execution.ephemeral_steering.clear()
 
+        if model is not None and not allow_pending:
+            self._apply_projection_allocation(execution, messages, shrinkable, model=model, tool_schema_characters=tool_schema_characters)
+
         return tuple(messages)
+
+    def _apply_projection_allocation(
+        self,
+        execution: _Execution,
+        messages: list[ProviderMessage],
+        shrinkable: list[_ShrinkableToolProjection],
+        *,
+        model: str,
+        tool_schema_characters: int,
+    ) -> None:
+        """Shrink ceiling-rendered tool projections to the active model's remaining headroom.
+
+        Phase one above rendered every tool result at the fixed ``TOOL_OUTPUT_BYTES``
+        host ceiling; this phase measures that window, pairs the session's own
+        committed token rate for the active model, and re-projects smaller only
+        when every input is known. Any unknown keeps the ceiling bytes exactly,
+        and a per-tool re-projection that cannot fit its identities keeps its own
+        ceiling rendering: adaptive sizing never refuses a dispatch.
+        """
+        provider_name, separator, model_name = model.partition("/")
+        limits = None
+        rate: float | None = None
+        if separator and model_name:
+            with self._dispatch("context") as snapshot:
+                limits = snapshot.plugin_runtime.provider_model_limits(provider_name, model_name)
+            rate = measured_tokens_per_character(execution.events, provider_name=provider_name, model_name=model_name)
+        shrinkable_characters = 0
+        for entry in shrinkable:
+            shrinkable_characters += len(messages[entry.index].content or "") - len(entry.label or "")
+        fixed_characters = sum(len(message.content or "") + len(message.reasoning or "") for message in messages) - shrinkable_characters
+        allocation = allocate_tool_text_budget(
+            tool_count=len(shrinkable),
+            fixed_characters=fixed_characters,
+            tool_schema_characters=tool_schema_characters,
+            images_present=any(message.images for message in messages),
+            limits=limits,
+            rate_tokens_per_char=rate,
+            ceiling_bytes=TOOL_OUTPUT_BYTES,
+        )
+        execution.projection_allocation = allocation
+        budget = allocation.per_tool_max_bytes
+        if allocation.policy != "adaptive" or budget is None:
+            return
+        ineffective = 0
+        for entry in shrinkable:
+            try:
+                text, images, _clipped = project_tool_result(entry.result, max_bytes=budget, artifact_reader=self._artifact_page)
+            except ValueError, OSError, RuntimeError:
+                # The ceiling rendering in hand is authoritative; a budget that
+                # cannot fit this tool's identities keeps it instead of failing.
+                ineffective += 1
+                continue
+            current = messages[entry.index]
+            messages[entry.index] = replace(current, content=(entry.label or "") + text, images=images)
+        execution.allocation_ineffective_tools = ineffective
 
     def _drive_pending_activations(self) -> None:
         """Finish committed command-tool work and staged continuations left across restart."""

@@ -222,12 +222,23 @@ def _measured_int(value: object, field: str) -> int:
     return value
 
 
+def _measured_optional_int(value: object, field: str) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or value < 0:
+        raise ValueError(f"measured window field {field} must be a non-negative integer or None")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class WindowSegment:
     """One measured segment of a dispatched provider request.
 
     `characters` is the exact length of the string that was sent — never an estimate —
-    and the digest pins the content the dispatch actually carried.
+    and the digest pins the content the dispatch actually carried. Image inventory is
+    measured the same way: `image_bytes` is the UTF-8 bytes of the base64 text carried,
+    never decoded pixels and never tokens. ``None`` means the dispatch predates image
+    inventory and its image occupancy is unknown — never zero.
     """
 
     role: str
@@ -236,12 +247,18 @@ class WindowSegment:
     tool_calls: int = 0
     tool_name: str | None = None
     reasoning_characters: int = 0
+    image_count: int | None = None
+    image_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.role, str) or not self.role:
             raise ValueError("window segment role must be a non-empty string")
         if type(self.characters) is not int or self.characters < 0:
             raise ValueError("window segment characters must be a non-negative integer")
+        for name in ("image_count", "image_bytes"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"window segment {name} must be a non-negative integer or None")
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -251,6 +268,8 @@ class WindowSegment:
             "tool_calls": self.tool_calls,
             "tool_name": self.tool_name,
             "reasoning_characters": self.reasoning_characters,
+            "image_count": self.image_count,
+            "image_bytes": self.image_bytes,
         }
 
     @staticmethod
@@ -260,8 +279,10 @@ class WindowSegment:
             characters=_measured_int(payload.get("characters"), "characters"),
             sha256=str(payload["sha256"]),
             tool_calls=_measured_int(payload.get("tool_calls", 0), "tool_calls"),
-            tool_name=None if payload.get("tool_name") is None else str(payload["tool_name"]),
+            tool_name=None if payload.get("tool_name") is None else str(payload.get("tool_name")),
             reasoning_characters=_measured_int(payload.get("reasoning_characters", 0), "reasoning_characters"),
+            image_count=_measured_optional_int(payload.get("image_count"), "image_count"),
+            image_bytes=_measured_optional_int(payload.get("image_bytes"), "image_bytes"),
         )
 
 
@@ -295,6 +316,26 @@ class RequestWindow:
     @property
     def total_characters(self) -> int:
         return self.message_characters + self.tool_schema_characters
+
+    @property
+    def total_image_count(self) -> int | None:
+        """Measured images carried, or ``None`` when any segment predates inventory."""
+        total = 0
+        for segment in self.segments:
+            if segment.image_count is None:
+                return None
+            total += segment.image_count
+        return total
+
+    @property
+    def total_image_bytes(self) -> int | None:
+        """Measured base64-text bytes carried, or ``None`` when any segment is unknown."""
+        total = 0
+        for segment in self.segments:
+            if segment.image_bytes is None:
+                return None
+            total += segment.image_bytes
+        return total
 
     def as_payload(self) -> dict[str, object]:
         return {

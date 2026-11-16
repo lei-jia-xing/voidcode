@@ -166,6 +166,33 @@ class ProviderTurnResult:
     metadata: dict[str, object] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ModelContextLimits:
+    """Provider-advertised context limits for one model; ``None`` is unknown, never zero.
+
+    These are claims the provider's own catalog/discovery makes about the named
+    model, read per dispatch. Consumers use them only to shrink projections and
+    must treat every ``None`` as unknown (never infer tokens from bytes).
+    """
+
+    context_window: int | None = None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("context_window", "max_input_tokens", "max_output_tokens"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"model context limit {name} must be a positive integer or None")
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "context_window": self.context_window,
+            "max_input_tokens": self.max_input_tokens,
+            "max_output_tokens": self.max_output_tokens,
+        }
+
+
 @runtime_checkable
 class ProviderAbortSignal(Protocol):
     """Cancellation handle a run hands to providers and tools."""
@@ -230,3 +257,15 @@ class StreamableTurnProvider(TurnProvider, Protocol):
     """A turn provider that can also answer the same turn as an event stream."""
 
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]: ...
+
+
+@runtime_checkable
+class ModelLimitsProvider(Protocol):
+    """A turn provider that advertises per-model context limits.
+
+    Separate from ``TurnProvider`` so existing providers keep working: the core
+    probes with ``isinstance`` and treats a missing probe as unknown limits.
+    ``None`` means the model is absent or its limits are unadvertised.
+    """
+
+    def model_limits(self, model_name: str) -> ModelContextLimits | None: ...

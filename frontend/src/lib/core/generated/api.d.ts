@@ -1725,6 +1725,16 @@ export interface components {
         WindowSegmentWire: {
             /** Characters */
             characters: number;
+            /**
+             * Image Bytes
+             * @default null
+             */
+            image_bytes?: number | null;
+            /**
+             * Image Count
+             * @default null
+             */
+            image_count?: number | null;
             /** Reasoning Characters */
             reasoning_characters: number;
             /** Role */

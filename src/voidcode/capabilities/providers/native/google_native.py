@@ -15,6 +15,7 @@ from google.oauth2 import service_account
 
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import (
+    ModelContextLimits,
     ProviderDoneReason,
     ProviderExecutionError,
     ProviderMessage,
@@ -28,7 +29,7 @@ from voidcode.sdk.tools import ToolCall
 from ._wire_common import OwnedResource, iter_stream_with_timeout, normalize_tool_call_id, resolve_extra_request_headers, usage_int
 from .config import GoogleProviderConfig
 from .errors import provider_execution_error_from_payload
-from .model_catalog import static_catalog_metadata
+from .model_catalog import catalog_model_limits, static_catalog_metadata
 from .reasoning_effort import (
     clamp_effort_to_supported,
     normalize_reasoning_effort,
@@ -116,6 +117,12 @@ class GoogleGenAIProvider:
 
     def close(self) -> None:
         self._owned_client.close()
+
+    def model_limits(self, model_name: str) -> ModelContextLimits | None:
+        """Advertised limits for one model; gateway aliases resolve before dispatch."""
+        if not isinstance(model_name, str) or not model_name.strip():
+            return None
+        return catalog_model_limits(self.name, model_name)
 
     def _client(self, *, provider_name: str, model_name: str) -> Any:
         if self.client is not None:

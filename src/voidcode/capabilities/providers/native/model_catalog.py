@@ -7,6 +7,8 @@ from typing import Annotated, cast
 from pydantic import ConfigDict, Field, TypeAdapter
 from pydantic.dataclasses import dataclass as validated_dataclass
 
+from voidcode.sdk.provider import ModelContextLimits
+
 from ._resources import load_json
 from .reasoning_effort import CANONICAL_EFFORTS
 
@@ -120,3 +122,21 @@ def static_catalog_metadata(provider_name: str, model_name: str) -> ProviderMode
 def static_catalog_model_ids(provider_name: str) -> tuple[str, ...]:
     """Shipped catalog model ids for one provider, sorted; empty when it ships none."""
     return tuple(sorted(_load_static_catalog().get(provider_name.strip().lower(), {})))
+
+
+def catalog_model_limits(provider_name: str, model_name: str) -> ModelContextLimits | None:
+    """Neutral context limits for one catalog entry; ``None`` when absent or unadvertised.
+
+    A pure DTO conversion over :func:`static_catalog_metadata`: every ``None``
+    field stays ``None`` (unknown), never a guessed number.
+    """
+    metadata = static_catalog_metadata(provider_name, model_name)
+    if metadata is None:
+        return None
+    if metadata.context_window is None and metadata.max_input_tokens is None and metadata.max_output_tokens is None:
+        return None
+    return ModelContextLimits(
+        context_window=metadata.context_window,
+        max_input_tokens=metadata.max_input_tokens,
+        max_output_tokens=metadata.max_output_tokens,
+    )

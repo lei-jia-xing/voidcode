@@ -113,6 +113,8 @@ from .observed_effects import (
 from .plugin import Plugin, PluginQuery, PluginQueryCaller, StateSchema
 from .provider import (
     ImageAttachment,
+    ModelContextLimits,
+    ModelLimitsProvider,
     ProviderAbortSignal,
     ProviderCacheRetention,
     ProviderDoneReason,
@@ -347,6 +349,8 @@ __all__ = [
     "ProcessResult",
     "ProviderAbortSignal",
     "ImageAttachment",
+    "ModelContextLimits",
+    "ModelLimitsProvider",
     "ProviderCacheRetention",
     "ProviderDoneReason",
     "ProviderErrorKind",

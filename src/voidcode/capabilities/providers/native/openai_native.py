@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import (
+    ModelContextLimits,
     ProviderDoneReason,
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -39,7 +40,7 @@ from .config import OpenAIProviderConfig, ProviderEndpointConfig
 from .errors import (
     provider_execution_error_from_payload,
 )
-from .model_catalog import ProviderModelMetadata, static_catalog_metadata
+from .model_catalog import ProviderModelMetadata, catalog_model_limits, static_catalog_metadata
 from .provider_config import openai_wire_default_base_url
 from .provider_table import PROVIDER_TABLE_BY_ID
 from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_effort, reasoning_kwargs
@@ -413,6 +414,14 @@ class OpenAIChatCompletionsProvider:
         endpoint = self._endpoint_config()
         model_map = endpoint.model_map if endpoint is not None else {}
         return model_map.get(model_name) or model_name
+
+    def model_limits(self, model_name: str) -> ModelContextLimits | None:
+        """Advertised limits for one model, resolved through this endpoint's model map."""
+        if not isinstance(model_name, str) or not model_name.strip():
+            return None
+        endpoint = self._endpoint_config()
+        model_map = endpoint.model_map if endpoint is not None else {}
+        return catalog_model_limits(self.name, model_map.get(model_name) or model_name)
 
     def close(self) -> None:
         self._owned_transport.close()

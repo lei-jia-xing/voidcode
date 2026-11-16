@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from threading import Lock
 
 from voidcode.sdk.provider import (
+    ModelContextLimits,
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTurnRequest,
@@ -14,7 +15,7 @@ from voidcode.sdk.provider import (
 )
 
 from .config import RoutedWire
-from .model_catalog import static_catalog_metadata
+from .model_catalog import catalog_model_limits, static_catalog_metadata
 
 #: Upstream wire name -> the route VoidCode serves it at. A name absent here is a
 #: wire VoidCode does not implement: the request fails typed instead of being sent
@@ -77,6 +78,12 @@ class RoutedTurnProvider:
         model = self.model_map.get(requested) or requested
         metadata = static_catalog_metadata(self.routing.provider, model)
         return model, self.routing.resolve(None if metadata is None else metadata.api)
+
+    def model_limits(self, model_name: str) -> ModelContextLimits | None:
+        """Advertised limits for one model, resolved through this gateway's model map."""
+        if not isinstance(model_name, str) or not model_name.strip():
+            return None
+        return catalog_model_limits(self.routing.provider, self.model_map.get(model_name) or model_name)
 
     def _dispatch(self, request: ProviderTurnRequest) -> tuple[StreamableTurnProvider, ProviderTurnRequest]:
         model, route = self.route_for(request)

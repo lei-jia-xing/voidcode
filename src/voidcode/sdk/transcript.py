@@ -131,6 +131,8 @@ class WindowSegmentWire(TranscriptWireModel):
     tool_calls: int
     tool_name: str | None
     reasoning_characters: int
+    image_count: int | None = None
+    image_bytes: int | None = None
 
 
 class RequestWindowWire(TranscriptWireModel):

@@ -60,6 +60,8 @@ from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.observed_effects import ObservedChange
 from voidcode.sdk.plugin import Plugin, PluginQueryCaller, StateSchema
 from voidcode.sdk.provider import (
+    ModelContextLimits,
+    ModelLimitsProvider,
     ProviderAbortSignal,
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -547,6 +549,24 @@ class PluginRuntime:
         """Whether the registered provider answers stream_turn; unknown names never do."""
         entry = self._providers.get(provider)
         return entry is not None and isinstance(entry[0], StreamableTurnProvider)
+
+    def provider_model_limits(self, provider: str, model_name: str) -> ModelContextLimits | None:
+        """Advertised context limits for one model; ``None`` when unknown or unadvertised.
+
+        Limits are advisory input to projection sizing only: an unregistered
+        provider, a provider without the probe, or a failing probe all degrade
+        to unknown rather than breaking dispatch assembly.
+        """
+        if not isinstance(model_name, str) or not model_name.strip():
+            return None
+        entry = self._providers.get(provider)
+        if entry is None or not isinstance(entry[0], ModelLimitsProvider):
+            return None
+        try:
+            limits = entry[0].model_limits(model_name)
+        except Exception:
+            return None
+        return limits if isinstance(limits, ModelContextLimits) or limits is None else None
 
     @property
     def commands(self) -> tuple[CommandDescriptor, ...]:
