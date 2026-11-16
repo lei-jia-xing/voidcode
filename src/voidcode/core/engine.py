@@ -2762,6 +2762,9 @@ class Core:
             finally:
                 with self._aborts_lock:
                     self._session_aborts.pop(session_id, None)
+                # A parked follow-up run commits no terminal fact; wake child joiners past the state change.
+                if self.store.session(session_id).parent_session_id is not None:
+                    self._delegation.notify_child_state_changed()
 
         for parent_id, notice_id in dict.fromkeys(parent_deliveries):
             self._delegation._deliver_child_notice(parent_id, notice_id)

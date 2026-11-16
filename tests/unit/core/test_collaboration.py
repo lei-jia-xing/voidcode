@@ -1853,6 +1853,78 @@ def test_join_during_publication_waits_and_never_returns_an_empty_completed(tmp_
         assert joined.history_sha256, "the published outcome carries its history snapshot"
 
 
+def test_join_returns_promptly_when_child_completes_mid_timeout(tmp_path: Path) -> None:
+    """A completion wake ends the join; it never sleeps out the deadline."""
+    with _server([]) as server:
+        child_started = threading.Event()
+        release_child = threading.Event()
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            child_started.set()
+            if not release_child.wait(timeout=60):
+                raise TimeoutError("gated child provider gate was not released")
+            return _turn(output="gated child answer")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        child = core.spawn_child(parent, "gated child task")
+        assert child_started.wait(timeout=15), "child run never reached the provider"
+        releaser = threading.Timer(2.0, release_child.set)
+        releaser.daemon = True
+        releaser.start()
+        started = time.monotonic()
+        try:
+            outcome = core.join_child(parent, child, timeout_seconds=60)
+        finally:
+            releaser.cancel()
+            release_child.set()
+        elapsed = time.monotonic() - started
+        assert (outcome.status, outcome.output) == ("completed", "gated child answer")
+        assert elapsed < 30, f"join slept past the completion wake: {elapsed:.1f}s of a 60s deadline"
+
+
+def test_join_timeout_returns_the_live_running_outcome(tmp_path: Path) -> None:
+    """An unfinished child at the deadline reports running with its live run, never an error."""
+    with _server([]) as server:
+        child_started = threading.Event()
+        release_child = threading.Event()
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            child_started.set()
+            if not release_child.wait(timeout=60):
+                raise TimeoutError("gated child provider gate was not released")
+            return _turn(output="late child answer")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        child = core.spawn_child(parent, "slow child task")
+        assert child_started.wait(timeout=15), "child run never reached the provider"
+        # A hang-breaker the deadline must beat: reaching it fails the assertions below.
+        breaker = threading.Timer(30.0, release_child.set)
+        breaker.daemon = True
+        breaker.start()
+        started = time.monotonic()
+        try:
+            outcome = core.join_child(parent, child, timeout_seconds=3)
+        finally:
+            breaker.cancel()
+        elapsed = time.monotonic() - started
+        assert outcome.status == "running", outcome.as_payload()
+        assert outcome.output is None
+        assert outcome.run_id == core.session(child).run_id, "the expiry outcome names the live run"
+        assert elapsed < 30, f"join slept past its deadline: {elapsed:.1f}s for a 3s timeout"
+        assert elapsed >= 2.0, f"join returned without waiting out its deadline: {elapsed:.1f}s for a 3s timeout"
+        release_child.set()
+        done = _join(core, parent, child)
+        assert (done.status, done.output) == ("completed", "late child answer")
+
+
 def test_join_after_restart_returns_the_durable_outcome_without_rerunning(tmp_path: Path) -> None:
     """Close/reopen with a persisted parent fact: join returns it and the child never reruns."""
     replies = [

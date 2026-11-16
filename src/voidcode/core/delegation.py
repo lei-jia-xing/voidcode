@@ -892,6 +892,29 @@ class DelegationManager:
         self.core._ensure_open()
         self._owned_child(parent_session_id, child_id)
         deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        with self._child_finished_lock:
+            generation = self._child_finished_generation
+        parent_seen_sequence: int | None = None
+
+        def published_fact(run_id: str | None) -> dict[str, object] | None:
+            """This run's published fact: memory cache first, then the parent history past its cursor."""
+            nonlocal parent_seen_sequence
+            fact = self._latest_child_fact(child_id, run_id)
+            if fact is not None:
+                return fact
+            # The registry is only a cache: the durable parent fact is the restart truth.
+            # Past the first scan only new parent events can carry an uncached publish:
+            # a current run's fact cannot be evicted while it stays current, since 32
+            # newer same-child publishes would have advanced the run past it.
+            fresh = self.core.store.events(parent_session_id, after_sequence=parent_seen_sequence or 0)
+            if fresh:
+                parent_seen_sequence = max(event.sequence for event in fresh)
+            elif parent_seen_sequence is not None:
+                return None
+            else:
+                parent_seen_sequence = 0
+            return self._durable_child_fact(parent_session_id, child_id, run_id)
+
         while True:
             child = self.core.store.session(child_id)
             if child.status == "waiting":
@@ -900,26 +923,19 @@ class DelegationManager:
             if child.status == "interrupted" and not self.core._admits_fresh_work(child):
                 # A recoverable interruption needs an explicit public resume, not a join.
                 # A terminal cancellation still publishes a fact (error/history); prefer it.
-                fact = self._latest_child_fact(child_id, child.run_id)
-                if fact is None:
-                    fact = self._durable_child_fact(parent_session_id, child_id, child.run_id)
+                fact = published_fact(child.run_id)
                 if fact is not None:
                     return self._child_outcome(child_id, fact)
                 with self._child_finished_lock:
                     publishing = child.run_id is not None and (child_id, child.run_id) in self._child_publication_inflight
                 if publishing:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
+                    if deadline - time.monotonic() <= 0:
                         return self._child_status_outcome(child)
-                    with self._child_finished_lock:
-                        self._child_finished_lock.wait(timeout=min(remaining, 0.2))
+                    generation = self._await_child_wake(deadline, generation)
                     continue
                 return self._child_status_outcome(child)
             if not self._child_has_outstanding_work(child):
-                fact = self._latest_child_fact(child_id, child.run_id)
-                if fact is None:
-                    # The registry is only a cache: the durable parent fact is the restart truth.
-                    fact = self._durable_child_fact(parent_session_id, child_id, child.run_id)
+                fact = published_fact(child.run_id)
                 if fact is not None:
                     return self._child_outcome(child_id, fact)
                 with self._child_finished_lock:
@@ -930,11 +946,25 @@ class DelegationManager:
                 # A terminal session whose fact/artifacts are still in flight is not a
                 # completed outcome. Wait for the publisher; a deadline returns the honest
                 # nonterminal wait outcome instead of completed/output=None.
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if deadline - time.monotonic() <= 0:
                 return self._child_wait_outcome(child)
-            with self._child_finished_lock:
-                self._child_finished_lock.wait(timeout=min(remaining, 0.2))
+            generation = self._await_child_wake(deadline, generation)
+
+    def _await_child_wake(self, deadline: float, generation: int) -> int:
+        """Sleep until a child-state notify or the deadline; returns the observed generation.
+
+        A notify that landed before this call is never slept through: the caller
+        re-reads durable state and only sleeps on a still-current generation, so a
+        wake is never lost and a spurious wake just re-reads unchanged state.
+        """
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return generation
+        with self._child_finished_lock:
+            if generation != self._child_finished_generation:
+                return self._child_finished_generation
+            self._child_finished_lock.wait(timeout=remaining)
+            return self._child_finished_generation
 
     def acknowledge_child_completion(self, parent_session_id: str, child_id: str, run_id: str) -> Mapping[str, object] | None:
         """Stage common receipt identity only for this run's durable terminal fact."""
@@ -1079,6 +1109,9 @@ class DelegationManager:
             return True
         cancelled = self.core.cancel_session(child_id, reason, cause="owner_cancel")
         pending = self.core.store.cancel_pending_continuations(child_id, CHILD_MESSAGE_OWNER)
+        if cancelled or pending > 0:
+            # The sweep above commits after cancel_session's notify; wake joiners past it.
+            self.notify_child_state_changed()
         child = self.core.store.session(child_id)
         if child.parent_session_id is not None and target_run and child.run_id == target_run:
             facts = self._reconstruct_child_outcome(child)
@@ -1383,6 +1416,7 @@ class DelegationManager:
             )
         except StoreConflict:
             return False
+        self.notify_child_state_changed()
         return True
 
     def _child_has_outstanding_work(self, child: SessionRecord) -> bool:
