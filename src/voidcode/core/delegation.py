@@ -1533,6 +1533,19 @@ class DelegationManager:
                 # never double-commit; retry paths observe the terminal child again.
                 return
             resolved_label = label or self._child_label(parent_session_id, child_id)
+            if notify:
+                try:
+                    notice_root_id: str | None = self._captured_child_root_id(child_id)
+                except StoreConflict:
+                    # A child born before captured root authorization carries no budget
+                    # identity to stamp on its notice, and a rootless notice can never
+                    # drain. Suppress the wake-up for this publication only: the durable
+                    # fact still commits below, so the result stays readable via join and
+                    # wait. No migration, no fresh budget, no retry.
+                    notify = False
+                    notice_root_id = None
+            else:
+                notice_root_id = None
             notice_id = child_completion_notice_id(parent_session_id, child_id, run_id) if notify else None
             payload = self._child_fact_payload(
                 child_id,
@@ -1565,6 +1578,7 @@ class DelegationManager:
                     ),
                     idempotency_key=f"child-finished:{child_id}:{run_id}",
                     ordinal=0,
+                    root_id=cast(str, notice_root_id),
                 )
             committed = self._commit_child_fact(
                 parent_session_id,

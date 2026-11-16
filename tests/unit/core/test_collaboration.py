@@ -33,6 +33,7 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import DELEGATION_SPAWN_BUDGET, Core
 from voidcode.core.events import CHILD_OUTCOME_RECEIPT_OWNER, child_completion_notice_id
+from voidcode.core.storage.store import StoreConflict
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.services import ChildOutcome, ChildSendReceipt
 
@@ -1333,6 +1334,48 @@ def test_restart_republishes_an_uncommitted_child_fact_once_without_rerunning(
         assert len(child_requests) == 1
         notice_id = child_completion_notice_id(parent, child, run_id)
         _wait_for(lambda: reopened.store.continuation_status(notice_id) == "completed", what="the recovered notice consumption")
+
+
+def test_legacy_child_without_captured_root_publishes_fact_without_notice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rootless birth suppresses only the wake-up: the fact still publishes, join reads it."""
+    replies = [_turn(output="legacy output")]
+    with _server(replies) as server:
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+
+        # Real terminal run first (publication stubbed, as in the restart test above).
+        monkeypatch.setattr(core._delegation, "_publish_child_terminal", lambda *args, **kwargs: None)
+        child = core.spawn_child(parent, "child prompt", notify_on_completion=True)
+        _wait_for(lambda: core.session(child).status == "completed", what="the child's terminal commit")
+        run_id = core.session(child).run_id
+        assert run_id is not None
+        assert _child_facts(core, parent) == []
+        monkeypatch.undo()
+
+        # The store refuses to persist a rootless birth, so the legacy signal is
+        # staged at the exact seam the branch handles: root resolution raises.
+        def _legacy_root(child_id: str) -> str:
+            raise StoreConflict(f"child {child_id!r} has no captured root action identity")
+
+        monkeypatch.setattr(core._delegation, "_captured_child_root_id", _legacy_root)
+        core._delegation._recover_child_publications()
+
+        facts = _child_facts(core, parent)
+        assert len(facts) == 1
+        fact = facts[0]
+        assert fact["run_id"] == run_id
+        assert fact["status"] == "completed"
+        assert fact["output"] == "legacy output"
+        assert fact["notify_on_completion"] is False
+        assert "notice_id" not in fact
+        assert core.store.continuation_status(child_completion_notice_id(parent, child, run_id)) is None
+        assert len(server.requests) == 1, "no notice turn ran and the child never reran"
+
+        joined = core.join_child(parent, child, timeout_seconds=15)
+        assert (joined.status, joined.output, joined.run_id) == ("completed", "legacy output", run_id)
 
 
 def test_send_authorization_follows_the_current_stance(tmp_path: Path) -> None:
