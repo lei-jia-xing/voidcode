@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import ClassVar, cast
+from typing import ClassVar
 from uuid import uuid4
 
 from voidcode.capabilities.agent_queries import AgentDefinition, AgentDefinitionRequest, apply_agent_profile
@@ -21,7 +21,7 @@ from voidcode.capabilities.resource_pages import render_stored_artifact_page
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import PluginQueryCaller
-from voidcode.sdk.resources import ResourceReadCaller, ResourceReaderServices
+from voidcode.sdk.resources import ResourceReadCaller
 from voidcode.sdk.services import ChildOutcome, DescendantNode, PluginServices
 from voidcode.sdk.tools import (
     TextOutput,
@@ -637,8 +637,7 @@ def _artifact_output_facts(
     page = render_stored_artifact_page(
         uri=uri,
         digest=digest,
-        # The shared pager only calls read_artifact, which this plugin service also exposes.
-        services=cast(ResourceReaderServices, services),
+        services=services,
         caller=caller,
         byte_offset=offset,
         # Always make room for a complete UTF-8 scalar, even when a caller

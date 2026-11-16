@@ -804,11 +804,14 @@ class PluginServices(Protocol):
         ...
 
     def acknowledge_child_completion(self, child_session_id: str, run_id: str) -> None:
-        """Stage cancellation of this run's pending completion notice on the current invocation.
+        """Stage delivery of this exact known terminal child run.
 
-        The cancellation commits atomically with the successful tool result that consumed the
-        outcome, so a crash cannot lose the notice and a concurrent join cannot steal delivery.
-        A notice already delivered or claimed is untouched; an unknown run is a no-op.
+        Unknown or nonterminal runs are a no-op; a known old run remains eligible even when a
+        newer run is current. The receipt is staged even if no completion notice exists (for
+        example, `notify_on_completion=False`). An unstarted notice for this run is cancelled;
+        claimed or delivered notices are untouched. Both effects commit with any valid result,
+        including `ToolFailure`; exceptions, invalid results, abort, revocation, or shutdown do
+        not consume the outcome.
         """
         ...
 

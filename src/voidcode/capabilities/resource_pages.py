@@ -11,15 +11,22 @@ from __future__ import annotations
 
 import codecs
 from concurrent.futures import CancelledError
+from typing import Protocol
 
 from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
-from voidcode.sdk.resources import ResourcePage, ResourceReadCaller, ResourceReaderServices
+from voidcode.sdk.resources import ResourcePage, ResourceReadCaller
 from voidcode.sdk.services import ArtifactPage
 from voidcode.sdk.tools import AttachmentOutput, OutputBounds, TextOutput
 
 #: One bounded page stays below the model projection so result metadata fits.
 MAX_RESOURCE_PAGE_BYTES = TOOL_OUTPUT_BYTES - 4096
 RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
+
+
+class ArtifactPageReader(Protocol):
+    """The shared artifact pager's only service dependency."""
+
+    def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage: ...
 
 
 def format_resource_text(
@@ -56,7 +63,7 @@ def render_stored_artifact_page(
     *,
     uri: str,
     digest: str,
-    services: ResourceReaderServices,
+    services: ArtifactPageReader,
     caller: ResourceReadCaller,
     offset: int = 1,
     limit: int = 2000,
