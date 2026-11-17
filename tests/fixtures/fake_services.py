@@ -278,6 +278,8 @@ class FakeServices(PluginServices):
         max_steps: int | None = None,
         readonly: bool = False,
         notify_on_completion: bool = False,
+        idempotency_key: str | None = None,
+        result_schema: Mapping[str, object] | None = None,
     ) -> str:
         call_number = len(self.spawn_calls) + 1
         self.spawn_calls.append(
@@ -288,6 +290,8 @@ class FakeServices(PluginServices):
                 "max_steps": max_steps,
                 "readonly": readonly,
                 "notify_on_completion": notify_on_completion,
+                "idempotency_key": idempotency_key,
+                "result_schema": result_schema,
             }
         )
         refusal = self.spawn_failures.get(call_number)

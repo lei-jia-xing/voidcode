@@ -634,6 +634,7 @@ class RuntimeServices:
         readonly: bool = False,
         notify_on_completion: bool = False,
         idempotency_key: str | None = None,
+        result_schema: Mapping[str, object] | None = None,
     ) -> str:
         lease = self._active_lease()
         self._check_hook("spawn_child")
@@ -647,6 +648,8 @@ class RuntimeServices:
             raise ValueError("tool_allowlist must be a list of tool names or null")
         if max_steps is not None and type(max_steps) is not int:
             raise ValueError("max_steps must be an integer or null")
+        if result_schema is not None and not isinstance(result_schema, Mapping):
+            raise ValueError("result_schema must be an object or null")
         if not isinstance(lease.root_action_id, str) or not lease.root_action_id:
             raise ValueError("child spawning requires a captured root action identity")
         if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key):
@@ -667,6 +670,7 @@ class RuntimeServices:
             lease.root_action_id,
             lease.initial_root_budget,
             self._runtime.admission_guard(lease),
+            result_schema,
         )
 
     def find_child(self, *, idempotency_key: str) -> str | None:

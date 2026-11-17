@@ -16,7 +16,9 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
+from ..sdk.child_schema import canonical_result_schema, compose_child_prompt
 from ..sdk.codec import decode_provider_result
+from ..sdk.json_values import json_wire_object
 from ..sdk.limits import CHILD_PROMPT_MAX_BYTES
 from ..sdk.services import BudgetExhaustion, CancelSubtreeReceipt, ChildOutcome, ChildSendReceipt, ChildSessionSnapshot, DescendantNode
 from .child_history import spill_history
@@ -157,6 +159,7 @@ class DelegationManager:
         root_action_id: str | None = None,
         initial_root_budget: int | None = None,
         admission_guard: Callable[[], bool] | None = None,
+        result_schema: Mapping[str, object] | None = None,
     ) -> str:
         """Create and start a delegated child session under `parent_session_id`.
 
@@ -170,10 +173,22 @@ class DelegationManager:
         window that left a pristine child or a missing spawn fact), while the same key with a
         different spec is refused visibly instead of spawning a second child. Without a key the
         child is always fresh.
+
+        With `result_schema` the core appends a fixed delivery instruction to the child's
+        prompt and carries the declaration in the birth and spawn facts plus the spec hash.
+        The core never validates child output against it; terminal facts commit identically
+        with or without a schema.
         """
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > CHILD_PROMPT_MAX_BYTES:
+        canonical_schema: dict[str, object] | None = None
+        if result_schema is not None:
+            if not isinstance(result_schema, Mapping):
+                raise ValueError("result_schema must be an object or null")
+            canonical_schema = canonical_result_schema(result_schema)
+        effective_prompt = compose_child_prompt(prompt, canonical_schema)
+        if not isinstance(prompt, str) or not prompt.strip() or len(effective_prompt.encode("utf-8")) > CHILD_PROMPT_MAX_BYTES:
             # A core guard, not a product budget: a delegated prompt may carry a whole
             # review diff, so owners enforce their own tighter caps before calling here.
+            # The bound applies to the effective body (base text plus any delivery hint).
             raise ValueError(f"child prompt must be nonempty UTF-8 text within {CHILD_PROMPT_MAX_BYTES // 1024} KiB")
         if type(notify_on_completion) is not bool:
             raise ValueError("notify_on_completion must be a boolean")
@@ -223,6 +238,7 @@ class DelegationManager:
             root_cap,
             label,
             notify_on_completion,
+            result_schema=canonical_schema,
         )
         if idempotency_key is not None:
             recovery = self._recover_keyed_spawn(
@@ -235,7 +251,7 @@ class DelegationManager:
                 readonly=bool(readonly),
                 notify_on_completion=notify_on_completion,
                 spec_hash=spec_hash,
-                prompt=prompt,
+                prompt=effective_prompt,
                 owner=owner,
                 idempotency_key=idempotency_key,
                 root_id=root_id,
@@ -253,6 +269,8 @@ class DelegationManager:
             "notify_on_completion": notify_on_completion,
             "readonly": bool(readonly),
         }
+        if canonical_schema is not None:
+            birth["result_schema"] = canonical_schema
         if idempotency_key is not None:
             birth.update(
                 {
@@ -305,7 +323,7 @@ class DelegationManager:
                 readonly=bool(readonly),
                 notify_on_completion=notify_on_completion,
                 spec_hash=spec_hash,
-                prompt=prompt,
+                prompt=effective_prompt,
                 owner=owner,
                 idempotency_key=idempotency_key,
                 root_id=root_id,
@@ -326,6 +344,8 @@ class DelegationManager:
             "tool_allowlist": list(scope) if scope is not None else None,
             "notify_on_completion": notify_on_completion,
         }
+        if canonical_schema is not None:
+            spawned_payload["result_schema"] = canonical_schema
         if idempotency_key is not None:
             spawned_payload["spawn_owner"] = owner
             spawned_payload["idempotency_key"] = idempotency_key
@@ -334,7 +354,7 @@ class DelegationManager:
             parent.session_id,
             EventDraft(EventType.CHILD_SPAWNED, "kernel", "plugin", spawned_payload),
         )
-        self._start_child_run(parent.session_id, child_id, prompt, max_steps, label, notify_on_completion)
+        self._start_child_run(parent.session_id, child_id, effective_prompt, max_steps, label, notify_on_completion)
         return child_id
 
     @staticmethod
@@ -353,20 +373,27 @@ class DelegationManager:
         root_action_budget: int | None,
         label: str,
         notify_on_completion: bool,
+        *,
+        result_schema: Mapping[str, object] | None = None,
     ) -> str:
-        """Fingerprint stable child spec and captured root authorization, never usage counters."""
-        encoded = canonical_json(
-            {
-                "prompt": prompt,
-                "scope": None if scope is None else list(scope),
-                "max_steps": max_steps,
-                "readonly": readonly,
-                "root_id": root_id,
-                "root_action_budget": root_action_budget,
-                "label": label,
-                "notify_on_completion": notify_on_completion,
-            }
-        )
+        """Fingerprint stable child spec and captured root authorization, never usage counters.
+
+        An undeclared schema is omitted (not hashed as null) so pre-change keyed
+        retries keep matching; a declared schema alters the fingerprint.
+        """
+        spec: dict[str, object] = {
+            "prompt": prompt,
+            "scope": None if scope is None else list(scope),
+            "max_steps": max_steps,
+            "readonly": readonly,
+            "root_id": root_id,
+            "root_action_budget": root_action_budget,
+            "label": label,
+            "notify_on_completion": notify_on_completion,
+        }
+        if result_schema is not None:
+            spec["result_schema"] = json_wire_object(result_schema)
+        encoded = canonical_json(spec)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _spawned_fact(self, parent_session_id: str, child_id: str) -> dict[str, object] | None:

@@ -84,6 +84,48 @@ class StructuredModelResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class StructuredChildResult:
+    """One delegated child run read against the parent's declared result schema.
+
+    ``raw_text`` is the child's full terminal text, always kept. Exactly one of
+    ``data`` (owned, schema-validated JSON object) and ``parse_error`` is set:
+    an invalid delivery is a callable failure, never silent success and never
+    data. ``output_uri`` names the immutable full-output artifact when the run
+    spilled one; ``None`` means the run completed inline (use ``raw_text``),
+    never \"no output\". Non-completed runs have no structured reading at all:
+    the caller reports status, never this shape.
+    """
+
+    child_session_id: str
+    run_id: str | None
+    raw_text: str
+    data: Mapping[str, object] | None = None
+    parse_error: StructuredQueryParseError | None = None
+    output_uri: str | None = None
+    output_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.data is not None:
+            object.__setattr__(self, "data", own_json_object(self.data))
+        if (self.data is None) == (self.parse_error is None):
+            raise ValueError("structured child result requires exactly one of data or parse_error")
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "child_session_id": self.child_session_id,
+            "run_id": self.run_id,
+            "raw_text": self.raw_text,
+            "data": None if self.data is None else json_wire_object(self.data),
+            "parse_error": None if self.parse_error is None else self.parse_error.as_payload(),
+        }
+        if self.output_uri is not None:
+            payload["output_uri"] = self.output_uri
+        if self.output_bytes is not None:
+            payload["output_bytes"] = self.output_bytes
+        return payload
+
+
 class QueryUnavailable(ValueError):
     """No admitted plugin in this runtime generation answers the named query."""
 
@@ -816,6 +858,7 @@ class PluginServices(Protocol):
         readonly: bool = False,
         notify_on_completion: bool = False,
         idempotency_key: str | None = None,
+        result_schema: Mapping[str, object] | None = None,
     ) -> str:
         """Start a delegated child session of the bound session; returns its durable session id.
 
@@ -834,6 +877,12 @@ class PluginServices(Protocol):
         With `idempotency_key` the identity is deterministic per parent, owner, and key: a retry
         with the same effective spec returns the existing child, while the same key with a
         different spec is refused visibly instead of spawning a second child.
+
+        With `result_schema` (a JSON Schema describing one JSON object) the core appends a
+        fixed delivery instruction to the child's prompt and carries the declaration durably;
+        the parent validates the child's full terminal text against it after join. The core
+        never validates child output: terminal facts commit identically with or without a
+        schema. `None` (the default) declares no contract — unknown, never valid.
         """
         ...
 

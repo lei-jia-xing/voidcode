@@ -25,10 +25,11 @@ from typing import Any, ClassVar, Literal, cast
 from uuid import uuid4
 
 from voidcode.capabilities.agent_queries import AGENT_DEFINITIONS, AgentDefinitionRequest, apply_agent_profile
+from voidcode.sdk.child_schema import canonical_result_schema, validate_child_text
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult, ConfirmationRequest
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.json_values import json_wire_object, json_wire_value, own_json_value
+from voidcode.sdk.json_values import json_wire_object, json_wire_value, own_json_object, own_json_value
 from voidcode.sdk.services import (
     BackgroundActionStatus,
     BackgroundContext,
@@ -37,6 +38,8 @@ from voidcode.sdk.services import (
     PluginServices,
     QueryContractError,
     QueryUnavailable,
+    StructuredChildResult,
+    StructuredQueryParseError,
 )
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 from voidcode.sdk.views import PluginViewDescriptor
@@ -108,9 +111,12 @@ _NODE_KEYS = frozenset(
         "history_error",
         "error",
         "budget_exhaustion",
+        "result_schema",
+        "data",
+        "parse_error",
     }
 )
-_NODE_REQUIRED_KEYS = _NODE_KEYS - {"budget_exhaustion", "output_preview", "output_error", "history_error"}
+_NODE_REQUIRED_KEYS = _NODE_KEYS - {"budget_exhaustion", "output_preview", "output_error", "history_error", "result_schema", "data", "parse_error"}
 _RUN_STATUSES: frozenset[str] = frozenset({"running", "paused", "parked", "completed", "failed", "cancelled"})
 _NODE_STATUSES: frozenset[str] = frozenset({"pending", "running", "waiting", "interrupted", "completed", "failed", "cancelled", "skipped"})
 _TERMINAL_RUN: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
@@ -147,6 +153,25 @@ def parse_workflows_config(config: Mapping[str, object] | None) -> Mapping[str, 
 # --- Durable state ---
 
 
+def _structured_parse_error_from_payload(value: object, *, run_id: str, key: str) -> StructuredQueryParseError | None:
+    """Parse a persisted structured parse error; absent legacy data remains unknown."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"workflow run '{run_id}' node '{key}' parse_error must be an object or null")
+    kind = value.get("kind")
+    message = value.get("message")
+    path = value.get("path")
+    if kind != "invalid_json" and kind != "schema_violation":
+        raise ValueError(f"workflow run '{run_id}' node '{key}' parse_error has an unknown kind: {kind!r}")
+    if not isinstance(message, str) or not message:
+        raise ValueError(f"workflow run '{run_id}' node '{key}' parse_error requires a non-empty message")
+    if path is not None and not isinstance(path, str):
+        raise ValueError(f"workflow run '{run_id}' node '{key}' parse_error path must be a string or null")
+    # Membership was checked above; cast mirrors BudgetExhaustion.from_payload's narrowing.
+    return StructuredQueryParseError(kind=cast(Literal["invalid_json", "schema_violation"], kind), message=message, path=path)
+
+
 @dataclass(frozen=True, slots=True)
 class WorkflowNode:
     key: str
@@ -168,6 +193,13 @@ class WorkflowNode:
     history_error: str | None = None
     error: str | None = None
     budget_exhaustion: BudgetExhaustion | None = None
+    #: Declared result schema for structured delivery; None means undeclared (unknown, never valid).
+    result_schema: Mapping[str, object] | None = None
+    #: Validated structured delivery (exactly one of data/parse_error) when a schema was
+    #: declared and the node completed with full text captured; absent means undeclared,
+    #: undelivered, or uncaptured — never valid, never a guess.
+    data: Mapping[str, object] | None = None
+    parse_error: StructuredQueryParseError | None = None
 
     @classmethod
     def from_payload(cls, raw: Mapping[str, object], *, run_id: str) -> WorkflowNode:
@@ -239,6 +271,25 @@ class WorkflowNode:
         if error is not None and not isinstance(error, str):
             raise ValueError(f"workflow run '{run_id}' node '{key}' error must be text or null")
         budget_exhaustion = BudgetExhaustion.from_payload(raw.get("budget_exhaustion"))
+        schema_raw = raw.get("result_schema")
+        result_schema: Mapping[str, object] | None = None
+        if schema_raw is not None:
+            if not isinstance(schema_raw, Mapping):
+                raise ValueError(f"workflow run '{run_id}' node '{key}' result_schema must be an object or null")
+            try:
+                result_schema = canonical_result_schema(schema_raw)
+            except ValueError as exc:
+                raise ValueError(f"workflow run '{run_id}' node '{key}' {exc}") from exc
+        data_raw = raw.get("data")
+        data: Mapping[str, object] | None = None
+        if data_raw is not None:
+            if not isinstance(data_raw, Mapping):
+                raise ValueError(f"workflow run '{run_id}' node '{key}' data must be an object or null")
+            try:
+                data = json_wire_object(own_json_object(data_raw))
+            except ValueError as exc:
+                raise ValueError(f"workflow run '{run_id}' node '{key}' data is not JSON: {exc}") from exc
+        parse_error = _structured_parse_error_from_payload(raw.get("parse_error"), run_id=run_id, key=key)
         return cls(
             key=key,
             status=node_status,
@@ -256,6 +307,9 @@ class WorkflowNode:
             history_error=history_error,
             error=error,
             budget_exhaustion=budget_exhaustion,
+            result_schema=result_schema,
+            data=data,
+            parse_error=parse_error,
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -281,6 +335,12 @@ class WorkflowNode:
             payload["history_error"] = self.history_error
         if self.budget_exhaustion is not None:
             payload["budget_exhaustion"] = self.budget_exhaustion.as_payload()
+        if self.result_schema is not None:
+            payload["result_schema"] = self.result_schema
+        if self.data is not None:
+            payload["data"] = self.data
+        if self.parse_error is not None:
+            payload["parse_error"] = self.parse_error.as_payload()
         return payload
 
 
@@ -556,6 +616,37 @@ def load_workflow_script(name: str, path: str, source: bytes) -> WorkflowScript:
 # --- Script context ---
 
 
+def _checked_node_args(
+    agent_name: str,
+    prompt: str,
+    key: str,
+    depends_on: Sequence[str],
+    tool_allowlist: Sequence[str] | None,
+    max_steps: int | None,
+) -> tuple[tuple[str, ...], tuple[str, ...] | None]:
+    """Validate one node's static arguments; returns (deps, scoped allowlist)."""
+    if not isinstance(agent_name, str) or not agent_name:
+        raise ValueError(f"node '{key}' agent must be a non-empty agent name")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError(f"node '{key}' prompt must be non-empty text")
+    if not isinstance(key, str) or not key:
+        raise ValueError("workflow node key must be a non-empty string")
+    if isinstance(depends_on, (str, bytes, bytearray)) or not isinstance(depends_on, Sequence):
+        raise ValueError(f"node '{key}' depends_on must be a sequence of non-empty keys")
+    deps = tuple(depends_on)
+    if any(not isinstance(dep, str) or not dep for dep in deps):
+        raise ValueError(f"node '{key}' depends_on must list non-empty keys")
+    if key in deps:
+        raise ValueError(f"node '{key}' cannot depend on itself")
+    if tool_allowlist is not None and (
+        not isinstance(tool_allowlist, (list, tuple)) or any(not isinstance(name, str) or not name for name in tool_allowlist)
+    ):
+        raise ValueError(f"node '{key}' tool_allowlist must list non-empty tool names or be null")
+    if max_steps is not None and (type(max_steps) is not int or max_steps < 1):
+        raise ValueError(f"node '{key}' max_steps must be a positive integer or null")
+    return deps, (None if tool_allowlist is None else tuple(tool_allowlist))
+
+
 @dataclass
 class WorkflowContext:
     """The driver handle a trusted workflow script uses for delegated agent nodes.
@@ -583,28 +674,38 @@ class WorkflowContext:
         max_steps: int | None = None,
     ) -> str:
         """Run one named-agent child node, or reuse its durable outcome by key."""
-        if not isinstance(agent_name, str) or not agent_name:
-            raise ValueError(f"node '{key}' agent must be a non-empty agent name")
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError(f"node '{key}' prompt must be non-empty text")
-        if not isinstance(key, str) or not key:
-            raise ValueError("workflow node key must be a non-empty string")
-        if isinstance(depends_on, (str, bytes, bytearray)) or not isinstance(depends_on, Sequence):
-            raise ValueError(f"node '{key}' depends_on must be a sequence of non-empty keys")
-        deps = tuple(depends_on)
-        if any(not isinstance(dep, str) or not dep for dep in deps):
-            raise ValueError(f"node '{key}' depends_on must list non-empty keys")
-        if key in deps:
-            raise ValueError(f"node '{key}' cannot depend on itself")
-        if tool_allowlist is not None and (
-            not isinstance(tool_allowlist, (list, tuple)) or any(not isinstance(name, str) or not name for name in tool_allowlist)
-        ):
-            raise ValueError(f"node '{key}' tool_allowlist must list non-empty tool names or be null")
-        if max_steps is not None and (type(max_steps) is not int or max_steps < 1):
-            raise ValueError(f"node '{key}' max_steps must be a positive integer or null")
-        scoped = None if tool_allowlist is None else tuple(tool_allowlist)
-        outcome = await asyncio.to_thread(self._run_node_guarded, agent_name, prompt, key, deps, label, scoped, max_steps)
+        deps, scoped = _checked_node_args(agent_name, prompt, key, depends_on, tool_allowlist, max_steps)
+        outcome = await asyncio.to_thread(self._run_node_guarded, agent_name, prompt, key, deps, label, scoped, max_steps, None)
         return outcome
+
+    async def agent_structured(
+        self,
+        agent_name: str,
+        prompt: str,
+        *,
+        key: str,
+        result_schema: Mapping[str, object],
+        depends_on: Sequence[str] = (),
+        label: str = "",
+        tool_allowlist: Sequence[str] | None = None,
+        max_steps: int | None = None,
+    ) -> StructuredChildResult:
+        """Run one named-agent child node with a declared delivery shape, or reuse it by key.
+
+        The child is instructed to deliver exactly one JSON object matching
+        ``result_schema``; the returned reading carries validated ``data`` or a
+        callable ``parse_error`` — never a guess. The schema is part of the
+        node's effective input: reusing a key requires the same schema, and a
+        key must stay on one method (``agent`` vs ``agent_structured``).
+        """
+        deps, scoped = _checked_node_args(agent_name, prompt, key, depends_on, tool_allowlist, max_steps)
+        if not isinstance(result_schema, Mapping):
+            raise ValueError(f"node '{key}' result_schema must be an object")
+        try:
+            canonical_schema = canonical_result_schema(result_schema)
+        except ValueError as exc:
+            raise ValueError(f"node '{key}' {exc}") from exc
+        return await asyncio.to_thread(self._run_node_structured_guarded, agent_name, prompt, key, deps, label, scoped, max_steps, canonical_schema)
 
     def _run_node_guarded(
         self,
@@ -615,9 +716,10 @@ class WorkflowContext:
         label: str,
         tool_allowlist: tuple[str, ...] | None,
         max_steps: int | None,
+        result_schema: Mapping[str, object] | None,
     ) -> str:
         with self._node_slots:
-            return self._run_node(agent_name, prompt, key, depends_on, label, tool_allowlist, max_steps)
+            return self._run_node(agent_name, prompt, key, depends_on, label, tool_allowlist, max_steps, result_schema)
 
     def _run_node(
         self,
@@ -628,9 +730,12 @@ class WorkflowContext:
         label: str,
         tool_allowlist: tuple[str, ...] | None,
         max_steps: int | None,
+        result_schema: Mapping[str, object] | None,
     ) -> str:
         def stage(context: ToolContext, services: PluginServices) -> _StagedNode:
-            return _stage_pending_node(context, services, self.run_id, key, depends_on, agent_name, prompt, tool_allowlist, max_steps)
+            return _stage_pending_node(
+                context, services, self.run_id, key, depends_on, agent_name, prompt, tool_allowlist, max_steps, result_schema=result_schema
+            )
 
         staged = self._commit(stage)
         if staged.settled is not None:
@@ -657,6 +762,76 @@ class WorkflowContext:
                     raise ValueError(finished.error)
                 assert finished.text is not None
                 return finished.text
+            if outcome.status in ("waiting", "interrupted"):
+                self._commit(_ParkNode(self.run_id, key, outcome))
+                raise _ParkedNode(key, outcome.status, outcome.error)
+            if outcome.status == "cancelled":
+                finished = self._commit(_FinishNode(self.run_id, key, outcome))
+                if finished.error is not None:
+                    raise ValueError(finished.error)
+                if not finished.cancelled:
+                    raise AssertionError(f"node '{key}' finish swallowed its cancellation")
+                raise _CancelledNode(key)
+            # "running" past this slice: release the lease and re-drive.
+
+    def _run_node_structured_guarded(
+        self,
+        agent_name: str,
+        prompt: str,
+        key: str,
+        depends_on: tuple[str, ...],
+        label: str,
+        tool_allowlist: tuple[str, ...] | None,
+        max_steps: int | None,
+        result_schema: Mapping[str, object],
+    ) -> StructuredChildResult:
+        with self._node_slots:
+            return self._run_node_structured(agent_name, prompt, key, depends_on, label, tool_allowlist, max_steps, result_schema)
+
+    def _run_node_structured(
+        self,
+        agent_name: str,
+        prompt: str,
+        key: str,
+        depends_on: tuple[str, ...],
+        label: str,
+        tool_allowlist: tuple[str, ...] | None,
+        max_steps: int | None,
+        result_schema: Mapping[str, object],
+    ) -> StructuredChildResult:
+        def stage(context: ToolContext, services: PluginServices) -> _StagedNode:
+            return _stage_pending_node(
+                context, services, self.run_id, key, depends_on, agent_name, prompt, tool_allowlist, max_steps, result_schema=result_schema
+            )
+
+        staged = self._commit(stage)
+        if staged.settled is not None:
+            # A fingerprint match means the settled node declared this same schema.
+            assert staged.settled_structured is not None
+            return staged.settled_structured
+        plan = staged.plan
+        assert plan is not None
+
+        def attach(context: ToolContext, services: PluginServices) -> _NodePlan:
+            return _attach_node_child(context, services, self.run_id, key, plan, label)
+
+        node = self._commit(attach).node
+        child_id = node.child_session_id
+        if child_id is None:
+            raise ValueError(f"node '{key}' has no child to drive")
+        while True:
+            outcome = self.invoke(_JoinNode(child_id, JOIN_SLICE_SECONDS))
+            if outcome.status in ("completed", "failed"):
+                finished = self._commit(_FinishNode(self.run_id, key, outcome))
+                # The node truth already committed inside the lease; control flow
+                # raises here so a terminal row is never lost to lease rollback.
+                if finished.cancelled:
+                    raise _CancelledNode(key)
+                if finished.error is not None:
+                    raise ValueError(finished.error)
+                assert finished.text is not None
+                assert finished.structured is not None
+                return finished.structured
             if outcome.status in ("waiting", "interrupted"):
                 self._commit(_ParkNode(self.run_id, key, outcome))
                 raise _ParkedNode(key, outcome.status, outcome.error)
@@ -745,6 +920,7 @@ class _EffectivePlan:
     scope: tuple[str, ...] | None
     budget: int | None
     effective_input: str
+    result_schema: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -752,6 +928,7 @@ class _StagedNode:
     node: WorkflowNode | None
     plan: _EffectivePlan | None
     settled: str | None
+    settled_structured: StructuredChildResult | None = None
 
 
 def _resolve_effective_plan(
@@ -763,6 +940,7 @@ def _resolve_effective_plan(
     prompt: str,
     tool_allowlist: tuple[str, ...] | None,
     max_steps: int | None,
+    result_schema: Mapping[str, object] | None = None,
 ) -> _EffectivePlan:
     try:
         profile = AGENT_DEFINITIONS.ask(services, AgentDefinitionRequest(name=agent_name))
@@ -774,17 +952,22 @@ def _resolve_effective_plan(
         raise ValueError(f"unknown agent: {agent_name!r}")
     body, readonly, scope, budget = apply_agent_profile(profile, prompt, tool_allowlist, max_steps)
     _state, run, _version = _require_run(services, run_id)
-    effective_input = _digest(
-        {
-            "body": body,
-            "readonly": readonly,
-            "scope": None if scope is None else list(scope),
-            "budget": budget,
-            "depends_on": list(depends_on),
-            "input_sha256": run.input_sha256,
-        }
+    digest_input: dict[str, object] = {
+        "body": body,
+        "readonly": readonly,
+        "scope": None if scope is None else list(scope),
+        "budget": budget,
+        "depends_on": list(depends_on),
+        "input_sha256": run.input_sha256,
+    }
+    # An undeclared schema is omitted (not hashed as null) so pre-change resumes
+    # keep matching; a declared schema alters the fingerprint.
+    if result_schema is not None:
+        digest_input["result_schema"] = json_wire_object(result_schema)
+    effective_input = _digest(digest_input)
+    return _EffectivePlan(
+        agent_name=agent_name, body=body, readonly=readonly, scope=scope, budget=budget, effective_input=effective_input, result_schema=result_schema
     )
-    return _EffectivePlan(agent_name=agent_name, body=body, readonly=readonly, scope=scope, budget=budget, effective_input=effective_input)
 
 
 def _check_topology(run: WorkflowRun, key: str, depends_on: Sequence[str], existing: WorkflowNode | None, effective_input: str) -> None:
@@ -802,6 +985,30 @@ def _check_topology(run: WorkflowRun, key: str, depends_on: Sequence[str], exist
             raise ValueError(f"node '{key}' depends on '{dep}', which is {dependency.status}")
 
 
+def _settled_structured(node: WorkflowNode, full_text: str) -> StructuredChildResult | None:
+    """Rebuild the structured reading of a completed node; ``None`` when undeclared.
+
+    A declared schema without exactly one persisted reading (or without the
+    child that produced it) is a corrupt row: refuse loudly instead of
+    re-validating or guessing — the reuse must equal what finish persisted.
+    """
+    if node.result_schema is None:
+        return None
+    if (node.data is None) == (node.parse_error is None):
+        raise ValueError(f"node '{node.key}' has a declared schema but no single structured reading; refusing to guess it")
+    if node.child_session_id is None:
+        raise ValueError(f"node '{node.key}' has a structured reading but no child session; refusing to guess it")
+    return StructuredChildResult(
+        child_session_id=node.child_session_id,
+        run_id=node.run_id,
+        raw_text=full_text,
+        data=node.data,
+        parse_error=node.parse_error,
+        output_uri=None if node.output_sha256 is None else f"artifact://{node.output_sha256}",
+        output_bytes=node.output_bytes,
+    )
+
+
 def _stage_pending_node(
     _context: ToolContext,
     services: PluginServices,
@@ -812,9 +1019,10 @@ def _stage_pending_node(
     prompt: str,
     tool_allowlist: tuple[str, ...] | None,
     max_steps: int | None,
+    result_schema: Mapping[str, object] | None = None,
 ) -> _StagedNode:
     """First short invoke: persist the pending node and its effective spec, spawn nothing."""
-    plan = _resolve_effective_plan(services, run_id, key, depends_on, agent_name, prompt, tool_allowlist, max_steps)
+    plan = _resolve_effective_plan(services, run_id, key, depends_on, agent_name, prompt, tool_allowlist, max_steps, result_schema=result_schema)
     state, run, version = _require_run(services, run_id)
     if run.status in ("cancelled", "completed", "failed"):
         raise ValueError(f"workflow run '{run_id}' is {run.status}; no new node is accepted")
@@ -824,9 +1032,10 @@ def _stage_pending_node(
     _check_topology(run, key, depends_on, existing, plan.effective_input)
     if existing is not None:
         if existing.status == "completed" and existing.output_sha256 is not None:
-            return _StagedNode(node=existing, plan=None, settled=_read_full_artifact(services, existing.output_sha256))
+            settled = _read_full_artifact(services, existing.output_sha256)
+            return _StagedNode(node=existing, plan=None, settled=settled, settled_structured=_settled_structured(existing, settled))
         if existing.status == "completed" and existing.output is not None:
-            return _StagedNode(node=existing, plan=None, settled=existing.output)
+            return _StagedNode(node=existing, plan=None, settled=existing.output, settled_structured=_settled_structured(existing, existing.output))
         if existing.status == "completed" and existing.output_sha256 is None:
             # Preview-only capture failure persisted by _finish_node: no full text
             # exists to return, and redriving cannot manufacture it. Fail visibly
@@ -842,6 +1051,7 @@ def _stage_pending_node(
         agent=agent_name,
         effective_input_sha256=plan.effective_input,
         prompt_sha256=hashlib.sha256(plan.body.encode("utf-8")).hexdigest(),
+        result_schema=plan.result_schema,
     )
     run = replace(run, nodes=(*run.nodes, node), updated_at=_clock_ms())
     services.replace_state(state.with_run(run).to_payload(), version, "session")
@@ -872,6 +1082,7 @@ def _attach_node_child(_context: ToolContext, services: PluginServices, run_id: 
         readonly=plan.readonly,
         notify_on_completion=False,
         idempotency_key=f"workflow:{run_id}:{key}",
+        result_schema=plan.result_schema,
     )
     node = replace(node, status="running", child_session_id=child_id)
     services.replace_state(state.with_run(run.with_node(node)).to_payload(), version, "session")
@@ -891,6 +1102,7 @@ class _FinishedNode:
     text: str | None
     error: str | None = None
     cancelled: bool = False
+    structured: StructuredChildResult | None = None
 
 
 def _finish_node(context: ToolContext, services: PluginServices, run_id: str, key: str, outcome: ChildOutcome) -> _FinishedNode:
@@ -940,7 +1152,7 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
             return _FinishedNode(node=node, text=None, error=f"node '{key}' ends with failed run '{run_id}'")
         return _FinishedNode(node=node, text=None, error=f"node '{key}' ends with {run.status} run '{run_id}'")
     if node.status == "completed" and node.output is not None and node.output_sha256 is None:
-        return _FinishedNode(node=node, text=node.output)
+        return _FinishedNode(node=node, text=node.output, structured=_settled_structured(node, node.output))
     if outcome.status not in ("completed", "failed", "cancelled"):
         raise ValueError(f"cannot finish workflow node '{key}' from child status {outcome.status!r}")
     if outcome.run_id is not None:
@@ -981,6 +1193,15 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
         else:
             text = output
     error = outcome.error if status != "completed" else None
+    data: Mapping[str, object] | None = None
+    parse_error: StructuredQueryParseError | None = None
+    if status == "completed" and not preview_only and text is not None and node.result_schema is not None:
+        validated, failure = validate_child_text(node.result_schema, text)
+        if failure is not None:
+            parse_error = failure
+        else:
+            assert validated is not None
+            data = validated
     node = replace(
         node,
         status=status,
@@ -993,6 +1214,8 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
         history_error=outcome.history_error,
         error=error,
         budget_exhaustion=outcome.budget_exhaustion,
+        data=data,
+        parse_error=parse_error,
     )
     run = run.with_node(node)
     services.replace_state(state.with_run(run).to_payload(), version, "session")
@@ -1003,7 +1226,19 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
     if preview_only:
         return _FinishedNode(node=node, text=None, error=_unavailable_output_message(key, outcome.run_id, outcome.output_error))
     assert text is not None
-    return _FinishedNode(node=node, text=text)
+    structured: StructuredChildResult | None = None
+    if node.result_schema is not None:
+        # Exactly one of data/parse_error was persisted above; the constructor enforces it.
+        structured = StructuredChildResult(
+            child_session_id=outcome.child_session_id,
+            run_id=outcome.run_id,
+            raw_text=text,
+            data=data,
+            parse_error=parse_error,
+            output_uri=None if node.output_sha256 is None else f"artifact://{node.output_sha256}",
+            output_bytes=node.output_bytes,
+        )
+    return _FinishedNode(node=node, text=text, structured=structured)
 
 
 def _park_node(context: ToolContext, services: PluginServices, run_id: str, key: str, outcome: ChildOutcome) -> None:
@@ -1014,6 +1249,7 @@ def _park_node(context: ToolContext, services: PluginServices, run_id: str, key:
         return
     status: NodeStatus = "interrupted" if outcome.status == "interrupted" else "waiting"
     # The parked run owns this row now: prior-run output and capture data must not linger.
+    # The declared schema is spec, not run output, so it stays; its reading is cleared.
     run = run.with_node(
         replace(
             node,
@@ -1027,6 +1263,8 @@ def _park_node(context: ToolContext, services: PluginServices, run_id: str, key:
             history_error=outcome.history_error,
             error=outcome.error,
             budget_exhaustion=outcome.budget_exhaustion,
+            data=None,
+            parse_error=None,
         )
     )
     services.replace_state(state.with_run(run).to_payload(), version, "session")

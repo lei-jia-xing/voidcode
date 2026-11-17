@@ -246,7 +246,21 @@ class PluginRuntime:
         usage_callback: Callable[[str, int, int | None], SessionUsageReport] | None = None,
         budget_callback: Callable[[str, str], PluginBudget | None] | None = None,
         spawn_child_callback: Callable[
-            [str, str, str, int | None, tuple[str, ...] | None, bool, bool, str, str | None, str, int | None, Callable[[], bool]],
+            [
+                str,
+                str,
+                str,
+                int | None,
+                tuple[str, ...] | None,
+                bool,
+                bool,
+                str,
+                str | None,
+                str,
+                int | None,
+                Callable[[], bool],
+                Mapping[str, object] | None,
+            ],
             str,
         ]
         | None = None,

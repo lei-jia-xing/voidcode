@@ -170,6 +170,8 @@ def test_spawn_passes_arguments_through_and_records_roster_event(tmp_path: Path)
             "max_steps": 5,
             "readonly": False,
             "notify_on_completion": True,
+            "idempotency_key": None,
+            "result_schema": None,
         }
     ]
     assert services.join_calls == []
@@ -225,6 +227,8 @@ def test_profile_spawn_materializes_the_prompt_and_applies_its_scope(tmp_path: P
             "max_steps": None,
             "readonly": True,
             "notify_on_completion": True,
+            "idempotency_key": None,
+            "result_schema": None,
         }
     ]
     assert _payload(res) == {
@@ -725,8 +729,26 @@ def test_batch_spawns_the_whole_group_and_records_it(tmp_path: Path) -> None:
         ],
     }
     assert services.spawn_calls == [
-        {"prompt": "one", "label": "a", "tool_allowlist": None, "max_steps": None, "readonly": False, "notify_on_completion": True},
-        {"prompt": "two", "label": "", "tool_allowlist": None, "max_steps": 7, "readonly": False, "notify_on_completion": True},
+        {
+            "prompt": "one",
+            "label": "a",
+            "tool_allowlist": None,
+            "max_steps": None,
+            "readonly": False,
+            "notify_on_completion": True,
+            "idempotency_key": None,
+            "result_schema": None,
+        },
+        {
+            "prompt": "two",
+            "label": "",
+            "tool_allowlist": None,
+            "max_steps": 7,
+            "readonly": False,
+            "notify_on_completion": True,
+            "idempotency_key": None,
+            "result_schema": None,
+        },
     ]
     assert services.join_calls == []
     assert services.staged_events == [("task_batch_spawned", {"parallel_group_id": group_id, "task_ids": ["child-1", "child-2"]})]
@@ -891,8 +913,19 @@ def test_batch_items_select_their_own_profiles(tmp_path: Path) -> None:
             "max_steps": None,
             "readonly": True,
             "notify_on_completion": True,
+            "idempotency_key": None,
+            "result_schema": None,
         },
-        {"prompt": "plain", "label": "", "tool_allowlist": None, "max_steps": None, "readonly": False, "notify_on_completion": True},
+        {
+            "prompt": "plain",
+            "label": "",
+            "tool_allowlist": None,
+            "max_steps": None,
+            "readonly": False,
+            "notify_on_completion": True,
+            "idempotency_key": None,
+            "result_schema": None,
+        },
     ]
     assert _stored(services).children == {
         "child-1": ChildRecord(group_id=group_id, subagent_type="research"),

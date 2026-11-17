@@ -18,11 +18,12 @@ from uuid import uuid4
 
 from voidcode.capabilities.agent_queries import AgentDefinition, AgentDefinitionRequest, apply_agent_profile
 from voidcode.capabilities.resource_pages import render_stored_artifact_page
+from voidcode.sdk.child_schema import canonical_result_schema, validate_child_text
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import PluginQueryCaller
 from voidcode.sdk.resources import ResourceReadCaller
-from voidcode.sdk.services import ChildOutcome, DescendantNode, PluginServices
+from voidcode.sdk.services import ChildOutcome, DescendantNode, PluginServices, StructuredQueryParseError
 from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
@@ -51,9 +52,10 @@ _TASK_OPERATIONS: tuple[str, ...] = ("output", "cancel", "send", "history")
 _BATCH_OPERATIONS: tuple[str, ...] = ("output",)
 _STATE_KEYS: frozenset[str] = frozenset({"schema_version", "children", "groups"})
 _CHILD_KEYS: frozenset[str] = frozenset({"label", "group_id"})
-#: Optional child fields: absent in rows written before preset selection existed.
-_CHILD_OPTIONAL_KEYS: frozenset[str] = frozenset({"subagent_type"})
-_ITEM_KEYS: frozenset[str] = frozenset({"prompt", "label", "tool_allowlist", "max_steps", "subagent_type"})
+#: Optional child fields: absent in rows written before preset selection existed,
+#: and before structured delivery existed.
+_CHILD_OPTIONAL_KEYS: frozenset[str] = frozenset({"subagent_type", "result_schema"})
+_ITEM_KEYS: frozenset[str] = frozenset({"prompt", "label", "tool_allowlist", "max_steps", "subagent_type", "result_schema"})
 
 
 # --- Durable session state ---
@@ -66,6 +68,8 @@ class ChildRecord:
     label: str = ""
     group_id: str | None = None
     subagent_type: str | None = None
+    #: Declared result schema for structured delivery; None means undeclared (unknown, never valid).
+    result_schema: Mapping[str, object] | None = None
 
     @classmethod
     def parse(cls, child_id: str, raw: object) -> ChildRecord:
@@ -87,10 +91,22 @@ class ChildRecord:
         subagent_type = raw.get("subagent_type")
         if subagent_type is not None and (not isinstance(subagent_type, str) or not subagent_type):
             raise ValueError(f"delegation child {child_id!r} subagent_type must be a non-empty string or null")
-        return cls(label=label, group_id=group_id, subagent_type=subagent_type)
+        schema_raw = raw.get("result_schema")
+        result_schema: Mapping[str, object] | None = None
+        if schema_raw is not None:
+            if not isinstance(schema_raw, Mapping):
+                raise ValueError(f"delegation child {child_id!r} result_schema must be an object or null")
+            try:
+                result_schema = canonical_result_schema(schema_raw)
+            except ValueError as exc:
+                raise ValueError(f"delegation child {child_id!r} {exc}") from exc
+        return cls(label=label, group_id=group_id, subagent_type=subagent_type, result_schema=result_schema)
 
     def as_payload(self) -> dict[str, object]:
-        return {"label": self.label, "group_id": self.group_id, "subagent_type": self.subagent_type}
+        payload: dict[str, object] = {"label": self.label, "group_id": self.group_id, "subagent_type": self.subagent_type}
+        if self.result_schema is not None:
+            payload["result_schema"] = self.result_schema
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +213,7 @@ class _TaskArgs:
     task_id: str | None = None
     timeout_seconds: float = DEFAULT_JOIN_TIMEOUT_SECONDS
     subagent_type: str | None = None
+    result_schema: Mapping[str, object] | None = None
     output_offset: int = 0
     output_limit: int = OUTPUT_PAGE_BYTES
     after_sequence: int = 0
@@ -211,6 +228,7 @@ class _BatchItem:
     tool_allowlist: tuple[str, ...] | None = None
     max_steps: int | None = None
     subagent_type: str | None = None
+    result_schema: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +281,17 @@ def _parse_max_steps(raw: object, *, where: str) -> int | None:
     if type(raw) is not int or raw < 1:
         raise ValueError(f"{where} max_steps must be a positive integer")
     return raw
+
+
+def _parse_result_schema(raw: object, *, where: str) -> Mapping[str, object] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{where} result_schema must be an object")
+    try:
+        return canonical_result_schema(raw)
+    except ValueError as exc:
+        raise ValueError(f"{where} {exc}") from exc
 
 
 def _parse_timeout_seconds(raw: object, *, where: str) -> float:
@@ -325,13 +354,17 @@ def _parse_task_args(arguments: Mapping[str, object]) -> _TaskArgs:
     if operation is not None:
         subagent_type = None
         tool_allowlist = None
+        result_schema = None
         if arguments.get("subagent_type") is not None:
             raise ValueError("task subagent_type selects a child profile and applies to a spawn only")
         if arguments.get("tool_allowlist") is not None:
             raise ValueError("task tool_allowlist applies to a spawn only")
+        if arguments.get("result_schema") is not None:
+            raise ValueError("task result_schema declares the delivery shape and applies to a spawn only")
     else:
         subagent_type = _parse_subagent_type(arguments.get("subagent_type"), where="task")
         tool_allowlist = _parse_allowlist(arguments.get("tool_allowlist"), where="task")
+        result_schema = _parse_result_schema(arguments.get("result_schema"), where="task")
     return _TaskArgs(
         prompt=prompt,
         label=_parse_label(arguments.get("label"), where="task"),
@@ -342,6 +375,7 @@ def _parse_task_args(arguments: Mapping[str, object]) -> _TaskArgs:
         task_id=task_id,
         timeout_seconds=_parse_timeout_seconds(arguments.get("timeout"), where="task"),
         subagent_type=subagent_type,
+        result_schema=result_schema,
         output_offset=_parse_non_negative(arguments.get("output_offset"), where="task", field="output_offset"),
         output_limit=_parse_bounded_int(
             arguments.get("output_limit"),
@@ -380,6 +414,7 @@ def _parse_batch_item(index: int, raw: object) -> _BatchItem:
         tool_allowlist=tool_allowlist,
         max_steps=_parse_max_steps(raw.get("max_steps"), where=where),
         subagent_type=subagent_type,
+        result_schema=_parse_result_schema(raw.get("result_schema"), where=where),
     )
 
 
@@ -456,6 +491,11 @@ class TaskBody:
     output_preview: str | None = None
     output_error: str | None = None
     history_error: str | None = None
+    #: Validated structured delivery (exactly one of data/parse_error) when a schema was
+    #: declared and the run completed with full text captured; absent means undeclared,
+    #: undelivered, or uncaptured — never valid, never a guess.
+    data: Mapping[str, object] | None = None
+    parse_error: Mapping[str, object] | None = None
     #: Current status/latest published output; distinct from the transcript.
     agent_uri: str | None = None
     #: Live transcript and immutable saved-history references.
@@ -489,6 +529,8 @@ class TaskBody:
             "output_preview",
             "output_error",
             "history_error",
+            "data",
+            "parse_error",
             "agent_uri",
             "history_uri",
             "history_sha256",
@@ -566,6 +608,7 @@ def _spawn_child(
     profile: AgentDefinition | None,
     tool_allowlist: tuple[str, ...] | None,
     notify_on_completion: bool,
+    result_schema: Mapping[str, object] | None = None,
 ) -> str:
     """Apply profile text and stance; only the caller narrows the inherited scope."""
     body, readonly, tool_allowlist, max_steps = apply_agent_profile(profile, prompt, tool_allowlist, max_steps)
@@ -576,6 +619,7 @@ def _spawn_child(
         max_steps=max_steps,
         readonly=readonly,
         notify_on_completion=notify_on_completion,
+        result_schema=result_schema,
     )
     return child_id
 
@@ -712,6 +756,75 @@ def _output_facts(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _StructuredFacts:
+    """Consumer-side structured reading of one child run.
+
+    Exactly one of ``data``/``parse_error`` is set when a declared schema was
+    validated against full captured text. All-``None`` means either undeclared
+    (the caller held no schema, so no reading was attempted) or undelivered
+    (a schema is declared but the run is not completed, so status governs).
+    ``unavailable`` is set only when a schema was declared, the run completed,
+    but no full text was captured — the committed capture cause, never a guess.
+    """
+
+    data: dict[str, object] | None = None
+    parse_error: StructuredQueryParseError | None = None
+    unavailable: str | None = None
+
+
+def _full_output_text(services: PluginServices, outcome: ChildOutcome) -> str | None:
+    """Full terminal text for structured validation; ``None`` when uncaptured.
+
+    Artifact-backed output is joined as bytes and decoded once as strict
+    UTF-8; inline output is already whole. Preview bytes are never returned.
+    """
+    if outcome.output_sha256 is not None:
+        chunks: list[bytes] = []
+        offset = 0
+        while True:
+            page = services.read_artifact(outcome.output_sha256, offset=offset, limit=65536)
+            chunks.append(bytes(page.data))
+            if page.eof:
+                break
+            offset += len(page.data)
+        return b"".join(chunks).decode("utf-8")
+    return outcome.output
+
+
+def _structured_facts(
+    result_schema: Mapping[str, object] | None,
+    outcome: ChildOutcome,
+    services: PluginServices,
+) -> _StructuredFacts:
+    """Validate one completed run's full text; every degraded path stays explicit."""
+    if result_schema is None:
+        return _StructuredFacts()
+    if outcome.status != "completed":
+        return _StructuredFacts()
+    full_text = _full_output_text(services, outcome)
+    if full_text is None:
+        return _StructuredFacts(unavailable=outcome.output_error or "no full output was captured")
+    data, error = validate_child_text(result_schema, full_text)
+    if error is not None:
+        return _StructuredFacts(parse_error=error)
+    assert data is not None
+    return _StructuredFacts(data=data)
+
+
+def _structured_line(structured: _StructuredFacts) -> str | None:
+    """One honest structured-delivery line; ``None`` when status governs instead."""
+    if structured.data is not None:
+        return "structured: ok"
+    if structured.parse_error is not None:
+        error = structured.parse_error
+        location = f" at {error.path}" if error.path is not None else ""
+        return f"structured: {error.kind}{location}: {error.message}"
+    if structured.unavailable is not None:
+        return f"structured: unavailable ({structured.unavailable})"
+    return None
+
+
 def _outcome_text(
     task_id: str,
     label: str,
@@ -720,6 +833,7 @@ def _outcome_text(
     *,
     facts: _OutputFacts | None = None,
     budget_exhaustion: Mapping[str, object] | None = None,
+    structured: _StructuredFacts | None = None,
 ) -> str:
     lines = [f"{_header(task_id, label, subagent_type)} status={outcome.status} run_id={outcome.run_id or 'unknown'}"]
     if outcome.stop_cause:
@@ -733,6 +847,10 @@ def _outcome_text(
         lines.append(f"output_error: {outcome.output_error}")
     if outcome.history_error:
         lines.append(f"history_error: {outcome.history_error}")
+    if structured is not None:
+        structured_line = _structured_line(structured)
+        if structured_line is not None:
+            lines.append(structured_line)
     if facts is not None and facts.output_uri is not None:
         lines.append(f"Full immutable output for run_id={outcome.run_id or 'unknown'}: {facts.output_uri}.")
     if facts is not None and facts.output:
@@ -769,6 +887,7 @@ def _outcome_entry(
 ) -> tuple[dict[str, object], str]:
     budget_exhaustion = _budget_exhaustion_payload(outcome)
     facts = _output_facts(outcome, services, caller, 0, OUTPUT_PAGE_BYTES)
+    structured = _structured_facts(record.result_schema, outcome, services)
     body = TaskBody(
         operation="output",
         task_id=task_id,
@@ -787,6 +906,8 @@ def _outcome_entry(
         output_preview=facts.output_preview,
         output_error=outcome.output_error,
         history_error=outcome.history_error,
+        data=structured.data,
+        parse_error=None if structured.parse_error is None else structured.parse_error.as_payload(),
         agent_uri=_agent_uri(task_id),
         history_uri=_transcript_uri(task_id),
         history_sha256=outcome.history_sha256,
@@ -799,6 +920,7 @@ def _outcome_entry(
         record.subagent_type,
         facts=facts,
         budget_exhaustion=budget_exhaustion,
+        structured=structured,
     )
 
 
@@ -1018,6 +1140,14 @@ class TaskTool:
                     "description": "Optional tool names the child may use; never wider than your own scope.",
                 },
                 "max_steps": {"type": "integer", "minimum": 1, "description": "Optional provider-turn cap for the child session."},
+                "result_schema": {
+                    "type": "object",
+                    "description": (
+                        "Optional JSON Schema (one JSON object) the child's final result must match; "
+                        "spawn only. The child is instructed to deliver exactly one matching object, "
+                        "and reads report validated data or a parse_error — never a guess."
+                    ),
+                },
                 "run_in_background": {
                     "type": "boolean",
                     "default": True,
@@ -1094,13 +1224,14 @@ class TaskTool:
                 profile=profile,
                 tool_allowlist=args.tool_allowlist,
                 notify_on_completion=args.run_in_background,
+                result_schema=args.result_schema,
             )
         except (ValueError, PermissionError, RuntimeError) as exc:
             return _failure(self.definition.name, str(exc))
         services.replace_state(
             _with_children(
                 state,
-                ((child_id, ChildRecord(label=args.label, subagent_type=args.subagent_type)),),
+                ((child_id, ChildRecord(label=args.label, subagent_type=args.subagent_type, result_schema=args.result_schema)),),
                 group_id=None,
             ).to_payload(),
             expected_version=version,
@@ -1131,6 +1262,7 @@ class TaskTool:
             outcome = services.join_child(child_id, timeout_seconds=args.timeout_seconds)
             budget_exhaustion = _budget_exhaustion_payload(outcome)
             facts = _output_facts(outcome, services, _resource_caller(context), args.output_offset, args.output_limit)
+            structured = _structured_facts(args.result_schema, outcome, services)
             _acknowledge(outcome, services)
         except (ValueError, PermissionError, RuntimeError) as exc:
             return _failure(self.definition.name, str(exc))
@@ -1144,6 +1276,7 @@ class TaskTool:
                     args.subagent_type,
                     facts=facts,
                     budget_exhaustion=budget_exhaustion,
+                    structured=structured,
                 )
             ),
             body=TaskBody(
@@ -1164,6 +1297,8 @@ class TaskTool:
                 output_preview=facts.output_preview,
                 output_error=outcome.output_error,
                 history_error=outcome.history_error,
+                data=structured.data,
+                parse_error=None if structured.parse_error is None else structured.parse_error.as_payload(),
                 agent_uri=_agent_uri(child_id),
                 history_uri=_transcript_uri(child_id),
                 history_sha256=outcome.history_sha256,
@@ -1183,7 +1318,7 @@ class TaskTool:
                 return self._send(task_id, label, record.subagent_type, args, services)
             if args.operation == "history":
                 return self._history(task_id, label, record.subagent_type, args, services)
-            return self._output(task_id, label, record.subagent_type, args, context, services)
+            return self._output(task_id, label, record.subagent_type, record.result_schema, args, context, services)
         except (ValueError, PermissionError, RuntimeError) as exc:
             return _failure(self.definition.name, str(exc))
 
@@ -1311,6 +1446,7 @@ class TaskTool:
         task_id: str,
         label: str,
         subagent_type: str | None,
+        result_schema: Mapping[str, object] | None,
         args: _TaskArgs,
         context: ToolContext,
         services: PluginServices,
@@ -1318,6 +1454,7 @@ class TaskTool:
         outcome = services.join_child(task_id, timeout_seconds=args.timeout_seconds)
         facts = _output_facts(outcome, services, _resource_caller(context), args.output_offset, args.output_limit)
         budget_exhaustion = _budget_exhaustion_payload(outcome)
+        structured = _structured_facts(result_schema, outcome, services)
         _acknowledge(outcome, services)
         return ToolSuccess(
             self.definition.name,
@@ -1329,6 +1466,7 @@ class TaskTool:
                     subagent_type,
                     facts=facts,
                     budget_exhaustion=budget_exhaustion,
+                    structured=structured,
                 )
             ),
             body=TaskBody(
@@ -1349,6 +1487,8 @@ class TaskTool:
                 output_preview=facts.output_preview,
                 output_error=outcome.output_error,
                 history_error=outcome.history_error,
+                data=structured.data,
+                parse_error=None if structured.parse_error is None else structured.parse_error.as_payload(),
                 agent_uri=_agent_uri(task_id),
                 history_uri=_transcript_uri(task_id),
                 history_sha256=outcome.history_sha256,
@@ -1394,6 +1534,13 @@ class TaskBatchTool:
                                 "type": "integer",
                                 "minimum": 1,
                                 "description": "Optional provider-turn cap for this child session.",
+                            },
+                            "result_schema": {
+                                "type": "object",
+                                "description": (
+                                    "Optional JSON Schema (one JSON object) this child's final result must match; "
+                                    "reads report validated data or a parse_error — never a guess."
+                                ),
                             },
                         },
                         "required": ["prompt"],
@@ -1456,6 +1603,7 @@ class TaskBatchTool:
                     profile=profile,
                     tool_allowlist=item.tool_allowlist,
                     notify_on_completion=True,
+                    result_schema=item.result_schema,
                 )
             except (ValueError, PermissionError, RuntimeError) as exc:
                 failed.append((index, str(exc)))
@@ -1467,7 +1615,15 @@ class TaskBatchTool:
             _with_children(
                 state,
                 tuple(
-                    (entry.task_id, ChildRecord(label=items[entry.index].label, group_id=group_id, subagent_type=entry.subagent_type))
+                    (
+                        entry.task_id,
+                        ChildRecord(
+                            label=items[entry.index].label,
+                            group_id=group_id,
+                            subagent_type=entry.subagent_type,
+                            result_schema=items[entry.index].result_schema,
+                        ),
+                    )
                     for entry in created
                 ),
                 group_id=group_id,

@@ -3103,6 +3103,7 @@ class Core:
         root_id: str,
         root_budget: int | None,
         guard: Callable[[], bool] | None,
+        result_schema: Mapping[str, object] | None = None,
     ) -> str:
         return self.spawn_child(
             parent_session_id,
@@ -3117,6 +3118,7 @@ class Core:
             root_action_id=root_id,
             initial_root_budget=root_budget,
             admission_guard=guard,
+            result_schema=result_schema,
         )
 
     def _capture_root_authorization(self, session: SessionRecord) -> tuple[str, int | None]:
@@ -3157,6 +3159,7 @@ class Core:
         root_action_id: str | None = None,
         initial_root_budget: int | None = None,
         admission_guard: Callable[[], bool] | None = None,
+        result_schema: Mapping[str, object] | None = None,
     ) -> str:
         if root_action_id is None:
             if initial_root_budget is not None:
@@ -3193,6 +3196,7 @@ class Core:
             root_action_id=root_action_id,
             initial_root_budget=initial_root_budget,
             admission_guard=admission_guard,
+            result_schema=result_schema,
         )
 
     def find_keyed_child(self, parent_session_id: str, owner: str, idempotency_key: str) -> str | None:
