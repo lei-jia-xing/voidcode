@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Known-red baseline burn-down
+- Product fixes: unknown child births read as absent instead of raising `KeyError` (`_birth_record` guard); reserved-child claims report `cancelled` through the claim-event fallback; `enqueue_continuation` stamps the lease's captured root action identity so plugin-staged rows drain. Legacy rows without a captured root stay undrainable and fail visibly — no migration, no backfill, no fabricated grant.
+- Stale-test updates: result/process envelope unwraps (16 across artifacts, background processes, and process lease); session reads driven with real `root_action_budget` values; oversized child-history pages and shell stdout read through their artifact references; refreshed TUI terminal stub and stream session ids; agent surface expects the `wait` tool; media tests assert the small-result reference contract.
+- Verification: full suite green — `python -m pytest tests/unit tests/integration/test_review_plugin.py -q -p no:cacheprovider --tb=no -rf` → 1850 passed, 1 skipped, 0 failed. The `test_p2a_durable_continuation_executes_real_governed_run_and_recovers` spec passes unmodified. The retired 33-ID baseline list lived in docs/testing.md.
+
 ### Explicit budgets and immutable result recovery (BREAKING)
 - Fresh runs no longer receive an implicit 32-provider-turn cutoff. Optional `max_steps` remains a provider-turn cap; a separate finite `root_action_budget` is an operator grant shared by captured descendant/follow-up work and durable across restart. Resume extensions are explicit, idempotently keyed grants. Only committed `user_stop`/`owner_cancel` child stops map to `cancelled`; budget, shutdown, error, and unknown stops remain interrupted.
 - Legacy pending schema-v6 work without a captured root authorization (child births, checkpoints, queued rows, or wakeups) is refused visibly; no migration, inferred grant, or fresh root is fabricated.
@@ -47,7 +52,7 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - The `coverage.py` allocator derives `effective_input_limit_tokens` and `measured_tokens_per_character` from committed same-model zero-image dispatch history (reopen-safe pairing) and shrink-only `allocate_tool_text_budget` under the ceiling. Limits come from the new neutral `ModelContextLimits` DTO + `ModelLimitsProvider` probe (openai/anthropic/google adapters + routing + `RegisteredProvider` delegation via `catalog_model_limits`); window image inventory is `None`-poisoned (`None` = unknown, never zero) with a transcript wire mirror. No schema migration, no adapter wire changes, no tokenizer fallback.
 - Unknown matrix: unknown limits, unknown usage, or any present/unknown image inventory keeps bytes identical to the fixed ceiling render — never inferred from base64 or JSON byte counts.
 - Verification: `tests/unit/core/test_projection_headroom.py` 15 passed (A–G: adaptive shrink with intact URIs + full recovery, unknown-limits/usage byte-identical, images fixed + intact base64, same-model pairing with polluted/legacy skip, floor fallback).
-- Limits: even-split unfairness across tools; newest-only measured rate (drifts with model behavior); images force fixed projection; cold sessions without committed same-model zero-image history report unknown. Pre-existing failures unrelated to this slice: 3 `test_media_projection.py` image tests (`KeyError: 'result_reference'` :320, `[False-1]`/`[True-1]`/`[False-10]`) reproduce identically at HEAD `3cd6afa1`; the full 33-failure known-red baseline (identical at HEAD) is recorded in docs/testing.md.
+- Limits: even-split unfairness across tools; newest-only measured rate (drifts with model behavior); images force fixed projection; cold sessions without committed same-model zero-image history report unknown. The image-test failures and 33-failure baseline formerly noted here are resolved by the burn-down above.
 
 
 ### Full artifact viewers and live tool progress
