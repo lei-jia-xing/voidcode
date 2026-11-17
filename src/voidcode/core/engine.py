@@ -59,10 +59,15 @@ from ..sdk.services import (
     ToolInvocationReceipt,
 )
 from ..sdk.tools import (
+    CompositeOutput,
     ConfirmedStop,
+    ContentPart,
     ExecutionObservation,
+    JsonPart,
     ResourceChange,
+    TablePart,
     TextOutput,
+    TextPart,
     ToolCall,
     ToolDefinition,
     ToolEffect,
@@ -6041,7 +6046,10 @@ class Core:
         return replace(result, result_reference=ArtifactReference(digest, total, media_type)), size
 
     def _prepare_report_result(self, result: ToolResult) -> tuple[ToolResult, int, bool]:
-        stored, size = self._persist_result(result, force=isinstance(result.output, TextOutput) and result.body is not None)
+        stored, size = self._persist_result(
+            result,
+            force=(isinstance(result.output, (TextOutput, CompositeOutput)) and result.body is not None),
+        )
         try:
             projected, _, clipped = project_tool_result(
                 stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page, include_images=False
@@ -6074,6 +6082,15 @@ class Core:
                 text if isinstance(text, str) else "",
                 bounds=replace(output.bounds, reference=reference, partial=output.bounds.partial or clipped),
             )
+        elif isinstance(output, CompositeOutput):
+            compact_parts, compact_truncated = self._compact_composite_parts(stored)
+            presentation = projection.get("presentation")
+            output = CompositeOutput(
+                parts=tuple(compact_parts),
+                presentation=presentation if isinstance(presentation, str) else None,
+                bounds=replace(output.bounds, partial=output.bounds.partial or clipped or compact_truncated),
+            )
+            clipped = clipped or compact_truncated
         else:
             presentation = projection.get("presentation", projection.get("text"))
             output = replace(
@@ -6085,6 +6102,95 @@ class Core:
         if isinstance(compact, ToolFailure):
             compact = replace(compact, error=str(projection.get("error", compact.error)), diagnostics=None)
         return compact, size, clipped
+
+    def _spill_composite_text(self, text: str) -> ArtifactReference:
+        spill_id, spill = self._artifacts.start_spill("text/plain; charset=utf-8", owner="kernel")
+        try:
+            for start in range(0, len(text), 65536):
+                spill.append(text[start : start + 65536].encode("utf-8"))
+            digest, total, media_type = self._artifacts.finish(spill_id)
+        except BaseException:
+            self._artifacts.discard(spill_id)
+            raise
+        return ArtifactReference(digest, total, media_type)
+
+    def _spill_composite_table(self, columns: tuple[str, ...], rows: tuple[tuple[str, ...], ...], total_rows: int | None) -> ArtifactReference:
+        document = {"columns": list(columns), "rows": [list(row) for row in rows], "total_rows": total_rows if total_rows is not None else len(rows)}
+        payload = json.dumps(document, ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        spill_id, spill = self._artifacts.start_spill("application/json", owner="kernel")
+        try:
+            for start in range(0, len(payload), 65536):
+                spill.append(payload[start : start + 65536])
+            digest, total, media_type = self._artifacts.finish(spill_id)
+        except BaseException:
+            self._artifacts.discard(spill_id)
+            raise
+        return ArtifactReference(digest, total, media_type)
+
+    def _compact_composite_parts(self, stored: ToolResult) -> tuple[list[ContentPart], bool]:
+        output = stored.output
+        if not isinstance(output, CompositeOutput):
+            raise ValueError("composite compaction requires a composite output")
+        parts: list[ContentPart] = list(output.parts)
+        truncated = False
+
+        def _candidate_size(candidate: list[ContentPart]) -> int:
+            candidate_output = CompositeOutput(parts=tuple(candidate), presentation=None, bounds=output.bounds)
+            candidate_result = replace(stored, body=None, output=candidate_output, steering_context=None)
+            if isinstance(candidate_result, ToolFailure):
+                candidate_result = replace(candidate_result, diagnostics=None)
+            payload = encode_tool_result(candidate_result)
+            return len(json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":")).encode("utf-8"))
+
+        while _candidate_size(parts) > TOOL_OUTPUT_BYTES:
+            best_index: int | None = None
+            best_size = 0
+            for index, part in enumerate(parts):
+                if isinstance(part, TablePart) and part.rows:
+                    size = sum(len(cell.encode("utf-8")) for row in part.rows for cell in row)
+                    size += sum(len(column.encode("utf-8")) for column in part.columns)
+                elif isinstance(part, TextPart) and part.text:
+                    size = len(part.text.encode("utf-8"))
+                elif isinstance(part, JsonPart) and len(part.preview) > 1:
+                    size = len(part.preview.encode("utf-8"))
+                else:
+                    continue
+                if size > best_size:
+                    best_size = size
+                    best_index = index
+            if best_index is None:
+                break
+            part = parts[best_index]
+            if isinstance(part, TablePart):
+                if part.reference is None:
+                    reference = self._spill_composite_table(part.columns, part.rows, part.total_rows)
+                    total = part.total_rows if part.total_rows is not None else len(part.rows)
+                    keep = len(part.rows) // 2
+                    parts[best_index] = TablePart(
+                        columns=part.columns,
+                        rows=part.rows[:keep],
+                        total_rows=total,
+                        reference=reference,
+                        presentation=part.presentation,
+                    )
+                else:
+                    keep = len(part.rows) // 2
+                    parts[best_index] = replace(part, rows=part.rows[:keep])
+                truncated = True
+            elif isinstance(part, TextPart):
+                if part.reference is None:
+                    reference = self._spill_composite_text(part.text)
+                    keep = len(part.text) // 2
+                    parts[best_index] = TextPart(text=part.text[:keep], reference=reference)
+                else:
+                    keep = len(part.text) // 2
+                    parts[best_index] = TextPart(text=part.text[:keep], reference=part.reference)
+                truncated = True
+            elif isinstance(part, JsonPart):
+                keep = max(1, len(part.preview) // 2)
+                parts[best_index] = JsonPart(reference=part.reference, preview=part.preview[:keep], media_type=part.media_type)
+                truncated = True
+        return parts, truncated
 
     def _report(
         self,

@@ -17,7 +17,19 @@ from ..sdk.codec import decode_provider_result
 from ..sdk.hooks import RequestWindow
 from ..sdk.provider import ImageAttachment, ModelContextLimits
 from ..sdk.services import ArtifactPage, ArtifactReference
-from ..sdk.tools import AttachmentOutput, EmptyOutput, TextOutput, ToolFailure, ToolResult
+from ..sdk.tools import (
+    AttachmentOutput,
+    CompositeOutput,
+    EmptyOutput,
+    JsonPart,
+    MediaPart,
+    TablePart,
+    TextOutput,
+    TextPart,
+    ToolFailure,
+    ToolResult,
+    composite_ordered_text,
+)
 from .artifacts import MAX_PAGE_BYTES
 from .events import EventType
 
@@ -120,6 +132,45 @@ def _textual_artifact(reference: ArtifactReference) -> bool:
     )
 
 
+def _composite_part_meta(part: TextPart | MediaPart | TablePart | JsonPart) -> dict[str, object]:
+    """One part's complete-data identity; no base64, no row matrices."""
+    if isinstance(part, TextPart):
+        meta: dict[str, object] = {"kind": "text"}
+        if part.reference is not None:
+            meta["uri"] = part.reference.uri
+        return meta
+    if isinstance(part, MediaPart):
+        return {"kind": "media", "media_type": part.mime, "uri": part.reference.uri}
+    if isinstance(part, TablePart):
+        meta = {"kind": "table", "shown": len(part.rows), "total": part.total_rows if part.total_rows is not None else len(part.rows)}
+        if part.reference is not None:
+            meta["uri"] = part.reference.uri
+        return meta
+    return {"kind": "json", "media_type": part.media_type, "uri": part.reference.uri}
+
+
+def _composite_uris(output: CompositeOutput) -> list[str]:
+    """Ordered unique complete-data URIs: top-level first, then parts in order."""
+    uris: list[str] = []
+    seen: set[str] = set()
+
+    def _add(uri: str) -> None:
+        if uri not in seen:
+            seen.add(uri)
+            uris.append(uri)
+
+    top = output.bounds.reference
+    if isinstance(top, ArtifactReference):
+        _add(top.uri)
+    elif isinstance(top, str) and top:
+        _add(top)
+    for part in output.parts:
+        reference = part.reference
+        if reference is not None:
+            _add(reference.uri)
+    return uris
+
+
 def project_tool_result(
     result: ToolResult,
     *,
@@ -133,8 +184,10 @@ def project_tool_result(
     canonical result URI, never duplicated into the model allocation. ``EmptyOutput`` bodies
     remain inline for structured-only results. Only explicit ``EmptyOutput`` references with
     textual MIME types (``text/*``, JSON/XML/JavaScript, ``+json``/``+xml``) are paged; images are read
-    to EOF at dispatch. Any omission requires ``result_reference``. The final boolean means
-    selected content was clipped, not that machine metadata was omitted.
+    to EOF at dispatch. ``CompositeOutput`` renders parts in order to ``text`` with ``parts``
+    identities and ``output_uris``; its body is omitted like ``TextOutput``. Any omission
+    requires ``result_reference``. The final boolean means selected content was clipped,
+    not that machine metadata was omitted.
     """
     if type(max_bytes) is not int or max_bytes < 1:
         raise ValueError("model projection budget must be a positive integer")
@@ -145,6 +198,11 @@ def project_tool_result(
     reference = output.bounds.reference
     if reference is not None:
         document["output_uri"] = reference.uri if isinstance(reference, ArtifactReference) else reference
+    if isinstance(output, CompositeOutput):
+        uris = _composite_uris(output)
+        if uris:
+            document["output_uris"] = uris
+        document["parts"] = [_composite_part_meta(part) for part in output.parts]
     if output.bounds.source is not None:
         document["source"] = output.bounds.source
     if output.bounds.partial:
@@ -156,12 +214,18 @@ def project_tool_result(
         if result.diagnostics is not None:
             document["diagnostics"] = result.diagnostics.as_payload()
     out_of_line_text = isinstance(output, EmptyOutput) and isinstance(reference, ArtifactReference) and _textual_artifact(reference)
-    output_text = output.text if isinstance(output, TextOutput) else output.presentation
-    if out_of_line_text and output_text:
-        document["presentation"] = output_text
-        projected_text = None
+    if isinstance(output, CompositeOutput):
+        if output.presentation:
+            document["presentation"] = output.presentation
+        ordered = composite_ordered_text(output)
+        projected_text = ordered if ordered else None
     else:
-        projected_text = output_text
+        output_text = output.text if isinstance(output, TextOutput) else output.presentation
+        if out_of_line_text and output_text:
+            document["presentation"] = output_text
+            projected_text = None
+        else:
+            projected_text = output_text
     omitted = False
     clipped = False
 
@@ -172,7 +236,7 @@ def project_tool_result(
         document["projection_note"] = MODEL_PROJECTION_MARKER
 
     if result.body is not None:
-        if isinstance(output, TextOutput):
+        if isinstance(output, (TextOutput, CompositeOutput)):
             document["body_omitted"] = True
             partial()
         else:
@@ -241,6 +305,16 @@ def project_tool_result(
             images = (ImageAttachment(output.mime, data),)
         else:
             raise ValueError("image attachment has no readable original")
+    if include_images and isinstance(output, CompositeOutput):
+        raster = [part for part in output.parts if isinstance(part, MediaPart) and part.mime in RASTER_IMAGE_MIMES]
+        if raster:
+            if artifact_reader is None:
+                raise ValueError("reference-backed image projection requires an artifact page reader")
+            decoded: list[ImageAttachment] = []
+            for part in raster:
+                content = read_artifact_content(part.reference, artifact_reader)
+                decoded.append(ImageAttachment(part.mime, base64.b64encode(content).decode("ascii"), part.reference.sha256))
+            images = tuple(decoded)
     return _json(document), images, clipped
 
 

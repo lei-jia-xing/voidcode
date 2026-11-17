@@ -379,15 +379,31 @@ def test_real_native_sdks_send_valid_tool_result_image_blocks(name: str, model: 
         server.server_close()
 
 
-def test_real_core_openai_tool_image_refuses_unsupported_route_without_silent_drop(tmp_path: Path) -> None:
-    with _server([_turn(_call("image", "read", path="screen.png"))]) as server:
+def test_real_core_openai_tool_image_uses_synthetic_without_silent_drop(tmp_path: Path) -> None:
+    with _server([_turn(_call("image", "read", path="screen.png")), _turn(output="image received")]) as server:
         workspace = _configure(tmp_path, provider="endpoint", base_url=f"http://127.0.0.1:{server.server_port}/v1")
-        (workspace / "screen.png").write_bytes(rgb_png())
+        png = rgb_png()
+        (workspace / "screen.png").write_bytes(png)
         with open_core(workspace, state_dir=tmp_path / "state") as core:
             result = core.run("Read the image.")
-            assert result.status == "failed"
-            assert "does not support image attachments in tool messages" in result.error
-            assert len(server.requests) == 1
+            assert result.status == "completed", result.error
+            assert result.output == "image received"
+            assert len(server.requests) == 2
+            messages = server.requests[1]["messages"]
+            assert isinstance(messages, list)
+            assert all(message.get("role") != "tool" for message in messages if isinstance(message, dict))
+            image_urls: list[str] = []
+            for message in messages:
+                content = message.get("content") if isinstance(message, dict) else None
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "image_url":
+                            url = block.get("image_url", {}).get("url", "")
+                            image_urls.append(url)
+            assert len(image_urls) == 1
+            prefix, _, data = image_urls[0].partition(",")
+            assert prefix == "data:image/png;base64"
+            assert base64.b64decode(data) == png
 
 
 def test_real_core_selected_file_page_preserves_coverage_and_allows_edit(tmp_path: Path) -> None:

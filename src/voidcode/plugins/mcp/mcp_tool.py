@@ -19,10 +19,13 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import ArtifactReference, PluginServices
 from voidcode.sdk.tools import (
-    AttachmentOutput,
+    CompositeOutput,
+    ContentPart,
+    JsonPart,
+    MediaPart,
     OpaqueToolBody,
     OutputBounds,
-    TextOutput,
+    TextPart,
     ToolCall,
     ToolDefinition,
     ToolEffect,
@@ -30,10 +33,10 @@ from voidcode.sdk.tools import (
     ToolResult,
     ToolSuccess,
 )
+from voidcode.sdk.views import MAX_VIEW_DATA_BYTES
 
 from .types import McpManager, McpToolCallResult, McpToolSafety
 
-MAX_INLINE_ATTACHMENT_BYTES = (50 * 1024 - 128) * 3 // 4
 RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
 
 _MAX_MCP_BINARY_BYTES = 50 * 1024 * 1024
@@ -151,7 +154,7 @@ class McpTool:
             return ToolFailure(
                 tool_name=self.definition.name,
                 error=message,
-                output=TextOutput(message, bounds=OutputBounds(partial=True)),
+                output=CompositeOutput(parts=(TextPart(message),), bounds=OutputBounds(partial=True)),
                 body=OpaqueToolBody(
                     {
                         "server": server_name,
@@ -162,7 +165,7 @@ class McpTool:
             )
 
         result_artifact = services.spill_artifact(result_json, media_type="application/json")
-        rendered: list[str] = []
+        parts: list[ContentPart] = [TextPart(f"Full MCP result JSON: {result_artifact.uri}")]
         artifacts: list[ArtifactReference] = []
         projection_error: str | None = None
         try:
@@ -178,34 +181,46 @@ class McpTool:
                     text = item.get("text")
                     if not isinstance(text, str):
                         raise ValueError(f"MCP text item {index} has an invalid text payload")
-                    rendered.append(text)
+                    parts.append(TextPart(text))
                 elif kind in {"image", "audio"}:
                     ref, description = _media_item(item, index=index, services=services)
-                    rendered.append(description)
-                    if ref is not None:
-                        artifacts.append(ref)
+                    if ref is None:
+                        raise ValueError(f"MCP {kind} item {index} produced no artifact")
+                    parts.append(MediaPart(reference=ref, mime=ref.media_type, presentation=description))
+                    artifacts.append(ref)
                 elif kind == "resource":
                     resource = item.get("resource")
                     if not isinstance(resource, Mapping):
                         raise ValueError(f"MCP resource item {index} has an invalid resource payload")
                     ref, description = _media_item(resource, index=index, services=services)
-                    rendered.append(description)
-                    if ref is not None:
+                    if ref is None:
+                        parts.append(TextPart(description))
+                    else:
+                        parts.append(MediaPart(reference=ref, mime=ref.media_type, presentation=description))
                         artifacts.append(ref)
                 elif kind == "resource_link":
-                    rendered.append(_render_resource_reference(item, index=index))
+                    parts.append(TextPart(_render_resource_reference(item, index=index)))
                 else:
                     raise ValueError(f"unsupported MCP content type {kind!r} at item {index}")
             structured_content = original_result["structured_content"]
             if isinstance(structured_content, Mapping):
-                rendered.append("Structured content:\n" + json.dumps(json_wire_object(structured_content), ensure_ascii=False, sort_keys=True))
+                full_structured = json.dumps(json_wire_object(structured_content), ensure_ascii=False, sort_keys=True)
+                struct_artifact = services.spill_artifact(full_structured, media_type="application/json")
+                preview_bytes = full_structured.encode("utf-8")
+                if len(preview_bytes) <= MAX_VIEW_DATA_BYTES:
+                    preview = full_structured
+                else:
+                    preview = preview_bytes[:MAX_VIEW_DATA_BYTES].decode("utf-8", errors="ignore")
+                    if not preview:
+                        preview = full_structured[:1]
+                parts.append(JsonPart(reference=struct_artifact, preview=preview))
         except (ValueError, binascii.Error) as exc:
             projection_error = str(exc)
-            rendered.append(f"MCP content projection failed: {projection_error}")
+            parts.append(TextPart(f"MCP content projection failed: {projection_error}"))
 
         return self._result(
             result,
-            rendered,
+            parts,
             artifacts,
             server_name=server_name,
             tool_name=tool_name,
@@ -216,7 +231,7 @@ class McpTool:
     def _result(
         self,
         result: McpToolCallResult,
-        rendered: list[str],
+        parts: list[ContentPart],
         artifacts: list[ArtifactReference],
         *,
         server_name: str,
@@ -224,12 +239,6 @@ class McpTool:
         result_artifact: ArtifactReference,
         projection_error: str | None,
     ) -> ToolResult:
-        result_uri = result_artifact.uri
-        references = [artifact.uri for artifact in artifacts]
-        rendered.insert(0, f"Full MCP result JSON: {result_uri}")
-        if references:
-            rendered.insert(1, "Embedded output artifacts: " + ", ".join(references))
-        content = "\n\n".join(part for part in rendered if part)
         is_error = result.is_error or projection_error is not None
         safety = self._safety_for(server_name=server_name, tool_name=tool_name)
         payload: dict[str, object] = {
@@ -249,18 +258,11 @@ class McpTool:
             payload["projection_error"] = projection_error
         if artifacts:
             payload["artifacts"] = [artifact.as_payload() for artifact in artifacts]
-        images = [artifact for artifact in artifacts if artifact.media_type in RASTER_IMAGE_MIMES]
-        image = images[0] if len(images) == 1 else None
         source = f"mcp:{server_name}/{tool_name}"
-        if image is not None and image.bytes <= MAX_INLINE_ATTACHMENT_BYTES:
-            output = AttachmentOutput(
-                image.media_type,
-                data_uri=None,
-                presentation=content,
-                bounds=OutputBounds(partial=is_error, reference=image, source=source),
-            )
-        else:
-            output = TextOutput(content, bounds=OutputBounds(partial=is_error, reference=result_artifact, source=source))
+        output = CompositeOutput(
+            parts=tuple(parts),
+            bounds=OutputBounds(partial=is_error, reference=result_artifact, source=source),
+        )
         if is_error:
             error = (
                 f"MCP content projection failed: {projection_error}"

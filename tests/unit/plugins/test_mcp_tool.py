@@ -9,9 +9,10 @@ import pytest
 
 from voidcode.plugins.mcp.mcp_tool import McpTool
 from voidcode.plugins.mcp.types import McpToolCallResult
+from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference
-from voidcode.sdk.tools import AttachmentOutput, TextOutput, ToolCall
+from voidcode.sdk.tools import CompositeOutput, JsonPart, MediaPart, TextPart, ToolCall, composite_ordered_text
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=")
 
@@ -51,23 +52,31 @@ def invoke(tmp_path, content, *, is_error=False):
 def test_empty_content_still_references_the_original_json(tmp_path: Path):
     result, services = invoke(tmp_path, [])
     assert result.status == "ok"
-    assert isinstance(result.output, TextOutput)
+    assert isinstance(result.output, CompositeOutput)
+    assert len(result.output.parts) == 1
+    first = result.output.parts[0]
+    assert isinstance(first, TextPart)
     reference = result.output.bounds.reference
     assert reference is not None
     assert json.loads(services.artifacts[reference.sha256]) == {"content": [], "structured_content": None, "is_error": False}
-    assert reference.uri in result.output.text
+    assert reference.uri in first.text
 
 
-@pytest.mark.parametrize("size,attachment", [(0, True), (60_000, False)])
-def test_image_projection_preserves_binary_and_json_references(tmp_path: Path, size: int, attachment: bool):
+@pytest.mark.parametrize("size", [0, 60_000])
+def test_image_projection_preserves_binary_and_json_references(tmp_path: Path, size: int):
     data = PNG + b"x" * size
     result, services = invoke(tmp_path, [{"type": "image", "mimeType": "image/png", "data": base64.b64encode(data).decode()}])
     assert result.status == "ok"
-    assert isinstance(result.output, AttachmentOutput if attachment else TextOutput)
+    assert isinstance(result.output, CompositeOutput)
+    assert len(result.output.parts) == 2
+    assert isinstance(result.output.parts[0], TextPart)
+    media = result.output.parts[1]
+    assert isinstance(media, MediaPart)
+    assert media.mime == "image/png"
     assert services.artifacts[sha256(data).hexdigest()] == data
+    assert services.artifacts[media.reference.sha256] == data
     assert result.output.bounds.reference is not None
-    expected_mime = "image/png" if attachment else "application/json"
-    assert result.output.bounds.reference.media_type == expected_mime
+    assert result.output.bounds.reference.media_type == "application/json"
     assert result.output.bounds.truncated is False
 
 
@@ -93,7 +102,8 @@ def test_remote_tool_error_is_partial_even_for_valid_text(tmp_path: Path):
     result, _ = invoke(tmp_path, [{"type": "text", "text": "remote failure"}], is_error=True)
     assert result.status == "error"
     assert result.output.bounds.partial is True
-    assert "remote failure" in result.output.text
+    assert isinstance(result.output, CompositeOutput)
+    assert "remote failure" in composite_ordered_text(result.output)
 
 
 def test_resource_blob_without_mime_is_preserved_as_generic_bytes(tmp_path: Path):
@@ -115,7 +125,8 @@ def test_resource_blob_without_mime_is_preserved_as_generic_bytes(tmp_path: Path
 def test_resource_text_and_links_need_no_binary_artifact(tmp_path: Path, content, text):
     result, services = invoke(tmp_path, content)
     assert result.status == "ok"
-    assert text in result.output.text
+    assert isinstance(result.output, CompositeOutput)
+    assert text in composite_ordered_text(result.output)
     assert len(services.artifacts) == 1
 
 
@@ -151,3 +162,65 @@ def test_nonstandard_or_incomplete_resources_are_explicit_projection_failures(tm
     assert result.output.bounds.partial is True
     artifact = result.body.as_payload()["result_artifact"]
     assert json.loads(services.artifacts[artifact["sha256"]])["content"] == content
+
+
+def test_mcp_multi_image_order_preserved_with_structured_json(tmp_path: Path):
+    from voidcode.plugins.mcp.types import McpToolCallResult as _Result
+    from voidcode.sdk.tools import ToolCall as _Call
+
+    services = Services()
+    content = [
+        {"type": "text", "text": "first explanation"},
+        {"type": "image", "mimeType": "image/png", "data": base64.b64encode(PNG).decode()},
+        {"type": "text", "text": "middle note"},
+        {"type": "image", "mimeType": "image/png", "data": base64.b64encode(PNG).decode()},
+        {"type": "resource_link", "uri": "custom://link", "name": "ref"},
+    ]
+    structured = {"answer": 42}
+    tool = McpTool(manager=Manager(_Result(content=content, structured_content=structured, is_error=False)))
+    result = tool.invoke(
+        _Call("mcp", {"server": "demo", "tool": "example"}),
+        context=ToolContext(workspace=tmp_path, session_id="s", run_id="r", invocation_id="i", revision_id="v", actor="model"),
+        services=services,  # type: ignore[arg-type]
+    )
+    assert result.status == "ok"
+    assert isinstance(result.output, CompositeOutput)
+    kinds = [type(part).__name__ for part in result.output.parts]
+    assert kinds == ["TextPart", "TextPart", "MediaPart", "TextPart", "MediaPart", "TextPart", "JsonPart"]
+    ordered = composite_ordered_text(result.output)
+    assert ordered.index("first explanation") < ordered.index("middle note") < ordered.index("remote resources are not fetched")
+    assert ordered.index("middle note") < ordered.index('"answer": 42')
+    media_refs = [part.reference.sha256 for part in result.output.parts if isinstance(part, MediaPart)]
+    assert len(media_refs) == 2 and media_refs[0] == media_refs[1]
+    json_part = next(part for part in result.output.parts if isinstance(part, JsonPart))
+    assert json.loads(services.artifacts[json_part.reference.sha256]) == structured
+
+
+def test_mcp_single_small_image_legacy_bytes_still_decode(tmp_path: Path):
+    from voidcode.sdk.tools import AttachmentOutput
+
+    legacy = {
+        "status": "ok",
+        "tool_name": "mcp",
+        "output": {"type": "attachment", "mime": "image/png", "data_uri": None, "presentation": "old", "bounds": {}},
+        "body": None,
+    }
+    decoded = decode_tool_result(legacy)
+    assert isinstance(decoded.output, AttachmentOutput)
+    result, _ = invoke(tmp_path, [{"type": "image", "mimeType": "image/png", "data": base64.b64encode(PNG).decode()}])
+    assert isinstance(result.output, CompositeOutput)
+    assert any(isinstance(part, MediaPart) for part in result.output.parts)
+
+
+def test_mcp_failure_diagnosis_renders_ordered_and_partial(tmp_path: Path):
+    content = [
+        {"type": "text", "text": "explanation"},
+        {"type": "image", "mimeType": "image/png", "data": base64.b64encode(PNG).decode()},
+    ]
+    result, _ = invoke(tmp_path, content, is_error=True)
+    assert result.status == "error"
+    assert isinstance(result.output, CompositeOutput)
+    assert result.output.bounds.partial is True
+    ordered = composite_ordered_text(result.output)
+    assert "explanation" in ordered and "MCP image item 1" in ordered
+    assert "reported an error" in result.error

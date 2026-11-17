@@ -246,7 +246,164 @@ class AttachmentOutput:
     bounds: OutputBounds = OutputBounds()
 
 
-type ToolOutput = TextOutput | EmptyOutput | AttachmentOutput
+@dataclass(frozen=True, slots=True)
+class TextPart:
+    """One ordered inline text segment; ``reference`` is spilled full text when compacted."""
+
+    text: str
+    reference: ArtifactReference | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str):
+            raise ValueError("text part text must be a string")
+        if self.reference is not None and not isinstance(self.reference, ArtifactReference):
+            raise ValueError("text part reference must be an artifact reference or null")
+
+
+@dataclass(frozen=True, slots=True)
+class MediaPart:
+    """One ordered media segment; ``presentation`` is the required readable fallback."""
+
+    reference: ArtifactReference
+    mime: str
+    presentation: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reference, ArtifactReference):
+            raise ValueError("media part requires an artifact reference")
+        if not isinstance(self.mime, str) or not self.mime:
+            raise ValueError("media part mime must be a non-empty string")
+        if not isinstance(self.presentation, str) or not self.presentation:
+            raise ValueError("media part presentation must be a non-empty string")
+
+
+@dataclass(frozen=True, slots=True)
+class TablePart:
+    """One ordered string-matrix segment; truncation requires a complete-data reference."""
+
+    columns: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...] = ()
+    total_rows: int | None = None
+    reference: ArtifactReference | None = None
+    presentation: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.columns, tuple):
+            try:
+                object.__setattr__(self, "columns", tuple(self.columns))
+            except TypeError:
+                raise ValueError("table columns must be a sequence of strings") from None
+        if not isinstance(self.rows, tuple):
+            try:
+                object.__setattr__(self, "rows", tuple(self.rows))
+            except TypeError:
+                raise ValueError("table rows must be a sequence of rows") from None
+        normalized: list[tuple[str, ...]] = []
+        for row in self.rows:
+            if isinstance(row, tuple):
+                normalized.append(row)
+            elif isinstance(row, list):
+                normalized.append(tuple(row))
+            else:
+                raise ValueError("table row must be a sequence of strings")
+        object.__setattr__(self, "rows", tuple(normalized))
+        if not self.columns:
+            raise ValueError("table requires at least one column")
+        for column in self.columns:
+            if not isinstance(column, str):
+                raise ValueError("table column must be a string")
+        for row in self.rows:
+            if len(row) != len(self.columns):
+                raise ValueError("table row length must match columns")
+            for cell in row:
+                if not isinstance(cell, str):
+                    raise ValueError("table cell must be a string")
+        if self.total_rows is not None:
+            if type(self.total_rows) is not int or self.total_rows < 0:
+                raise ValueError("table total_rows must be a non-negative integer or null")
+            if self.total_rows < len(self.rows):
+                raise ValueError("table total_rows must cover inline rows")
+        if self.reference is not None and not isinstance(self.reference, ArtifactReference):
+            raise ValueError("table reference must be an artifact reference or null")
+        if self.total_rows is not None and self.total_rows > len(self.rows) and self.reference is None:
+            raise ValueError("truncated table requires a reference to complete data")
+        if self.presentation is not None and not isinstance(self.presentation, str):
+            raise ValueError("table presentation must be a string or null")
+
+
+@dataclass(frozen=True, slots=True)
+class JsonPart:
+    """One ordered JSON segment; complete JSON lives at ``reference``, ``preview`` is inline."""
+
+    reference: ArtifactReference
+    preview: str
+    media_type: str = "application/json"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reference, ArtifactReference):
+            raise ValueError("json part requires an artifact reference")
+        if not isinstance(self.preview, str) or not self.preview:
+            raise ValueError("json preview must be a non-empty string")
+        if not isinstance(self.media_type, str) or not self.media_type:
+            raise ValueError("json media_type must be a non-empty string")
+
+
+type ContentPart = TextPart | MediaPart | TablePart | JsonPart
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeOutput:
+    """Ordered mixed content; ``presentation`` is the overall readable summary."""
+
+    parts: tuple[ContentPart, ...]
+    presentation: str | None = None
+    bounds: OutputBounds = OutputBounds()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.parts, tuple):
+            try:
+                object.__setattr__(self, "parts", tuple(self.parts))
+            except TypeError:
+                raise ValueError("composite parts must be a sequence of parts") from None
+        if not self.parts:
+            raise ValueError("composite output requires at least one part")
+        for part in self.parts:
+            if not isinstance(part, (TextPart, MediaPart, TablePart, JsonPart)):
+                raise ValueError(f"composite part has invalid type: {type(part).__name__}")
+        if self.presentation is not None and not isinstance(self.presentation, str):
+            raise ValueError("composite presentation must be a string or null")
+        if not isinstance(self.bounds, OutputBounds):
+            raise ValueError("composite bounds must be OutputBounds")
+
+
+type ToolOutput = TextOutput | EmptyOutput | AttachmentOutput | CompositeOutput
+
+
+def content_part_text(part: ContentPart) -> str:
+    """One part's ordered readable text; references stay as URIs, never inlined bytes."""
+    if isinstance(part, TextPart):
+        if part.reference is not None:
+            suffix = f"[full text: {part.reference.uri}]"
+            return f"{part.text}\n{suffix}" if part.text else suffix
+        return part.text
+    if isinstance(part, MediaPart):
+        return f"{part.presentation} [{part.mime}, {part.reference.bytes} bytes, {part.reference.uri}]"
+    if isinstance(part, TablePart):
+        lines = ["\t".join(part.columns)]
+        lines.extend("\t".join(row) for row in part.rows)
+        table_text = "\n".join(lines)
+        if part.presentation:
+            table_text = f"{part.presentation}\n{table_text}"
+        if part.total_rows is not None and part.total_rows > len(part.rows) and part.reference is not None:
+            table_text += f"\n[showing {len(part.rows)}/{part.total_rows} rows; full table: {part.reference.uri}]"
+        return table_text
+    return f"{part.preview}\n[full JSON: {part.reference.uri}]"
+
+
+def composite_ordered_text(output: CompositeOutput) -> str:
+    """All parts in order, joined for model projection, history, and compaction."""
+    rendered = [content_part_text(part) for part in output.parts]
+    return "\n\n".join(text for text in rendered if text)
 
 
 class ToolBody(Protocol):

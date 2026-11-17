@@ -516,7 +516,10 @@ class OpenAIChatCompletionsProvider:
 
     def _messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         original_to_provider, _ = self._tool_maps(request)
-        if self._model_name(request) in self.synthetic_tool_feedback_models or request.model_name in self.synthetic_tool_feedback_models:
+        mapped = self._model_name(request)
+        synthetic_configured = mapped in self.synthetic_tool_feedback_models or request.model_name in self.synthetic_tool_feedback_models
+        tool_images_present = any(message.role == "tool" and message.images for message in request.messages)
+        if synthetic_configured or tool_images_present:
             return self._synthetic_feedback_messages(request, original_to_provider)
         requires_reasoning_content = _requires_reasoning_content_with_tool_calls(
             provider_name=request.provider_name or self.name,

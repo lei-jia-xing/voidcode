@@ -312,9 +312,9 @@ export interface components {
              * View Type
              * @enum {string}
              */
-            view_type: "notice" | "markdown" | "fields" | "choices" | "form" | "diff" | "status";
+            view_type: "notice" | "markdown" | "fields" | "choices" | "form" | "diff" | "status" | "table" | "json" | "media";
         };
-        CommandPresentationData: components["schemas"]["NoticeViewData"] | components["schemas"]["MarkdownViewData"] | components["schemas"]["FieldsViewData"] | components["schemas"]["ChoicesViewData"] | components["schemas"]["FormViewData"] | components["schemas"]["DiffViewData"] | components["schemas"]["StatusViewData"];
+        CommandPresentationData: components["schemas"]["NoticeViewData"] | components["schemas"]["MarkdownViewData"] | components["schemas"]["FieldsViewData"] | components["schemas"]["ChoicesViewData"] | components["schemas"]["FormViewData"] | components["schemas"]["DiffViewData"] | components["schemas"]["StatusViewData"] | components["schemas"]["TableViewData"] | components["schemas"]["JsonViewData"] | components["schemas"]["MediaViewData"];
         /**
          * CommandResult
          * @description Outcome of a command invocation, returning data, error, or confirmation request.
@@ -369,6 +369,31 @@ export interface components {
              */
             tone?: "default" | "info" | "success" | "warning" | "error";
         };
+        /** CompositeOutputWire */
+        CompositeOutputWire: {
+            /**
+             * @default {
+             *       "fallback_reason": null,
+             *       "partial": false,
+             *       "reference": null,
+             *       "source": null,
+             *       "truncated": false
+             *     }
+             */
+            bounds?: components["schemas"]["OutputBoundsWire"];
+            /** Parts */
+            parts: (components["schemas"]["TextPartWire"] | components["schemas"]["MediaPartWire"] | components["schemas"]["TablePartWire"] | components["schemas"]["JsonPartWire"])[];
+            /**
+             * Presentation
+             * @default null
+             */
+            presentation?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "composite";
+        };
         /** ConfirmRequest */
         ConfirmRequest: {
             /**
@@ -411,7 +436,7 @@ export interface components {
              * Ui Type
              * @enum {string}
              */
-            ui_type: "notice" | "markdown" | "fields" | "choices" | "confirmation" | "form" | "diff" | "status";
+            ui_type: "notice" | "markdown" | "fields" | "choices" | "confirmation" | "form" | "diff" | "status" | "table" | "json" | "media";
         };
         /** ConfirmationViewData */
         ConfirmationViewData: {
@@ -763,6 +788,36 @@ export interface components {
             /** Session Id */
             session_id: string;
         };
+        /** JsonPartWire */
+        JsonPartWire: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "json";
+            /**
+             * Media Type
+             * @default application/json
+             */
+            media_type?: string;
+            /** Preview */
+            preview: string;
+            reference: components["schemas"]["ArtifactReference"];
+        };
+        /** JsonViewData */
+        JsonViewData: {
+            /**
+             * Media Type
+             * @default application/json
+             */
+            media_type?: string;
+            /** Preview */
+            preview: string;
+            /** @default null */
+            reference?: components["schemas"]["ArtifactReference"] | null;
+            /** @default null */
+            style?: components["schemas"]["ComponentStyle"] | null;
+        };
         /** ListSessionsParams */
         ListSessionsParams: {
             /**
@@ -780,6 +835,29 @@ export interface components {
             actions?: components["schemas"]["ViewAction"][];
             /** Content */
             content: string;
+            /** @default null */
+            style?: components["schemas"]["ComponentStyle"] | null;
+        };
+        /** MediaPartWire */
+        MediaPartWire: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "media";
+            /** Mime */
+            mime: string;
+            /** Presentation */
+            presentation: string;
+            reference: components["schemas"]["ArtifactReference"];
+        };
+        /** MediaViewData */
+        MediaViewData: {
+            /** Alt */
+            alt: string;
+            /** Mime */
+            mime: string;
+            reference: components["schemas"]["ArtifactReference"];
             /** @default null */
             style?: components["schemas"]["ComponentStyle"] | null;
         };
@@ -824,7 +902,7 @@ export interface components {
              */
             truncated?: boolean;
         };
-        PluginViewData: components["schemas"]["NoticeViewData"] | components["schemas"]["MarkdownViewData"] | components["schemas"]["FieldsViewData"] | components["schemas"]["ChoicesViewData"] | components["schemas"]["ConfirmationViewData"] | components["schemas"]["FormViewData"] | components["schemas"]["DiffViewData"] | components["schemas"]["StatusViewData"];
+        PluginViewData: components["schemas"]["NoticeViewData"] | components["schemas"]["MarkdownViewData"] | components["schemas"]["FieldsViewData"] | components["schemas"]["ChoicesViewData"] | components["schemas"]["ConfirmationViewData"] | components["schemas"]["FormViewData"] | components["schemas"]["DiffViewData"] | components["schemas"]["StatusViewData"] | components["schemas"]["TableViewData"] | components["schemas"]["JsonViewData"] | components["schemas"]["MediaViewData"];
         /**
          * PluginViewDescriptor
          * @description Bounded, declarative view presentation contributed by an admitted plugin.
@@ -841,7 +919,7 @@ export interface components {
              * View Type
              * @enum {string}
              */
-            view_type: "notice" | "markdown" | "fields" | "choices" | "confirmation" | "form" | "diff" | "status";
+            view_type: "notice" | "markdown" | "fields" | "choices" | "confirmation" | "form" | "diff" | "status" | "table" | "json" | "media";
         };
         /** @enum {string} */
         ProviderDoneReason: "stop" | "tool_calls" | "length" | "content_filter" | "function_call" | "cancelled" | "error" | "unknown" | "completed";
@@ -1388,6 +1466,46 @@ export interface components {
             /** Subscription Id */
             subscription_id: string;
         };
+        /** TablePartWire */
+        TablePartWire: {
+            /** Columns */
+            columns: string[];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "table";
+            /**
+             * Presentation
+             * @default null
+             */
+            presentation?: string | null;
+            /** @default null */
+            reference?: components["schemas"]["ArtifactReference"] | null;
+            /** Rows */
+            rows?: string[][];
+            /**
+             * Total Rows
+             * @default null
+             */
+            total_rows?: number | null;
+        };
+        /** TableViewData */
+        TableViewData: {
+            /** Columns */
+            columns: string[];
+            /** @default null */
+            reference?: components["schemas"]["ArtifactReference"] | null;
+            /** Rows */
+            rows: string[][];
+            /** @default null */
+            style?: components["schemas"]["ComponentStyle"] | null;
+            /**
+             * Total Rows
+             * @default null
+             */
+            total_rows?: number | null;
+        };
         /** TextOutputWire */
         TextOutputWire: {
             /**
@@ -1412,6 +1530,18 @@ export interface components {
              * @enum {string}
              */
             type: "text";
+        };
+        /** TextPartWire */
+        TextPartWire: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "text";
+            /** @default null */
+            reference?: components["schemas"]["ArtifactReference"] | null;
+            /** Text */
+            text: string;
         };
         /** ToolCall */
         ToolCall: {
@@ -1500,7 +1630,7 @@ export interface components {
             /** @default null */
             execution?: components["schemas"]["ExecutionWire"] | null;
             /** Output */
-            output: components["schemas"]["TextOutputWire"] | components["schemas"]["EmptyOutputWire"] | components["schemas"]["AttachmentOutputWire"];
+            output: components["schemas"]["TextOutputWire"] | components["schemas"]["EmptyOutputWire"] | components["schemas"]["AttachmentOutputWire"] | components["schemas"]["CompositeOutputWire"];
             /** @default null */
             result_reference?: components["schemas"]["ArtifactReference"] | null;
             /**

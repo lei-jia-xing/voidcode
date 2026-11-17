@@ -15,7 +15,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from ..sdk.codec import decode_provider_result, decode_tool_result, encode_tool_call
 from ..sdk.history import PAGE_BYTES, HistoryEvent, HistoryPage
 from ..sdk.json_values import json_wire_object
-from ..sdk.tools import TextOutput
+from ..sdk.tools import CompositeOutput, TextOutput, composite_ordered_text
 
 
 def _json(value: object) -> str:
@@ -29,7 +29,11 @@ def _json(value: object) -> str:
 def _result_text(result: object) -> str:
     output = getattr(result, "output", None)
     body = getattr(result, "body", None)
-    text = output.text if isinstance(output, TextOutput) else getattr(output, "presentation", None)
+    if isinstance(output, CompositeOutput):
+        ordered = composite_ordered_text(output)
+        text: str | None = ordered if ordered else output.presentation
+    else:
+        text = output.text if isinstance(output, TextOutput) else getattr(output, "presentation", None)
     if body is not None:
         try:
             rendered = json.dumps(body.as_payload(), ensure_ascii=False, allow_nan=False)

@@ -29,6 +29,7 @@ from voidcode.sdk.tools import (
     ToolDefinition,
     ToolEffect,
     ToolFailure,
+    ToolOutput,
     ToolResult,
     ToolSuccess,
 )
@@ -124,10 +125,11 @@ class ReadResultBody:
 
 @dataclass(frozen=True, slots=True)
 class _ReadOutcome:
-    output: TextOutput | AttachmentOutput
+    output: ToolOutput
     body: ReadResultBody | OpaqueToolBody
     #: File versions this result made visible to the model; only bounded text
-    #: pages of real files claim coverage; attachments and URI reads grant nothing.
+    #: pages of real files claim coverage; attachments, composite URI reads, and
+    #: other URI reads grant nothing (part content is not verified file bytes).
     coverage: tuple[ReadObservation, ...] = ()
 
 

@@ -28,9 +28,12 @@ from voidcode.sdk.views import (
     DiffViewData,
     FieldsViewData,
     FormViewData,
+    JsonViewData,
     MarkdownViewData,
+    MediaViewData,
     NoticeViewData,
     StatusViewData,
+    TableViewData,
 )
 
 from .models import AuthenticateParams, SessionFrameParams, SubscriptionClosedParams
@@ -200,6 +203,9 @@ class CoreTransportApp(FastAPI):
             FormViewData,
             DiffViewData,
             StatusViewData,
+            TableViewData,
+            JsonViewData,
+            MediaViewData,
         ]
         declarations: list[tuple[str, Any]] = [(cls.__name__, cls) for cls in [*view_classes, RpcRequest, RpcSuccess, RpcFailure, RpcNotification]]
         methods = {name: (method.params, method.result) for name, method in METHODS.items()} | CONNECTION_METHODS

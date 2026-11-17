@@ -16,13 +16,18 @@ from .provider import ProviderMessage, ProviderTurnResult
 from .services import ArtifactReference
 from .tools import (
     AttachmentOutput,
+    CompositeOutput,
     ConfirmedStop,
     EmptyOutput,
+    JsonPart,
+    MediaPart,
     OpaqueToolBody,
     OutputBounds,
     ReadObservation,
     ResourceChange,
+    TablePart,
     TextOutput,
+    TextPart,
     ToolCall,
     ToolDefinition,
     ToolDiagnostics,
@@ -152,6 +157,48 @@ class AttachmentOutputWire(WireModel):
     bounds: OutputBoundsWire = OutputBoundsWire()
 
 
+class TextPartWire(WireModel):
+    kind: Literal["text"] = "text"
+    text: str
+    reference: ArtifactReference | None = None
+
+
+class MediaPartWire(WireModel):
+    kind: Literal["media"] = "media"
+    reference: ArtifactReference
+    mime: str = Field(min_length=1)
+    presentation: str = Field(min_length=1)
+
+
+class TablePartWire(WireModel):
+    kind: Literal["table"] = "table"
+    columns: list[str] = Field(min_length=1)
+    rows: list[list[str]] = Field(default_factory=list)
+    total_rows: int | None = Field(default=None, ge=0)
+    reference: ArtifactReference | None = None
+    presentation: str | None = None
+
+
+class JsonPartWire(WireModel):
+    kind: Literal["json"] = "json"
+    reference: ArtifactReference
+    preview: str = Field(min_length=1)
+    media_type: str = Field(min_length=1, default="application/json")
+
+
+ContentPartWire = Annotated[
+    TextPartWire | MediaPartWire | TablePartWire | JsonPartWire,
+    Field(discriminator="kind"),
+]
+
+
+class CompositeOutputWire(WireModel):
+    type: Literal["composite"] = "composite"
+    parts: list[ContentPartWire] = Field(min_length=1)
+    presentation: str | None = None
+    bounds: OutputBoundsWire = OutputBoundsWire()
+
+
 class ExecutionWire(WireModel):
     cancellation_signalled: bool
     execution_stopped: bool
@@ -176,7 +223,10 @@ class ResourceChangeWire(WireModel):
 class ToolResultWire(WireModel):
     status: Literal["ok", "error"]
     tool_name: str = Field(min_length=1)
-    output: Annotated[TextOutputWire | EmptyOutputWire | AttachmentOutputWire, Field(discriminator="type")]
+    output: Annotated[
+        TextOutputWire | EmptyOutputWire | AttachmentOutputWire | CompositeOutputWire,
+        Field(discriminator="type"),
+    ]
     body: dict[str, object] | None = None
     #: Only ever sent by a read-shaped success; absent means "made no file visible".
     coverage: list[ReadObservationWire] | None = None
@@ -196,11 +246,36 @@ def encode_tool_result(result: ToolResult | Mapping[str, object]) -> dict[str, o
     if isinstance(result, Mapping):
         return _encode(result)
     output: ToolOutput = result.output
-    output_type = "text" if isinstance(output, TextOutput) else "empty" if isinstance(output, EmptyOutput) else "attachment"
+    if isinstance(output, CompositeOutput):
+        parts_payload: list[dict[str, object]] = []
+        for part in output.parts:
+            if isinstance(part, TextPart):
+                kind = "text"
+            elif isinstance(part, MediaPart):
+                kind = "media"
+            elif isinstance(part, TablePart):
+                kind = "table"
+            elif isinstance(part, JsonPart):
+                kind = "json"
+            else:
+                raise ValueError(f"composite part has invalid type: {type(part).__name__}")
+            parts_payload.append({"kind": kind, **_encode(part)})
+        encoded_bounds = _wire(output.bounds)
+        if not isinstance(encoded_bounds, dict):
+            raise ValueError("wire payload must be an object")
+        output_payload: dict[str, object] = {
+            "type": "composite",
+            "parts": parts_payload,
+            "presentation": output.presentation,
+            "bounds": encoded_bounds,
+        }
+    else:
+        output_type = "text" if isinstance(output, TextOutput) else "empty" if isinstance(output, EmptyOutput) else "attachment"
+        output_payload = {"type": output_type, **_encode(output)}
     payload = {
         "status": result.status,
         "tool_name": result.tool_name,
-        "output": {"type": output_type, **_encode(output)},
+        "output": output_payload,
         "body": None if result.body is None else result.body.as_payload(),
     }
     if result.steering_context is not None:
@@ -236,11 +311,33 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
     bounds = output.bounds
     decoded_bounds = OutputBounds(bounds.truncated, bounds.partial, bounds.reference, bounds.source, bounds.fallback_reason)
     if isinstance(output, TextOutputWire):
-        decoded = TextOutput(output.text, output.presentation, decoded_bounds)
+        decoded: ToolOutput = TextOutput(output.text, output.presentation, decoded_bounds)
     elif isinstance(output, EmptyOutputWire):
         decoded = EmptyOutput(output.presentation, decoded_bounds)
-    else:
+    elif isinstance(output, AttachmentOutputWire):
         decoded = AttachmentOutput(output.mime, output.data_uri, output.presentation, decoded_bounds)
+    else:
+        parts: list[TextPart | MediaPart | TablePart | JsonPart] = []
+        for part_wire in output.parts:
+            if isinstance(part_wire, TextPartWire):
+                parts.append(TextPart(text=part_wire.text, reference=part_wire.reference))
+            elif isinstance(part_wire, MediaPartWire):
+                parts.append(MediaPart(reference=part_wire.reference, mime=part_wire.mime, presentation=part_wire.presentation))
+            elif isinstance(part_wire, TablePartWire):
+                parts.append(
+                    TablePart(
+                        columns=tuple(part_wire.columns),
+                        rows=tuple(tuple(row) for row in part_wire.rows),
+                        total_rows=part_wire.total_rows,
+                        reference=part_wire.reference,
+                        presentation=part_wire.presentation,
+                    )
+                )
+            elif isinstance(part_wire, JsonPartWire):
+                parts.append(JsonPart(reference=part_wire.reference, preview=part_wire.preview, media_type=part_wire.media_type))
+            else:
+                raise ValueError(f"composite part has invalid type: {type(part_wire).__name__}")
+        decoded = CompositeOutput(parts=tuple(parts), presentation=output.presentation, bounds=decoded_bounds)
     body = None if wire.body is None else OpaqueToolBody(wire.body)
     if wire.status == "ok":
         if any(value is not None for value in (wire.error, wire.diagnostics, wire.execution, wire.timeout_seconds)):

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from .json_values import own_json_object
-from .tools import AttachmentOutput, TextOutput
+from .tools import AttachmentOutput, CompositeOutput, TextOutput
 
 if TYPE_CHECKING:
     from .history import HistoryPage
@@ -126,12 +126,12 @@ class ResourceReadCaller:
 class ResourcePage:
     """One bounded resource page reusing the tool output shapes."""
 
-    output: TextOutput | AttachmentOutput
+    output: TextOutput | AttachmentOutput | CompositeOutput
     body: Mapping[str, object]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.output, (TextOutput, AttachmentOutput)):
-            raise ValueError("resource page output must be TextOutput or AttachmentOutput")
+        if not isinstance(self.output, (TextOutput, AttachmentOutput, CompositeOutput)):
+            raise ValueError("resource page output must be TextOutput, AttachmentOutput, or CompositeOutput")
         if not isinstance(self.body, Mapping):
             raise ValueError("resource page body must be a JSON object")
         object.__setattr__(self, "body", own_json_object(self.body))

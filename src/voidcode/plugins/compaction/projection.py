@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
-from voidcode.sdk.tools import TextOutput, ToolFailure, ToolOutput, ToolResult
+from voidcode.sdk.tools import CompositeOutput, TextOutput, ToolFailure, ToolOutput, ToolResult, composite_ordered_text
 from voidcode.sdk.transcript import ContextRecord, TranscriptDispatch, TranscriptInterrupted, TranscriptTool
 
 # --- Legacy constants (``runtime/context/window.py``) ---
@@ -253,6 +253,9 @@ class ToolResultFact:
 
 
 def _output_text(output: ToolOutput) -> str:
+    if isinstance(output, CompositeOutput):
+        ordered = composite_ordered_text(output)
+        return ordered if ordered else (output.presentation or "")
     return output.text if isinstance(output, TextOutput) else (output.presentation or "")
 
 

@@ -11,7 +11,7 @@ from pydantic import Field, TypeAdapter
 
 from .commands import CommandCatalog, ConfirmationUIType
 from .json_values import json_wire_object, own_json_object
-from .services import PluginServices
+from .services import ArtifactReference, PluginServices
 from .tools import ToolEffect
 
 StyleTone = Literal["default", "info", "success", "warning", "error"]
@@ -199,6 +199,100 @@ class StatusViewData:
         return _decode_payload(_VIEW_ADAPTERS["status"], payload)
 
 
+@dataclass(frozen=True, slots=True)
+class TableViewData:
+    columns: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]
+    total_rows: int | None = None
+    reference: ArtifactReference | None = None
+    style: ComponentStyle | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.columns, tuple):
+            try:
+                object.__setattr__(self, "columns", tuple(self.columns))
+            except TypeError:
+                raise ValueError("table columns must be a sequence of strings") from None
+        if not isinstance(self.rows, tuple):
+            try:
+                object.__setattr__(self, "rows", tuple(self.rows))
+            except TypeError:
+                raise ValueError("table rows must be a sequence of rows") from None
+        normalized: list[tuple[str, ...]] = []
+        for row in self.rows:
+            if isinstance(row, tuple):
+                normalized.append(row)
+            elif isinstance(row, list):
+                normalized.append(tuple(row))
+            else:
+                raise ValueError("table row must be a sequence of strings")
+        object.__setattr__(self, "rows", tuple(normalized))
+        if not self.columns:
+            raise ValueError("table requires at least one column")
+        for column in self.columns:
+            if not isinstance(column, str):
+                raise ValueError("table column must be a string")
+        for row in self.rows:
+            if len(row) != len(self.columns):
+                raise ValueError("table row length must match columns")
+            for cell in row:
+                if not isinstance(cell, str):
+                    raise ValueError("table cell must be a string")
+        if self.total_rows is not None:
+            if type(self.total_rows) is not int or self.total_rows < 0:
+                raise ValueError("table total_rows must be a non-negative integer or null")
+            if self.total_rows < len(self.rows):
+                raise ValueError("table total_rows must cover inline rows")
+        if self.reference is not None and not isinstance(self.reference, ArtifactReference):
+            raise ValueError("table reference must be an artifact reference or null")
+        if self.total_rows is not None and self.total_rows > len(self.rows) and self.reference is None:
+            raise ValueError("truncated table requires a reference to complete data")
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> TableViewData:
+        return _decode_payload(_VIEW_ADAPTERS["table"], payload)
+
+
+@dataclass(frozen=True, slots=True)
+class JsonViewData:
+    preview: str
+    reference: ArtifactReference | None = None
+    media_type: str = "application/json"
+    style: ComponentStyle | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.preview, str) or not self.preview:
+            raise ValueError("json preview must be a non-empty string")
+        if self.reference is not None and not isinstance(self.reference, ArtifactReference):
+            raise ValueError("json reference must be an artifact reference or null")
+        if not isinstance(self.media_type, str) or not self.media_type:
+            raise ValueError("json media_type must be a non-empty string")
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> JsonViewData:
+        return _decode_payload(_VIEW_ADAPTERS["json"], payload)
+
+
+@dataclass(frozen=True, slots=True)
+class MediaViewData:
+    reference: ArtifactReference
+    mime: str
+    alt: str
+    style: ComponentStyle | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reference, ArtifactReference):
+            raise ValueError("media view requires an artifact reference")
+        if not isinstance(self.mime, str) or not self.mime:
+            raise ValueError("media view mime must be a non-empty string")
+        if not isinstance(self.alt, str) or not self.alt:
+            raise ValueError("media view alt must be a non-empty string")
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> MediaViewData:
+        return _decode_payload(_VIEW_ADAPTERS["media"], payload)
+
+
 _VIEW_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "notice": TypeAdapter(NoticeViewData),
     "markdown": TypeAdapter(MarkdownViewData),
@@ -208,7 +302,11 @@ _VIEW_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "form": TypeAdapter(FormViewData),
     "diff": TypeAdapter(DiffViewData),
     "status": TypeAdapter(StatusViewData),
+    "table": TypeAdapter(TableViewData),
+    "json": TypeAdapter(JsonViewData),
+    "media": TypeAdapter(MediaViewData),
 }
+
 
 MAX_VIEW_DATA_BYTES = 64 * 1024
 
@@ -235,7 +333,17 @@ def validate_view_data(view_type: ConfirmationUIType, data: Mapping[str, object]
 
 
 type ViewData = (
-    NoticeViewData | MarkdownViewData | FieldsViewData | ChoicesViewData | ConfirmationViewData | FormViewData | DiffViewData | StatusViewData
+    NoticeViewData
+    | MarkdownViewData
+    | FieldsViewData
+    | ChoicesViewData
+    | ConfirmationViewData
+    | FormViewData
+    | DiffViewData
+    | StatusViewData
+    | TableViewData
+    | JsonViewData
+    | MediaViewData
 )
 
 

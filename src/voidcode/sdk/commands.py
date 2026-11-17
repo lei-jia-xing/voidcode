@@ -14,7 +14,7 @@ from .json_values import json_wire_object, own_json_object
 from .services import PluginServices
 from .tools import ToolEffect
 
-ConfirmationUIType = Literal["notice", "markdown", "fields", "choices", "confirmation", "form", "diff", "status"]
+ConfirmationUIType = Literal["notice", "markdown", "fields", "choices", "confirmation", "form", "diff", "status", "table", "json", "media"]
 
 
 def _decode_command[T](adapter: TypeAdapter[T], payload: Mapping[str, object], label: str) -> T:
@@ -171,7 +171,7 @@ class CommandPresentation:
     """Bounded command UI, mounted only from a direct receipt, never replay."""
 
     title: str
-    view_type: Literal["notice", "markdown", "fields", "choices", "form", "diff", "status"]
+    view_type: Literal["notice", "markdown", "fields", "choices", "form", "diff", "status", "table", "json", "media"]
     data: Mapping[str, object]
     #: Advisory client refresh cadence in ms; only carrying views refresh, only while open.
     refresh_after_ms: int | None = None
