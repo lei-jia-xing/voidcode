@@ -64,11 +64,13 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - 边界：不交出完整 `PluginServices`、peer state、凭据、任意 SQL 或可变宿主路径；process owner 在 spawn 时取自 lease，缺 owner/session 的 Core lookup 不作 unrestricted fallback。读者不能 join、ack、send、cancel 或 replay。
   - 剩余验收：增加与真实消费者对应的资源能力声明/搜索前，先复用同一注册入口与分页 identity；provider disabled 立即移除 scheme，未知 scheme、不可见/不存在资源、非法页和 handler/storage 错误保持各自语义。外部进程只读物化能力仍未定义，不得直接提供 artifact 可写 backing path。
 
-- [ ] **组合工具内容与有界声明式展示。** 消费方：`eval` 的表格/图像、MCP 混合媒体、TUI/Web 工具结果卡。
+- [x] **组合工具内容与有界声明式展示。** 消费方：`eval` 的表格/图像、MCP 混合媒体、TUI/Web 工具结果卡。
   - 现状：[`ToolOutput`](tools.py) 是单个 `TextOutput | EmptyOutput | AttachmentOutput`，不能表达按序混合的文本和多张图片；`ToolBody` 已能表达结构化业务数据，不缺第二套 JSON body。[`ResourcePage`](resources.py) 同样只容纳单个文本或附件；[`views.py`](views.py) 的有限视图没有 table/JSON tree/media 类型。MCP [结果投影](../plugins/mcp/mcp_tool.py) 仅在恰好一张且足够小时选用附件输出，其余回退文本和 artifact 引用。
   - 目标：以现有 `ArtifactReference`、typed body 和 output bounds 为基础，补有序组合内容及有限、纯数据的展示契约，复用已有 `DiffViewData` 而非再造平行的 diff 格式；区分模型投影、用户展示和完整数据引用。复用 `ToolContext.emit_tool_progress` 及已有 `stream/text`，跨工具确需共享阶段/进度字段时才规范可选载荷及未知值，不再建一套进度总线。参考 OMP [eval 的 views/images 与模型文本分流](omp://tools/eval.md)。
   - 边界：SDK 不引入终端协议、HTML 执行器或任意插件 renderer；图片原件留在现有内容寻址存储，不复制 OMP 的第二套 blob/artifact 存储。契约落地须贯通 codec、transcript、transport、provider 投影和两端客户端，迁移全部调用方，不靠丢字段兼容。
   - 验收：一次调用输出说明、表格、两张图和失败诊断，两端按序呈现，CLI/无图终端有可读降级；大图/大表走引用与分页，不因展示上限丢完整数据，也不把 base64/完整 JSON 重复塞进模型上下文；取消后的部分结果不显示为成功。
+  - 已落地：`ToolOutput` 新增有序 `CompositeOutput`（`TextPart`/`MediaPart`/`TablePart`/`JsonPart`，`composite_ordered_text` 渲染模型文本）；`ResourcePage` 同样接纳组合输出；`views.py` 新增纯数据 `TableViewData`/`JsonViewData`/`MediaViewData`（预览按 `MAX_VIEW_DATA_BYTES` 截断，无 renderer）；codec 以 `kind` 判别往返，旧载荷字节一致；Core 投影按序渲染文本并携带 `parts`/`output_uris` 身份，body 与 `TextOutput` 同样省略；commit 路径对超限 parts 以 kernel-spilled 引用收敛而非丢数据；history/compaction 渲染有序文本；MCP 试点输出有序组合（文本/媒体/资源/结构化 JSON，无单图静默回退）；`read` 的 `_ReadOutcome` 拓宽到 `ToolOutput`，组合 URI 读不授予 coverage；TUI/Web 按序呈现 parts 并保留完整数据入口。
+  - 证据：新增 29 passed（`test_composite_output` 9、`test_composite_projection` 7、`test_composite_views` 13）；MCP 试点 `test_mcp_tool` 18、`test_media_projection` 22；前端组合 22（vitest 全量 85）；全量单元 1960 passed + 1 skipped；subagents 集成 7；e2e artifact 场景 1 passed/14.2s；`mise run lint` + `typecheck` + `frontend:api:check` 全绿。
 
 - [ ] **模型发起的持久化用户问答契约。** 消费方：结构化 `ask` 工具及其 TUI/Web 表单。
   - 现状：[`FormViewData`/`FormField`](views.py) 是命令 action 驱动的表单，只有基础字段及单选 options；[`ConfirmationRequest`](commands.py) 确认的是命令副作用。`ToolResult` 只有成功/失败，尚无模型问题与用户答案的关联、等待和恢复契约；不能把问答伪装成审批。
