@@ -118,6 +118,24 @@ def _messages(request: dict[str, object]) -> list[dict[str, object]]:
     return [entry for entry in messages if isinstance(entry, dict)] if isinstance(messages, list) else []
 
 
+def _full_task_body(core: Core, projection: Mapping[str, object]) -> dict[str, object]:
+    """Read the complete task body behind a transcript projection."""
+    uri = projection.get("result_uri")
+    assert isinstance(uri, str) and uri.startswith("artifact://"), projection
+    digest = uri.removeprefix("artifact://")
+    chunks: list[bytes] = []
+    offset = 0
+    while True:
+        page = core.read_artifact(digest, offset=offset)
+        chunks.append(page.data)
+        offset += len(page.data)
+        if page.eof:
+            break
+    result = decode_tool_result(json.loads(b"".join(chunks).decode("utf-8")))
+    assert result.body is not None
+    return dict(result.body.as_payload())
+
+
 def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> None:
     replies: list[dict[str, object]] = [
         # Parent: delegate the work and wait for the child in the same call.
@@ -161,7 +179,9 @@ def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> N
         tool_messages = [message for message in _messages(server.requests[2]) if message.get("role") == "tool"]
         assert len(tool_messages) == 1
         tool_text = str(tool_messages[0]["content"])
-        body = json.loads(tool_text.splitlines()[0])
+        projection = json.loads(tool_text.splitlines()[0])
+        assert projection["status"] == "ok"
+        body = _full_task_body(core, projection)
         assert body["operation"] == "spawn"
         assert body["label"] == "doors"
         assert body["status"] == "completed"
@@ -234,7 +254,9 @@ def test_profile_child_inherits_parent_scope_or_uses_explicit_narrowing(tmp_path
         assert child_prompt["content"] == f"{_EXPLORE_PROMPT_BODY}\n\nsummarize the visitor guide"
 
         tool_text = str([message for message in _messages(server.requests[2]) if message.get("role") == "tool"][0]["content"])
-        body = json.loads(tool_text.splitlines()[0])
+        projection = json.loads(tool_text.splitlines()[0])
+        assert projection["status"] == "ok"
+        body = _full_task_body(core, projection)
         assert body["subagent_type"] == "explore"
         assert body["status"] == "completed"
         assert body["output"] == "child answer: explored"
