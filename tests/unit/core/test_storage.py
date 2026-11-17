@@ -12,12 +12,17 @@ from typing import Any, cast
 import pytest
 
 from voidcode.core.storage.store import (
+    MAX_CHILD_LABEL_BYTES,
     MAX_COMMITTED_EVENT_BYTES,
+    MAX_CONTINUATION_PAYLOAD_BYTES,
+    MAX_WAKEUP_PAYLOAD_BYTES,
     Checkpoint,
     EventDraft,
     ForeignDatabaseError,
     SessionRecord,
     SqliteStore,
+    StagedContinuationDraft,
+    StagedWakeup,
     StorageError,
     StoreConflict,
     StoredEvent,
@@ -611,3 +616,240 @@ def test_commit_accepts_event_payload_at_bound(tmp_path: Path) -> None:
         )
         assert session.last_event_sequence == 1
         assert store.events("sess-bound")[0].payload == payload
+
+
+def test_enqueue_continuation_rejects_oversized_payload_without_writing(tmp_path: Path) -> None:
+    """An oversized continuation fails visibly before any row — including its budget row — is written."""
+    payload = _payload_of_size(MAX_CONTINUATION_PAYLOAD_BYTES + 1)
+    assert len(canonical_json(payload).encode("utf-8")) == MAX_CONTINUATION_PAYLOAD_BYTES + 1
+    with SqliteStore(tmp_path / "cont-guard.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-cont", "/ws", rev_id)
+        with pytest.raises(StoreConflict, match=f"{MAX_CONTINUATION_PAYLOAD_BYTES + 1} bytes.*{MAX_CONTINUATION_PAYLOAD_BYTES}-byte"):
+            store.enqueue_continuation("cont-big", "owner", "sess-cont", "plugin.owner", "run-1", rev_id, payload, root_id="root-1", root_budget=5)
+        assert store.pending_continuations("sess-cont", limit=10) == ()
+        assert store.root_budget_state("root-1") is None
+
+
+def test_enqueue_continuation_accepts_payload_at_bound(tmp_path: Path) -> None:
+    """A continuation payload of exactly the bound queues and reads back unchanged."""
+    payload = _payload_of_size(MAX_CONTINUATION_PAYLOAD_BYTES)
+    assert len(canonical_json(payload).encode("utf-8")) == MAX_CONTINUATION_PAYLOAD_BYTES
+    with SqliteStore(tmp_path / "cont-bound.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-cont", "/ws", rev_id)
+        cid = store.enqueue_continuation("cont-edge", "owner", "sess-cont", "plugin.owner", "run-1", rev_id, payload, root_id="root-1")
+        assert cid == "cont-edge"
+        (record,) = store.pending_continuations("sess-cont", limit=10)
+        assert record.payload == payload
+
+
+def test_commit_staged_rejects_oversized_staged_continuation_atomically(tmp_path: Path) -> None:
+    """An oversized staged continuation fails the whole commit: no events, rows, or checkpoint moves."""
+    payload = _payload_of_size(MAX_CONTINUATION_PAYLOAD_BYTES + 1)
+    with SqliteStore(tmp_path / "staged-cont-guard.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-staged", "/ws", rev_id)
+        store.commit_staged(
+            "sess-staged",
+            run_id="run-1",
+            revision_id=rev_id,
+            events=(EventDraft("core.turn_start", "core", "user", {"turn": 1}),),
+            status="running",
+            checkpoint_kind="ready",
+            checkpoint_payload={"call_index": 0},
+        )
+        with pytest.raises(StoreConflict, match=f"{MAX_CONTINUATION_PAYLOAD_BYTES + 1} bytes.*{MAX_CONTINUATION_PAYLOAD_BYTES}-byte"):
+            store.commit_staged(
+                "sess-staged",
+                expected_sequence=1,
+                expected_run_id="run-1",
+                run_id="run-1",
+                revision_id=rev_id,
+                events=(EventDraft("tool.completed", "host", "tool", {"ok": True}),),
+                status="running",
+                checkpoint_kind="ready",
+                checkpoint_payload={"call_index": 1},
+                staged_continuations=(
+                    StagedContinuationDraft(continuation_id="staged-big", owner="owner", source="plugin.owner", payload=payload, root_id="root-1"),
+                ),
+            )
+        assert store.session("sess-staged").last_event_sequence == 1
+        assert len(store.events("sess-staged")) == 1
+        assert store.pending_continuations("sess-staged", limit=10) == ()
+        cp = store.checkpoint("sess-staged")
+        assert cp is not None
+        assert cp.payload == {"call_index": 0}
+
+
+def test_commit_staged_accepts_staged_continuation_at_bound(tmp_path: Path) -> None:
+    """A staged continuation of exactly the bound commits with its turn unchanged."""
+    payload = _payload_of_size(MAX_CONTINUATION_PAYLOAD_BYTES)
+    with SqliteStore(tmp_path / "staged-cont-bound.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-staged", "/ws", rev_id)
+        store.commit_staged(
+            "sess-staged",
+            run_id="run-1",
+            revision_id=rev_id,
+            events=(EventDraft("core.turn_start", "core", "user", {"turn": 1}),),
+            status="running",
+            checkpoint_kind="ready",
+            checkpoint_payload={"call_index": 0},
+            staged_continuations=(
+                StagedContinuationDraft(continuation_id="staged-edge", owner="owner", source="plugin.owner", payload=payload, root_id="root-1"),
+            ),
+        )
+        assert store.session("sess-staged").last_event_sequence == 1
+        (record,) = store.pending_continuations("sess-staged", limit=10)
+        assert record.continuation_id == "staged-edge"
+        assert record.payload == payload
+
+
+def test_schedule_wakeup_rejects_oversized_payload(tmp_path: Path) -> None:
+    """An oversized wakeup fails visibly and leaves no pending row."""
+    payload = _payload_of_size(MAX_WAKEUP_PAYLOAD_BYTES + 1)
+    assert len(canonical_json(payload).encode("utf-8")) == MAX_WAKEUP_PAYLOAD_BYTES + 1
+    with SqliteStore(tmp_path / "wake-guard.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-wake", "/ws", rev_id)
+        with pytest.raises(StoreConflict, match=f"{MAX_WAKEUP_PAYLOAD_BYTES + 1} bytes.*{MAX_WAKEUP_PAYLOAD_BYTES}-byte"):
+            store.schedule_wakeup("wake-big", "owner", "/ws", "sess-wake", payload, 0, root_action_id="root-1", root_action_budget=None)
+        assert store.pending_wakeups() == ()
+
+
+def test_schedule_wakeup_accepts_payload_at_bound(tmp_path: Path) -> None:
+    """A wakeup payload of exactly the bound schedules and reads back unchanged."""
+    payload = _payload_of_size(MAX_WAKEUP_PAYLOAD_BYTES)
+    assert len(canonical_json(payload).encode("utf-8")) == MAX_WAKEUP_PAYLOAD_BYTES
+    with SqliteStore(tmp_path / "wake-bound.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-wake", "/ws", rev_id)
+        assert (
+            store.schedule_wakeup("wake-edge", "owner", "/ws", "sess-wake", payload, 0, root_action_id="root-1", root_action_budget=None)
+            == "wake-edge"
+        )
+        (record,) = store.pending_wakeups()
+        assert record.payload == payload
+
+
+def test_commit_staged_rejects_oversized_staged_wakeup_atomically(tmp_path: Path) -> None:
+    """An oversized staged wakeup fails the whole commit: no events, rows, or checkpoint moves."""
+    payload = _payload_of_size(MAX_WAKEUP_PAYLOAD_BYTES + 1)
+    with SqliteStore(tmp_path / "staged-wake-guard.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-wake", "/ws", rev_id)
+        store.commit_staged(
+            "sess-wake",
+            run_id="run-1",
+            revision_id=rev_id,
+            events=(EventDraft("core.turn_start", "core", "user", {"turn": 1}),),
+            status="running",
+            checkpoint_kind="ready",
+            checkpoint_payload={"call_index": 0},
+        )
+        with pytest.raises(StoreConflict, match=f"{MAX_WAKEUP_PAYLOAD_BYTES + 1} bytes.*{MAX_WAKEUP_PAYLOAD_BYTES}-byte"):
+            store.commit_staged(
+                "sess-wake",
+                expected_sequence=1,
+                expected_run_id="run-1",
+                run_id="run-1",
+                revision_id=rev_id,
+                events=(EventDraft("tool.completed", "host", "tool", {"ok": True}),),
+                status="running",
+                checkpoint_kind="ready",
+                checkpoint_payload={"call_index": 1},
+                staged_wakeups=(StagedWakeup(wakeup_id="staged-wake-big", owner="owner", session_id="sess-wake", payload=payload, due_at=0),),
+                root_action_id="root-1",
+                root_action_budget=None,
+            )
+        assert store.session("sess-wake").last_event_sequence == 1
+        assert len(store.events("sess-wake")) == 1
+        assert store.pending_wakeups() == ()
+        cp = store.checkpoint("sess-wake")
+        assert cp is not None
+        assert cp.payload == {"call_index": 0}
+
+
+def test_commit_staged_accepts_staged_wakeup_at_bound(tmp_path: Path) -> None:
+    """A staged wakeup of exactly the bound commits with its turn unchanged."""
+    payload = _payload_of_size(MAX_WAKEUP_PAYLOAD_BYTES)
+    with SqliteStore(tmp_path / "staged-wake-bound.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-wake", "/ws", rev_id)
+        store.commit_staged(
+            "sess-wake",
+            run_id="run-1",
+            revision_id=rev_id,
+            events=(EventDraft("core.turn_start", "core", "user", {"turn": 1}),),
+            status="running",
+            checkpoint_kind="ready",
+            checkpoint_payload={"call_index": 0},
+            staged_wakeups=(StagedWakeup(wakeup_id="staged-wake-edge", owner="owner", session_id="sess-wake", payload=payload, due_at=0),),
+            root_action_id="root-1",
+            root_action_budget=None,
+        )
+        assert store.session("sess-wake").last_event_sequence == 1
+        (record,) = store.pending_wakeups()
+        assert record.wakeup_id == "staged-wake-edge"
+        assert record.payload == payload
+
+
+def test_create_child_session_rejects_oversized_birth_label(tmp_path: Path) -> None:
+    """An oversized birth label fails visibly and creates no child session; labels must be text."""
+    with SqliteStore(tmp_path / "label-guard.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-parent", "/ws", rev_id)
+        with pytest.raises(ValueError, match="1 KiB"):
+            store.create_child_session(
+                "child-big",
+                "/ws",
+                rev_id,
+                parent_session_id="sess-parent",
+                root_session_id="sess-parent",
+                depth=1,
+                birth={"root_id": "root-1", "root_action_budget": None, "label": "x" * (MAX_CHILD_LABEL_BYTES + 1)},
+            )
+        with pytest.raises(KeyError):
+            store.session("child-big")
+        with pytest.raises(ValueError, match="1 KiB"):
+            store.create_child_session(
+                "child-typed",
+                "/ws",
+                rev_id,
+                parent_session_id="sess-parent",
+                root_session_id="sess-parent",
+                depth=1,
+                birth={"root_id": "root-1", "root_action_budget": None, "label": 123},
+            )
+
+
+def test_create_child_session_accepts_birth_label_at_bound(tmp_path: Path) -> None:
+    """A birth label of exactly the bound lands in the birth row unchanged."""
+    label = "x" * MAX_CHILD_LABEL_BYTES
+    assert len(label.encode("utf-8")) == MAX_CHILD_LABEL_BYTES
+    with SqliteStore(tmp_path / "label-bound.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-parent", "/ws", rev_id)
+        record = store.create_child_session(
+            "child-edge",
+            "/ws",
+            rev_id,
+            parent_session_id="sess-parent",
+            root_session_id="sess-parent",
+            depth=1,
+            birth={"root_id": "root-1", "root_action_budget": None, "label": label},
+        )
+        assert record.last_event_sequence == 1
+        (birth,) = store.events("child-edge")
+        assert birth.payload["label"] == label

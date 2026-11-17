@@ -14,6 +14,7 @@ from tests.fixtures.reload_plugin import DELEGATE_TOOL, OVERLAY_COMMAND, write_r
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
+from voidcode.core.storage.store import MAX_CHILD_LABEL_BYTES
 from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
 
 PLUGIN_ID = "reload-fixture"
@@ -110,6 +111,30 @@ def test_child_prompt_bound_is_a_guard_not_a_product_budget(tmp_path: Path) -> N
         assert [event for event in child_events if event.event_type == "core.user_message"]
         with pytest.raises(ValueError, match="256 KiB"):
             core.spawn_child("sess-parent", "y" * (CHILD_PROMPT_MAX_BYTES + 1), label="too-big")
+
+
+def test_child_birth_label_bound_is_measured_in_utf8_bytes(tmp_path: Path) -> None:
+    source = tmp_path / "plugin"
+    write_reload_plugin(source, tool_output="v1")
+    replies = [_turn(output="child answered")]
+    with _server(replies) as server:
+        _configure(tmp_path / "workspace", server, source)
+        core = _open(tmp_path)
+        core.create_session("sess-parent")
+
+        # Exactly 1 KiB lands in the birth row unchanged.
+        edge = "x" * MAX_CHILD_LABEL_BYTES
+        child = core.spawn_child("sess-parent", "small prompt", label=edge)
+        assert child
+        birth = next(event for event in core.events_after(child) if event.event_type == "core.child_reserved")
+        assert birth.payload["label"] == edge
+        core.join_child("sess-parent", child, timeout_seconds=60)
+
+        # One byte over fails visibly, measured in UTF-8 bytes, not characters.
+        with pytest.raises(ValueError, match="1 KiB"):
+            core.spawn_child("sess-parent", "small prompt", label="y" * (MAX_CHILD_LABEL_BYTES + 1))
+        with pytest.raises(ValueError, match="1 KiB"):
+            core.spawn_child("sess-parent", "small prompt", label="é" * 513)
 
 
 def test_read_only_stance_may_only_delegate_read_only_work(tmp_path: Path) -> None:

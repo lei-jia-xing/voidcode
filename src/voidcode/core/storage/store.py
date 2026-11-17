@@ -30,6 +30,28 @@ SCHEMA_VERSION = 6
 #: multi-MB inline rows with a visible `StoreConflict`.
 MAX_COMMITTED_EVENT_BYTES = 4 * 1024 * 1024
 
+#: Maximum canonical (UTF-8 bytes of `canonical_json`) payload for one continuation row.
+#: Storage/integrity guard: `claim_and_start_continuation` re-embeds the payload verbatim
+#: into its CONTINUATION_STARTED event, so an uncapped row would blow past the
+#: committed-event bound at claim time. The legit worst case is exact, not sampled: a
+#: child follow-up at the max child prompt doubles it (`text` plus `prompt`) to 524_462
+#: bytes, while the suite's largest observed payload is 930 bytes — this bound doubles
+#: the proven max while keeping every claim event near 1 MiB, far under the 4 MiB ceiling.
+MAX_CONTINUATION_PAYLOAD_BYTES = 1024 * 1024
+
+#: Maximum canonical payload for one wakeup row. Storage/integrity guard: the claim path
+#: re-embeds the payload verbatim into its WAKEUP_FIRED event. A wakeup carries one
+#: future turn's steering text — the same class as a client prompt — so this bound matches
+#: that 64 KiB budget, ~1000x over the suite's observed 61-byte max, keeping claim events
+#: far under the committed-event ceiling. Oversized schedules fail visibly, never silently.
+MAX_WAKEUP_PAYLOAD_BYTES = 64 * 1024
+
+#: Maximum UTF-8 bytes for a child-birth label. Storage/integrity guard: the label rides
+#: in the CHILD_RESERVED birth row and is re-embedded into spawn facts and completion
+#: notices, so one unbounded tag bloats every read of the lineage. Labels are short human
+#: tags (suite max 23 bytes); 1 KiB is 44x headroom while refusing pathological rows.
+MAX_CHILD_LABEL_BYTES = 1024
+
 
 class StorageError(RuntimeError):
     """Base error for core storage failures."""
@@ -746,6 +768,9 @@ class SqliteStore:
         root_id = birth.get("root_id")
         if not isinstance(root_id, str) or not root_id:
             raise ValueError("child birth record requires a captured root action identity")
+        birth_label = birth.get("label")
+        if birth_label is not None and (not isinstance(birth_label, str) or len(birth_label.encode("utf-8")) > MAX_CHILD_LABEL_BYTES):
+            raise ValueError(f"child birth label must be UTF-8 text within {MAX_CHILD_LABEL_BYTES // 1024} KiB")
         now = int(time.time() * 1000)
         allowlist_json = None if tool_allowlist is None else json.dumps(list(tool_allowlist))
         with self._lock:
@@ -1130,6 +1155,11 @@ class SqliteStore:
             raise ValueError("root_action_budget must be a non-negative integer or null")
         if root_action_id is None and root_action_budget is not None:
             raise ValueError("a finite root_action_budget requires its captured root_action_id")
+        wakeup_size = len(canonical_json(payload).encode("utf-8"))
+        if wakeup_size > MAX_WAKEUP_PAYLOAD_BYTES:
+            raise StoreConflict(
+                f"wakeup {wakeup_id!r} payload is {wakeup_size} bytes, exceeding the {MAX_WAKEUP_PAYLOAD_BYTES}-byte wakeup-payload bound"
+            )
         now = int(time.time() * 1000)
         with self._lock:
             self._check_open()
@@ -1808,6 +1838,12 @@ class SqliteStore:
                             )
                             if c_chk.fetchone() is not None:
                                 continue
+                        continuation_size = len(cont_payload_json.encode("utf-8"))
+                        if continuation_size > MAX_CONTINUATION_PAYLOAD_BYTES:
+                            raise StoreConflict(
+                                f"continuation {cont.continuation_id!r} payload is {continuation_size} bytes, "
+                                f"exceeding the {MAX_CONTINUATION_PAYLOAD_BYTES}-byte continuation-payload bound"
+                            )
                         try:
                             self._connection.execute(
                                 """
@@ -1941,6 +1977,12 @@ class SqliteStore:
                 if staged_wakeups and (not isinstance(root_action_id, str) or not root_action_id):
                     raise StoreConflict("staged wakeups require the run's captured root action identity")
                 for wakeup in staged_wakeups:
+                    wakeup_size = len(canonical_json(wakeup.payload).encode("utf-8"))
+                    if wakeup_size > MAX_WAKEUP_PAYLOAD_BYTES:
+                        raise StoreConflict(
+                            f"wakeup {wakeup.wakeup_id!r} payload is {wakeup_size} bytes, "
+                            f"exceeding the {MAX_WAKEUP_PAYLOAD_BYTES}-byte wakeup-payload bound"
+                        )
                     try:
                         self._connection.execute(
                             """
@@ -3034,6 +3076,12 @@ class SqliteStore:
                     if row[1] != root_id or row[2] != payload_json:
                         raise StoreConflict("continuation idempotency key was already used with a different authorization or payload")
                     return row[0]
+            continuation_size = len(payload_json.encode("utf-8"))
+            if continuation_size > MAX_CONTINUATION_PAYLOAD_BYTES:
+                raise StoreConflict(
+                    f"continuation {continuation_id!r} payload is {continuation_size} bytes, "
+                    f"exceeding the {MAX_CONTINUATION_PAYLOAD_BYTES}-byte continuation-payload bound"
+                )
             if root_budget is not None:
                 if type(root_budget) is not int or not 0 <= root_budget <= 9_223_372_036_854_775_807:
                     raise ValueError("root_budget must fit a non-negative SQLite INTEGER")

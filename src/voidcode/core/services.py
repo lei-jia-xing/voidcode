@@ -562,7 +562,7 @@ class RuntimeServices:
         idempotency_key: str | None = None,
         role: Literal["system", "user"] = "system",
     ) -> str:
-        from .storage.store import StagedContinuationDraft
+        from .storage.store import MAX_CONTINUATION_PAYLOAD_BYTES, StagedContinuationDraft, canonical_json
 
         lease = self._active_lease()
         self._check_hook("enqueue_continuation")
@@ -585,6 +585,13 @@ class RuntimeServices:
                 existing = self._runtime.require_store().continuation_id_for_idempotency(lease.session_id, lease.owner, key)
             if existing is not None:
                 return existing
+            # After the dedupe return: a keyed retry names its existing row without staging anything new.
+            continuation_size = len(canonical_json(owned).encode("utf-8"))
+            if continuation_size > MAX_CONTINUATION_PAYLOAD_BYTES:
+                raise ValueError(
+                    f"continuation payload is {continuation_size} bytes, "
+                    f"exceeding the {MAX_CONTINUATION_PAYLOAD_BYTES}-byte continuation-payload bound"
+                )
             # A keyed identity is derived from the key itself, so two
             # concurrent leases that both stage before either commits
             # return the SAME id: the store's key dedupe then keeps
@@ -1003,7 +1010,7 @@ class RuntimeServices:
         *,
         idempotency_key: str | None = None,
     ) -> str:
-        from .storage.store import BACKGROUND_ACTION_SOURCE, StagedContinuationDraft
+        from .storage.store import BACKGROUND_ACTION_SOURCE, MAX_CONTINUATION_PAYLOAD_BYTES, StagedContinuationDraft, canonical_json
 
         lease = self._active_lease()
         self._check_hook("enqueue_background_action")
@@ -1037,16 +1044,25 @@ class RuntimeServices:
                     "readonly": lease.origin_readonly,
                     "revision_id": lease.revision_id,
                 }
+            staged_payload = {
+                "action": owned,
+                "root_action_budget": lease.initial_root_budget,
+                "tool_wait_authority": authority,
+            }
+            # The row stores the wrapped payload, so the bound measures the wrapper: an
+            # oversized action fails here, before staging, instead of at commit time.
+            continuation_size = len(canonical_json(staged_payload).encode("utf-8"))
+            if continuation_size > MAX_CONTINUATION_PAYLOAD_BYTES:
+                raise ValueError(
+                    f"continuation payload is {continuation_size} bytes, "
+                    f"exceeding the {MAX_CONTINUATION_PAYLOAD_BYTES}-byte continuation-payload bound"
+                )
             lease.staged_continuations.append(
                 StagedContinuationDraft(
                     continuation_id=cid,
                     owner=lease.owner,
                     source=BACKGROUND_ACTION_SOURCE,
-                    payload={
-                        "action": owned,
-                        "root_action_budget": lease.initial_root_budget,
-                        "tool_wait_authority": authority,
-                    },
+                    payload=staged_payload,
                     idempotency_key=key,
                     ordinal=lease.op_counter,
                     root_id=lease.root_action_id,
@@ -1111,6 +1127,8 @@ class RuntimeServices:
         idempotency_key: str | None = None,
         role: Literal["system", "user"] = "system",
     ) -> str:
+        from .storage.store import MAX_WAKEUP_PAYLOAD_BYTES, canonical_json
+
         lease = self._active_lease()
         self._check_hook("schedule_wakeup")
         if lease.internal_restricted:
@@ -1120,6 +1138,10 @@ class RuntimeServices:
         if role not in ("system", "user"):
             raise ValueError("role must be 'system' or 'user'")
         key = str(idempotency_key) if isinstance(idempotency_key, str) and idempotency_key else None
+        owned = own_json_object(payload)
+        wakeup_size = len(canonical_json(owned).encode("utf-8"))
+        if wakeup_size > MAX_WAKEUP_PAYLOAD_BYTES:
+            raise ValueError(f"wakeup payload is {wakeup_size} bytes, exceeding the {MAX_WAKEUP_PAYLOAD_BYTES}-byte wakeup-payload bound")
         if key is None:
             wakeup_id = uuid4().hex
         else:
@@ -1131,7 +1153,7 @@ class RuntimeServices:
             lease.owner,
             str(lease.workspace),
             lease.session_id,
-            own_json_object(payload),
+            owned,
             due_at_ms,
             str(role),
             root_action_id=lease.root_action_id,

@@ -24,6 +24,7 @@ from ..sdk.services import BudgetExhaustion, CancelSubtreeReceipt, ChildOutcome,
 from .child_history import spill_history
 from .events import CHILD_MESSAGE_OWNER, CHILD_OUTCOME_RECEIPT_OWNER, EventType, child_completion_notice_id
 from .storage.store import (
+    MAX_CHILD_LABEL_BYTES,
     ContinuationRecord,
     EventDraft,
     FencedSubtree,
@@ -190,6 +191,8 @@ class DelegationManager:
             # review diff, so owners enforce their own tighter caps before calling here.
             # The bound applies to the effective body (base text plus any delivery hint).
             raise ValueError(f"child prompt must be nonempty UTF-8 text within {CHILD_PROMPT_MAX_BYTES // 1024} KiB")
+        if not isinstance(label, str) or len(label.encode("utf-8")) > MAX_CHILD_LABEL_BYTES:
+            raise ValueError(f"child birth label must be UTF-8 text within {MAX_CHILD_LABEL_BYTES // 1024} KiB")
         if type(notify_on_completion) is not bool:
             raise ValueError("notify_on_completion must be a boolean")
         self.core._validate_steps(max_steps)
