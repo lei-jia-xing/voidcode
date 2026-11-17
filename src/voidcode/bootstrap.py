@@ -6,7 +6,7 @@ import fcntl
 import hashlib
 import os
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from importlib.metadata import version
@@ -249,7 +249,7 @@ def state_directory(workspace: Path) -> Path:
 
 
 @contextmanager
-def _workspace_lease(workspace: Path) -> Iterator[None]:
+def _workspace_lease(workspace: Path) -> Generator[None]:
     descriptor = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
     try:
         try:
@@ -444,7 +444,7 @@ def open_session_client(
     state_dir: Path | None = None,
     server_url: str | None = None,
     token: str | None = None,
-) -> Iterator[SessionClient]:
+) -> Generator[SessionClient]:
     """Open one typed session client: local owned core or remote WebSocket RPC.
 
     Exactly one of ``workspace`` (local arm, owns its ``Core``) or

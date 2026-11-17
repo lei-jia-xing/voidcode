@@ -88,13 +88,13 @@ class _AbsoluteLinkConverter(MarkdownConverter):
         href = el.get("href")
         if isinstance(href, str):
             el["href"] = self._absolute(self.base_url, href)
-        return super().convert_a(el, text, parent_tags)  # ty: ignore[unresolved-attribute]
+        return super().convert_a(el, text, parent_tags)  # ty: ignore[missing-attribute]
 
     def convert_img(self, el, text, parent_tags):  # type: ignore[no-untyped-def]
         src = el.get("src")
         if isinstance(src, str):
             el["src"] = self._absolute(self.base_url, src)
-        return super().convert_img(el, text, parent_tags)  # ty: ignore[unresolved-attribute]
+        return super().convert_img(el, text, parent_tags)  # ty: ignore[missing-attribute]
 
 
 def _render_html(html: str, base_url: str) -> str:

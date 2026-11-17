@@ -62,7 +62,7 @@ dev = [
   "pytest-cov",
   "pytest-xdist>=3.8.0",
   "ruff",
-  "ty>=0.0.33",
+  "ty>=0.0.104",
   "zstandard",
 ]
 syntax = [

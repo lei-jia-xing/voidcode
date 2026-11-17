@@ -8,7 +8,7 @@ import json
 import os
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -903,7 +903,7 @@ class Core:
             worker.join()
 
     @contextmanager
-    def _session_lock(self, session_id: str) -> Iterator[None]:
+    def _session_lock(self, session_id: str) -> Generator[None]:
         """Serialize work of ONE session; different sessions never block each other."""
         with self._session_locks_guard:
             lock = self._session_locks.get(session_id)
@@ -941,7 +941,7 @@ class Core:
         return self._snapshot.revision_id
 
     @contextmanager
-    def _dispatch(self, description: str) -> Iterator[_Snapshot]:
+    def _dispatch(self, description: str) -> Generator[_Snapshot]:
         """Capture the current generation and hold a call slot until the caller's result commits.
 
         The slot is what makes an activation safe: a switch is refused while any foreign
@@ -2098,7 +2098,7 @@ class Core:
         return self.store.owner_budget(session_id, owner)
 
     @contextmanager
-    def _command_abort(self, context: ToolContext) -> Iterator[ToolContext]:
+    def _command_abort(self, context: ToolContext) -> Generator[ToolContext]:
         # Commands may run alongside a turn and other commands: each owns its signal.
         abort = Cancellation()
         with self._aborts_lock:
