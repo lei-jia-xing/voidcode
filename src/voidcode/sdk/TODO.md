@@ -99,7 +99,8 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - Parity：与 `governed_model_query` 共享 `_model_query_turn`（`../core/engine.py:4263`）——同一 dispatch、中止、用量事件与 tool-calls 防护（`../core/engine.py:4197-4198,4213-4220`）；`result_schema` 须为合法 JSON Schema 对象（`:4203-4212`），提示词追加 JSON-only 后缀（`:4215`）。
   - 验收：`tests/unit/core/test_model_query_structured.py` 7 passed；非法结果、拒绝、取消与预算耗尽不可当作有效答案，调用仍进入原有治理和用量统计。Limits：无 fence-stripping 或回复修复——带围栏或冗余文本的回复判 `invalid_json`，完整原文保留在 `raw_text`（`:4221-4236`）。
 
-- [ ] **子任务输出 schema 与结构化结果身份。** 消费方：`task`、workflow、脚本中的 Agent 结果。
-  - 现状：[`spawn_child`/`ChildOutcome`](services.py) 没有输出 schema/已校验 JSON 结果字段；`agent://<id>` 只读完整文本/既有 artifact，不能依据字符串或 transcript 解析 `/key/index`。Core 的 `CHILD_FINISHED` 也没有独立的 accepted-yield 标记，当前 URI 对非空 completed output 的选择是有限近似。
-  - 目标：为子任务声明可选输出契约，结果保留 schema 校验状态、run 身份和完整数据/引用；模型的最后一句话、部分进度与正式交付区分清楚。具体交付工具属于产品插件，SDK 不引入 OMP 专用 `yield` builtin，也不为此开放任意动态提权。
-  - 验收：结构化交付经过严格校验后被父任务和 workflow 同样读取；无效结果不能静默标为成功，修正仍遵守已授权预算、不暗设固定重试轮数；取消/超限保留部分成果但不满足成功 schema。准确区分 accepted yield 的协议须先由 Core/SDK 表达，再由 `agent://` 消费。
+- [x] **子任务输出 schema 与结构化结果身份。** 消费方：`task`、`task_batch`、`workflow` 的 Agent 结果。
+  - 声明即契约：`spawn_child(..., result_schema)`（`services.py:851-881`）在 spawn 时声明一次；`canonical_result_schema`（`child_schema.py:35`）在任何 spawn 前校验 schema 合法性（`../core/services.py:651-652`、`../core/delegation.py:183-186`），非法直接 `ValueError`，不落任何 birth。
+  - Core 搬运：schema 随 spawn 门禁（`../core/services.py:637-673`）→ engine spawn（`../core/engine.py:3106-3199`）→ delegation birth 记录与 `spawned` payload（`../core/delegation.py:241,273,348`）；`compose_child_prompt`（`child_schema.py:53`）只给 child prompt 追加固定交付指令，不碰 facts；`CHILD_FINISHED` 不增 accepted-yield 标记，不引入 OMP 专用 `yield` builtin，不设固定重试轮数。
+  - 消费方-only 校验：`StructuredChildResult`（`services.py:88`）只在读取侧由 `validate_child_text`（`child_schema.py:69`）构造——`data`/`parse_error`/`unavailable` 三态，无效结果永不标为成功；`ChildOutcome`（`services.py:277-314`）不增结构化字段，身份/run/引用语义不变。`task` 经 `_StructuredFacts`（`../plugins/subagents/subagents_plugin.py:760-812`）把 `data`/`parse_error` 拼到结果首行 JSON；workflow 经 `agent_structured`（`../plugins/workflows/workflows_plugin.py:681`）与 `_settled_structured`（`:988`）读同一契约，声明的 schema 进入节点有效输入指纹（`:955-967`），换契约即换指纹、不复用旧结果（`:809`）。
+  - 验收：5 个新文件 43 passed（`test_child_schema` 11、`test_child_structured` 6、`test_task_structured` 13、`test_workflows_structured` 12、`test_child_structured_e2e` 1）+ `test_subagents_plugin.py` 4 处断言迁移；keyed retry 两向 schema 不符拒绝（未声明 spec hash 与 legacy 8 字段一致）；取消/预算耗尽/失败携带无 structured keys，部分成果保留但不满足 schema。

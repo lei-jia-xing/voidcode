@@ -72,17 +72,18 @@
   - 目标：由 capability/plugin 适配器提供目录、JSON/JSONL 查询、notebook 单元、PDF 文本/指定页图、SQLite 只读页和 archive 成员读取，复用资源身份、分页和媒体输出。参考 OMP [read 各格式与 selectors](omp://tools/read.md)，保留 VoidCode 现有显式游标习惯，不照搬全部路径后缀语法。
   - 验收：每种声明支持的格式有真实材料场景与明确限额；大文件/长行/UTF-8/扫描 PDF 可继续读到所需部分；archive 防路径逃逸及解压资源耗尽，数据库不执行变更；缺 converter、解码失败和不支持格式不可伪装为空内容。
 
-- [ ] **增加行为定位式 `find`，与 literal/AST/LSP 检索分工。**
-  - 现状：[`files`](files/README.md) 提供 glob/grep，[`ast_grep`](ast_grep/README.md) 与 [`lsp`](lsp/README.md) 已有结构/语义能力；缺的是按自然语言描述行为、返回可核查实现位置的发现入口，而不是再包一层 grep。
-  - 目标：有界 lexical 预筛与可配置语义判断，返回路径、真实行段、证据、覆盖范围和成本；literal 查询继续走 grep，符号导航继续走 LSP。复用 SDK 模型查询，结构化批量判断所需 schema 能力单列在 SDK TODO。参考 OMP [find 的分级检索与 partial/unavailable](omp://tools/find.md)。
-  - 验收：行为问题能定位实际实现且可用 `read` 核对；超时/判断服务不可用/只扫描部分文件与真正无命中严格区分，不虚构行号；不默认引入向量数据库或必需的后台索引，模型调用有预算和明确费用。
+- [x] **增加行为定位式 `find`，与 literal/AST/LSP 检索分工。**
+  - 链路：有界 lexical 预筛（每关键词一次共享 `grep`，总匹配复用 grep 自身 `MAX_MATCHES`）→ 一次结构化 judge（`model_query_structured` + 严格 `verdicts` schema，只判预筛候选）→ 共享 `read` 校验行号并取证据。新包 `find/`（`find_tool.py` + README）+ `tests/unit/plugins/test_find_plugin.py` 17 passed（含 real-Core loopback judge round-trip）。
+  - 类型化状态：`ok`/`no_hit`/`partial` 走 ToolSuccess（`ok` 永不空；`partial` 覆盖任何截断且保留已验证命中），`timeout`/`judge_unavailable`/`judge_error` 走带同体 `FindResultBody` + diagnostics 的 ToolFailure；幻觉行号进 `coverage.rejected`（7 种原因）永不静默修正；grep 层拒绝（超长行）以其 typed diagnostic 向上传播，不伪装 `no_hit`。
+  - 组合 fence：直接调用共享 grep/read（无独立 pipeline ledger）仅因二者皆为 READ-effect 且中间页不进 session model（judge 侧转 prompt + 本地校验；证据只存 body 不进 output.text，零 ReadObservation 正确）——fence 注释 + effects tripwire 测试锁定；judge prompt 的 snippet 截断（12 matches/file、500 chars/line）经 `coverage.snippet_cuts` 逐文件可见，不再静默。
+  - 未包含：向量数据库/后台索引；符号导航仍归 LSP。
 
 - [ ] **把 LSP 语义重构、安全编辑和诊断连成一次可靠操作。**
   - 现状：[`lsp`](lsp/README.md) 已能返回 rename/codeAction/willRenameFiles 计算出的 edits，[`files`](files/README.md) 已有 `apply_workspace_edit` 与 `expectedHash`/document-version 校验；不是缺一个能做字符串替换的“rename”。
   - 目标：以符号定位减少模型猜 character offset，支持可检查预览及受治理应用，沿用已有文档状态 query 与 workspace edit；明确跨文件部分失败/竞态，不把工具预览当已落盘。参考 OMP [lsp 的符号定位、rename_file/code_actions 与 freshness](omp://tools/lsp.md)、[edit 的 snapshot 与错误类别](omp://tools/edit.md)。
   - 验收：重命名带跨文件引用的符号或文件，预览可取消，应用后引用与诊断可核对；stale hash/version 拒绝而不覆盖用户修改，失败不谎报全成功；只读语义继续受实际进程权限约束，不为模仿 OMP 偷改效果标签。
 
-- [ ] **支持可选 schema 的子 Agent 结构化交付。**
-  - 现状：SDK `ChildOutcome.output` 是文本，`task` 的完成结果没有声明/验证输出 schema 的契约；不能要求父 Agent 从自然语言或截断预览中猜 JSON。
-  - 目标：采用 SDK 的结构化子任务结果契约，`task` 与 workflow 一致消费；可以借鉴 OMP [task 的 outputSchema/yield](omp://tools/task.md)，但不在 Core 增加产品专用 builtin，不机械复制固定提醒次数或重试 MAX。
-  - 验收：父 Agent 要求文件列表和布尔判断，拿到校验后的数据及其 run 身份；schema 不符、未交付、预算耗尽和正常完成严格区分；完整数据可按引用读取。schema 变化进入 workflow 的有效规格指纹，不能复用另一份契约的旧结果。
+- [x] **支持可选 schema 的子 Agent 结构化交付。**
+  - `task`（含 batch）与 workflow 同读 SDK 契约：spawn 声明 `result_schema`，读取侧严格校验后返回 `data` 及其 run 身份；schema 不符/未交付/预算耗尽/正常完成严格区分（`data`/`parse_error`/`unavailable` 三态），完整数据按引用读取。无 `yield` builtin、无固定提醒/重试 MAX。
+  - task↔workflow parity：声明/未声明、合法/违例/不可解析、preview-only、预算/取消/失败、复用与指纹拒绝两侧一致；schema 进入 workflow 有效规格指纹，`test_same_key_different_schema_is_refused` 锁定换契约不复用旧结果。
+  - 验收：5 新文件 43 passed + e2e 子 spawn→交付全链路；`test_subagents_plugin.py` 4 处断言迁移到首行结构化 JSON。
