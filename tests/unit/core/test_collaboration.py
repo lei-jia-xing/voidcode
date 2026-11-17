@@ -31,7 +31,7 @@ from tests.fixtures.s5_plugin import PROBE_TOOL as S5_PROBE_TOOL
 from tests.fixtures.s5_plugin import write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
-from voidcode.core.engine import DELEGATION_SPAWN_BUDGET, Core
+from voidcode.core.engine import Core
 from voidcode.core.events import CHILD_OUTCOME_RECEIPT_OWNER, child_completion_notice_id
 from voidcode.core.storage.store import StoreConflict
 from voidcode.sdk.codec import decode_tool_result
@@ -2163,7 +2163,7 @@ def test_concurrent_spawns_at_budget_accept_exactly_one_child(tmp_path: Path) ->
     with _server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
-        assert DELEGATION_SPAWN_BUDGET == 4
+        assert core.config.max_root_children == 4
         for index in range(3):
             child = core.spawn_child(parent, f"setup child {index}", notify_on_completion=False)
             assert _join(core, parent, child).status == "completed"

@@ -13,7 +13,7 @@ import pytest
 from tests.fixtures.reload_plugin import DEACTIVATE_TOOL, DELEGATE_TOOL, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
-from voidcode.core.engine import DELEGATION_SPAWN_BUDGET, Core
+from voidcode.core.engine import Core
 from voidcode.sdk.json_values import json_wire_object
 
 PLUGIN_ID = "reload-fixture"
@@ -141,13 +141,17 @@ def test_delegated_children_run_and_join_with_a_narrowed_tool_scope(tmp_path: Pa
 def test_child_limits_and_scope_are_enforced_by_the_core(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", delegating=True)
+    # The chain quota owner is policy.max_root_children (default 4); _configure leaves
+    # it unset, so size the provider script to the admitted default.
+    budget = 4
     # Every spawned child auto-drives exactly one provider turn: supply one final
-    # reply per child the budget admits, then join each child before the server
+    # reply per child the quota admits, then join each child before the server
     # exits so no child thread outlives its provider or the store.
-    replies = [_turn(output=f"child {index} done") for index in range(DELEGATION_SPAWN_BUDGET)]
+    replies = [_turn(output=f"child {index} done") for index in range(budget)]
     with _server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
+        assert core.config.max_root_children == budget
         core.create_session("root")
         session = core.session("root")
         children: list[str] = []
@@ -165,19 +169,19 @@ def test_child_limits_and_scope_are_enforced_by_the_core(tmp_path: Path) -> None
         assert record.root_session_id == "root"
         assert session.depth == 0
 
-        # The chain's spawn budget is finite and counts every child of the root chain.
-        while core.store.count_root_children("root") < DELEGATION_SPAWN_BUDGET:
+        # The chain's child quota is finite and counts every child of the root chain.
+        while core.store.count_root_children("root") < budget:
             children.append(core.spawn_child("root", "budget child"))
         with pytest.raises(ValueError, match="spawn budget exhausted"):
             core.spawn_child("root", "one too many")
 
         # Join every driven child while the provider is still listening: each must
         # reach its terminal state, and the join consumes its published fact.
-        assert len(children) == DELEGATION_SPAWN_BUDGET
+        assert len(children) == budget
         for child_id in children:
             outcome = core.join_child("root", child_id, timeout_seconds=60.0)
             assert outcome.status == "completed", outcome.as_payload()
-        assert len(server.requests) == DELEGATION_SPAWN_BUDGET
+        assert len(server.requests) == budget
 
 
 def test_child_cannot_call_a_tool_outside_its_scope(tmp_path: Path) -> None:

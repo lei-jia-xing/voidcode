@@ -37,10 +37,10 @@ if TYPE_CHECKING:
     from .engine import Core, CoreResult, _Execution
 
 
-#: A parent may nest children at most this deep, and the chain may spawn at most this many
-#: total. A child inherits the parent's policy unchanged, so delegation never widens it.
+#: A parent may nest children at most this deep. A child inherits the parent's policy
+#: unchanged, so delegation never widens it; the chain-wide child count is governed by
+#: the operator-configurable ExecutionConfig.max_root_children.
 DELEGATION_MAX_DEPTH = 3
-DELEGATION_SPAWN_BUDGET = 4
 #: Larger terminal child output is represented by a full artifact reference and bounded preview;
 #: this threshold is an inline representation policy, not a transport-frame or total-output cap.
 CHILD_INLINE_OUTPUT_BYTES = 32 * 1024
