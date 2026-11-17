@@ -598,6 +598,7 @@ class RuntimeServices:
                     payload=owned,
                     idempotency_key=key,
                     ordinal=lease.op_counter,
+                    root_id=lease.root_action_id,
                     role=role,
                 )
             )

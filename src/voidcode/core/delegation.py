@@ -377,12 +377,18 @@ class DelegationManager:
         return None
 
     def _birth_record(self, child_id: str) -> dict[str, object] | None:
-        """The child's own atomic birth record (sequence 1), or None when it predates birth records.
+        """The child's own atomic birth record (sequence 1), or None when it is missing.
 
+        None covers both a child that predates birth records and a session id with no
+        row at all: a first keyed spawn probes its deterministic id before creating it.
         The birth record commits in the same transaction as the child row, so it is the
         crash-window truth when the parent fact never landed. It is read-only here.
         """
-        for event in self.core.store.events(child_id, limit=1):
+        try:
+            first = self.core.store.events(child_id, limit=1)
+        except KeyError:
+            return None
+        for event in first:
             if event.sequence == 1 and event.event_type == EventType.CHILD_RESERVED:
                 return dict(event.payload)
         return None
@@ -1454,6 +1460,13 @@ class DelegationManager:
     def _child_status_outcome(self, child: SessionRecord) -> ChildOutcome:
         status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"]
         stop_payload = self.core.store.latest_stop_payload(child.session_id, child.run_id)
+        if stop_payload is None and child.run_id == "":
+            # The reserved-claim bookkeeping marker ("") is not a real run, so the
+            # run-scoped stop lookup cannot see it; read the claim event itself.
+            for event in reversed(self.core.store.events(child.session_id)):
+                if event.event_type == EventType.RUN_INTERRUPTED:
+                    stop_payload = event.payload
+                    break
         stop_cause = None if stop_payload is None else stop_payload.get("stop_cause")
         if not isinstance(stop_cause, str):
             stop_cause = None
