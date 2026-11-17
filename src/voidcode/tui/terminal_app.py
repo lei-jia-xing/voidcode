@@ -22,6 +22,8 @@ from voidcode.capabilities.providers.native.reasoning_effort import normalize_re
 from voidcode.config import BannerConfig
 from voidcode.core.events import EventType
 from voidcode.sdk.client import (
+    MAX_PROMPT_BYTES,
+    MAX_PROMPT_CHARS,
     CommandCatalog,
     CommandResult,
     CoreClientError,
@@ -79,7 +81,7 @@ from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
 from .region import TuiFrame
 from .styles import SPINNER_FRAMES, Styles
-from .term import Terminal, clamp_row, crop_row_right, escape_terminal_controls, visible_width
+from .term import Terminal, clamp_row, copy_to_clipboard, crop_row_right, escape_terminal_controls, visible_width
 from .views import (
     InteractiveApproval,
     InteractiveChoices,
@@ -315,6 +317,12 @@ _RESERVED_SHORTCUTS: frozenset[str] = frozenset(
         "ctrl+backspace",
         "alt+delete",
         "alt+d",
+        "alt+e",
+        "alt+shift+e",
+        "alt+c",
+        "alt+shift+c",
+        "alt+x",
+        "alt+shift+x",
     }
 )
 
@@ -2220,6 +2228,17 @@ class CoreTuiApp:
         if chord == "ctrl+o":
             self._show_truncated_output()
             return
+        if name == "enter" and not self.composer.completion:
+            line = self.composer.value.strip()
+            if line and not line.startswith("/"):
+                nchars = len(line)
+                nbytes = len(line.encode("utf-8"))
+                if nchars > MAX_PROMPT_CHARS or nbytes > MAX_PROMPT_BYTES:
+                    self.status_line = (
+                        f"Prompt too large ({nchars} chars, {nbytes} bytes; "
+                        f"max {MAX_PROMPT_CHARS} chars, {MAX_PROMPT_BYTES} bytes) — draft kept, nothing sent"
+                    )
+                    return
         if name in ("enter", "tab") and self.composer.completion:
             selected = self.composer.completion[self.composer.completion_index]
             if selected in self._path_replacements:
@@ -2254,6 +2273,16 @@ class CoreTuiApp:
             self._cancel_active_run()
         elif outcome.action == ComposerAction.INTERRUPT:
             self.running = False
+        elif outcome.action == ComposerAction.COPY and outcome.text is not None:
+            try:
+                copy_to_clipboard(outcome.text)
+            except ValueError as exc:
+                self.status_line = f"Copy failed: {exc} — draft kept"
+            except OSError as exc:
+                self.status_line = f"Copy failed: {exc}"
+            else:
+                nbytes = len(outcome.text.encode("utf-8"))
+                self.status_line = f"Copied {nbytes} bytes to clipboard"
         elif outcome.action == ComposerAction.SUBMIT and outcome.text is not None:
             line = outcome.text.strip()
             if not line:

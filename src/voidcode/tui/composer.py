@@ -41,6 +41,10 @@ _DELETE_WORD_BACK_KEYS = frozenset({"ctrl+w", "alt+backspace", "ctrl+backspace"}
 _DELETE_WORD_FORWARD_KEYS = frozenset({"alt+delete", "alt+d"})
 #: Keys whose ``text`` is not plain inserted text.
 _NON_TEXT_KEYS = frozenset({"unknown", "paste"})
+#: Paste-block chords (reserved in terminal_app; pure view-state toggles, no I/O).
+_EXPAND_KEYS = frozenset({"alt+e", "alt+shift+e"})
+_COPY_KEYS = frozenset({"alt+c", "alt+shift+c"})
+_DELETE_BLOCK_KEYS = frozenset({"alt+x", "alt+shift+x"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +83,7 @@ class ComposerAction(StrEnum):
     SUBMIT = "submit"
     CANCEL_TURN = "cancel_turn"
     INTERRUPT = "interrupt"
+    COPY = "copy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +92,57 @@ class ComposerOutcome:
 
     action: ComposerAction = ComposerAction.NONE
     text: str = ""
+
+
+@dataclass(slots=True)
+class _PasteBlock:
+    """One folded pasted span: exact true-text offsets plus its collapsed view flag."""
+
+    start: int
+    end: int
+    collapsed: bool = True
+
+
+def _badge_for_text(block_text: str) -> str:
+    """Single-row display badge derived from a block's exact true text."""
+
+    lines = block_text.count("\n") + 1
+    nbytes = len(block_text.encode("utf-8"))
+    return f"[pasted {lines} lines, {nbytes} bytes; Alt+E]"
+
+
+def _bounds_in(text: str, cursor: int) -> tuple[int, int]:
+    """Start and end offsets of the logical line holding ``cursor`` in ``text``."""
+
+    start = text.rfind("\n", 0, cursor) + 1
+    end = text.find("\n", cursor)
+    return start, len(text) if end == -1 else end
+
+
+def _cursor_up_in(text: str, cursor: int) -> int:
+    """Cursor one logical line up in ``text``, preserving the display column."""
+
+    start, _ = _bounds_in(text, cursor)
+    if start == 0:
+        return cursor
+    column = _display_width(text[start:cursor])
+    previous_end = start - 1
+    previous_start = text.rfind("\n", 0, previous_end) + 1
+    return _offset_at_cell(text, previous_start, previous_end, column)
+
+
+def _cursor_down_in(text: str, cursor: int) -> int:
+    """Cursor one logical line down in ``text``, preserving the display column."""
+
+    start, end = _bounds_in(text, cursor)
+    if end == len(text):
+        return cursor
+    column = _display_width(text[start:cursor])
+    next_start = end + 1
+    next_end = text.find("\n", next_start)
+    if next_end == -1:
+        next_end = len(text)
+    return _offset_at_cell(text, next_start, next_end, column)
 
 
 def _is_cjk(cp: int) -> bool:
@@ -268,6 +324,8 @@ class Composer:
         self._history: list[str] = []
         self._history_index: int | None = None
         self._draft = ""
+        self._draft_blocks: list[_PasteBlock] = []
+        self._paste_blocks: list[_PasteBlock] = []
         self._last_interrupt = float("-inf")
         self._scroll = 0
         self._cursor_position: tuple[int, int] | None = None
@@ -304,6 +362,17 @@ class Composer:
         """The bounded submitted-prompt history, oldest first."""
         return tuple(self._history)
 
+    @property
+    def paste_blocks(self) -> tuple[tuple[int, int, bool], ...]:
+        """Folded paste spans as ``(start, end, collapsed)`` in true-text offsets."""
+        return tuple((block.start, block.end, block.collapsed) for block in self._paste_blocks)
+
+    @property
+    def display_text(self) -> str:
+        """Draft with collapsed blocks replaced by their single-row badges."""
+        text, _ = self._display_text_and_cursor()
+        return text
+
     def set_max_height(self, height: int) -> None:
         self._max_height = max(1, height)
 
@@ -332,6 +401,8 @@ class Composer:
         self._cursor = 0
         self._history_index = None
         self._draft = ""
+        self._draft_blocks = []
+        self._paste_blocks = []
         self._scroll = 0
         self.set_completion(())
 
@@ -340,6 +411,7 @@ class Composer:
         self._text = text
         self._cursor = len(text)
         self._history_index = None
+        self._paste_blocks = []
         self._scroll = 0
         self.set_completion(())
 
@@ -375,12 +447,225 @@ class Composer:
 
     # -- editing primitives ------------------------------------------------
 
+    # -- paste blocks --------------------------------------------------------
+
+    def _layout_width(self) -> int:
+        """Usable input cells after frame inset and prompt gutter."""
+        frame = _FRAMES[self._style]
+        inset = int(frame.sides) * 2 + int(frame.sidebar) * 2 + int(frame.rail)
+        width = max(1, self._width - inset)
+        gutter = self._prompt_gutter()
+        gutter_width = min(visible_width(gutter), max(0, width - 2))
+        return max(2, width - gutter_width)
+
+    def _count_display_rows(self, text: str, layout_width: int) -> int:
+        """Wrapped row count for ``text`` at ``layout_width`` (pure viewport math)."""
+        total = 0
+        for line in text.split("\n"):
+            rows, _ = _wrap_display_line(line, layout_width)
+            total += len(rows)
+        return total
+
+    def _should_fold_paste(self, paste_text: str) -> bool:
+        """Fold only a multi-line paste taller than the visible input height."""
+        if "\n" not in paste_text:
+            return False
+        visible = max(1, self._max_height)
+        if paste_text.count("\n") + 1 > visible:
+            return True
+        return self._count_display_rows(paste_text, self._layout_width()) > visible
+
+    def _collapsed_blocks(self) -> list[_PasteBlock]:
+        """Collapsed blocks in true-offset order (the list is always sorted)."""
+        return [block for block in self._paste_blocks if block.collapsed]
+
+    def _display_text_and_cursor(self) -> tuple[str, int]:
+        """Display text with badges plus the display offset for the true cursor."""
+        collapsed = self._collapsed_blocks()
+        if not collapsed:
+            return self._text, self._cursor
+        parts: list[str] = []
+        display_cursor: int | None = None
+        display_pos = 0
+        prev_true = 0
+        for block in collapsed:
+            run = self._text[prev_true : block.start]
+            if display_cursor is None and prev_true <= self._cursor <= block.start:
+                display_cursor = display_pos + (self._cursor - prev_true)
+            parts.append(run)
+            display_pos += len(run)
+            badge = _badge_for_text(self._text[block.start : block.end])
+            if display_cursor is None and block.start < self._cursor < block.end:
+                display_cursor = display_pos + len(badge)
+            parts.append(badge)
+            display_pos += len(badge)
+            prev_true = block.end
+        tail = self._text[prev_true:]
+        if display_cursor is None and prev_true <= self._cursor <= len(self._text):
+            display_cursor = display_pos + (self._cursor - prev_true)
+        parts.append(tail)
+        if display_cursor is None:
+            display_cursor = display_pos + len(tail)
+        return "".join(parts), display_cursor
+
+    def _display_to_true(self, display_offset: int, old_true: int) -> int:
+        """Map a display offset back to true text; inside a badge snap to an edge."""
+        collapsed = self._collapsed_blocks()
+        if not collapsed:
+            return max(0, min(display_offset, len(self._text)))
+        display_pos = 0
+        prev_true = 0
+        for block in collapsed:
+            run_len = block.start - prev_true
+            if display_offset <= display_pos + run_len:
+                return prev_true + (display_offset - display_pos)
+            display_pos += run_len
+            badge_len = len(_badge_for_text(self._text[block.start : block.end]))
+            if display_offset <= display_pos + badge_len:
+                if display_offset == display_pos:
+                    return block.start
+                if display_offset == display_pos + badge_len:
+                    return block.end
+                return block.start if old_true <= block.start else block.end
+            display_pos += badge_len
+            prev_true = block.end
+        tail_len = len(self._text) - prev_true
+        if display_offset <= display_pos + tail_len:
+            return prev_true + (display_offset - display_pos)
+        return len(self._text)
+
+    def _block_at_cursor(self) -> _PasteBlock | None:
+        """Block under the caret; adjacent collapsed wins over expanded."""
+        matching = [block for block in self._paste_blocks if block.start <= self._cursor <= block.end]
+        if not matching:
+            return None
+        if len(matching) == 1:
+            return matching[0]
+        for block in matching:
+            if block.collapsed:
+                return block
+        return matching[0]
+
+    def _adjust_blocks_for_insert(self, pos: int, length: int) -> None:
+        """Shift or grow spans for an insertion of ``length`` at ``pos``."""
+        if length <= 0:
+            return
+        for block in self._paste_blocks:
+            if pos <= block.start:
+                block.start += length
+                block.end += length
+            elif pos < block.end:
+                block.end += length
+
+    def _adjust_blocks_for_delete(self, del_start: int, del_end: int) -> None:
+        """Drop, truncate, or shift spans for the removed true range."""
+        deleted = del_end - del_start
+        if deleted <= 0:
+            return
+        kept: list[_PasteBlock] = []
+        for block in self._paste_blocks:
+            if block.end <= del_start:
+                kept.append(block)
+            elif block.start >= del_end:
+                block.start -= deleted
+                block.end -= deleted
+                kept.append(block)
+            elif del_start <= block.start and block.end <= del_end:
+                continue
+            elif block.start < del_start and del_end < block.end:
+                block.end -= deleted
+                kept.append(block)
+            elif del_start <= block.start < del_end < block.end:
+                remaining = block.end - del_end
+                block.start = del_start
+                block.end = del_start + remaining
+                kept.append(block)
+            elif block.start < del_start < block.end <= del_end:
+                block.end = del_start
+                kept.append(block)
+            else:
+                kept.append(block)
+        self._paste_blocks = [block for block in kept if block.start < block.end]
+
+    def _expand_delete_for_collapsed(self, del_start: int, del_end: int) -> tuple[int, int]:
+        """Grow a true delete range to include every touched collapsed block."""
+        if del_start >= del_end:
+            return del_start, del_end
+        new_start, new_end = del_start, del_end
+        for block in self._paste_blocks:
+            if not block.collapsed:
+                continue
+            if new_start < block.end and new_end > block.start:
+                new_start = min(new_start, block.start)
+                new_end = max(new_end, block.end)
+        return new_start, new_end
+
+    def _delete_true_range(self, del_start: int, del_end: int) -> None:
+        """Delete one true range, collapsing atomic badges it touches."""
+        if del_start >= del_end:
+            return
+        del_start, del_end = self._expand_delete_for_collapsed(del_start, del_end)
+        self._text = self._text[:del_start] + self._text[del_end:]
+        self._cursor = del_start
+        self._adjust_blocks_for_delete(del_start, del_end)
+        self._edited()
+
+    def _insert_paste(self, raw_text: str) -> None:
+        """Insert pasted text, folding only a viewport-tall multi-line fragment."""
+        text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+        if not text:
+            return
+        pos = self._cursor
+        for block in self._paste_blocks:
+            if block.start < pos < block.end:
+                self._insert(text)
+                return
+        should_fold = self._should_fold_paste(text)
+        self._adjust_blocks_for_insert(pos, len(text))
+        self._text = self._text[:pos] + text + self._text[pos:]
+        self._cursor = pos + len(text)
+        self._edited()
+        if should_fold:
+            self._paste_blocks.append(_PasteBlock(pos, pos + len(text), True))
+            self._paste_blocks.sort(key=lambda item: item.start)
+
+    def _toggle_block_at_cursor(self) -> None:
+        """Expand a collapsed badge or collapse an expanded block under the caret."""
+        block = self._block_at_cursor()
+        if block is None:
+            return
+        if block.collapsed:
+            block.collapsed = False
+            return
+        if block.start < self._cursor < block.end:
+            if self._cursor - block.start < block.end - self._cursor:
+                self._cursor = block.start
+            else:
+                self._cursor = block.end
+        block.collapsed = True
+
+    def _copy_block_at_cursor(self) -> str | None:
+        """Exact true text of the block under the caret, if any."""
+        block = self._block_at_cursor()
+        if block is None:
+            return None
+        return self._text[block.start : block.end]
+
+    def _delete_block_at_cursor(self) -> None:
+        """Delete the whole true span of the block under the caret, if any."""
+        block = self._block_at_cursor()
+        if block is None:
+            return
+        self._delete_true_range(block.start, block.end)
+
     def _insert(self, text: str) -> None:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         if not text:
             return
-        self._text = self._text[: self._cursor] + text + self._text[self._cursor :]
-        self._cursor += len(text)
+        pos = self._cursor
+        self._adjust_blocks_for_insert(pos, len(text))
+        self._text = self._text[:pos] + text + self._text[pos:]
+        self._cursor = pos + len(text)
         self._edited()
 
     def _edited(self) -> None:
@@ -389,29 +674,13 @@ class Composer:
 
     def _bounds(self) -> tuple[int, int]:
         """Start and end offsets of the logical line holding the cursor."""
-        start = self._text.rfind("\n", 0, self._cursor) + 1
-        end = self._text.find("\n", self._cursor)
-        return start, len(self._text) if end == -1 else end
+        return _bounds_in(self._text, self._cursor)
 
     def _cursor_up(self) -> None:
-        start, _ = self._bounds()
-        if start == 0:
-            return
-        column = _display_width(self._text[start : self._cursor])
-        previous_end = start - 1
-        previous_start = self._text.rfind("\n", 0, previous_end) + 1
-        self._cursor = _offset_at_cell(self._text, previous_start, previous_end, column)
+        self._cursor = _cursor_up_in(self._text, self._cursor)
 
     def _cursor_down(self) -> None:
-        start, end = self._bounds()
-        if end == len(self._text):
-            return
-        column = _display_width(self._text[start : self._cursor])
-        next_start = end + 1
-        next_end = self._text.find("\n", next_start)
-        if next_end == -1:
-            next_end = len(self._text)
-        self._cursor = _offset_at_cell(self._text, next_start, next_end, column)
+        self._cursor = _cursor_down_in(self._text, self._cursor)
 
     # -- history -----------------------------------------------------------
 
@@ -429,6 +698,7 @@ class Composer:
             return
         if self._history_index is None:
             self._draft = self._text
+            self._draft_blocks = [_PasteBlock(block.start, block.end, block.collapsed) for block in self._paste_blocks]
             self._history_index = len(self._history) - 1
         elif self._history_index > 0:
             self._history_index -= 1
@@ -436,6 +706,7 @@ class Composer:
             return
         self._text = self._history[self._history_index]
         self._cursor = 0
+        self._paste_blocks = []
 
     def _history_down(self) -> None:
         if self._history_index is None:
@@ -443,9 +714,11 @@ class Composer:
         if self._history_index < len(self._history) - 1:
             self._history_index += 1
             self._text = self._history[self._history_index]
+            self._paste_blocks = []
         else:
             self._history_index = None
             self._text = self._draft
+            self._paste_blocks = [_PasteBlock(block.start, block.end, block.collapsed) for block in self._draft_blocks]
         self._cursor = len(self._text)
 
     # -- completion ----------------------------------------------------------
@@ -454,11 +727,18 @@ class Composer:
         """Replace the target token (or draft) with ``replacement``."""
         if self._completion_range is not None:
             start, end = self._completion_range
-            self._text = self._text[:start] + replacement + self._text[end:]
-            self._cursor = start + len(replacement)
+            del_start, del_end = self._expand_delete_for_collapsed(start, end) if start < end else (start, end)
+            if del_start < del_end:
+                self._text = self._text[:del_start] + self._text[del_end:]
+                self._adjust_blocks_for_delete(del_start, del_end)
+            if replacement:
+                self._adjust_blocks_for_insert(del_start, len(replacement))
+                self._text = self._text[:del_start] + replacement + self._text[del_start:]
+            self._cursor = del_start + len(replacement)
         else:
             self._text = replacement
             self._cursor = len(self._text)
+            self._paste_blocks = []
         self.set_completion(())
         self._edited()
 
@@ -510,18 +790,58 @@ class Composer:
                 return ComposerOutcome()
             return self._submit()
         if name == "paste":
-            self._insert(key.text)
+            self._insert_paste(key.text)
+            return ComposerOutcome()
+        if name in _EXPAND_KEYS:
+            self._toggle_block_at_cursor()
+            return ComposerOutcome()
+        if name in _COPY_KEYS:
+            copied = self._copy_block_at_cursor()
+            if copied is None:
+                return ComposerOutcome()
+            return ComposerOutcome(ComposerAction.COPY, copied)
+        if name in _DELETE_BLOCK_KEYS:
+            self._delete_block_at_cursor()
             return ComposerOutcome()
 
+        collapsed = self._collapsed_blocks()
         if name == "left":
-            self._cursor = _previous_boundary(self._text, self._cursor)
+            for block in collapsed:
+                if self._cursor == block.end:
+                    self._cursor = block.start
+                    return ComposerOutcome()
+            target = _previous_boundary(self._text, self._cursor)
+            for block in collapsed:
+                if block.start < target < block.end:
+                    target = block.start
+                    break
+            self._cursor = target
             return ComposerOutcome()
         if name == "right":
-            self._cursor = _next_boundary(self._text, self._cursor)
+            for block in collapsed:
+                if self._cursor == block.start:
+                    self._cursor = block.end
+                    return ComposerOutcome()
+            target = _next_boundary(self._text, self._cursor)
+            for block in collapsed:
+                if block.start < target < block.end:
+                    target = block.end
+                    break
+            self._cursor = target
             return ComposerOutcome()
         if name == "up":
             if self._completion:
                 self._completion_index = (self._completion_index - 1) % len(self._completion)
+                return ComposerOutcome()
+            if collapsed:
+                display_text, display_cursor = self._display_text_and_cursor()
+                display_start, _ = _bounds_in(display_text, display_cursor)
+                if self._history_index is not None or display_start == 0:
+                    self._history_up()
+                else:
+                    old_true = self._cursor
+                    new_display = _cursor_up_in(display_text, display_cursor)
+                    self._cursor = self._display_to_true(new_display, old_true)
                 return ComposerOutcome()
             if self._history_index is not None or self._bounds()[0] == 0:
                 self._history_up()
@@ -532,6 +852,16 @@ class Composer:
             if self._completion:
                 self._completion_index = (self._completion_index + 1) % len(self._completion)
                 return ComposerOutcome()
+            if collapsed:
+                display_text, display_cursor = self._display_text_and_cursor()
+                _, display_end = _bounds_in(display_text, display_cursor)
+                if self._history_index is not None or display_end == len(display_text):
+                    self._history_down()
+                else:
+                    old_true = self._cursor
+                    new_display = _cursor_down_in(display_text, display_cursor)
+                    self._cursor = self._display_to_true(new_display, old_true)
+                return ComposerOutcome()
             if self._history_index is not None or self._bounds()[1] == len(self._text):
                 self._history_down()
             else:
@@ -540,51 +870,87 @@ class Composer:
 
         start, end = self._bounds()
         if name in ("home", "ctrl+a"):
-            self._cursor = start
+            if collapsed:
+                display_text, display_cursor = self._display_text_and_cursor()
+                display_start, _ = _bounds_in(display_text, display_cursor)
+                self._cursor = self._display_to_true(display_start, self._cursor)
+            else:
+                self._cursor = start
             return ComposerOutcome()
         if name in ("end", "ctrl+e"):
-            self._cursor = end
+            if collapsed:
+                display_text, display_cursor = self._display_text_and_cursor()
+                _, display_end = _bounds_in(display_text, display_cursor)
+                self._cursor = self._display_to_true(display_end, self._cursor)
+            else:
+                self._cursor = end
             return ComposerOutcome()
         if name in _WORD_LEFT_KEYS:
-            self._cursor = _snap_left(self._text, _word_left(self._text, self._cursor))
+            target = _snap_left(self._text, _word_left(self._text, self._cursor))
+            for block in collapsed:
+                if block.start < target < block.end:
+                    target = block.start
+                    break
+            self._cursor = target
             return ComposerOutcome()
         if name in _WORD_RIGHT_KEYS:
-            self._cursor = _snap_right(self._text, _word_right(self._text, self._cursor))
+            target = _snap_right(self._text, _word_right(self._text, self._cursor))
+            for block in collapsed:
+                if block.start < target < block.end:
+                    target = block.end
+                    break
+            self._cursor = target
             return ComposerOutcome()
 
         if name == "backspace":
             if self._cursor > 0:
                 target = _previous_boundary(self._text, self._cursor)
-                self._text = self._text[:target] + self._text[self._cursor :]
-                self._cursor = target
-                self._edited()
+                self._delete_true_range(target, self._cursor)
             return ComposerOutcome()
         if name in ("delete", "ctrl+d"):
             if self._cursor < len(self._text):
                 target = _next_boundary(self._text, self._cursor)
-                self._text = self._text[: self._cursor] + self._text[target:]
-                self._edited()
+                self._delete_true_range(self._cursor, target)
             return ComposerOutcome()
         if name in _DELETE_WORD_BACK_KEYS:
             target = _snap_left(self._text, _word_left(self._text, self._cursor))
             if target != self._cursor:
-                self._text = self._text[:target] + self._text[self._cursor :]
-                self._cursor = target
-                self._edited()
+                self._delete_true_range(target, self._cursor)
             return ComposerOutcome()
         if name in _DELETE_WORD_FORWARD_KEYS:
             target = _snap_right(self._text, _word_right(self._text, self._cursor))
             if target != self._cursor:
-                self._text = self._text[: self._cursor] + self._text[target:]
-                self._edited()
+                self._delete_true_range(self._cursor, target)
             return ComposerOutcome()
         if name == "ctrl+u":
+            if collapsed:
+                display_text, display_cursor = self._display_text_and_cursor()
+                display_start, _ = _bounds_in(display_text, display_cursor)
+                if display_cursor > display_start:
+                    old_true = self._cursor
+                    true_start = self._display_to_true(display_start, old_true)
+                    true_end = self._display_to_true(display_cursor, old_true)
+                    if true_end > true_start:
+                        self._delete_true_range(true_start, true_end)
+                    else:
+                        self._cursor = true_start
+                return ComposerOutcome()
             if self._cursor > start:
                 self._text = self._text[:start] + self._text[self._cursor :]
                 self._cursor = start
                 self._edited()
             return ComposerOutcome()
         if name == "ctrl+k":
+            if collapsed:
+                display_text, display_cursor = self._display_text_and_cursor()
+                _, display_end = _bounds_in(display_text, display_cursor)
+                if display_cursor < display_end:
+                    old_true = self._cursor
+                    true_start = self._display_to_true(display_cursor, old_true)
+                    true_end = self._display_to_true(display_end, old_true)
+                    if true_end > true_start:
+                        self._delete_true_range(true_start, true_end)
+                return ComposerOutcome()
             if self._cursor < end:
                 self._text = self._text[: self._cursor] + self._text[end:]
                 self._edited()
@@ -726,15 +1092,16 @@ class Composer:
             row = self._input_row(first_gutter, self._empty_content(layout_width), layout_width, self._width)
             return self._style_rows([row], status, border_status)
 
-        lines = self._text.split("\n")
+        display_text, display_cursor = self._display_text_and_cursor()
+        lines = display_text.split("\n")
         offsets: list[int] = []
         position = 0
         for line in lines:
             offsets.append(position)
             position += len(line) + 1
 
-        line_index = self._text.count("\n", 0, self._cursor)
-        local = self._cursor - offsets[line_index]
+        line_index = display_text.count("\n", 0, display_cursor)
+        local = display_cursor - offsets[line_index]
         cell = _display_width(lines[line_index][:local])
 
         wrapped = [_wrap_display_line(line, layout_width) for line in lines]
