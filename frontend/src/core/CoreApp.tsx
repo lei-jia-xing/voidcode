@@ -12,7 +12,6 @@ import type { CommandCatalog } from "../lib/core/client";
 import type {
   ArtifactPage,
   ArtifactReference,
-  ToolResult,
   HealthStatus,
   FormField,
   Icon,
@@ -21,11 +20,12 @@ import type {
   SessionFrame,
   StreamEvent,
   ToolExecution,
-  ToolOutput,
   TranscriptEntry,
   TranscriptTool,
 } from "../lib/core/types";
 import { PluginViewRenderer } from "./views/PluginViewRenderer";
+import { artifactSources, toolOutputParts } from "./toolOutput";
+import type { ArtifactSource } from "./toolOutput";
 
 export interface CoreAppProps {
   baseUrl?: string;
@@ -36,17 +36,6 @@ export interface CoreAppProps {
 function toolIconText(icon: Icon | null | undefined, generic: string): string {
   const pick = icon?.glyph;
   return typeof pick === "string" ? pick : generic;
-}
-
-/** Canonical text for one typed tool output; the union replaces type guessing. */
-function toolOutputText(output: ToolOutput): string {
-  if (output.type === "text") {
-    return output.presentation || output.text;
-  }
-  if (output.type === "attachment") {
-    return `[${output.mime}]`;
-  }
-  return output.presentation ?? "";
 }
 
 /** Public slash paths use spaces; machine command IDs stay unchanged. */
@@ -120,54 +109,6 @@ function toolExecutionCueKey(
   if (execution.side_effect_state === "unknown")
     return "core.toolEffectsUnknown";
   return null;
-}
-
-type ArtifactSource = {
-  label: string;
-  sha256: string;
-  reference?: ArtifactReference;
-};
-
-function artifactSources(result: ToolResult): ArtifactSource[] {
-  const sources: ArtifactSource[] = [];
-  const seen = new Set<string>();
-  const add = (label: string, value: unknown): boolean => {
-    let sha256: string | undefined;
-    let reference: ArtifactReference | undefined;
-    if (typeof value === "string" && value.startsWith("artifact://")) {
-      sha256 = value.slice(11);
-    } else if (value !== null && typeof value === "object") {
-      const record = value as Record<string, unknown>;
-      if (
-        typeof record.sha256 === "string" &&
-        Number.isSafeInteger(record.bytes) &&
-        (record.bytes as number) >= 0 &&
-        typeof record.media_type === "string"
-      ) {
-        sha256 = record.sha256;
-        reference = value as ArtifactReference;
-      }
-    }
-    if (!sha256 || !/^[0-9a-f]{64}$/.test(sha256)) return false;
-    if (!seen.has(sha256)) {
-      sources.push({ label, sha256, reference });
-      seen.add(sha256);
-    }
-    return true;
-  };
-  add("Original output source", result.output.bounds?.reference);
-  const visit = (value: unknown, path: string) => {
-    if (add(path, value)) return;
-    if (Array.isArray(value))
-      value.forEach((child, index) => visit(child, `${path}[${index}]`));
-    else if (value !== null && typeof value === "object")
-      Object.entries(value).forEach(([name, child]) =>
-        visit(child, `${path}.${name}`),
-      );
-  };
-  visit(result.body, "Result body");
-  add("Complete structured result JSON", result.result_reference);
-  return sources;
 }
 
 function decodeArtifactText(
@@ -482,7 +423,7 @@ function ArtifactViewer({
   );
 }
 
-function ToolResultCard({
+export function ToolResultCard({
   evSequence,
   tool,
   client,
@@ -506,7 +447,9 @@ function ToolResultCard({
   const source = sources[sourceIndex];
   const toolName =
     tool.call.tool_name ?? result.tool_name ?? t("core.unknownLabel");
-  const text = toolOutputText(result.output);
+  const blocks = useMemo(() => toolOutputParts(result.output), [result.output]);
+  const isComposite = result.output.type === "composite";
+  const text = blocks[0] ?? "";
   const failed = tool.interrupted === true || result.status === "error";
   const cueKey = toolExecutionCueKey(result.execution);
   return (
@@ -518,7 +461,7 @@ function ToolResultCard({
         <div>
           {failed ? "✖" : "✔"} {toolIconText(tool.icon, "▷")}{" "}
           {t("core.toolLabel")} [{toolName}]:{" "}
-          {failed ? (result.error ?? text) : text}
+          {!isComposite && <>{failed ? (result.error ?? text) : text}</>}
           {cueKey && <span className="text-neutral-400"> ({t(cueKey)})</span>}
           {result.output.bounds?.truncated && (
             <span
@@ -541,6 +484,17 @@ function ToolResultCard({
           </button>
         )}
       </div>
+      {isComposite && (
+        <div
+          data-testid={`event-${evSequence}-parts`}
+          className="whitespace-pre-wrap mt-1 flex flex-col gap-1"
+        >
+          {blocks.map((block, index) => (
+            <div key={index}>{block}</div>
+          ))}
+          {failed && <div>{result.error ?? "Interrupted"}</div>}
+        </div>
+      )}
       {expanded && source && (
         <div data-testid={`event-${evSequence}-full-output`}>
           <label>

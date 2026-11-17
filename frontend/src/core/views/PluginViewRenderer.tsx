@@ -7,10 +7,13 @@ import type {
   DiffViewData,
   FieldsViewData,
   FormViewData,
+  JsonViewData,
   MarkdownViewData,
+  MediaViewData,
   NoticeViewData,
   PluginViewDescriptor,
   StatusViewData,
+  TableViewData,
 } from "../../lib/core/types";
 import type { CoreClient } from "../../lib/core/client";
 import { NoticeView } from "./NoticeView";
@@ -21,6 +24,9 @@ import { ConfirmationView } from "./ConfirmationView";
 import { FormView } from "./FormView";
 import { DiffView } from "./DiffView";
 import { StatusView } from "./StatusView";
+import { TableView } from "./TableView";
+import { JsonView } from "./JsonView";
+import { MediaView } from "./MediaView";
 
 export interface PluginViewRendererProps {
   descriptor: PluginViewDescriptor;
@@ -125,6 +131,12 @@ export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
       return <DiffView data={data as DiffViewData} />;
     case "status":
       return <StatusView data={data as StatusViewData} />;
+    case "table":
+      return <TableView data={data as TableViewData} />;
+    case "json":
+      return <JsonView data={data as JsonViewData} />;
+    case "media":
+      return <MediaView data={data as MediaViewData} />;
     default:
       return (
         <div

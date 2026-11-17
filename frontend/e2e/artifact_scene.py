@@ -62,7 +62,10 @@ def prepare(workspace: Path, state: Path) -> dict[str, object]:
             return {"object": "list", "data": [{"id": "test-model"}]}
         messages = request["messages"]
         prompt = next(message["content"] for message in messages if message["role"] == "user")
-        if any(message["role"] == "tool" for message in messages):
+        # Follow-up dispatch: tool feedback arrives either as a tool role or, for
+        # image-carrying results, as an extra synthetic user message (which drops
+        # the assistant tool-call turn by design, so assistant presence is absent).
+        if any(message["role"] == "tool" for message in messages) or sum(1 for message in messages if message["role"] == "user") > 1:
             return openai_response(message={"role": "assistant", "content": "scene recorded"}, finish="stop")
         image = prompt == "PNG_SCENE_REQUEST"
         name, arguments = ("read", {"path": "screen.png"}) if image else ("artifact_scene", {})
@@ -93,8 +96,8 @@ def prepare(workspace: Path, state: Path) -> dict[str, object]:
             text = core.run("TEXT_SCENE_REQUEST", session_id="artifact-text")
             assert text.status == "completed", text.error
             image = core.run("PNG_SCENE_REQUEST", session_id="artifact-png")
-            # The endpoint route intentionally refuses tool images after recording read's result.
-            assert image.status == "failed" and "does not support image attachments in tool messages" in image.error, image.error
+            # Synthetic tool feedback carries the read image to OpenAI-compatible wires.
+            assert image.status == "completed", image.error
             manifest: dict[str, object] = {
                 "workspace": str(workspace),
                 "state": str(state),

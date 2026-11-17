@@ -26,6 +26,12 @@ export type ToolCall = Schemas["ToolCallWire"];
 export type ToolResult = Schemas["ToolResultWire"];
 export type ToolExecution = Schemas["ExecutionWire"];
 export type ToolOutput = ToolResult["output"];
+export type CompositeToolOutput = Extract<ToolOutput, { type: "composite" }>;
+export type ToolOutputPart = CompositeToolOutput["parts"][number];
+export type TextPart = Schemas["TextPartWire"];
+export type MediaPart = Schemas["MediaPartWire"];
+export type TablePart = Schemas["TablePartWire"];
+export type JsonPart = Schemas["JsonPartWire"];
 export type ArtifactReference = Required<Schemas["ArtifactReference"]>;
 /** Binary data is base64 only in the generated wire DTO, never UTF-8 decoded. */
 export type ArtifactPage = Omit<
@@ -47,6 +53,9 @@ export type FormViewData = Schemas["FormViewData"];
 export type FormField = Schemas["FormField"];
 export type DiffViewData = Schemas["DiffViewData"];
 export type StatusViewData = Schemas["StatusViewData"];
+export type TableViewData = Schemas["TableViewData"];
+export type JsonViewData = Schemas["JsonViewData"];
+export type MediaViewData = Schemas["MediaViewData"];
 // Session frames: the generated union is the contract. The head carries no kind,
 // so TS narrows it via `'events' in frame`; the other three narrow on `kind`.
 export type SessionFrame = Schemas["SessionFrameWire"];

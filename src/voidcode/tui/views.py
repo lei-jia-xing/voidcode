@@ -1,4 +1,4 @@
-"""Pure renderers and interactive models for the 8 finite core plugin UI kinds."""
+"""Pure renderers and interactive models for the 11 finite core plugin UI kinds."""
 
 from __future__ import annotations
 
@@ -23,10 +23,13 @@ from voidcode.sdk.views import (
     DiffViewData,
     FieldsViewData,
     FormViewData,
+    JsonViewData,
     MarkdownViewData,
+    MediaViewData,
     NoticeViewData,
     PluginViewDescriptor,
     StatusViewData,
+    TableViewData,
     choices_dispatch,
     parse_view_data,
     validate_form_submission,
@@ -169,6 +172,84 @@ def render_active_tools_summary(
     return [lines[0]] if lines else []
 
 
+def _artifact_ref_uri(value: object) -> str | None:
+    """A wire artifact reference's URI, or None when the value is not a typed reference."""
+    if not isinstance(value, Mapping):
+        return value if isinstance(value, str) and value.startswith("artifact://") else None
+    digest = value.get("sha256")
+    if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        return None
+    return f"artifact://{digest}"
+
+
+def _artifact_ref_bytes(value: object) -> str:
+    """A wire artifact reference's byte count, or an explicit unknown marker."""
+    if isinstance(value, Mapping):
+        total = value.get("bytes")
+        if type(total) is int and total >= 0:
+            return str(total)
+    return "unknown"
+
+
+def _composite_part_text(part: Mapping[str, Any]) -> str:
+    """One composite part's ordered readable text from its wire dict.
+
+    The renderer never raises: unknown kinds and malformed fields render as
+    explicit markers naming the problem, so scrollback always stays readable.
+    """
+    kind = part.get("kind")
+    if kind == "text":
+        text = part.get("text")
+        body = text if isinstance(text, str) else ""
+        uri = _artifact_ref_uri(part.get("reference"))
+        if uri is not None:
+            suffix = f"[full text: {uri}]"
+            return f"{body}\n{suffix}" if body else suffix
+        return body
+    if kind == "media":
+        mime = part.get("mime")
+        mime_text = mime if isinstance(mime, str) and mime else "unknown"
+        alt = part.get("presentation")
+        alt_text = alt if isinstance(alt, str) and alt else "(missing presentation)"
+        reference = part.get("reference")
+        uri = _artifact_ref_uri(reference)
+        label = "Image" if mime_text.startswith("image/") else "Audio" if mime_text.startswith("audio/") else "Media"
+        return f"[{label}: {mime_text}, {_artifact_ref_bytes(reference)} bytes, {uri if uri is not None else 'missing-uri'}] {alt_text}"
+    if kind == "table":
+        raw_columns = part.get("columns")
+        columns = [column for column in raw_columns if isinstance(column, str)] if isinstance(raw_columns, list) else []
+        if not columns:
+            return "[table: missing columns]"
+        raw_rows = part.get("rows")
+        lines = ["\t".join(columns)]
+        shown = 0
+        if isinstance(raw_rows, list):
+            for row in raw_rows:
+                if not isinstance(row, list):
+                    continue
+                lines.append("\t".join(cell if isinstance(cell, str) else "" for cell in row))
+                shown += 1
+        caption = part.get("presentation")
+        if isinstance(caption, str) and caption:
+            lines.insert(0, caption)
+        total = part.get("total_rows")
+        if type(total) is int and total > shown:
+            uri = _artifact_ref_uri(part.get("reference"))
+            note = f"[showing {shown}/{total} rows" + (f"; full table: {uri}]" if uri is not None else "]")
+            lines.append(note)
+        return "\n".join(lines)
+    if kind == "json":
+        preview = part.get("preview")
+        preview_text = preview if isinstance(preview, str) and preview else "(missing preview)"
+        uri = _artifact_ref_uri(part.get("reference"))
+        return f"{preview_text}\n[full JSON: {uri if uri is not None else 'missing-uri'}]"
+    return f"[unknown part kind: {kind!r}]"
+
+
+def _composite_part_has_reference(part: object) -> bool:
+    return isinstance(part, Mapping) and _artifact_ref_uri(part.get("reference")) is not None
+
+
 def render_tool_result(
     result: Mapping[str, Any],
     width: int,
@@ -181,19 +262,26 @@ def render_tool_result(
     failed = interrupted or result.get("status") == "error"
     rows: list[str] = []
     output = result.get("output")
-    body = ""
+    bodies: list[str] = []
     suffix = ""
     artifact_available = result.get("result_reference") is not None
     if isinstance(output, Mapping):
         output_type = str(output.get("type", ""))
         if output_type == "text":
             presentation = output.get("presentation")
-            body = str(presentation) if isinstance(presentation, str) and presentation else str(output.get("text", ""))
+            bodies.append(str(presentation) if isinstance(presentation, str) and presentation else str(output.get("text", "")))
         elif output_type == "attachment":
-            body = f"[{output.get('mime') or 'attachment'}]"
+            bodies.append(f"[{output.get('mime') or 'attachment'}]")
         elif output_type == "empty":
             presentation = output.get("presentation")
-            body = presentation if isinstance(presentation, str) else ""
+            bodies.append(presentation if isinstance(presentation, str) else "")
+        elif output_type == "composite":
+            parts = output.get("parts")
+            if isinstance(parts, list):
+                for part in parts:
+                    if isinstance(part, Mapping):
+                        bodies.append(_composite_part_text(part))
+                        artifact_available = artifact_available or _composite_part_has_reference(part)
         bounds = output.get("bounds")
         if isinstance(bounds, Mapping):
             flags = [key for key in ("truncated", "partial") if bounds.get(key) is True]
@@ -202,7 +290,17 @@ def render_tool_result(
             note = ", ".join([*flags, str(source)] if isinstance(source, str) and source else flags)
             if note:
                 suffix = f"[{note}]"
+    body = "\n\n".join(block for block in bodies if block)
     if failed:
+        if body and isinstance(output, Mapping) and str(output.get("type", "")) == "composite":
+            rows.extend(
+                render_lines(
+                    Text(escape_terminal_controls(body, preserve_newlines=True, preserve_tabs=True), style=resolved.style("dim")),
+                    width,
+                    theme=markdown_theme(),
+                    color_system=resolved.color_system,
+                )
+            )
         error = result.get("error")
         label = "Interrupted" if interrupted else "Error"
         detail = escape_terminal_controls(str(error or body or "interrupted"), preserve_newlines=True)
@@ -296,6 +394,51 @@ def render_status(data: StatusViewData, width: int, styles: Styles | None = None
         (escape_terminal_controls(data.value), resolved.style(tone_slot or "text", color=fg, background=bg)),
     )
     return render_lines(text, width, theme=markdown_theme(), color_system=resolved.color_system)
+
+
+def render_table(data: TableViewData, width: int, styles: Styles | None = None) -> list[str]:
+    resolved = _styles_arg(styles)
+    fg, bg, tone_slot = resolve_component(data.style)
+    table = Table(show_header=True, box=None, padding=(0, 2), expand=False)
+    for column in data.columns:
+        table.add_column(
+            Text(escape_terminal_controls(column)),
+            style=resolved.style(tone_slot or "link", color=fg, background=bg, bold=True),
+            overflow="fold",
+        )
+    value_style = resolved.style(tone_slot or "text", color=fg, background=bg)
+    for row in data.rows:
+        table.add_row(*[Text(escape_terminal_controls(cell), style=value_style) for cell in row])
+    rows = render_lines(table, width, theme=markdown_theme(), color_system=resolved.color_system)
+    if data.total_rows is not None and data.total_rows > len(data.rows) and data.reference is not None:
+        rows.append(resolved.fg("dim", f"[showing {len(data.rows)}/{data.total_rows} rows; full table: {data.reference.uri}]"))
+    return rows
+
+
+def render_json(data: JsonViewData, width: int, styles: Styles | None = None) -> list[str]:
+    resolved = _styles_arg(styles)
+    fg, bg, tone_slot = resolve_component(data.style)
+    preview = Text(
+        escape_terminal_controls(data.preview, preserve_newlines=True, preserve_tabs=True),
+        style=resolved.style(tone_slot or "text", color=fg, background=bg),
+    )
+    rows = render_lines(preview, width, theme=markdown_theme(), color_system=resolved.color_system)
+    if data.reference is not None:
+        rows.append(resolved.fg("dim", f"[full JSON: {data.reference.uri}]"))
+    return rows
+
+
+def render_media(data: MediaViewData, width: int, styles: Styles | None = None) -> list[str]:
+    resolved = _styles_arg(styles)
+    fg, bg, tone_slot = resolve_component(data.style)
+    label = "Image" if data.mime.startswith("image/") else "Audio" if data.mime.startswith("audio/") else "Media"
+    line = f"[{label}: {data.mime}, {data.reference.bytes} bytes, {data.reference.uri}] {escape_terminal_controls(data.alt)}"
+    return render_lines(
+        Text(line, style=resolved.style(tone_slot or "text", color=fg, background=bg)),
+        width,
+        theme=markdown_theme(),
+        color_system=resolved.color_system,
+    )
 
 
 class InteractiveMarkdown:
@@ -877,9 +1020,9 @@ class InteractiveForm:
 
 
 def render_plugin_view(descriptor: PluginViewDescriptor, width: int, styles: Styles | None = None) -> list[str]:
-    """Render any of the 8 finite view kinds into ANSI rows.
+    """Render any of the 11 finite view kinds into ANSI rows.
 
-    Raises UnsupportedViewError if the view_type is outside the 8 finite kinds.
+    Raises UnsupportedViewError if the view_type is outside the 11 finite kinds.
     """
     data = parse_view_data(descriptor.view_type, descriptor.data)
 
@@ -893,6 +1036,12 @@ def render_plugin_view(descriptor: PluginViewDescriptor, width: int, styles: Sty
         return render_diff(data, width, styles)
     if isinstance(data, StatusViewData):
         return render_status(data, width, styles)
+    if isinstance(data, TableViewData):
+        return render_table(data, width, styles)
+    if isinstance(data, JsonViewData):
+        return render_json(data, width, styles)
+    if isinstance(data, MediaViewData):
+        return render_media(data, width, styles)
     if isinstance(data, ChoicesViewData):
         return InteractiveChoices(data).render_rows(width, styles)
     if isinstance(data, ConfirmationViewData):

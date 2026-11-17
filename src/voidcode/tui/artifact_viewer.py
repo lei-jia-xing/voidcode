@@ -83,6 +83,14 @@ def artifact_sources(result: Mapping[str, object]) -> tuple[ArtifactSource, ...]
         bounds = output.get("bounds")
         if isinstance(bounds, Mapping):
             add("Original output source", bounds.get("reference"))
+        parts = output.get("parts")
+        if isinstance(parts, list):
+            for index, part in enumerate(parts):
+                if not isinstance(part, Mapping):
+                    continue
+                kind = part.get("kind")
+                label = f"Part {index} ({kind})" if isinstance(kind, str) and kind else f"Part {index}"
+                add(label, part.get("reference"))
 
     def visit(value: object, path: str) -> None:
         if add(path, value):
