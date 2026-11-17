@@ -21,6 +21,15 @@ from ..events import CHILD_MESSAGE_OWNER, EventType
 SCHEMA_MAGIC = "voidcode-kernel-v1"
 SCHEMA_VERSION = 6
 
+#: Maximum canonical (UTF-8 bytes of `canonical_json`) payload for one committed
+#: session event. Storage/integrity guard: session events are append-only and read
+#: back wholesale, so one unbounded row bloats every read of its session. Measured
+#: against the suite: the largest canonical payload the suite commits is 204_835
+#: bytes (a synthetic 200 KiB bounds-test prompt; realistic tool projections top out
+#: near 52 KiB), giving this bound ~20x headroom while still refusing pathological
+#: multi-MB inline rows with a visible `StoreConflict`.
+MAX_COMMITTED_EVENT_BYTES = 4 * 1024 * 1024
+
 
 class StorageError(RuntimeError):
     """Base error for core storage failures."""
@@ -2022,6 +2031,12 @@ class SqliteStore:
                     current_seq += 1
                     first_sequence_by_type.setdefault(draft.event_type, current_seq)
                     payload_json = canonical_json(draft.payload)
+                    payload_size = len(payload_json.encode("utf-8"))
+                    if payload_size > MAX_COMMITTED_EVENT_BYTES:
+                        raise StoreConflict(
+                            f"session event {draft.event_type!r} payload is {payload_size} bytes, "
+                            f"exceeding the {MAX_COMMITTED_EVENT_BYTES}-byte committed-event bound"
+                        )
                     self._connection.execute(
                         """
                         INSERT INTO session_events (

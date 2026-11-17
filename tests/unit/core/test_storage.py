@@ -12,6 +12,7 @@ from typing import Any, cast
 import pytest
 
 from voidcode.core.storage.store import (
+    MAX_COMMITTED_EVENT_BYTES,
     Checkpoint,
     EventDraft,
     ForeignDatabaseError,
@@ -20,6 +21,7 @@ from voidcode.core.storage.store import (
     StorageError,
     StoreConflict,
     StoredEvent,
+    canonical_json,
 )
 
 
@@ -543,3 +545,69 @@ def test_store_can_commit_from_a_run_worker_thread(tmp_path: Path) -> None:
         cp = store.checkpoint("worker")
         assert cp is not None
         assert cp.payload["last"] == 42
+
+
+def _payload_of_size(size: int) -> dict[str, object]:
+    """Build a payload whose canonical JSON is exactly `size` bytes (`{"pad":"<pad>"}`)."""
+    pad = size - len('{"pad":""}')
+    assert pad >= 0
+    return {"pad": "x" * pad}
+
+
+def test_commit_staged_rejects_oversized_event_payload_atomically(tmp_path: Path) -> None:
+    """An event past the committed-event bound fails the whole commit visibly, writing nothing."""
+    payload = _payload_of_size(MAX_COMMITTED_EVENT_BYTES + 1)
+    assert len(canonical_json(payload).encode("utf-8")) == MAX_COMMITTED_EVENT_BYTES + 1
+    with SqliteStore(tmp_path / "guard.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-guard", "/ws", rev_id)
+        store.commit_staged(
+            "sess-guard",
+            run_id="run-1",
+            revision_id=rev_id,
+            events=(EventDraft("core.turn_start", "core", "user", {"turn": 1}),),
+            status="running",
+            checkpoint_kind="ready",
+            checkpoint_payload={"call_index": 0},
+        )
+        with pytest.raises(StoreConflict, match=f"{MAX_COMMITTED_EVENT_BYTES + 1} bytes.*{MAX_COMMITTED_EVENT_BYTES}-byte"):
+            store.commit_staged(
+                "sess-guard",
+                expected_sequence=1,
+                expected_run_id="run-1",
+                run_id="run-1",
+                revision_id=rev_id,
+                events=(EventDraft("tool.completed", "host", "tool", payload),),
+                status="running",
+                checkpoint_kind="ready",
+                checkpoint_payload={"call_index": 1},
+            )
+        assert store.session("sess-guard").last_event_sequence == 1
+        assert len(store.events("sess-guard")) == 1
+        cp = store.checkpoint("sess-guard")
+        assert cp is not None
+        assert cp.payload == {"call_index": 0}
+
+
+def test_commit_accepts_event_payload_at_bound(tmp_path: Path) -> None:
+    """A payload of exactly the bound commits through the `commit` wrapper unchanged."""
+    payload = _payload_of_size(MAX_COMMITTED_EVENT_BYTES)
+    assert len(canonical_json(payload).encode("utf-8")) == MAX_COMMITTED_EVENT_BYTES
+    with SqliteStore(tmp_path / "bound.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": ["files"]})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-bound", "/ws", rev_id)
+        session = store.commit(
+            "sess-bound",
+            expected_sequence=0,
+            expected_run_id=None,
+            run_id="run-1",
+            revision_id=rev_id,
+            events=(EventDraft("tool.completed", "host", "tool", payload),),
+            status="running",
+            checkpoint_kind="ready",
+            checkpoint_payload={"call_index": 0},
+        )
+        assert session.last_event_sequence == 1
+        assert store.events("sess-bound")[0].payload == payload
