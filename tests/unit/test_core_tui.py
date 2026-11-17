@@ -84,13 +84,14 @@ def _event(
     run_id: str = "run-1",
     revision_id: str = "rev-1",
     content: Any = None,
+    session_id: str = "s1",
     **payload: object,
 ) -> StreamEvent:
     entry: TranscriptEntry | None = None
     if content is not None:
         entry = TranscriptEntry(sequence, run_id, revision_id, "kernel", content)
     return StreamEvent(
-        session_id="s1",
+        session_id=session_id,
         sequence=sequence,
         type=event_type,
         run_id=run_id,
@@ -2236,7 +2237,7 @@ def test_model_turn_updates_footer_context() -> None:
 
     # Turn 1: 5200 in, 1500 out
     turn1 = ProviderTurnResult(usage=ProviderTokenUsage(input_tokens=5200, output_tokens=1500))
-    ev1 = _event(1, "core.model_turn", content=turn1, result=encode_provider_result(turn1))
+    ev1 = _event(1, "core.model_turn", content=turn1, result=encode_provider_result(turn1), session_id="session-secret-123")
     app.event_queue.put({"kind": "stream_event", "frame": EventFrame(session_id="session-secret-123", event=ev1)})
     app._drain_events()
 
@@ -2249,7 +2250,7 @@ def test_model_turn_updates_footer_context() -> None:
 
     # Turn 2: 8100 in, 2000 out (context tracks latest dispatch, total accumulates)
     turn2 = ProviderTurnResult(usage=ProviderTokenUsage(input_tokens=8100, output_tokens=2000))
-    ev2 = _event(2, "core.model_turn", content=turn2, result=encode_provider_result(turn2))
+    ev2 = _event(2, "core.model_turn", content=turn2, result=encode_provider_result(turn2), session_id="session-secret-123")
     app.event_queue.put({"kind": "stream_event", "frame": EventFrame(session_id="session-secret-123", event=ev2)})
     app._drain_events()
 

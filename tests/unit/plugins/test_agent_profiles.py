@@ -108,5 +108,5 @@ def test_builtin_prompts_and_stances_are_preserved():
 
 def test_subagents_plugin_surface():
     plugin = create_plugin({})
-    assert [tool.definition.name for tool in plugin.tools] == ["task", "task_batch"]
+    assert [tool.definition.name for tool in plugin.tools] == ["task", "task_batch", "wait"]
     assert [cmd.definition.name for cmd in plugin.commands] == ["subagents.monitor", "subagents.monitor.cancel"]

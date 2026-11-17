@@ -317,7 +317,20 @@ def test_real_core_native_and_untrusted_deferred_images_reach_anthropic_sdk_wire
             for event in reads:
                 wire = event.payload["result"]
                 assert wire["output"]["data_uri"] is None and len(json.dumps(json_wire_object(wire))) < 4096
-                assert wire["result_reference"]["sha256"] != wire["output"]["bounds"]["reference"]["sha256"]
+                # Small-result contract: the durable event is complete, so no canonical
+                # spill exists; the image bytes stay recoverable via the output reference.
+                assert wire.get("result_reference") is None
+                reference = wire["output"]["bounds"]["reference"]
+                assert reference is not None and int(reference["bytes"]) == len(png)
+                recovered = bytearray()
+                offset = 0
+                while True:
+                    page = core.read_artifact(str(reference["sha256"]), offset=offset, limit=256 * 1024)
+                    recovered += page.data
+                    if page.eof:
+                        break
+                    offset += len(page.data)
+                assert bytes(recovered) == png
             dispatches = [event for event in events if event.event_type == "core.provider_intent"]
             assert max(len(json.dumps(json_wire_object(event.payload))) for event in dispatches) < 16384
             from voidcode.sdk.transcript import encode_context_history

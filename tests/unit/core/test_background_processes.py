@@ -93,7 +93,11 @@ def _payload(server: OpenAILoopbackServer, request_index: int) -> dict[str, obje
     """The last tool result the model of that dispatch read."""
     messages = server.requests[request_index].get("messages")
     assert isinstance(messages, list)
-    payloads = [json.loads(str(message.get("content", ""))) for message in messages if isinstance(message, Mapping) and message.get("role") == "tool"]
+    payloads: list[dict[str, object]] = []
+    for message in messages:
+        if isinstance(message, Mapping) and message.get("role") == "tool":
+            envelope = json.loads(str(message.get("content", "")))
+            payloads.append(json.loads(envelope["text"]))
     assert payloads, f"dispatch {request_index} carried no tool result"
     return payloads[-1]
 

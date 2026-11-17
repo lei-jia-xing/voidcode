@@ -8,7 +8,9 @@ from pathlib import Path
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.core.coverage import read_artifact_content
 from voidcode.sdk.codec import decode_tool_result
+from voidcode.sdk.services import ArtifactReference
 from voidcode.sdk.tools import ToolFailure, ToolSuccess
 
 _REPRESENTATIVE_CALLS: tuple[tuple[str, dict[str, object], type[object]], ...] = (
@@ -73,13 +75,22 @@ def test_bundle_dispatches_one_tool_per_tool_plugin(tmp_path: Path) -> None:
 
             # Verify local tools produced real output
             tool_outputs: dict[str, str] = {}
+            shell_decoded = None
             for e in completed:
                 decoded_r = decode_tool_result(e.payload["result"])
                 text = getattr(getattr(decoded_r, "output", None), "text", None)
                 if text:
                     tool_outputs[decoded_r.tool_name] = text
+                if decoded_r.tool_name == "shell_exec":
+                    shell_decoded = decoded_r
             assert "initial content" in tool_outputs.get("read", "")
-            assert "bundle-ok" in tool_outputs.get("shell_exec", "")
+            assert shell_decoded is not None and shell_decoded.body is not None
+            shell_body = shell_decoded.body.structured_content
+            assert shell_body["exit_code"] == 0
+            stdout = shell_body["stdout"]
+            reference = ArtifactReference(sha256=str(stdout["sha256"]), bytes=int(stdout["bytes"]), media_type=str(stdout["media_type"]))
+            captured = read_artifact_content(reference, core._artifact_page).decode("utf-8")
+            assert "bundle-ok" in captured
 
             # Tool results reached model in message history
             reports = [message for message in server.requests[1]["messages"] if message.get("role") == "tool"]

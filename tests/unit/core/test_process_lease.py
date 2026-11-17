@@ -109,7 +109,8 @@ def _tool_payloads(server: OpenAILoopbackServer, index: int = 1) -> list[dict[st
     payloads: list[dict[str, object]] = []
     for message in messages:
         if isinstance(message, Mapping) and message.get("role") == "tool":
-            payloads.append(json.loads(str(message.get("content", ""))))
+            envelope = json.loads(str(message.get("content", "")))
+            payloads.append(json.loads(envelope["text"]))
     return payloads
 
 

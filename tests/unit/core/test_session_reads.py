@@ -8,13 +8,16 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL, WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.core.coverage import read_artifact_content
 from voidcode.core.engine import Core
+from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.json_values import json_wire_object
 
 
@@ -87,6 +90,11 @@ def _body(core: Core, session_id: str, tool_name: str, index: int = 0) -> dict[s
     """The JSON body of one committed result; every fixture action carries one."""
     result = _results(core, session_id, tool_name)[index]
     body = result.get("body")
+    if body is None:
+        # Oversized results commit body-less by design; the complete JSON waits at the reference.
+        reference = decode_tool_result(result).result_reference
+        assert reference is not None, result
+        body = json.loads(read_artifact_content(reference, core._artifact_page))["body"]
     assert isinstance(body, Mapping), result
     return json_wire_object(body)
 
@@ -116,9 +124,18 @@ def test_session_info_reports_one_running_session_and_its_chain_budget(tmp_path:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess")
-        child = core.spawn_child("sess", "read your own facts", tool_allowlist=(PROBE_TOOL,), max_steps=11)
+        child_root = uuid4().hex
+        core.store.ensure_root_budget(child_root, 11)
+        child = core.spawn_child(
+            "sess",
+            "read your own facts",
+            tool_allowlist=(PROBE_TOOL,),
+            max_steps=11,
+            root_action_id=child_root,
+            initial_root_budget=11,
+        )
         assert core.join_child("sess", child, timeout_seconds=30).status == "completed"
-        assert core.run("read the session facts", session_id="sess", max_steps=16).status == "completed"
+        assert core.run("read the session facts", session_id="sess", max_steps=16, root_action_budget=16).status == "completed"
 
         facts = _body(core, "sess", PROBE_TOOL)["session"]
         writable = _body(core, "sess", WRITE_TOOL)["session"]
@@ -205,15 +222,16 @@ def test_child_event_reads_are_bounded_cursor_scoped_and_descendant_checked(tmp_
         page, bounded, rest, grandchild_read, self_read, root_read, stranger_read = [_body(core, "sess", PROBE_TOOL, index) for index in range(7)]
 
         # One bounded page: the oversized first block splits mid-block, so the cursor
-        # stays at the incoming sequence with a byte offset into the same block.
+        # is the last fully consumed sequence (the skipped seq-1 reservation) with a
+        # byte offset into the same block.
         assert page["child_session_id"] == child
         assert page["after_sequence"] == 0 and page["limit"] == 2
-        assert page["page"]["next_after_sequence"] == 0
+        assert page["page"]["next_after_sequence"] == 1
         assert page["page"]["next_offset"] > 0
         assert page["page"]["truncated"] is True
         # The full history starts with the same split block: the 100 KiB prompt fills one
         # 40 KiB page alone, byte-identical, with more bytes still owed.
-        assert bounded["page"]["text"].startswith("## user [1]\n")
+        assert bounded["page"]["text"].startswith("## user [2]\n")
         assert "x" * 100 in bounded["page"]["text"]
         assert bounded["page"]["next_offset"] > 0
         assert bounded["page"]["truncated"] is True
@@ -275,7 +293,7 @@ def test_post_tool_hook_reads_the_session_row_under_a_hook_lease(tmp_path: Path)
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess")
-        assert core.run("let the hook read the session", session_id="sess", max_steps=16).status == "completed"
+        assert core.run("let the hook read the session", session_id="sess", max_steps=16, root_action_budget=16).status == "completed"
 
         # The hook's note is appended to the settled result: a hook lease reads the session row.
         result_text, note_text = _text(core, "sess", PROBE_TOOL, 0).split("\n\n", 1)

@@ -39,6 +39,9 @@ class _Terminal:
     def read_bytes(self, *, timeout: float = 0.0) -> bytes:
         return b""
 
+    def drain_kitty_replies(self) -> tuple[()]:
+        return ()
+
     def commit_rows(self, rows: list[str]) -> None:
         self.committed.extend(rows)
 
