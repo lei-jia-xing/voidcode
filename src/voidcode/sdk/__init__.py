@@ -140,6 +140,12 @@ from .resources import (
     ResourceReadRequest,
     ResourceUnavailable,
 )
+from .result_schema import (
+    ToolBodyValidationError,
+    resolve_output_schema,
+    try_validate_tool_body,
+    validate_tool_body,
+)
 from .services import (
     ArtifactPage,
     ArtifactReference,
@@ -161,6 +167,8 @@ from .services import (
     QueryUnavailable,
     SessionInfo,
     SessionUsageReport,
+    StructuredModelResult,
+    StructuredQueryParseError,
     ToolAwaitResult,
     ToolInvocationReceipt,
 )
@@ -390,6 +398,8 @@ __all__ = [
     "SessionUsageReport",
     "SessionFrame",
     "StateSchema",
+    "StructuredModelResult",
+    "StructuredQueryParseError",
     "StatusViewData",
     "StopCause",
     "StreamCancellation",
@@ -401,6 +411,7 @@ __all__ = [
     "TextOutput",
     "Tool",
     "ToolBody",
+    "ToolBodyValidationError",
     "ToolCall",
     "ToolContext",
     "ToolDefinition",
@@ -458,5 +469,8 @@ __all__ = [
     "pending_gates",
     "parse_session_frame",
     "reduce_gates",
+    "resolve_output_schema",
+    "try_validate_tool_body",
+    "validate_tool_body",
     "validate_view_data",
 ]

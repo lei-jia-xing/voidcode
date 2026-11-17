@@ -53,6 +53,8 @@ from ..sdk.services import (
     DescendantNode,
     PluginBudget,
     SessionUsageReport,
+    StructuredModelResult,
+    StructuredQueryParseError,
     ToolAwaitResult,
     ToolInvocationReceipt,
 )
@@ -763,6 +765,7 @@ class Core:
                 ),
                 cancel_background_action_callback=self.cancel_background_action,
                 model_query_callback=self.governed_model_query,
+                model_query_structured_callback=self.governed_model_query_structured,
                 progress_callback=self._report_progress,
                 tool_definition_callback=self._visible_tool_definition,
                 artifacts_dir=self._state_dir / "artifacts",
@@ -3050,6 +3053,7 @@ class Core:
                 ),
                 cancel_background_action_callback=self.cancel_background_action,
                 model_query_callback=self.governed_model_query,
+                model_query_structured_callback=self.governed_model_query_structured,
                 progress_callback=self._report_progress,
                 tool_definition_callback=self._visible_tool_definition,
                 artifacts_dir=self._state_dir / "artifacts",
@@ -4178,6 +4182,94 @@ class Core:
 
         Usage is recorded, but the question and answer never extend the conversation.
         """
+        turn, provider_name, model_name = self._model_query_turn(session_id, prompt, model, max_output_tokens, include_context)
+        self._commit_model_query_event(session_id, turn, provider_name, model_name)
+        return turn.output or ""
+
+    def governed_model_query_structured(
+        self,
+        session_id: str,
+        prompt: str,
+        result_schema: Mapping[str, object],
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+        include_context: bool = False,
+    ) -> StructuredModelResult:
+        """A tool-free side turn parsed and validated against ``result_schema``.
+
+        Same dispatch, abort, usage event, and tool-calls guard as
+        ``governed_model_query``. ``result_schema`` must be a JSON Schema
+        describing one JSON object. An invalid reply yields a callable
+        ``parse_error``; cancellation, budget exhaustion, and provider errors
+        propagate exactly as the bare query — never as data.
+        """
+        if not isinstance(result_schema, Mapping):
+            raise ValueError("result_schema must be an object")
+        try:
+            schema_json = json_wire_object(own_json_object(result_schema))
+        except ValueError as exc:
+            raise ValueError(f"result_schema must be a JSON object: {exc}") from exc
+        try:
+            jsonschema.Draft202012Validator.check_schema(schema_json)
+        except jsonschema.exceptions.SchemaError as err:
+            raise ValueError(f"result_schema is not a valid JSON schema: {err.message}") from err
+        turn, provider_name, model_name = self._model_query_turn(
+            session_id,
+            f"{prompt}\n\nReply with exactly one JSON object and nothing else.",
+            model,
+            max_output_tokens,
+            include_context,
+        )
+        self._commit_model_query_event(session_id, turn, provider_name, model_name)
+        raw_text = turn.output or ""
+        stripped = raw_text.strip()
+        if not stripped:
+            return StructuredModelResult(
+                raw_text=raw_text,
+                parse_error=StructuredQueryParseError(kind="invalid_json", message="model reply is empty"),
+                done_reason=turn.done_reason,
+            )
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            return StructuredModelResult(
+                raw_text=raw_text,
+                parse_error=StructuredQueryParseError(kind="invalid_json", message=f"model reply is not JSON: {exc.msg}"),
+                done_reason=turn.done_reason,
+            )
+        if not isinstance(parsed, dict):
+            return StructuredModelResult(
+                raw_text=raw_text,
+                parse_error=StructuredQueryParseError(kind="schema_violation", message="top-level JSON value must be an object"),
+                done_reason=turn.done_reason,
+            )
+        try:
+            owned = own_json_object(parsed)
+        except ValueError as exc:
+            return StructuredModelResult(
+                raw_text=raw_text,
+                parse_error=StructuredQueryParseError(kind="invalid_json", message=f"model reply is not JSON: {exc}"),
+                done_reason=turn.done_reason,
+            )
+        try:
+            jsonschema.Draft202012Validator(schema_json).validate(json_wire_object(owned))
+        except jsonschema.ValidationError as exc:
+            return StructuredModelResult(
+                raw_text=raw_text,
+                parse_error=StructuredQueryParseError(kind="schema_violation", message=exc.message, path=exc.json_path),
+                done_reason=turn.done_reason,
+            )
+        return StructuredModelResult(raw_text=raw_text, data=owned, done_reason=turn.done_reason)
+
+    def _model_query_turn(
+        self,
+        session_id: str,
+        prompt: str,
+        model: str | None,
+        max_output_tokens: int | None,
+        include_context: bool,
+    ) -> tuple[ProviderTurnResult, str, str]:
+        """The shared governed side-turn: resolution, abort, dispatch, tool-calls guard."""
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > 64 * 1024:
             raise ValueError("model query prompt must be nonempty UTF-8 text within 64 KiB")
         self._ensure_open()
@@ -4212,6 +4304,10 @@ class Core:
             turn = snapshot.plugin_runtime.propose_turn(request, provider=provider_name)
         if turn.tool_calls:
             raise RuntimeError("governed model query returned tool calls; none were offered")
+        return turn, provider_name, model_name
+
+    def _commit_model_query_event(self, session_id: str, turn: ProviderTurnResult, provider_name: str, model_name: str) -> None:
+        """Record one governed query's usage; the question and answer stay out of history."""
         self._commit_control_event(
             session_id,
             EventDraft(
@@ -4226,7 +4322,6 @@ class Core:
                 },
             ),
         )
-        return turn.output or ""
 
     def _commit_control_event(self, session_id: str, event: EventDraft) -> None:
         """Append one core control fact on a session without disturbing its run state."""

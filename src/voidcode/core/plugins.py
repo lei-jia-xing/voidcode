@@ -79,6 +79,7 @@ from voidcode.sdk.services import (
     PluginBudget,
     QueryUnavailable,
     SessionUsageReport,
+    StructuredModelResult,
 )
 from voidcode.sdk.tools import (
     ConfirmedStop,
@@ -260,6 +261,9 @@ class PluginRuntime:
         cancel_subtree_callback: Callable[[str, str, str | None, str], CancelSubtreeReceipt] | None = None,
         cancel_background_action_callback: Callable[[str, str, str, str], bool] | None = None,
         model_query_callback: Callable[[str, str, str | None, int | None, bool], str] | None = None,
+        model_query_structured_callback: (
+            Callable[[str, str, Mapping[str, object], str | None, int | None, bool], StructuredModelResult] | None
+        ) = None,
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
         tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,
         artifacts_dir: Path | None = None,
@@ -288,6 +292,7 @@ class PluginRuntime:
         self.cancel_subtree_callback = cancel_subtree_callback
         self.cancel_background_action_callback = cancel_background_action_callback
         self.model_query_callback = model_query_callback
+        self.model_query_structured_callback = model_query_structured_callback
         self.progress_callback = progress_callback
         self.tool_definition_callback = tool_definition_callback
         #: Core-owned background wiring: the claim loop's wakeup, the claim liveness check,
@@ -484,6 +489,13 @@ class PluginRuntime:
                     plugin_id = self._tool_owners.get(name, "unknown")
                     raise ValueError(f"Plugin {plugin_id} tool {name} has an invalid input schema: {err.message}") from err
                 self._validators[name] = jsonschema.Draft202012Validator(schema_json)
+            if definition.output_schema:
+                output_json = json_wire_object(definition.output_schema)
+                try:
+                    jsonschema.Draft202012Validator.check_schema(output_json)
+                except jsonschema.exceptions.SchemaError as err:
+                    plugin_id = self._tool_owners.get(name, "unknown")
+                    raise ValueError(f"Plugin {plugin_id} tool {name} has an invalid output schema: {err.message}") from err
         self._command_descs = tuple(
             CommandDescriptor(
                 name=command.definition.name,

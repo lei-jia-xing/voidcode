@@ -82,7 +82,14 @@ def decode_tool_call(payload: Mapping[str, object]) -> ToolCall:
 
 
 def encode_tool_definition(definition: ToolDefinition | Mapping[str, object]) -> dict[str, object]:
-    return _encode(definition)
+    if isinstance(definition, Mapping):
+        return _encode(definition)
+    payload = _encode(definition)
+    if definition.output_schema is None:
+        # Undeclared stays absent: definitions without a body contract encode
+        # byte-identically to before the field existed.
+        payload.pop("output_schema", None)
+    return payload
 
 
 def decode_tool_definition(payload: Mapping[str, object]) -> ToolDefinition:

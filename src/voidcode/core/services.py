@@ -37,6 +37,7 @@ from voidcode.sdk.services import (
     ProcessResult,
     SessionInfo,
     SessionUsageReport,
+    StructuredModelResult,
     ToolInvocationReceipt,
 )
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage
@@ -1336,6 +1337,30 @@ class RuntimeServices:
         if type(include_context) is not bool:
             raise ValueError("include_context must be a boolean")
         return callback(lease.session_id, str(prompt), model, max_output_tokens, include_context)
+
+    def model_query_structured(
+        self,
+        prompt: str,
+        *,
+        result_schema: Mapping[str, object],
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+        include_context: bool = False,
+    ) -> StructuredModelResult:
+        lease = self._active_lease()
+        self._check_hook("model_query_structured")
+        callback = self._runtime.model_query_structured_callback
+        if callback is None:
+            raise RuntimeError("governed model queries are unavailable")
+        if not isinstance(result_schema, Mapping):
+            raise ValueError("result_schema must be an object")
+        if model is not None and not isinstance(model, str):
+            raise ValueError("model must be a string or null")
+        if max_output_tokens is not None and type(max_output_tokens) is not int:
+            raise ValueError("max_output_tokens must be an integer or null")
+        if type(include_context) is not bool:
+            raise ValueError("include_context must be a boolean")
+        return callback(lease.session_id, str(prompt), result_schema, model, max_output_tokens, include_context)
 
     def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
         lease = self._active_lease()

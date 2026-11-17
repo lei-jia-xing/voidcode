@@ -19,9 +19,69 @@ if TYPE_CHECKING:
     from .hooks import FactPage, StopCause
     from .invocation import ToolContext
     from .observed_effects import ObservedEffects
+    from .provider import ProviderDoneReason
     from .resources import ResourcePage, ResourceReadRequest
     from .tools import ExecutionObservation, ToolDefinition, ToolResult
     from .transcript import ContextHistory, TranscriptPage
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredQueryParseError:
+    """Why one structured model reply produced no valid data.
+
+    ``invalid_json`` covers empty, unparseable, and non-object top-level JSON
+    (a refusal is unparseable text, not data). ``schema_violation`` covers
+    well-formed JSON the result schema rejects. ``path`` is the failing JSON
+    path of a schema violation, or ``None`` when nothing parsed.
+    """
+
+    kind: Literal["invalid_json", "schema_violation"]
+    message: str
+    path: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("invalid_json", "schema_violation"):
+            raise ValueError(f"unknown structured query parse error kind {self.kind!r}")
+        if not isinstance(self.message, str) or not self.message:
+            raise ValueError("structured query parse error requires a non-empty message")
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"kind": self.kind, "message": self.message}
+        if self.path is not None:
+            payload["path"] = self.path
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredModelResult:
+    """One tool-free provider turn parsed against a caller-supplied result schema.
+
+    ``raw_text`` is the verbatim model reply, always kept. Exactly one of
+    ``data`` (owned, schema-validated JSON object) and ``parse_error`` is set:
+    an invalid reply is a callable failure, never silent success and never
+    data. ``done_reason`` is the provider's own terminal marker, passed through
+    unchanged. Cancellation, budget exhaustion, and provider errors propagate
+    as exceptions — exactly as the bare ``model_query`` — and never surface here.
+    """
+
+    raw_text: str
+    data: Mapping[str, object] | None = None
+    parse_error: StructuredQueryParseError | None = None
+    done_reason: ProviderDoneReason = "completed"
+
+    def __post_init__(self) -> None:
+        if self.data is not None:
+            object.__setattr__(self, "data", own_json_object(self.data))
+        if (self.data is None) == (self.parse_error is None):
+            raise ValueError("structured model result requires exactly one of data or parse_error")
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "raw_text": self.raw_text,
+            "data": None if self.data is None else json_wire_object(self.data),
+            "parse_error": None if self.parse_error is None else self.parse_error.as_payload(),
+            "done_reason": self.done_reason,
+        }
 
 
 class QueryUnavailable(ValueError):
@@ -1160,6 +1220,26 @@ class PluginServices(Protocol):
 
     def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
         """One tool-free provider turn; optionally read the current context without extending it."""
+        ...
+
+    def model_query_structured(
+        self,
+        prompt: str,
+        *,
+        result_schema: Mapping[str, object],
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+        include_context: bool = False,
+    ) -> StructuredModelResult:
+        """One tool-free provider turn parsed and validated against ``result_schema``.
+
+        Same governance, budget, usage, and cancellation as ``model_query``: the call
+        enters the same dispatch path and usage accounting. ``result_schema`` is a
+        JSON Schema (Draft 2020-12) describing one JSON object; the returned
+        ``StructuredModelResult`` carries either validated ``data`` or a callable
+        ``parse_error`` — never silent success. Cancellation, budget exhaustion,
+        and provider errors propagate as exceptions, exactly as ``model_query``.
+        """
         ...
 
     def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:

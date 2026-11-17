@@ -10,13 +10,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+import jsonschema
 import pytest
 
 from voidcode.core.storage.store import StoredEvent
 from voidcode.core.transcript import context_records
 from voidcode.sdk.history import HistoryPage
 from voidcode.sdk.hooks import FactPage
-from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.resources import ResourcePage, ResourceReadRequest, ResourceUnavailable
 from voidcode.sdk.services import (
     ArtifactPage,
@@ -32,6 +33,8 @@ from voidcode.sdk.services import (
     ProcessResult,
     SessionInfo,
     SessionUsageReport,
+    StructuredModelResult,
+    StructuredQueryParseError,
     ToolInvocationReceipt,
 )
 from voidcode.sdk.tools import ToolDefinition
@@ -72,6 +75,7 @@ class FakeServices(PluginServices):
 
     model_answer: str | None = None
     answer: str | None = None
+    structured_answer: StructuredModelResult | None = None
     model_error: Exception | None = None
     failure: Exception | None = None
     refuse: bool = False
@@ -528,6 +532,51 @@ class FakeServices(PluginServices):
         return ""
 
     model_query = ask
+
+    def model_query_structured(
+        self,
+        prompt: str,
+        *,
+        result_schema: Mapping[str, object],
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+        include_context: bool = False,
+    ) -> StructuredModelResult:
+        _ = result_schema, model, max_output_tokens, include_context
+        self.prompts.append(prompt)
+        if self.model_error is not None:
+            raise self.model_error
+        if self.structured_answer is not None:
+            return self.structured_answer
+
+        raw = self.model_answer if self.model_answer is not None else (self.answer if self.answer is not None else "")
+        stripped = raw.strip()
+        if not stripped:
+            return StructuredModelResult(
+                raw_text=raw,
+                parse_error=StructuredQueryParseError(kind="invalid_json", message="model reply is empty"),
+            )
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            return StructuredModelResult(
+                raw_text=raw,
+                parse_error=StructuredQueryParseError(kind="invalid_json", message=f"model reply is not JSON: {exc.msg}"),
+            )
+        if not isinstance(parsed, dict):
+            return StructuredModelResult(
+                raw_text=raw,
+                parse_error=StructuredQueryParseError(kind="schema_violation", message="top-level JSON value must be an object"),
+            )
+        owned = own_json_object(parsed)
+        try:
+            jsonschema.Draft202012Validator(json_wire_object(own_json_object(result_schema))).validate(json_wire_object(owned))
+        except jsonschema.ValidationError as exc:
+            return StructuredModelResult(
+                raw_text=raw,
+                parse_error=StructuredQueryParseError(kind="schema_violation", message=exc.message, path=exc.json_path),
+            )
+        return StructuredModelResult(raw_text=raw, data=owned)
 
     # --- Usage and Budget ---
 

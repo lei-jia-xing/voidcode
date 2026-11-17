@@ -166,9 +166,16 @@ class ToolDefinition:
     # tools default to never replay unless they explicitly opt in.
     replay_policy: ToolReplayPolicy | None = None
     icon: Icon | None = None
+    #: Declared JSON Schema (Draft 2020-12) for this tool's success body payload
+    #: (``body.as_payload()`` on ``ToolSuccess``). ``None`` means the producer
+    #: declares no contract — unknown, never "any shape is valid". Failure bodies
+    #: are diagnostics, not data, and are never validated against this schema.
+    output_schema: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_schema", own_json_object(self.input_schema))
+        if self.output_schema is not None:
+            object.__setattr__(self, "output_schema", own_json_object(self.output_schema))
         if not isinstance(self.effects, frozenset):
             object.__setattr__(self, "effects", frozenset(ToolEffect(e) if isinstance(e, str) else e for e in self.effects))
         if not isinstance(self.path_argument_keys, tuple):

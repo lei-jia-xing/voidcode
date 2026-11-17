@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import codecs
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import ClassVar, final
@@ -77,6 +77,39 @@ class ShellExecResultBody:
         return payload
 
 
+_ARTIFACT_SCHEMA: Mapping[str, object] = {
+    "type": "object",
+    "required": ["sha256", "bytes", "media_type"],
+    "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "media_type": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+
+#: Declared contract for ``ShellExecResultBody.as_payload``: the base keys are
+#: always present, the rest appear only when the capture observed them.
+SHELL_EXEC_RESULT_SCHEMA: Mapping[str, object] = {
+    "type": "object",
+    "required": ["command", "exit_code", "stdout", "stderr", "timeout", "truncated"],
+    "properties": {
+        "command": {"type": "string"},
+        "exit_code": {"type": ["integer", "null"]},
+        "stdout": _ARTIFACT_SCHEMA,
+        "stderr": _ARTIFACT_SCHEMA,
+        "timeout": {"type": "integer", "minimum": 1},
+        "truncated": {"type": "boolean"},
+        "cwd": {"type": "string"},
+        "output_limit_exceeded": {"type": "boolean"},
+        "timed_out": {"type": "boolean"},
+        "cancelled": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]},
+    },
+    "additionalProperties": False,
+}
+
+
 class ShellExecArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -130,6 +163,7 @@ class ShellExecTool:
         description="Execute a command inside the current workspace.",
         input_schema=ShellExecArgs.model_json_schema(),
         effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
+        output_schema=SHELL_EXEC_RESULT_SCHEMA,
     )
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
