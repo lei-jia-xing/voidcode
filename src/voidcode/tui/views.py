@@ -250,6 +250,46 @@ def _composite_part_has_reference(part: object) -> bool:
     return isinstance(part, Mapping) and _artifact_ref_uri(part.get("reference")) is not None
 
 
+def _render_diff_body(body: object, width: int, styles: Styles) -> list[str] | None:
+    """Single-file edit semantics as a diff card, or None without complete shape.
+
+    Shape dispatch only (path/diff/additions/deletions with strict types): no
+    tool-name guessing, no plugin imports. Hunk styling reuses the DiffViewData
+    slots; complete structured data stays on the existing result_reference and
+    artifact entries, never a second full-text copy. Incomplete shapes return
+    None so output-only rendering is preserved; diff text is escaped so
+    scrollback stays readable.
+    """
+    if not isinstance(body, Mapping):
+        return None
+    path = body.get("path")
+    diff_text = body.get("diff")
+    additions = body.get("additions")
+    deletions = body.get("deletions")
+    if not isinstance(path, str) or not path:
+        return None
+    if not isinstance(diff_text, str) or not diff_text:
+        return None
+    if type(additions) is not int or additions < 0:
+        return None
+    if type(deletions) is not int or deletions < 0:
+        return None
+    card = Text()
+    card.append(f"Diff: {escape_terminal_controls(path)} (+{additions} -{deletions})", style=styles.style("text", bold=True))
+    for line in diff_text.splitlines():
+        card.append("\n")
+        clean = escape_terminal_controls(line)
+        if line.startswith("+") and not line.startswith("+++"):
+            card.append(clean, style=styles.style("diff_added"))
+        elif line.startswith("-") and not line.startswith("---"):
+            card.append(clean, style=styles.style("diff_removed"))
+        elif line.startswith("@@"):
+            card.append(clean, style=styles.style("accent"))
+        else:
+            card.append(clean, style=styles.style("diff_context"))
+    return render_lines(card, width, theme=markdown_theme(), color_system=styles.color_system)
+
+
 def render_tool_result(
     result: Mapping[str, Any],
     width: int,
@@ -320,6 +360,10 @@ def render_tool_result(
             color_system=resolved.color_system,
         )
         rows.extend(preview)
+    if not failed:
+        diff_rows = _render_diff_body(result.get("body"), width, resolved)
+        if diff_rows:
+            rows.extend(diff_rows)
     if artifact_available:
         rows.append(resolved.fg("dim", "Artifacts: Ctrl+O / /tui output · original sources and structured result are separate"))
     if suffix:
