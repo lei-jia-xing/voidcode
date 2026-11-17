@@ -4,6 +4,18 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Structured tool-result contracts and model queries
+- `ToolDefinition.output_schema` declares a tool's success-body JSON Schema contract (`None` = undeclared/unknown); catalog admission validates the schema and refuses invalid contracts. `sdk/result_schema.py` (`resolve_output_schema`/`validate_tool_body`/`try_validate_tool_body`) lets unrelated consumers validate a peer's decoded body with no peer imports, second JSON body, or parallel registry. `shell_exec` pilots the first declared schema across every capture branch.
+- Definitions without a contract encode byte-identically to before; legacy payloads without the key decode to undeclared; declared schemas round-trip.
+- `PluginServices.model_query_structured` runs a tool-free side turn through the same governed dispatch/abort/usage/tool-calls path as `model_query` (shared `_model_query_turn`), parsing the reply against a caller-supplied result schema. `StructuredModelResult` keeps the verbatim `raw_text` with exactly one of validated `data` or `parse_error` (`invalid_json`/`schema_violation`); cancellation, budget exhaustion, and provider errors propagate as exceptions, never as data.
+- Verification: 29 passed across 4 new files (`tests/unit/sdk/test_result_schema.py` 8, `tests/unit/sdk/test_tool_definition_codec.py` 4, `tests/unit/core/test_model_query_structured.py` 7, `tests/unit/plugins/test_shell_exec_schema.py` 10); narrow refresh `tests/unit/sdk` + structured file 45 passed; full phase-1 selector 251 passed; `mise run lint` + `mise run typecheck` green.
+- Limits: validation is consumer-side only — nothing on the commit path gates a producer result, so a producer schema bug surfaces at validation time, never as lost work. No fence-stripping or reply repair: fenced/verbose provider JSON yields `invalid_json` with the full verbatim reply kept in `raw_text`.
+
+### Non-root delegation policy cleanup
+- Removed the dead `DELEGATION_SPAWN_BUDGET=4` declaration and its engine re-export: a repo-wide search found zero production consumers (enforcement is `ExecutionConfig.max_root_children`). Delegation tests now pin the true quota owner. No behavior change.
+- Verified the `CHILD_INLINE_OUTPUT_BYTES` (32 KiB) definition comment already states the true rationale (inline representation policy: artifact identity + bounded preview); no stale "1 MiB stdio frame" justification remains in code. Threshold untouched.
+- Verification: `test_delegation.py` + `test_background_actions.py` + `test_spawn_budget_exhaustion_fails_visibly` 21 passed; `test_collaboration.py` 32 passed.
+
 ### Known-red baseline burn-down
 - Product fixes: unknown child births read as absent instead of raising `KeyError` (`_birth_record` guard); reserved-child claims report `cancelled` through the claim-event fallback; `enqueue_continuation` stamps the lease's captured root action identity so plugin-staged rows drain. Legacy rows without a captured root stay undrainable and fail visibly — no migration, no backfill, no fabricated grant.
 - Stale-test updates: result/process envelope unwraps (16 across artifacts, background processes, and process lease); session reads driven with real `root_action_budget` values; oversized child-history pages and shell stdout read through their artifact references; refreshed TUI terminal stub and stream session ids; agent surface expects the `wait` tool; media tests assert the small-result reference contract.
