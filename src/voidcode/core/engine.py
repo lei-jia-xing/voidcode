@@ -4715,6 +4715,32 @@ class Core:
             },
         )
 
+    def _observer_root_authorization(self, execution: _Execution) -> tuple[str | None, int | None]:
+        """Recorded root authorization for observer leases delivering this execution's facts.
+
+        Reads the run's own durable root — the birth record for child sessions, the
+        checkpoint cursor otherwise (the same sources `_capture_root_authorization`
+        uses) — and never mints a fresh identity: a terminal fact's observer spends
+        the run's own budget chain or fails visibly. Returns `(None, None)` when no
+        valid root is recorded (legacy rows); the caller then leaves the lease
+        rootless and the spawn/background/wakeup guards fail closed.
+        """
+        session = execution.session
+        if session.parent_session_id is not None:
+            birth = self._delegation._birth_record(session.session_id)
+            if birth is None or "root_action_budget" not in birth:
+                return None, None
+            root_id = birth.get("root_id")
+            budget = birth.get("root_action_budget")
+        else:
+            root_id = execution.cursor.root_id
+            budget = execution.cursor.initial_root_budget
+        if not isinstance(root_id, str) or not root_id or "\0" in root_id:
+            return None, None
+        if budget is not None and (type(budget) is not int or budget < 0):
+            return None, None
+        return root_id, budget
+
     def _deliver_fact_for_event(
         self,
         execution: _Execution,
@@ -4749,7 +4775,10 @@ class Core:
             if not active:
                 return
             logical_turn = str(fact_payload.get("logical_turn", ""))
-            obs_res = snapshot.plugin_runtime.notify_fact(fact_type, fact_payload, owners=tuple(active), logical_turn=logical_turn)
+            root_id, root_budget = self._observer_root_authorization(execution)
+            obs_res = snapshot.plugin_runtime.notify_fact(
+                fact_type, fact_payload, owners=tuple(active), logical_turn=logical_turn, root_action_id=root_id, initial_root_budget=root_budget
+            )
             receipts = tuple(ObserverReceiptRecord(session_id=ev.session_id, event_sequence=ev.sequence, owner=o) for o in active)
             staged_events: list[EventDraft] = []
             staged_budget_updates: list[StagedBudgetUpdate] = []

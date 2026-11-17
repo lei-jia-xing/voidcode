@@ -81,6 +81,7 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
                 event.payload["child_session_id"] for event in core.store.events(result.session_id) if event.event_type == "core.child_spawned"
             ]
             assert len(children) == 1
+            assert [e.payload for e in core.store.events(result.session_id) if e.event_type == "core.observer_error"] == []
             core.join_child(result.session_id, children[0], timeout_seconds=15)
             facts = history(core, result.session_id)
             observed = [e.payload["fact"] for e in core.store.events(result.session_id) if e.event_type == "plugin.probe.seen"]

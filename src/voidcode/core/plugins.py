@@ -1548,6 +1548,8 @@ class PluginRuntime:
         *,
         owners: Sequence[str] | None = None,
         logical_turn: str = "",
+        root_action_id: str | None = None,
+        initial_root_budget: int | None = None,
     ) -> CallbackChanges:
         """Notify subscribers of one fact; `owners` restricts delivery to those captured subscribers."""
         subscribed_owners = self._observer_owners.get(fact_type, ())
@@ -1570,7 +1572,16 @@ class PluginRuntime:
         typed = self._typed_fact(fact_type, fact, session_id, run_id, revision_id, str(fact.get("logical_turn", logical_turn)))
 
         for owner in subscribed_owners:
-            lease = self._open_lease(owner=owner, session_id=session_id, run_id=run_id, invocation_id=uuid4().hex, readonly=False, actor="plugin")
+            lease = self._open_lease(
+                owner=owner,
+                session_id=session_id,
+                run_id=run_id,
+                invocation_id=uuid4().hex,
+                readonly=False,
+                actor="plugin",
+                root_action_id=root_action_id,
+                initial_root_budget=initial_root_budget,
+            )
             context = ToolContext(
                 workspace=self.workspace,
                 session_id=session_id,
