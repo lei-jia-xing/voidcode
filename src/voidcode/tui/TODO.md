@@ -42,10 +42,12 @@
 
 ### P2：输入与视窗稳态
 
-- [ ] **长粘贴只折叠展示，不截断或替换真实输入。**
+- [x] **长粘贴只折叠展示，不截断或替换真实输入。**
   - 现状：[`composer.py`](composer.py) 的 paste 直接 `_insert(key.text)`；尚未有将粘贴块与其显示徽标分开的编辑模型。源码路径需用真实大文本观察，不把性能问题当作已复现事实。
   - 目标：多行粘贴可显示可展开/编辑/删除的紧凑块，提交时还原原文；按视窗选择折叠，不增加 PASTE_MAX。保留草稿、光标和已接收 follow-up/未接收原稿的现有区别。参考 OMP [composer 与 viewport](omp://tui-core-renderer.md)。
   - 验收：在当前入口支持的请求规模内粘贴长堆栈、中英文和多段文本，操作期间不会把 composer 撑出可用区域，复制/编辑/提交与原文一致；超过真实入口能力时明确说明或走全文资源方案，不能静默丢尾部、提交徽标文本或误重送。
+  - 实现：`composer.py` 新增纯 `_PasteBlock` span 模型（exact true-text offsets + collapsed 标志），badge 由块原文单行派生（`_badge_for_text`），仅当多行粘贴高于可见输入高度时折叠（`_should_fold_paste`，按视窗派生，不新增 PASTE_MAX），display/true 双向光标映射（badge 内 snap 到边）；submit/copy/edit 一律走原文精确字节（alt+e 展开、alt+c 复制块、alt+x 删除块）。`terminal_app.py` 接入真实入口能力：enter 提交前 oversize 预检（`MAX_PROMPT_CHARS`/`MAX_PROMPT_BYTES`，超限 draft 保留、status 明确说明、不发送），`ComposerAction.COPY` 经 `copy_to_clipboard`（OSC52 上限）接线，失败/超限均有明确 status。
+  - 证据与限制：新 `tests/unit/tui/test_paste_folding.py` 18 passed（块模型/badge/视窗折叠/双向光标映射/精确字节提交/复制/编辑/删除、超限预检与 COPY 接线）；`tests/unit/tui/` 全量 152 passed + 1 skipped；full unit 2010 passed + 1 skipped；`ruff check`/`ruff format --check`/`ty check` 全绿。unit-only，无 PTY/物理终端证明。
 
 - [ ] **以真实终端验证 resize、滚动历史和光标重锚定。**
   - 现状：[`term.py`](term.py) 根据 `_painted_cursor` 的缓存相对位置回到 Live origin，resize 后会失效几何缓存；是否存在真实漂移必须实测，不能仅凭这段源码宣布已有擦历史 bug。
