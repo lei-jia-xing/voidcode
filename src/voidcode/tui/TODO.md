@@ -29,10 +29,11 @@
 
 ### P1：结果有语义，后台 Agent 可发现
 
-- [ ] **用语义结果卡呈现 diff、表格、结构化数据和完整资源入口。**
-  - 现状：通用成功结果呈现尚未消费 `DiffViewData` 等语义；[`edit_tool`](../capabilities/files/edit_tool.py) 已产生 diff、additions/deletions，但当前通用卡不消费这些数据。已完成的长输出分页仍复用，不重建另一份全文。
-  - 目标：通过 SDK 声明式展示复用现有 `DiffViewData` 等语义，增加确有需要的表格/JSON/media 呈现；不按工具名猜格式、不导入具体插件。diff 按 hunk/上下文折叠，其他结果按内容及视窗布局；完整数据始终沿资源入口查看。参考 OMP [工具卡](omp://tui.md)、[diff/theme](omp://theme.md)、[eval views](omp://tools/eval.md)。
-  - 验收：编辑后直接看到文件、增删统计和可辨识变更；表格/JSON 保持可读层次且能查看/复制完整内容；显示预算不变成业务拒绝条件，不把 8 改成另一个魔数，也不为了“展开”重写 scrollback。
+- [x] **用语义结果卡呈现 diff、表格、结构化数据和完整资源入口。**
+  - 实现：`views.py` 新增 `_render_diff_body`，仅按 body 的 `path`/`diff`/`additions`/`deletions` 严格形状分派（类型严格、bool-safe），不按工具名猜格式、不导入具体插件；成功路径接入通用卡，失败/残缺形状保持纯输出渲染。hunk 按 `+`/`-`/`@@`/上下文逐行复用 `DiffViewData` 着色槽位渲染，50-hunk 大 diff 全部保留（不截断、不新增上限），宽度沿现有 `render_lines` 视窗派生；diff 文本转义终端控制序列，不污染 scrollback。
+  - 完整数据：完整结构化数据仍走既有 `result_reference`/artifact 条目（`Artifacts: Ctrl+O / /tui output`），不建第二份全文；表格/JSON/media 沿用既有 TSV/预览 + URI + `artifact_sources` 呈现，并由新测试锁定层次、引用与 CLI fallback 字符串。
+  - 边界：多文件 body（`apply_workspace_edit`/ast_grep 的 files 列表）与无 stats 的单 diff 仍为纯输出渲染，不属本次范围；本次只覆盖带 stats 的单文件形状（`edit_tool` 焦点）。
+  - 证据：新 `tests/unit/tui/test_diff_cards.py` 12 passed（文件+增删统计+hunk、输出/artifact 顺序、失败/残缺回退、控制字符转义、工具名无关、50-hunk 全保留与资源身份、表格/JSON 层次与引用、media CLI fallback、transcript harness）；`tests/unit/tui/` 全量 134 passed + 1 skipped；`ruff check`/`ruff format --check`/`ty check`（0.0.104）全绿。
 
 - [ ] **让后台子 Agent 状态可见，沿现有 monitor 进入跟进与结果。**
   - 现状：已有 alt+a monitor 和 SDK `DescendantNode.activity` 等状态；不缺新的 task console，缺的是主会话工作面中的后台活动提示与结果入口。
