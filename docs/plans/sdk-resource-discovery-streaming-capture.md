@@ -23,46 +23,58 @@ Both contracts reuse one paging/identity vocabulary; defined once here, referenc
 ```python
 @dataclass(frozen=True, slots=True)
 class ResourceSchemeCaps:
-    scheme: str                      # lowercase, _READER_SCHEME_PATTERN
+    scheme: str  # lowercase, _READER_SCHEME_PATTERN
     enumerable: bool
     searchable: bool
-    line_paging: bool                # honors offset/limit line cursors
-    byte_paging: bool                # honors byte_offset/byte_limit
-    inventory_uri: str | None = None # e.g. 'proc://' when enumerable
-    detail: str = ''  # REQUIRED non-empty, unconditionally (accepted review correction below)
+    line_paging: bool  # honors offset/limit line cursors
+    byte_paging: bool  # honors byte_offset/byte_limit
+    inventory_uri: str | None = None  # e.g. 'proc://' when enumerable
+    detail: str = ""  # REQUIRED non-empty, unconditionally (accepted review correction below)
+
 
 @dataclass(frozen=True, slots=True)
 class ResourceEnumRequest:
-    uri: str; offset: int = 1; limit: int | None = None
+    uri: str
+    offset: int = 1
+    limit: int | None = None
+
     @property
-    def scheme(self) -> str: ...     # same lowercasing as ResourceReadRequest.scheme
+    def scheme(self) -> str: ...  # same lowercasing as ResourceReadRequest.scheme
+
 
 @dataclass(frozen=True, slots=True)
 class ResourceEnumEntry:
-    uri: str; label: str | None = None
+    uri: str
+    label: str | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class ResourceEnumPage:
     entries: tuple[ResourceEnumEntry, ...]
-    next_offset: int | None          # None = end; else must exceed request offset
-    total_count: int | None = None   # None = unknown, never guessed
+    next_offset: int | None  # None = end; else must exceed request offset
+    total_count: int | None = None  # None = unknown, never guessed
+
 
 @dataclass(frozen=True, slots=True)
 class ResourceSearchRequest:
-    uri: str                         # scope root, e.g. 'proc://'
-    pattern: str                     # non-empty
+    uri: str  # scope root, e.g. 'proc://'
+    pattern: str  # non-empty
     regex: bool = False
     ignore_case: bool = False
-    offset: int = 1                  # match cursor
+    offset: int = 1  # match cursor
     limit: int | None = None
+
     @property
     def scheme(self) -> str: ...
 
+
 @dataclass(frozen=True, slots=True)
 class ResourceSearchMatch:
-    uri: str; text: str              # one bounded match line
-    line: int | None = None          # set iff scope is line-addressed
-    byte_offset: int | None = None   # set iff scope is byte-addressed
+    uri: str
+    text: str  # one bounded match line
+    line: int | None = None  # set iff scope is line-addressed
+    byte_offset: int | None = None  # set iff scope is byte-addressed
+
 
 @dataclass(frozen=True, slots=True)
 class ResourceSearchPage:
@@ -70,8 +82,9 @@ class ResourceSearchPage:
     next_offset: int | None
     truncated: bool = False
 
+
 class ResourceUnsupported(ValueError):
-    '''A known scheme does not offer the requested capability.'''
+    """A known scheme does not offer the requested capability."""
 ```
 
 **Accepted review correction — `detail` enforcement (integrated).** "Mixed" is dropped from the enforced rule; `detail` is required unconditionally. No boolean combination detects intra-scheme splits: `proc://` is line `True` + byte `True`, yet root pages by line and leaves by byte (`process_reader.py:57-58` vs `:248-249`), so any `line_paging != byte_paging`-style condition has a hole. The enforceable rule, verbatim:
@@ -83,9 +96,7 @@ def __post_init__(self) -> None:
     for name in ("enumerable", "searchable", "line_paging", "byte_paging"):
         if type(getattr(self, name)) is not bool:
             raise ValueError(f"resource scheme capabilities {name} must be a boolean")
-    if self.inventory_uri is not None and (
-        not isinstance(self.inventory_uri, str) or not self.inventory_uri.startswith(f"{self.scheme}://")
-    ):
+    if self.inventory_uri is not None and (not isinstance(self.inventory_uri, str) or not self.inventory_uri.startswith(f"{self.scheme}://")):
         raise ValueError("resource capabilities inventory_uri must be None or a URI in this scheme")
     if not isinstance(self.detail, str) or not self.detail.strip():
         raise ValueError("resource scheme capabilities require a non-empty detail note")
@@ -95,16 +106,16 @@ Precedents: scheme pattern `resources.py:49` + reader check `:211`; `type(...) i
 
 ResourceReader gains three defaulted fields (existing ResourceReader(scheme, handler) calls unchanged):
 ```python
-    capabilities: ResourceSchemeCaps | None = None   # None = undeclared (cf. ToolDefinition.output_schema None=undeclared)
-    enumerate: Callable[[ResourceEnumRequest, ResourceReadCaller, ResourceReaderServices], ResourceEnumPage | None] | None = None
-    search: Callable[[ResourceSearchRequest, ResourceReadCaller, ResourceReaderServices], ResourceSearchPage | None] | None = None
+capabilities: ResourceSchemeCaps | None = None  # None = undeclared (cf. ToolDefinition.output_schema None=undeclared)
+enumerate: Callable[[ResourceEnumRequest, ResourceReadCaller, ResourceReaderServices], ResourceEnumPage | None] | None = None
+search: Callable[[ResourceSearchRequest, ResourceReadCaller, ResourceReaderServices], ResourceSearchPage | None] | None = None
 ```
 PluginServices gains:
 ```python
-    def resource_schemes(self) -> tuple[str, ...]: ...                              # admitted schemes, admission order
-    def resource_capabilities(self, scheme: str) -> ResourceSchemeCaps | None: ...  # None = registered-but-undeclared
-    def enumerate_resources(self, request: ResourceEnumRequest) -> ResourceEnumPage | None: ...  # None = no such scope
-    def search_resources(self, request: ResourceSearchRequest) -> ResourceSearchPage | None: ...
+def resource_schemes(self) -> tuple[str, ...]: ...  # admitted schemes, admission order
+def resource_capabilities(self, scheme: str) -> ResourceSchemeCaps | None: ...  # None = registered-but-undeclared
+def enumerate_resources(self, request: ResourceEnumRequest) -> ResourceEnumPage | None: ...  # None = no such scope
+def search_resources(self, request: ResourceSearchRequest) -> ResourceSearchPage | None: ...
 ```
 
 **Declared caps per scheme.** tool:// enum F ('catalog listing not exposed to readers; read tool://<name>') search F, line T, byte F (rejects byte args resource_readers.py:39); artifact:// enum F ('content-addressed, no inventory') search F ('no store scan') line T byte T; transcript:// enum F ('no session roster') search F, line F + byte F with detail 'page with ?after_sequence=&offset= cursors; limit honored ≤200' (reader ignores request.offset, honors limit resource_readers.py:93-156); agent:// enum F ('root requires an id; no roster route' — subagents/README.md:19) search F, line T byte T (shared pager agent_reader.py:103-112); proc:// enum T inventory_uri='proc://' search F ('live log scan not offered') line T byte T detail 'root pages by line, proc://<id>[/stderr] pages by byte' (process_reader.py:57-58,248-249); web:// enum F search F line T byte T; skill:// enum F ('use skills command for roster') search F line T byte F (skills_plugin.py:440-441). All searchable=False initially — search shape specified, zero providers.

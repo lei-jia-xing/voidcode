@@ -25,24 +25,30 @@ Shared SDK surface (new module `src/voidcode/sdk/suspend.py`; stdlib + pydantic 
 # src/voidcode/sdk/suspend.py
 @dataclass(frozen=True, slots=True)
 class ParkIdentity:
-    park_id: str          # Core-assigned uuid4 hex at park commit (cf. TOOL_DEFERRED request_id, core/services.py:1326)
+    park_id: str  # Core-assigned uuid4 hex at park commit (cf. TOOL_DEFERRED request_id, core/services.py:1326)
     session_id: str
     revision_id: str
-    owner: str            # lease.owner of the suspending callback (sdk/services.py:815-818)
+    owner: str  # lease.owner of the suspending callback (sdk/services.py:815-818)
+
     def as_payload(self) -> dict[str, object]: ...
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> ParkIdentity: ...
 
+
 class SuspendPark(BaseException):
     """Unwind the callback to park it. Carries intent only; caught only at PluginRuntime.invoke."""
+
     def __init__(self, park_kind: Literal["composition", "ask"], intent: Mapping[str, object]) -> None: ...
     @property
     def park_kind(self) -> Literal["composition", "ask"]: ...
     @property
     def intent(self) -> Mapping[str, object]: ...  # owned JSON (own_json_object)
 
-class ParkError(ValueError): ...        # unknown / not-pending / already-terminal park
-class ParkRevisionError(ValueError): ... # expected_revision / active-revision mismatch
+
+class ParkError(ValueError): ...  # unknown / not-pending / already-terminal park
+
+
+class ParkRevisionError(ValueError): ...  # expected_revision / active-revision mismatch
 ```
 
 Per-contract intent/terminal types live in their own modules (`foreground.py`, `ask.py`) and reuse this base. The two contracts differ only in *what* is waited on (driver-staged tool result vs. client-delivered answer) and *who* resumes (driver vs. client RPC).
@@ -59,25 +65,31 @@ New SDK module `src/voidcode/sdk/foreground.py` (frozen DTOs + one Protocol + pu
 # src/voidcode/sdk/foreground.py
 @dataclass(frozen=True, slots=True)
 class CompositionReceipt:
-    composition_id: str   # stable id for logs/cancel correlation; equals the park_id
-    tool_name: str        # the suspending (parked) tool, e.g. "eval_exec"
-    depth: int            # lease.invocation_depth + 1, core-counted like ToolInvocationReceipt (sdk/services.py:628-642)
+    composition_id: str  # stable id for logs/cancel correlation; equals the park_id
+    tool_name: str  # the suspending (parked) tool, e.g. "eval_exec"
+    depth: int  # lease.invocation_depth + 1, core-counted like ToolInvocationReceipt (sdk/services.py:628-642)
+
     def as_payload(self) -> dict[str, object]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class CompositionDraft:
     """What the suspending callback asks the driver to run. JSON-ownable, size-honest."""
+
     cell_source: str
-    namespace_key: str    # plugin-state key holding the cross-cell namespace
+    namespace_key: str  # plugin-state key holding the cross-cell namespace
     tool_allowlist: tuple[str, ...] | None = None  # further narrowing only; never widening
+
     def as_payload(self) -> dict[str, object]: ...
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> CompositionDraft: ...
+
 
 @runtime_checkable
 class ForegroundContext(Protocol):
     """Driver handle for one claimed foreground composition. Mirrors BackgroundContext
     (sdk/services.py:773-808); the driver thread holds this, never a lease, across waits."""
+
     @property
     def composition_id(self) -> str: ...
     @property
@@ -92,15 +104,18 @@ class ForegroundContext(Protocol):
         """One atomic lease-bounded step: fresh owner/revision-bound lease, staged work commits
         before return; raises InterruptedError and commits nothing when aborted."""
         ...
+
     def wait_tool(self, receipt: ToolInvocationReceipt) -> ToolAwaitResult:
         """Wait unleased for this composition's exact deferred request. Reuses ToolAwaitResult
         (sdk/services.py:644-710) verbatim — no forked outcome type. Refused on any leased or
         dispatch thread (engine.py:972-979 discipline)."""
         ...
+
     def stage_terminal(self, result: ToolResult, *, for_tool: str) -> None:
         """Stage the parked call's terminal result for adoption. Single-shot (second call refused);
         data-only, no services cross. Core adopts it without re-invoking the tool."""
         ...
+
 
 class SuspendComposition(SuspendPark):
     def __init__(self, draft: CompositionDraft, *, idempotency_key: str | None = None) -> None: ...
@@ -180,47 +195,59 @@ New SDK module `src/voidcode/sdk/ask.py` (frozen DTOs + one pure validator + err
 # src/voidcode/sdk/ask.py
 AskAnswerStatus = Literal["answered", "cancelled", "expired"]
 
+
 @dataclass(frozen=True, slots=True)
 class AskMultiSelect:
     """The ONE new field shape: multi-choice. Everything single-valued reuses FormField."""
+
     name: str
     label: str
-    options: tuple[ChoiceOption, ...]          # reused (sdk/views.py:107-111)
+    options: tuple[ChoiceOption, ...]  # reused (sdk/views.py:107-111)
     required: bool = True
     min_selections: int = 0
     max_selections: int | None = None
-    context: str | None = None                 # per-question help text (new, plain markdown)
+    context: str | None = None  # per-question help text (new, plain markdown)
+
     def as_payload(self) -> dict[str, object]: ...
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> AskMultiSelect: ...
 
-type AskQuestion = FormField | AskMultiSelect   # FormField reused verbatim (sdk/views.py:142-157):
-                                                # text/multiline/integer/number/boolean + single-select options
+
+type AskQuestion = FormField | AskMultiSelect  # FormField reused verbatim (sdk/views.py:142-157):
+# text/multiline/integer/number/boolean + single-select options
 
 AskContextKind = Literal["notice", "markdown", "fields", "diff", "status", "table", "json", "media"]
+
+
 @dataclass(frozen=True, slots=True)
 class AskContextBlock:
     """One context block reusing an existing view DTO (validated by validate_view_data,
     sdk/views.py:320-332, hence MAX_VIEW_DATA_BYTES-bounded, sdk/views.py:311). No new renderer."""
+
     view_type: AskContextKind
     data: Mapping[str, object]
+
     def as_payload(self) -> dict[str, object]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class AskRequestDraft:
     """What the model/plugin stages. No ids (Core assigns), no permissions, no defaults-as-answers."""
+
     title: str
     questions: tuple[AskQuestion, ...]
     context: tuple[AskContextBlock, ...] = ()
     media: tuple[ArtifactReference, ...] = ()  # optional question images; content-addressed store reuse
-    timeout_ms: int | None = None              # caller-declared only; None = wait (no Core default)
+    timeout_ms: int | None = None  # caller-declared only; None = wait (no Core default)
+
     def as_payload(self) -> dict[str, object]: ...
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> AskRequestDraft: ...
 
+
 @dataclass(frozen=True, slots=True)
 class AskRequest:
-    request_id: str                            # Core-assigned at park (approval precedent engine.py:5954)
+    request_id: str  # Core-assigned at park (approval precedent engine.py:5954)
     session_id: str
     revision_id: str
     owner: str
@@ -229,25 +256,32 @@ class AskRequest:
     context: tuple[AskContextBlock, ...]
     media: tuple[ArtifactReference, ...]
     timeout_ms: int | None
+
     def as_payload(self) -> dict[str, object]: ...
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> AskRequest: ...
 
+
 @dataclass(frozen=True, slots=True)
 class AskAnswer:
     request_id: str
-    values: Mapping[str, object]               # Core-validated typed values (bool/int/float/str/tuple-of-ids)
+    values: Mapping[str, object]  # Core-validated typed values (bool/int/float/str/tuple-of-ids)
     status: AskAnswerStatus
     terminal_sequence: int
+
     def as_payload(self) -> dict[str, object]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class AskResultBody:
     """Typed tool-result body for the adopted ask success (validated by consumers via
     try_validate_tool_body against the ask tool's output_schema)."""
+
     answers: Mapping[str, object]
     status: Literal["answered"] = "answered"
+
     def as_payload(self) -> dict[str, object]: ...
+
 
 def validate_ask_answer(request: AskRequest, values: Mapping[str, object]) -> dict[str, object]:
     """Strict shared validator used by BOTH clients and Core (single implementation, no drift).
@@ -257,10 +291,15 @@ def validate_ask_answer(request: AskRequest, values: Mapping[str, object]) -> di
     min/max_selections. Raises ValueError visibly; no coercion, no default filling."""
     ...
 
+
 class SuspendAsk(SuspendPark):
     def __init__(self, draft: AskRequestDraft, *, idempotency_key: str | None = None) -> None: ...
-class AskError(ValueError): ...          # unknown / not-pending / already-answered / already-parked
-class AskValidationError(ValueError): ... # validate_ask_answer failure, carrying field + reason
+
+
+class AskError(ValueError): ...  # unknown / not-pending / already-answered / already-parked
+
+
+class AskValidationError(ValueError): ...  # validate_ask_answer failure, carrying field + reason
 ```
 
 `PluginServices` gains one method (sibling of the A-method):
