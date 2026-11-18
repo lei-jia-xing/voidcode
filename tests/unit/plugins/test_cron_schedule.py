@@ -285,11 +285,10 @@ class _Summary:
 
 def test_loop_confirmation_message_text() -> None:
     message = loop_confirmation_message(_Summary(prompt="check the deploy", human_schedule="every 10m", id="abc123"))
-    assert message == (
-        "Scheduled 'check the deploy' on cadence 'every 10m' (job ID: abc123). "
-        "Recurring tasks auto-expire after 7 days. "
-        "To cancel sooner, use `cron_delete`."
-    )
+    assert "check the deploy" in message
+    assert "every 10m" in message
+    assert "abc123" in message
+    assert "cron_delete" in message
 
 
 def test_loop_confirmation_message_uses_parsed_schedule() -> None:

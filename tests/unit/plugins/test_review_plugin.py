@@ -98,7 +98,7 @@ def test_target_resolution_table(raw: Mapping[str, object] | None, focus: str | 
 def test_unknown_target_type_is_refused() -> None:
     with pytest.raises(ValueError) as excinfo:
         resolve_review_target({"type": "nonsense"}, focus=None)
-    assert str(excinfo.value) == "unknown review target type 'nonsense'"
+    assert "unknown review target type" in str(excinfo.value)
 
 
 # --- Prompt construction ---

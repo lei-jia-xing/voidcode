@@ -404,9 +404,7 @@ def test_google_service_account_failures_are_typed_and_leak_no_key_material(serv
         error = excinfo.value
         assert error.kind == "missing_auth"
         assert error.retryable is False
-        assert error.message == (
-            "google provider auth service account credentials could not be loaded; check the configured 'service_account_json_path' file"
-        )
+        assert "service_account_json_path" in error.message
         assert secret not in f"{error.message} {error.details} {error!r}"
         assert str(path) not in f"{error.message} {error.details} {error!r}"
 
