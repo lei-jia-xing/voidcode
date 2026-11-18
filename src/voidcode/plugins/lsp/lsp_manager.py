@@ -26,7 +26,6 @@ from urllib.request import url2pathname
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
-from voidcode.config import CONFIG_FILE_NAME
 from voidcode.sdk.provider import ProviderAbortSignal
 from voidcode.sdk.services import PluginServices
 
@@ -781,7 +780,7 @@ class ManagedLspManager:
         return (
             f"failed to start LSP server {server_name}: {details}. "
             f"Ensure '{binary_name}' is installed and available on PATH, "
-            f"or override '{config_path}' in {CONFIG_FILE_NAME} with a custom command."
+            f"or override '{config_path}' in the product configuration with a custom command."
         )
 
     def _workspace_root_for_request(

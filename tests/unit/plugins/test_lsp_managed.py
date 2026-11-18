@@ -523,8 +523,7 @@ def test_missing_server_binary_reports_current_configuration_path(harness: tuple
         manager.request(
             LspRequest(server_name="missing", method="custom", params={}, workspace=tmp_path, session_id="missing-bin", services=services)
         )
-    assert "in voidcode.json" in str(error.value)
-    assert ".voidcode.json" not in str(error.value)
+    assert "in the product configuration" in str(error.value)
     state = manager.current_state().servers["missing"]
     assert state.status == "failed"
     assert state.last_error == str(error.value)
