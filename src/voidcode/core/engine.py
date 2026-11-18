@@ -82,6 +82,7 @@ from ..sdk.tools import (
 from ..sdk.transcript import ContextHistory, TranscriptPage
 from ..sdk.views import PluginViewDescriptor, ViewsSnapshot
 from .activation import (
+    PRIVATE_DIR_NAME,
     Admission,
     ExecutionConfig,
     StateCopyPlan,
@@ -111,6 +112,7 @@ from .facts import fact_for_event
 from .plugins import CommandInvocationOutcome, LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome
 from .sandbox import SandboxBackend
 from .storage.store import (
+    DATABASE_FILENAME,
     Checkpoint,
     ContinuationRecord,
     EventDraft,
@@ -683,8 +685,12 @@ class Core:
         admission: Admission | None = None,
         admits: Callable[..., Admission] | None = None,
         sandbox_backend: SandboxBackend | None = None,
+        # Product-owned config filename (e.g. voidcode.json): the product layer
+        # passes its own name in; the core never spells it, only guards it.
+        config_filename: str = "voidcode.json",
     ) -> None:
         self.auto_drain = auto_drain
+        self._config_filename = config_filename
         self.workspace = workspace.resolve(strict=True)
         self._abort = Cancellation()
         self._closed = False
@@ -733,7 +739,7 @@ class Core:
                 raise RuntimeError("another process owns this workspace") from exc
             self._lease_fd = lease
             state_dir.mkdir(parents=True, exist_ok=True)
-            self.store = SqliteStore(state_dir / "voidcode.db")
+            self.store = SqliteStore(state_dir / DATABASE_FILENAME)
             self._delegation.attach_store(self.store)
             resources.callback(self.store.close)
             runtime = PluginRuntime(
@@ -3082,7 +3088,7 @@ class Core:
         current = self._snapshot.plugin_runtime.sandbox_backend if self._snapshot is not None else None
         if current is None:
             return None
-        protected = [str(self.workspace / "voidcode.json")]
+        protected = [str(self.workspace / self._config_filename)]
         for source in admission.plugins:
             try:
                 protected.append(str(source.root.resolve(strict=True)))
@@ -3090,8 +3096,8 @@ class Core:
                 protected.append(str(source.root))
         if current.helper_path:
             protected.append(current.helper_path)
-        protected.append(str(self._state_dir / "private"))
-        protected.append(str(self._state_dir / "voidcode.db"))
+        protected.append(str(self._state_dir / PRIVATE_DIR_NAME))
+        protected.append(str(self._state_dir / DATABASE_FILENAME))
         protected.append(str(self._state_dir / "process-spool"))
         return SandboxBackend(
             policy=current.policy,

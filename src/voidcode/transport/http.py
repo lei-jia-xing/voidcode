@@ -19,7 +19,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
-from voidcode.core.storage.store import inspect_existing_workspace
+from voidcode.core.storage.store import DATABASE_FILENAME, inspect_existing_workspace
 from voidcode.sdk.client import HealthStatus, SessionFrameWire
 from voidcode.sdk.rpc import RPC_MAX_MESSAGE_BYTES, RPC_SUBPROTOCOL, RpcFailure, RpcNotification, RpcRequest, RpcSuccess
 from voidcode.sdk.views import (
@@ -238,7 +238,7 @@ class CoreTransportApp(FastAPI):
     async def _handle_health(self) -> Response:
         revision_id = self._core.revision_id if self._core is not None else ""
         if not revision_id and self._workspace is not None and self._state_dir is not None:
-            database = self._state_dir / "voidcode.db"
+            database = self._state_dir / DATABASE_FILENAME
             if database.is_file():
                 try:
                     found, _payload, _ = await asyncio.to_thread(inspect_existing_workspace, database, str(self._workspace))

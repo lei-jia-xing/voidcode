@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
 from .config import (
+    CONFIG_FILE_NAME,
     Config,
     PluginEntry,
     load_config,
@@ -22,6 +23,7 @@ from .config import (
     resolve_providers,
 )
 from .core.activation import (
+    PRIVATE_DIR_NAME,
     Admission,
     ExecutionConfig,
     ExecutionPolicy,
@@ -35,6 +37,7 @@ from .core.events import EventType
 from .core.plugins import PluginRuntime, PluginSource
 from .core.sandbox import SandboxBackend, check_helper
 from .core.storage.store import (
+    DATABASE_FILENAME,
     SCHEMA_VERSION,
     EventDraft,
     SqliteStore,
@@ -361,15 +364,15 @@ def sandbox_backend_for(
         )
     check_helper(helper)
     workspace = workspace.resolve(strict=True)
-    protected = [str(workspace / "voidcode.json")]
+    protected = [str(workspace / CONFIG_FILE_NAME)]
     for source in admission.plugins:
         try:
             protected.append(str(source.root.resolve(strict=True)))
         except OSError:
             protected.append(str(source.root))
     protected.append(str(helper))
-    protected.append(str(state_dir / "private"))
-    protected.append(str(state_dir / "voidcode.db"))
+    protected.append(str(state_dir / PRIVATE_DIR_NAME))
+    protected.append(str(state_dir / DATABASE_FILENAME))
     protected.append(str(state_dir / "process-spool"))
     return SandboxBackend(
         policy=SandboxPolicy(
@@ -394,7 +397,7 @@ def open_core(
     state_dir = state_directory(workspace) if state_dir is None else state_dir.resolve()
     if state_dir.is_relative_to(workspace):
         raise ValueError("state directory must be outside the workspace writable by file tools")
-    database = state_dir / "voidcode.db"
+    database = state_dir / DATABASE_FILENAME
 
     current_revision, current_payload, recorded_schema = inspect_existing_workspace(database, str(workspace))
     fresh_first_adoption = current_revision is None and current_payload is None and recorded_schema is None and not database.exists()
@@ -450,6 +453,7 @@ def open_core(
         admission=admission,
         admits=admit_callback,
         sandbox_backend=sandbox_backend_for(config=recorded, workspace=workspace, state_dir=state_dir, admission=admission),
+        config_filename=CONFIG_FILE_NAME,
     )
 
 
@@ -492,7 +496,7 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
     workspace = workspace.resolve(strict=True)
     if not workspace.is_dir():
         raise ValueError("workspace must be a directory")
-    database = state_dir / "voidcode.db"
+    database = state_dir / DATABASE_FILENAME
     with _workspace_lease(workspace):
         store = SqliteStore(database)
         try:

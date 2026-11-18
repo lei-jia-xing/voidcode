@@ -21,7 +21,7 @@ from uuid import uuid4
 from . import __version__
 from .bootstrap import open_core, state_directory
 from .config import BannerConfig
-from .core.storage.store import SessionRecord, open_read_only
+from .core.storage.store import DATABASE_FILENAME, SessionRecord, open_read_only
 from .sdk.json_values import json_wire_object, own_json_object
 
 if TYPE_CHECKING:
@@ -334,7 +334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) -> int:
-    database = directory / "voidcode.db"
+    database = directory / DATABASE_FILENAME
     if not database.is_file():
         raise FileNotFoundError("database does not exist")
     connection = open_read_only(database)

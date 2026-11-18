@@ -34,7 +34,7 @@ __all__ = [
     "write_private_snapshot",
 ]
 
-_PRIVATE_DIR_NAME = "private"
+PRIVATE_DIR_NAME = "private"
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,12 +100,12 @@ class Admission:
 
 
 def snapshot_path(state_dir: Path, revision_id: str) -> Path:
-    return state_dir / _PRIVATE_DIR_NAME / f"{revision_id}.json"
+    return state_dir / PRIVATE_DIR_NAME / f"{revision_id}.json"
 
 
 def write_private_snapshot(state_dir: Path, revision_id: str, snapshot: Mapping[str, object]) -> Path:
     """Persist credential-bearing configuration once per revision identity, never overwriting one."""
-    directory = state_dir / _PRIVATE_DIR_NAME
+    directory = state_dir / PRIVATE_DIR_NAME
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     target = snapshot_path(state_dir, revision_id)

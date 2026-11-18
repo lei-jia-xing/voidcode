@@ -21,6 +21,10 @@ from ..events import CHILD_MESSAGE_OWNER, EventType
 SCHEMA_MAGIC = "voidcode-kernel-v1"
 SCHEMA_VERSION = 6
 
+#: SQLite filename owned by the store, under the injected state directory.
+#: The engine and the CLI rescue read share this instead of re-spelling it.
+DATABASE_FILENAME = "voidcode.db"
+
 #: Maximum canonical (UTF-8 bytes of `canonical_json`) payload for one committed
 #: session event. Storage/integrity guard: session events are append-only and read
 #: back wholesale, so one unbounded row bloats every read of its session. Measured
