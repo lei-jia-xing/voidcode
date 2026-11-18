@@ -109,17 +109,6 @@ def _plugin_root(
     return root
 
 
-def _public_providers(providers: Mapping[str, object]) -> dict[str, object]:
-    """Provider entries with the ``api_key`` secret removed; non-secret fields kept."""
-    public: dict[str, object] = {}
-    for name, entry in providers.items():
-        if isinstance(entry, Mapping):
-            public[name] = {key: value for key, value in entry.items() if key != "api_key"}
-        else:
-            public[name] = entry
-    return public
-
-
 def admit_live(
     config: Config,
     *,
@@ -152,12 +141,7 @@ def admit_live(
             raise ValueError(f"plugin {plugin_id} must configure provider credentials in the root providers section")
         resolved = dict(entry.config)
         if providers:
-            # Least privilege: only the providers plugin builds streaming
-            # adapters at factory time and needs live credentials. Every other
-            # factory keeps the key (strict parsers stay untouched) but gets
-            # entries without api_key, so accidental publication through
-            # state, events, views, or errors is structurally impossible.
-            resolved["providers"] = providers if plugin_id == "providers" else _public_providers(providers)
+            resolved["providers"] = providers
         plugins.append(PluginSource(root=root, plugin_id=plugin_id, config=resolved))
 
     policy_section = {
