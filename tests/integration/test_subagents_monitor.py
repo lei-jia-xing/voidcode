@@ -16,6 +16,7 @@ from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.events import child_completion_notice_id
 from voidcode.core.history_renderer import iter_event_blocks
+from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
 from voidcode.sdk.views import ChoicesViewData, MarkdownViewData, choices_dispatch
 
 _SUBAGENTS_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"
@@ -171,7 +172,11 @@ def test_monitor_browsing_consumes_no_notice_and_stays_descendant_bound(tmp_path
 
 def test_monitor_detail_paging_reaches_every_marker_exactly_once(tmp_path: Path) -> None:
     markers = [f'marker-{index:02d} “ünicode” "quoted" \\u0001' for index in range(12)]
-    big = "BIG-" + '“引用”"q"\\x01' * 4000
+    # Sized between the 40 KiB history page (still forces multi-page output: the
+    # marker rides both the call-args and result blocks, ~76 KiB of history) and the
+    # 50 KiB bounded tool-result commit ceiling (commits verbatim): 38,004 bytes of
+    # marker, 44,211 bytes encoded with the JSON envelope.
+    big = "BIG-" + '“引用”"q"\\x01' * 2000
     replies = [
         openai_response(
             message={
@@ -408,7 +413,16 @@ def test_cancel_reports_a_run_claimed_after_census_distinctly(tmp_path: Path) ->
 
                     def _run_newer() -> None:
                         try:
-                            runner["result"] = core.run("real newer run RACE-NEWER after census", session_id=child)
+                            # The sweep holds the subtree fence while gated at the bound
+                            # signal, so a fenced send would be refused; drive the racing
+                            # run through the internal run surface with the parent's captured
+                            # birth authorization, exactly as the child driver does.
+                            runner["result"] = core._run(
+                                "real newer run RACE-NEWER after census",
+                                session_id=child,
+                                prompt_max_bytes=CHILD_PROMPT_MAX_BYTES,
+                                _root_id=core._delegation._captured_child_root_id(child),
+                            )
                         except Exception as exc:  # noqa: BLE001 - asserted below
                             runner["error"] = exc
 
@@ -635,7 +649,16 @@ def test_parked_settle_pin_refuses_after_newer_run_claims(tmp_path: Path) -> Non
 
                 def _run_newer() -> None:
                     try:
-                        runner["result"] = core.run("real newer run PARKED-NEWER", session_id=child)
+                        # The sweep holds the subtree fence while gated at the batch
+                        # boundary, so a fenced send would be refused; drive the racing
+                        # run through the internal run surface with the parent's captured
+                        # birth authorization, exactly as the child driver does.
+                        runner["result"] = core._run(
+                            "real newer run PARKED-NEWER",
+                            session_id=child,
+                            prompt_max_bytes=CHILD_PROMPT_MAX_BYTES,
+                            _root_id=core._delegation._captured_child_root_id(child),
+                        )
                     except Exception as exc:  # noqa: BLE001 - asserted below
                         runner["error"] = exc
 
@@ -782,13 +805,21 @@ def create_plugin(config):
         outcome: dict[str, object] = {}
 
         def hold_registration(*args, **kwargs):
+            if operation == "send":
+                target = kwargs.get("session_id", args[2] if len(args) > 2 else None)
+                if target == child:
+                    # Pass through the outer parent-authorized send that starts the
+                    # old invocation; only the tool's own registration gates here.
+                    return original(*args, **kwargs)
             at_registration.set()
             assert release_registration.wait(timeout=30), "SDK registration gate never released"
             return original(*args, **kwargs)
 
         def run_old_invocation():
             try:
-                outcome["result"] = core.run("register child work", session_id=child)
+                sent = core.send_child("root", child, "register child work", notify_on_completion=False)
+                outcome["receipt"] = sent
+                outcome["result"] = core.join_child("root", child, timeout_seconds=30)
             except Exception as exc:
                 outcome["error"] = exc
 
@@ -805,14 +836,19 @@ def create_plugin(config):
             runner.join(timeout=30)
             assert not runner.is_alive()
             assert "error" not in outcome, outcome.get("error")
-            assert outcome["result"].status == "interrupted"
+            # Join vocabulary for an owner-cancelled run: session interrupted with
+            # the owner cause surfaces as cancelled, never completed.
+            assert outcome["result"].status == "cancelled"
+            assert outcome["result"].stop_cause == "owner_cancel"
             assert {node.session_id for node in core.list_descendants("root")} == {child, grandchild}
             assert core.session(grandchild).run_id == old_grandchild_run
             assert core.store.pending_continuations(grandchild, limit=100) == ()
 
             monkeypatch.setattr(core.store, method, original)
-            fresh = core.run("register fresh child work", session_id=child)
-            assert fresh.status == "completed", fresh.error
+            sent = core.send_child("root", child, "register fresh child work", notify_on_completion=False)
+            assert sent.delivery == "started", sent
+            fresh = core.join_child("root", child, timeout_seconds=30)
+            assert fresh.status == "completed", fresh
             if operation == "spawn":
                 new_nodes = [node for node in core.list_descendants(child) if node.session_id != grandchild]
                 assert len(new_nodes) == 1 and new_nodes[0].parent_session_id == child
@@ -873,7 +909,16 @@ def test_newer_run_keeps_queued_input_at_the_disarm_boundary(tmp_path: Path, mon
                 outcome["cancel"] = core.cancel_descendant_subtree("root", child, expected_run_id=old_run)
 
             def run_new():
-                outcome["run"] = core.run("explicit newer turn", session_id=child)
+                # The canceller holds the subtree fence while gated at disarm, so a
+                # fenced send would be refused; drive the racing run through the
+                # internal run surface with the parent's captured birth authorization,
+                # exactly as the child driver does.
+                outcome["run"] = core._run(
+                    "explicit newer turn",
+                    session_id=child,
+                    prompt_max_bytes=CHILD_PROMPT_MAX_BYTES,
+                    _root_id=core._delegation._captured_child_root_id(child),
+                )
 
             monkeypatch.setattr(core.store, "cancel_pending_continuations", hold_disarm)
             monkeypatch.setattr(core._delegation, "_merge_child_messages", hold_merge)
