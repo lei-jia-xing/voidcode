@@ -193,6 +193,40 @@ def test_environment_keys_admit_builtin_providers_without_explicit_entries(tmp_p
     assert "environment-deepseek-key" not in public
 
 
+def test_non_provider_factories_receive_secret_stripped_providers(tmp_path, monkeypatch) -> None:
+    """Only the providers plugin factory sees api_key; every other factory keeps the key with secrets stripped."""
+    from collections.abc import Mapping
+
+    from voidcode.bootstrap import admit_live, bundled_sources
+    from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
+
+    for row in PROVIDER_TABLE:
+        for variable in row.env_vars:
+            monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "environment-deepseek-key")
+    admission = admit_live(
+        parse_config({"model": {"model": "deepseek/a-model"}}),
+        workspace=tmp_path,
+        bundled_sources=bundled_sources(),
+    )
+    by_id = {plugin.plugin_id: plugin for plugin in admission.plugins}
+    full = by_id["providers"].config["providers"]
+    assert isinstance(full, Mapping)
+    assert isinstance(full["deepseek"], Mapping)
+    assert full["deepseek"]["api_key"] == "environment-deepseek-key"
+    stripped = by_id["todo"].config["providers"]
+    assert isinstance(stripped, Mapping)
+    assert isinstance(stripped["deepseek"], Mapping)
+    assert "api_key" not in stripped["deepseek"]
+    assert stripped["deepseek"]["base_url"] == "https://api.deepseek.com"
+    snapshot_providers = admission.private_snapshot["providers"]
+    assert isinstance(snapshot_providers, Mapping)
+    assert isinstance(snapshot_providers["deepseek"], Mapping)
+    assert snapshot_providers["deepseek"]["api_key"] == "environment-deepseek-key"
+    public = json.dumps(json_wire_object(admission.revision_payload))
+    assert "environment-deepseek-key" not in public
+
+
 def test_explicit_credentials_and_null_override_discovered_keys(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "environment-deepseek-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "environment-openrouter-key")
