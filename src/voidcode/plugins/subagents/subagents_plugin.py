@@ -56,6 +56,7 @@ _CHILD_KEYS: frozenset[str] = frozenset({"label", "group_id"})
 #: and before structured delivery existed.
 _CHILD_OPTIONAL_KEYS: frozenset[str] = frozenset({"subagent_type", "result_schema"})
 _ITEM_KEYS: frozenset[str] = frozenset({"prompt", "label", "tool_allowlist", "max_steps", "subagent_type", "result_schema"})
+_BATCH_KEYS: frozenset[str] = frozenset({"tasks", "operation", "parallel_group_id", "context"})
 
 
 # --- Durable session state ---
@@ -236,6 +237,7 @@ class _BatchArgs:
     tasks: tuple[_BatchItem, ...] = ()
     operation: str | None = None
     parallel_group_id: str | None = None
+    context: str | None = None
 
 
 def _parse_label(raw: object, *, where: str) -> str:
@@ -418,7 +420,30 @@ def _parse_batch_item(index: int, raw: object) -> _BatchItem:
     )
 
 
+def _parse_batch_context(raw: object) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("task_batch context must be a string")
+    return raw
+
+
+def _merge_batch_prompt(shared_context: str | None, prompt: str) -> str:
+    """One item's effective prompt: shared background plus its own task, under fixed labels.
+
+    The shared context comes only from the spawning batch request and is merged here,
+    before any profile prefixing; it is never persisted, so later calls cannot inherit
+    it. An absent or blank context returns the item prompt byte-identical.
+    """
+    if shared_context is None or not shared_context.strip():
+        return prompt
+    return f"Shared context:\n{shared_context}\n\nTask:\n{prompt}"
+
+
 def _parse_batch_args(arguments: Mapping[str, object]) -> _BatchArgs:
+    unknown = sorted(str(key) for key in arguments if key not in _BATCH_KEYS)
+    if unknown:
+        raise ValueError(f"task_batch field '{unknown[0]}' is not supported")
     operation = arguments.get("operation")
     if operation is not None and (not isinstance(operation, str) or operation not in _BATCH_OPERATIONS):
         raise ValueError(f"task_batch operation must be one of {', '.join(_BATCH_OPERATIONS)}")
@@ -436,6 +461,8 @@ def _parse_batch_args(arguments: Mapping[str, object]) -> _BatchArgs:
             raise ValueError("task_batch accepts one mode per call: tasks to spawn a group, or operation=output with a parallel_group_id")
         if group_id is None:
             raise ValueError(f"task_batch operation={operation} requires a parallel_group_id")
+        if arguments.get("context") is not None:
+            raise ValueError("task_batch context declares shared background and applies to a spawn only")
         return _BatchArgs(operation=operation, parallel_group_id=group_id)
     if not isinstance(raw_tasks, (list, tuple)):
         raise ValueError("task_batch tasks must be an array")
@@ -443,7 +470,10 @@ def _parse_batch_args(arguments: Mapping[str, object]) -> _BatchArgs:
         raise ValueError(f"task_batch accepts at most {MAX_BATCH_SIZE} tasks, got {len(raw_tasks)}")
     if not raw_tasks:
         raise ValueError("task_batch requires at least one task")
-    return _BatchArgs(tasks=tuple(_parse_batch_item(index, item) for index, item in enumerate(raw_tasks)))
+    return _BatchArgs(
+        tasks=tuple(_parse_batch_item(index, item) for index, item in enumerate(raw_tasks)),
+        context=_parse_batch_context(arguments.get("context")),
+    )
 
 
 # --- Result bodies ---
@@ -1089,6 +1119,10 @@ TASK_BATCH_DESCRIPTION = (
     "- Pass tasks with 1-100 items. Every item requires prompt and accepts optional label, "
     "tool_allowlist, max_steps, and subagent_type (a builtin or workspace custom child "
     "profile).\n"
+    "- Pass context with optional shared background declared once for the whole group. It is "
+    'merged into every item\'s prompt under fixed "Shared context" and "Task" labels; an '
+    "absent or blank context leaves item prompts byte-identical. Context applies to a spawn "
+    "only and is never stored or inherited by later calls.\n"
     "- Every item is validated before anything is created; when all items are valid they all start "
     "in the background under one fresh group id.\n"
     "- A result with partial=true lists the created and the failed items. Created children stay "
@@ -1556,6 +1590,13 @@ class TaskBatchTool:
                     "minLength": 1,
                     "description": "Group id returned by an earlier task_batch call.",
                 },
+                "context": {
+                    "type": "string",
+                    "description": (
+                        "Optional shared background for a spawn, merged into every item prompt under "
+                        "fixed labels; absent or blank leaves item prompts unchanged."
+                    ),
+                },
             },
             "required": [],
         },
@@ -1572,7 +1613,7 @@ class TaskBatchTool:
             return _failure(self.definition.name, str(exc))
         if args.operation is not None:
             return self._group_output(args.parallel_group_id or "", state, context, services)
-        return self._spawn_group(args.tasks, state, version, context, services)
+        return self._spawn_group(args.tasks, state, version, context, services, shared_context=args.context)
 
     def _spawn_group(
         self,
@@ -1581,6 +1622,8 @@ class TaskBatchTool:
         version: int,
         context: ToolContext,
         services: PluginServices,
+        *,
+        shared_context: str | None = None,
     ) -> ToolResult:
         group_id = uuid4().hex
         created: list[_BatchChild] = []
@@ -1594,10 +1637,11 @@ class TaskBatchTool:
         except ValueError as exc:
             return _failure(self.definition.name, str(exc))
         for index, (item, profile) in enumerate(zip(items, resolved, strict=True)):
+            effective_prompt = _merge_batch_prompt(shared_context, item.prompt)
             try:
                 child_id = _spawn_child(
                     services,
-                    prompt=item.prompt,
+                    prompt=effective_prompt,
                     label=item.label,
                     max_steps=item.max_steps,
                     profile=profile,

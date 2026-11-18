@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,6 +21,7 @@ from voidcode.plugins.subagents.subagents_plugin import (
     DelegationState,
     TaskBatchTool,
     TaskTool,
+    _merge_batch_prompt,
 )
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.resources import ResourceReadCaller, ResourceReadRequest
@@ -1050,3 +1052,111 @@ def test_standard_agent_max_turns_apply_to_task_and_batch(tmp_path: Path):
     assert isinstance(result, ToolSuccess)
     assert services.spawn_calls[1]["tool_allowlist"] is None
     assert services.spawn_calls[1]["max_steps"] == 2
+
+
+# --- task_batch: shared context ---
+
+
+def test_batch_shared_context_merges_into_every_child_prompt(tmp_path: Path) -> None:
+    services = FakeServices()
+    res = _batch(
+        services,
+        tmp_path,
+        {"tasks": [{"prompt": "one", "label": "a"}, {"prompt": "two"}], "context": "The guide is on the north wall."},
+    )
+    assert isinstance(res, ToolSuccess)
+    payload = _payload(res)
+    group_id = str(payload["parallel_group_id"])
+    assert payload["operation"] == "spawn"
+    assert payload["task_ids"] == ["child-1", "child-2"]
+    assert payload["partial"] is False
+    assert [call["prompt"] for call in services.spawn_calls] == [
+        "Shared context:\nThe guide is on the north wall.\n\nTask:\none",
+        "Shared context:\nThe guide is on the north wall.\n\nTask:\ntwo",
+    ]
+    assert [call["label"] for call in services.spawn_calls] == ["a", ""]
+    # The context rides the spawn prompt only: stored records keep no copy.
+    assert _stored(services).children == {
+        "child-1": ChildRecord(label="a", group_id=group_id),
+        "child-2": ChildRecord(label="", group_id=group_id),
+    }
+    assert services.staged_events == [("task_batch_spawned", {"parallel_group_id": group_id, "task_ids": ["child-1", "child-2"]})]
+    assert "Started 2 child task(s)" in res.output.text
+
+
+@pytest.mark.parametrize("extra", [{}, {"context": ""}, {"context": "   "}])
+def test_batch_shared_context_empty_is_byte_identical_noop(tmp_path: Path, extra: dict[str, object]) -> None:
+    services = FakeServices()
+    res = _batch(services, tmp_path, {"tasks": [{"prompt": "one"}, {"prompt": "two"}], **extra})
+    assert isinstance(res, ToolSuccess)
+    assert [call["prompt"] for call in services.spawn_calls] == ["one", "two"]
+
+
+def test_batch_shared_context_template_is_fixed_and_verbatim() -> None:
+    prompt = "do the thing"
+    assert _merge_batch_prompt(None, prompt) is prompt
+    assert _merge_batch_prompt("", prompt) is prompt
+    assert _merge_batch_prompt("   ", prompt) is prompt
+    assert _merge_batch_prompt("  padded  ", prompt) == "Shared context:\n  padded  \n\nTask:\ndo the thing"
+
+
+def test_batch_shared_context_validation_rejects_before_any_spawn(tmp_path: Path) -> None:
+    services = FakeServices()
+    non_string = _batch(services, tmp_path, {"tasks": [{"prompt": "ok"}], "context": 42})
+    assert isinstance(non_string, ToolFailure)
+    assert non_string.error == "task_batch context must be a string"
+
+    unknown = _batch(services, tmp_path, {"tasks": [{"prompt": "ok"}], "bogus": "x"})
+    assert isinstance(unknown, ToolFailure)
+    assert unknown.error == "task_batch field 'bogus' is not supported"
+
+    spawned = _batch(services, tmp_path, {"tasks": [{"prompt": "ok"}]})
+    group_id = str(_payload(spawned)["parallel_group_id"])
+    on_output = _batch(services, tmp_path, {"operation": "output", "parallel_group_id": group_id, "context": "late"})
+    assert isinstance(on_output, ToolFailure)
+    assert on_output.error == "task_batch context declares shared background and applies to a spawn only"
+
+    assert len(services.spawn_calls) == 1, "only the legitimate spawn ran"
+
+
+def test_batch_shared_context_separates_effective_prompts(tmp_path: Path) -> None:
+    """A changed context never reuses another context's effective prompt (hence never its spec hash)."""
+    north_services = FakeServices()
+    assert isinstance(_batch(north_services, tmp_path, {"tasks": [{"prompt": "audit"}], "context": "north wing"}), ToolSuccess)
+    south_services = FakeServices()
+    assert isinstance(_batch(south_services, tmp_path, {"tasks": [{"prompt": "audit"}], "context": "south wing"}), ToolSuccess)
+    north_again_services = FakeServices()
+    assert isinstance(_batch(north_again_services, tmp_path, {"tasks": [{"prompt": "audit"}], "context": "north wing"}), ToolSuccess)
+    north = str(north_services.spawn_calls[0]["prompt"])
+    south = str(south_services.spawn_calls[0]["prompt"])
+    north_again = str(north_again_services.spawn_calls[0]["prompt"])
+    assert north != south
+    assert north_again == north
+    assert hashlib.sha256(north.encode()).hexdigest() != hashlib.sha256(south.encode()).hexdigest()
+    assert "audit" in north and "north wing" in north
+
+
+def test_batch_shared_context_applies_inside_profile_prefix(tmp_path: Path) -> None:
+    services = FakeServices()
+    res = _batch(
+        services,
+        tmp_path,
+        {"tasks": [{"prompt": "read the docs", "subagent_type": "research"}], "context": "repo uses src layout"},
+    )
+    assert isinstance(res, ToolSuccess)
+    assert services.spawn_calls[0]["prompt"] == (
+        f"{_builtin_body(tmp_path, 'research')}\n\nShared context:\nrepo uses src layout\n\nTask:\nread the docs"
+    )
+    assert services.spawn_calls[0]["readonly"] is True
+
+
+def test_batch_shared_context_is_never_inherited_by_later_calls(tmp_path: Path) -> None:
+    services = FakeServices()
+    first = _batch(services, tmp_path, {"tasks": [{"prompt": "one"}], "context": "background"})
+    assert isinstance(first, ToolSuccess)
+    second = _batch(services, tmp_path, {"tasks": [{"prompt": "two"}]})
+    assert isinstance(second, ToolSuccess)
+    assert [call["prompt"] for call in services.spawn_calls] == [
+        "Shared context:\nbackground\n\nTask:\none",
+        "two",
+    ]

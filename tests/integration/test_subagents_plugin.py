@@ -705,3 +705,104 @@ def test_agent_snapshot_refreshes_current_run_after_concurrent_publication(tmp_p
         assert raced_ref_line.endswith(".") and raced_ref_line[len("Immutable output: ") : -1] != first_ref
         assert "This previous output is superseded while the current run is active." not in raced_text
         assert "This is the last published output, not the current session run's result." not in raced_text
+
+
+# --- task_batch: shared context ---
+
+
+def test_batch_shared_context_reaches_the_real_child_prompt(tmp_path: Path) -> None:
+    """End to end: one declared context is merged into the prompt the real child model sees."""
+    shared_context = "The visitor guide hangs on the north wall."
+    item_prompt = "count the visitor guide doors"
+    merged = f"Shared context:\n{shared_context}\n\nTask:\n{item_prompt}"
+    batch_reply = openai_response(
+        message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-batch-1",
+                    "type": "function",
+                    "function": {
+                        "name": "task_batch",
+                        "arguments": json.dumps({"tasks": [{"prompt": item_prompt, "label": "doors"}], "context": shared_context}),
+                    },
+                }
+            ],
+        },
+        finish="tool_calls",
+    )
+    child_reply = openai_response(message={"role": "assistant", "content": "child answer: 12 doors"}, finish="stop")
+    wait_reply = openai_response(
+        message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "call-wait-1", "type": "function", "function": {"name": "wait", "arguments": "{}"}}],
+        },
+        finish="tool_calls",
+    )
+    finish_reply = openai_response(message={"role": "assistant", "content": "delegation complete"}, finish="stop")
+
+    def route(payload: dict[str, object], _ordinal: int) -> dict[str, object] | None:
+        # The background child races the parent's second turn, so route by request shape, not arrival order.
+        messages = payload.get("messages")
+        # NOTE: match the merged prompt against raw message content; json.dumps would escape its newlines.
+        if isinstance(messages, list) and any(
+            isinstance(message, dict) and message.get("role") == "user" and merged in str(message.get("content", "")) for message in messages
+        ):
+            return child_reply
+        text = json.dumps(payload)
+        if "Delivered 1 child result(s)" in text:
+            return finish_reply
+        if "Started 1 child task(s)" in text:
+            return wait_reply
+        return batch_reply
+
+    with _loopback_server([]) as server:
+        server.before_reply = route
+        core = _core(tmp_path, server)
+        parent_id = core.create_session("parent").session_id
+        result = core.run("count the doors", session_id=parent_id)
+        assert result.status == "completed"
+        assert result.output == "delegation complete"
+
+        # Four provider turns: the parent's three plus the child's one.
+        assert len(server.requests) == 4
+        assert "task_batch" in _tool_names(server.requests[0])
+        child_requests = [
+            request
+            for request in server.requests
+            if any(message.get("role") == "user" and message.get("content") == merged for message in _messages(request))
+        ]
+        assert len(child_requests) == 1, "exactly the child observes the merged prompt"
+        child_users = [message for message in _messages(child_requests[0]) if message.get("role") == "user"]
+        assert child_users and child_users[-1]["content"] == merged
+
+        # The wait delivery keeps this child's exact run/output identity.
+        tool_messages = [message for message in _messages(server.requests[-1]) if message.get("role") == "tool"]
+        wait_text = next(text for text in (str(message.get("content", "")) for message in tool_messages) if "Delivered 1 child result(s)" in text)
+        assert "child answer: 12 doors" in wait_text
+        projection_line = next(line for line in wait_text.splitlines() if '"result_uri"' in line)
+        wait_body = _full_task_body(core, json.loads(projection_line))
+        assert wait_body["operation"] == "wait"
+        raw_children = wait_body["children"]
+        assert isinstance(raw_children, list)
+        (delivered,) = [child for child in raw_children if isinstance(child, Mapping)]
+        assert delivered["output"] == "child answer: 12 doors"
+        assert delivered["status"] == "completed"
+        assert isinstance(delivered["run_id"], str) and delivered["run_id"]
+        child_id = str(delivered["task_id"])
+
+        child = core.session(child_id)
+        assert child.parent_session_id == parent_id
+        assert child.status == "completed"
+
+        stored = core.store.plugin_state("subagents", "session", parent_id)
+        assert stored is not None
+        payload, _version = stored
+        assert payload is not None
+        groups = payload["groups"]
+        assert isinstance(groups, Mapping) and len(groups) == 1
+        assert [list(members) for members in groups.values()] == [[child_id]]
+        children = payload["children"]
+        assert isinstance(children, Mapping) and list(children) == [child_id]
