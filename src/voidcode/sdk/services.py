@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Literal, NoReturn, Protocol, cast, runtime_checkable
 
 from pydantic import TypeAdapter
 
@@ -15,12 +15,22 @@ from .history import PAGE_BYTES
 from .json_values import json_wire_object, own_json_object
 
 if TYPE_CHECKING:
+    from .ask import AskRequestDraft
+    from .foreground import CompositionDraft
     from .history import HistoryPage
     from .hooks import FactPage, StopCause
     from .invocation import ToolContext
     from .observed_effects import ObservedEffects
     from .provider import ProviderDoneReason
-    from .resources import ResourcePage, ResourceReadRequest
+    from .resources import (
+        ResourceEnumPage,
+        ResourceEnumRequest,
+        ResourcePage,
+        ResourceReadRequest,
+        ResourceSchemeCaps,
+        ResourceSearchPage,
+        ResourceSearchRequest,
+    )
     from .tools import ExecutionObservation, ToolDefinition, ToolResult
     from .transcript import ContextHistory, TranscriptPage
 
@@ -555,6 +565,98 @@ class ProcessOutput:
 
 
 @dataclass(frozen=True, slots=True)
+class RawStreamCapture:
+    """One raw byte stream durably captured to its own artifact.
+
+    Exactly one of ``artifact`` (stored bytes) and ``capture_error`` (the
+    verbatim store/append/finish cause) is set, so a silent partial is
+    unrepresentable. ``truncated`` is ``bytes_dropped > 0`` regardless of
+    cause: bound truncation and post-store-failure drops both count.
+    """
+
+    stream: Literal["stdout", "stderr"]
+    bytes_captured: int
+    bytes_dropped: int
+    artifact: ArtifactReference | None
+    capture_error: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.stream not in ("stdout", "stderr"):
+            raise ValueError(f"raw stream capture requires 'stdout' or 'stderr', got {self.stream!r}")
+        for name in ("bytes_captured", "bytes_dropped"):
+            if type(getattr(self, name)) is not int or getattr(self, name) < 0:
+                raise ValueError(f"raw stream capture {name} must be a non-negative integer")
+        if (self.artifact is None) == (self.capture_error is None):
+            raise ValueError("raw stream capture requires exactly one of artifact or capture_error")
+        if self.artifact is not None and not isinstance(self.artifact, ArtifactReference):
+            raise ValueError("raw stream capture artifact must be an ArtifactReference or None")
+        if self.capture_error is not None and (not isinstance(self.capture_error, str) or not self.capture_error):
+            raise ValueError("raw stream capture capture_error must be non-empty text or None")
+
+    @property
+    def truncated(self) -> bool:
+        return self.bytes_dropped > 0
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "stream": self.stream,
+            "bytes_captured": self.bytes_captured,
+            "bytes_dropped": self.bytes_dropped,
+            "truncated": self.truncated,
+            "artifact": None if self.artifact is None else self.artifact.as_payload(),
+            "capture_error": self.capture_error,
+        }
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> RawStreamCapture:
+        if not isinstance(payload, Mapping):
+            raise ValueError("raw stream capture payload must be an object")
+        allowed = {"stream", "bytes_captured", "bytes_dropped", "truncated", "artifact", "capture_error"}
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise ValueError("raw stream capture contains unknown field(s): " + ", ".join(unknown))
+        for name in ("stream", "bytes_captured", "bytes_dropped", "artifact", "capture_error"):
+            if name not in payload:
+                raise ValueError(f"raw stream capture is missing {name}")
+        stream = payload["stream"]
+        if stream not in ("stdout", "stderr"):
+            raise ValueError(f"raw stream capture requires 'stdout' or 'stderr', got {stream!r}")
+        captured = payload["bytes_captured"]
+        dropped = payload["bytes_dropped"]
+        if type(captured) is not int or captured < 0:
+            raise ValueError("raw stream capture bytes_captured must be a non-negative integer")
+        if type(dropped) is not int or dropped < 0:
+            raise ValueError("raw stream capture bytes_dropped must be a non-negative integer")
+        error = payload["capture_error"]
+        if error is not None and (not isinstance(error, str) or not error):
+            raise ValueError("raw stream capture capture_error must be non-empty text or None")
+        if "truncated" in payload:
+            truncated = payload["truncated"]
+            if type(truncated) is not bool or truncated != (dropped > 0):
+                raise ValueError("raw stream capture truncated flag does not match bytes_dropped")
+        raw_artifact = payload["artifact"]
+        reference: ArtifactReference | None
+        if raw_artifact is None:
+            reference = None
+        else:
+            if not isinstance(raw_artifact, Mapping) or set(raw_artifact) != {"sha256", "bytes", "media_type"}:
+                raise ValueError("raw stream capture artifact must be an artifact reference or null")
+            sha256 = raw_artifact["sha256"]
+            total = raw_artifact["bytes"]
+            media_type = raw_artifact["media_type"]
+            if not isinstance(sha256, str) or type(total) is not int or not isinstance(media_type, str):
+                raise ValueError("raw stream capture artifact fields have the wrong types")
+            reference = ArtifactReference(sha256=sha256, bytes=total, media_type=media_type)
+        return RawStreamCapture(
+            stream=cast(Literal["stdout", "stderr"], stream),
+            bytes_captured=captured,
+            bytes_dropped=dropped,
+            artifact=reference,
+            capture_error=error,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessResult:
     """Outcome of one lease-scoped child process.
 
@@ -562,6 +664,10 @@ class ProcessResult:
     cut at the capture bound `truncated` is set, so a caller never mistakes a clipped capture for
     complete output. A process the runtime stopped is reported by `timed_out`/`cancelled`, which
     are separate from the real exit status.
+
+    In raw mode (`raw_capture=True`) `raw` carries exactly the stdout/stderr
+    pair and the text fields are "" and VOID: when `raw` is non-empty they
+    carry no meaning.
     """
 
     exit_code: int | None
@@ -574,6 +680,18 @@ class ProcessResult:
     #: Bounded observed-effects report when this execution ran confined; None on the
     #: unconfined/absent path. Failed/cancelled/timed-out runs still carry the prefix.
     effects: ObservedEffects | None = None
+    #: Raw byte captures: empty in text mode (today); exactly (stdout, stderr) when requested.
+    raw: tuple[RawStreamCapture, ...] = ()
+
+    def __post_init__(self) -> None:
+        raw = tuple(self.raw)
+        object.__setattr__(self, "raw", raw)
+        if any(not isinstance(entry, RawStreamCapture) for entry in raw):
+            raise ValueError("process result raw captures must be RawStreamCapture entries")
+        if len(raw) not in (0, 2):
+            raise ValueError("process result raw must be empty or exactly its stdout/stderr pair")
+        if len(raw) == 2 and (raw[0].stream != "stdout" or raw[1].stream != "stderr"):
+            raise ValueError("process result raw captures must arrive in stdout/stderr order")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1098,6 +1216,33 @@ class PluginServices(Protocol):
         """
         ...
 
+    def resource_schemes(self) -> tuple[str, ...]:
+        """Admitted resource schemes in admission order, read from the live generation map."""
+        ...
+
+    def resource_capabilities(self, scheme: str) -> ResourceSchemeCaps | None:
+        """Declared capabilities of one admitted scheme; None means registered-but-undeclared.
+
+        An unregistered scheme raises ``ResourceUnavailable``.
+        """
+        ...
+
+    def enumerate_resources(self, request: ResourceEnumRequest) -> ResourceEnumPage | None:
+        """Enumerate one scope URI of a known scheme; None means no such scope.
+
+        A known scheme lacking enumeration raises ``ResourceUnsupported`` (never
+        a silent empty page); a malformed page raises ``ResourceContractError``.
+        """
+        ...
+
+    def search_resources(self, request: ResourceSearchRequest) -> ResourceSearchPage | None:
+        """Search one scope URI of a known scheme for a pattern; None means no such scope.
+
+        A known scheme lacking search raises ``ResourceUnsupported`` (never a
+        silent empty page); a malformed page raises ``ResourceContractError``.
+        """
+        ...
+
     def invoke_tool(
         self,
         name: str,
@@ -1118,6 +1263,27 @@ class PluginServices(Protocol):
         """
         ...
 
+    def suspend_foreground_composition(self, draft: CompositionDraft, *, idempotency_key: str | None = None) -> NoReturn:
+        """Stage this composition's wait-intent on the lease and raise SuspendComposition (never returns).
+
+        Tool-callback leases only; hook/command/background leases are refused
+        visibly. With idempotency_key a retried stage returns the existing
+        composition instead of a second one (spawn_child precedent). Refused
+        with CompositionNestedRefused when the suspending lease is already
+        composition-bound (single composition slot, no stack); suspend_for_ask
+        from such a lease remains allowed.
+        """
+        ...
+
+    def suspend_for_ask(self, draft: AskRequestDraft, *, idempotency_key: str | None = None) -> NoReturn:
+        """Validate refs/shape on the lease, stage the ask intent, raise SuspendAsk (never returns).
+
+        Tool-callback leases only. Media digests are shape-checked here;
+        existence is resolved by the plugin via read_artifact BEFORE suspending
+        (FileNotFoundError = visible stage error, no park).
+        """
+        ...
+
     def run_process(
         self,
         argv: Sequence[str],
@@ -1128,6 +1294,8 @@ class PluginServices(Protocol):
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
         on_output: Callable[[str, bytes], None] | None = None,
+        raw_capture: bool = False,
+        raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
         """Run one child process of this runtime, in its own process group under this lease.
 
@@ -1137,6 +1305,9 @@ class PluginServices(Protocol):
         neither may touch the machine. `env` overrides the inherited environment; `cwd` defaults to
         the workspace. Each stream is captured up to `max_output_bytes` and the excess is dropped
         with `truncated` set. A lease cancellation kills the whole group before returning.
+        With `raw_capture` each stream is also durably captured byte-identical to its own
+        artifact (`raw_media_type` names both); `raw` then carries exactly the
+        stdout/stderr pair and the text fields are "" and VOID.
         """
         ...
 
@@ -1150,6 +1321,8 @@ class PluginServices(Protocol):
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
         on_output: Callable[[str, bytes], None] | None = None,
+        raw_capture: bool = False,
+        raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
         """Run one read-only query child process of this runtime under this lease.
 
@@ -1157,7 +1330,10 @@ class PluginServices(Protocol):
         commands (such as code search, AST queries, linters, or non-mutating analysis tools).
         Hook leases remain purely observational and are refused outright. When sandboxed,
         the process runs under a read-only profile, and no mutable filesystem observations
-        are staged.
+        are staged. With `raw_capture` each stream is also durably captured
+        byte-identical to its own artifact (`raw_media_type` names both); `raw`
+        then carries exactly the stdout/stderr pair and the text fields are ""
+        and VOID.
         """
         ...
 

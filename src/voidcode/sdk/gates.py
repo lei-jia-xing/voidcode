@@ -8,8 +8,9 @@ stream events and run receipts into :data:`GateChange`, then folds them with
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from .ask import AskRequest
 from .commands import ConfirmationRequest
 from .hooks import ApprovalRequestedFact
 from .tools import ToolCall
@@ -85,7 +86,29 @@ class ConfirmationGate:
         return ConfirmationGate(request=request, revision_id=revision_id)
 
 
-type PendingGate = ApprovalGate | ConfirmationGate
+@dataclass(frozen=True, slots=True)
+class AskGate:
+    """One pending model-initiated ask plus the revision it was displayed under."""
+
+    request: AskRequest
+    revision_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, AskRequest):
+            raise ValueError("ask gate requires an AskRequest")
+        if not isinstance(self.revision_id, str):
+            raise ValueError("ask gate revision_id must be a string")
+
+    @property
+    def request_id(self) -> str:
+        return self.request.request_id
+
+    @staticmethod
+    def from_request(request: AskRequest, *, revision_id: str) -> AskGate:
+        return AskGate(request=request, revision_id=revision_id)
+
+
+type PendingGate = ApprovalGate | ConfirmationGate | AskGate
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +119,11 @@ class ApprovalRequested:
 @dataclass(frozen=True, slots=True)
 class ConfirmationRequested:
     gate: ConfirmationGate
+
+
+@dataclass(frozen=True, slots=True)
+class AskRequested:
+    gate: AskGate
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,7 +157,7 @@ class RunTerminated:
             raise ValueError("terminated run requires a non-empty run_id")
 
 
-type GateChange = ApprovalRequested | ConfirmationRequested | GateDecided | ActivationCommitted | RunTerminated
+type GateChange = ApprovalRequested | ConfirmationRequested | AskRequested | GateDecided | ActivationCommitted | RunTerminated
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +166,12 @@ class GateState:
 
     approval: ApprovalGate | None = None
     confirmations: tuple[ConfirmationGate, ...] = ()
+    asks: tuple[AskGate, ...] = ()
     decided: frozenset[str] = frozenset()
+    #: Cross-kind arrival order of confirmation/ask request ids. Ordering only:
+    #: excluded from equality so reducer output still compares equal to
+    #: hand-built states that predate it.
+    arrival: tuple[str, ...] = field(default=(), compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.approval is not None and not isinstance(self.approval, ApprovalGate):
@@ -147,7 +180,12 @@ class GateState:
         for gate in self.confirmations:
             if not isinstance(gate, ConfirmationGate):
                 raise ValueError("gate state confirmations must be ConfirmationGate entries")
+        object.__setattr__(self, "asks", tuple(self.asks))
+        for gate in self.asks:
+            if not isinstance(gate, AskGate):
+                raise ValueError("gate state asks must be AskGate entries")
         object.__setattr__(self, "decided", frozenset(self.decided))
+        object.__setattr__(self, "arrival", tuple(self.arrival))
 
 
 def reduce_gates(state: GateState, change: GateChange) -> GateState:
@@ -158,50 +196,80 @@ def reduce_gates(state: GateState, change: GateChange) -> GateState:
             return state
         if state.approval is not None and state.approval.request_id == gate.request_id:
             return state
-        return GateState(approval=gate, confirmations=state.confirmations, decided=state.decided)
+        return GateState(approval=gate, confirmations=state.confirmations, asks=state.asks, decided=state.decided, arrival=state.arrival)
     if isinstance(change, ConfirmationRequested):
         gate = change.gate
         if gate.request_id in state.decided:
             return state
         if any(entry.request_id == gate.request_id for entry in state.confirmations):
             return state
-        return GateState(approval=state.approval, confirmations=(*state.confirmations, gate), decided=state.decided)
+        arrival = state.arrival if gate.request_id in state.arrival else (*state.arrival, gate.request_id)
+        return GateState(approval=state.approval, confirmations=(*state.confirmations, gate), asks=state.asks, decided=state.decided, arrival=arrival)
+    if isinstance(change, AskRequested):
+        gate = change.gate
+        if gate.request_id in state.decided:
+            return state
+        if any(entry.request_id == gate.request_id for entry in state.asks):
+            return state
+        arrival = state.arrival if gate.request_id in state.arrival else (*state.arrival, gate.request_id)
+        return GateState(approval=state.approval, confirmations=state.confirmations, asks=(*state.asks, gate), decided=state.decided, arrival=arrival)
     if isinstance(change, GateDecided):
         request_id = change.request_id
         approval = None if state.approval is not None and state.approval.request_id == request_id else state.approval
         confirmations = tuple(entry for entry in state.confirmations if entry.request_id != request_id)
-        if request_id in state.decided and approval is state.approval and len(confirmations) == len(state.confirmations):
+        asks = tuple(entry for entry in state.asks if entry.request_id != request_id)
+        arrival = tuple(entry for entry in state.arrival if entry != request_id)
+        if (
+            request_id in state.decided
+            and approval is state.approval
+            and len(confirmations) == len(state.confirmations)
+            and len(asks) == len(state.asks)
+        ):
             return state
-        return GateState(approval=approval, confirmations=confirmations, decided=state.decided | {request_id})
+        return GateState(approval=approval, confirmations=confirmations, asks=asks, decided=state.decided | {request_id}, arrival=arrival)
     if isinstance(change, ActivationCommitted):
         dropped = {entry.request_id for entry in state.confirmations if entry.revision_id != change.to_revision_id}
+        dropped |= {entry.request_id for entry in state.asks if entry.revision_id != change.to_revision_id}
         confirmations = tuple(entry for entry in state.confirmations if entry.revision_id == change.to_revision_id)
+        asks = tuple(entry for entry in state.asks if entry.revision_id == change.to_revision_id)
+        arrival = tuple(entry for entry in state.arrival if entry not in dropped)
         approval = state.approval
         if approval is not None:
             dropped.add(approval.request_id)
             approval = None
         if not dropped:
             return state
-        return GateState(approval=approval, confirmations=confirmations, decided=state.decided | dropped)
+        return GateState(approval=approval, confirmations=confirmations, asks=asks, decided=state.decided | dropped, arrival=arrival)
     if isinstance(change, RunTerminated):
         approval = state.approval
         if approval is None or approval.run_id != change.run_id:
             return state
-        return GateState(approval=None, confirmations=state.confirmations, decided=state.decided | {approval.request_id})
+        return GateState(
+            approval=None, confirmations=state.confirmations, asks=state.asks, decided=state.decided | {approval.request_id}, arrival=state.arrival
+        )
     raise ValueError(f"unknown gate change: {type(change).__name__}")
 
 
 def pending_gates(state: GateState) -> tuple[PendingGate, ...]:
-    """Ordered pending gates: the blocking approval first, then confirmations."""
+    """Ordered pending gates: the blocking approval first, then asks and confirmations in arrival order."""
+    by_id: dict[str, PendingGate] = {}
+    for gate in state.confirmations:
+        by_id[gate.request_id] = gate
+    for gate in state.asks:
+        by_id[gate.request_id] = gate
+    ranked = [by_id[request_id] for request_id in state.arrival if request_id in by_id]
+    ranked.extend(gate for gate in (*state.confirmations, *state.asks) if gate.request_id not in state.arrival)
     if state.approval is None:
-        return state.confirmations
-    return (state.approval, *state.confirmations)
+        return tuple(ranked)
+    return (state.approval, *ranked)
 
 
 __all__ = [
     "ActivationCommitted",
     "ApprovalGate",
     "ApprovalRequested",
+    "AskGate",
+    "AskRequested",
     "ConfirmationGate",
     "ConfirmationRequested",
     "GateChange",

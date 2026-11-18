@@ -8,17 +8,28 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NoReturn
 
 import jsonschema
 import pytest
 
 from voidcode.core.storage.store import StoredEvent
 from voidcode.core.transcript import context_records
+from voidcode.sdk.ask import AskRequestDraft
+from voidcode.sdk.foreground import CompositionDraft
 from voidcode.sdk.history import HistoryPage
 from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import json_wire_object, own_json_object
-from voidcode.sdk.resources import ResourcePage, ResourceReadRequest, ResourceUnavailable
+from voidcode.sdk.resources import (
+    ResourceEnumPage,
+    ResourceEnumRequest,
+    ResourcePage,
+    ResourceReadRequest,
+    ResourceSchemeCaps,
+    ResourceSearchPage,
+    ResourceSearchRequest,
+    ResourceUnavailable,
+)
 from voidcode.sdk.services import (
     ArtifactPage,
     ArtifactReference,
@@ -492,6 +503,18 @@ class FakeServices(PluginServices):
             return self.resources_dict[request.scheme]
         raise ResourceUnavailable(f"no admitted plugin reads the resource scheme {request.scheme!r}")
 
+    def resource_schemes(self) -> tuple[str, ...]:
+        raise NotImplementedError("FakeServices does not enumerate resource schemes")
+
+    def resource_capabilities(self, scheme: str) -> ResourceSchemeCaps | None:
+        raise NotImplementedError("FakeServices does not report resource capabilities")
+
+    def enumerate_resources(self, request: ResourceEnumRequest) -> ResourceEnumPage | None:
+        raise NotImplementedError("FakeServices does not enumerate resources")
+
+    def search_resources(self, request: ResourceSearchRequest) -> ResourceSearchPage | None:
+        raise NotImplementedError("FakeServices does not search resources")
+
     ask_query = query
 
     # --- Tools ---
@@ -514,6 +537,12 @@ class FakeServices(PluginServices):
             tool_name=name,
             depth=1,
         )
+
+    def suspend_foreground_composition(self, draft: CompositionDraft, *, idempotency_key: str | None = None) -> NoReturn:
+        raise NotImplementedError("FakeServices does not park foreground compositions")
+
+    def suspend_for_ask(self, draft: AskRequestDraft, *, idempotency_key: str | None = None) -> NoReturn:
+        raise NotImplementedError("FakeServices does not park asks")
 
     # --- Model Query / Ask ---
 
@@ -664,9 +693,11 @@ class FakeServices(PluginServices):
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
         on_output: Callable[[str, bytes], None] | None = None,
+        raw_capture: bool = False,
+        raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
-        _ = argv, cwd, env, stdin, timeout_seconds, max_output_bytes, on_output
-        return self.process_result or ProcessResult(exit_code=0, stdout=b"", stderr=b"")
+        _ = argv, cwd, env, stdin, timeout_seconds, max_output_bytes, on_output, raw_capture, raw_media_type
+        return self.process_result or ProcessResult(exit_code=0, stdout="", stderr="", duration_ms=0)
 
     def run_query_process(
         self,
@@ -678,6 +709,8 @@ class FakeServices(PluginServices):
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
         on_output: Callable[[str, bytes], None] | None = None,
+        raw_capture: bool = False,
+        raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
         return self.run_process(
             argv,
@@ -687,6 +720,8 @@ class FakeServices(PluginServices):
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
             on_output=on_output,
+            raw_capture=raw_capture,
+            raw_media_type=raw_media_type,
         )
 
     def spawn_service_process(

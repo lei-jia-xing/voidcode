@@ -1246,6 +1246,13 @@ export interface components {
             pending_approval?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Pending Ask
+             * @default null
+             */
+            pending_ask?: {
+                [key: string]: unknown;
+            } | null;
             /** Revision Id */
             revision_id: string;
             /** Run Id */

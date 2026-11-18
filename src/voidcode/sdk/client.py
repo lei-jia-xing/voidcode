@@ -237,6 +237,12 @@ class RunSpec:
     max_steps: int | None = None
     root_action_budget: int | None = None
     images: tuple[ImageAttachment, ...] = ()
+    #: Request-scoped interaction declaration (D3): None means interactive. A run
+    #: declaring "unattended" refuses ask and approval parks at the park-commit
+    #: site with a typed ToolFailure (the run continues; the model sees explicit
+    #: unsupported, never a hang, never a fabricated default). Enforcement is
+    #: Core's; this field only declares the mode for this run.
+    interaction: Literal["interactive", "unattended"] | None = None
 
     def __post_init__(self) -> None:
         _validated_prompt(self.prompt)
@@ -247,6 +253,8 @@ class RunSpec:
         for img in self.images:
             if not isinstance(img, ImageAttachment):
                 raise ValueError(f"expected ImageAttachment, got {type(img).__name__}")
+        if self.interaction is not None and self.interaction not in ("interactive", "unattended"):
+            raise ValueError('interaction must be "interactive", "unattended", or null')
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +266,10 @@ class ResumeSpec:
     max_steps: int | None = None
     extend_root_actions: int | None = None
     root_action_grant_id: str | None = None
+    #: Request-scoped interaction declaration (D3): re-declares the mode for the
+    #: resumed run (override, per-run); None means interactive. Enforcement is
+    #: Core's; this field only declares the mode.
+    interaction: Literal["interactive", "unattended"] | None = None
 
     def __post_init__(self) -> None:
         if (self.approval_request_id is None) != (self.decision is None):
@@ -266,6 +278,8 @@ class ResumeSpec:
             raise ValueError("decision must be 'allow' or 'deny'")
         _validated_steps(self.max_steps)
         _validated_grant(self.extend_root_actions, self.root_action_grant_id)
+        if self.interaction is not None and self.interaction not in ("interactive", "unattended"):
+            raise ValueError('interaction must be "interactive", "unattended", or null')
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,12 +293,15 @@ class RunResult:
     output: str | None = None
     error: str | None = None
     pending_approval: Mapping[str, object] | None = None
+    pending_ask: Mapping[str, object] | None = None
     stop_cause: StopCause | None = None
     budget_exhaustion: BudgetExhaustion | None = None
 
     def __post_init__(self) -> None:
         if self.pending_approval is not None:
             object.__setattr__(self, "pending_approval", own_json_object(self.pending_approval))
+        if self.pending_ask is not None:
+            object.__setattr__(self, "pending_ask", own_json_object(self.pending_ask))
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> RunResult:
@@ -300,6 +317,8 @@ class RunResult:
             "error": self.error,
             "pending_approval": None if self.pending_approval is None else json_wire_object(self.pending_approval),
         }
+        if self.pending_ask is not None:
+            payload["pending_ask"] = json_wire_object(self.pending_ask)
         if self.stop_cause is not None:
             payload["stop_cause"] = self.stop_cause
         if self.budget_exhaustion is not None:

@@ -137,6 +137,172 @@ class ResourcePage:
         object.__setattr__(self, "body", own_json_object(self.body))
 
 
+@dataclass(frozen=True, slots=True)
+class ResourceSchemeCaps:
+    """Declared capabilities of one ``scheme://`` namespace: what readers may route to it."""
+
+    scheme: str
+    enumerable: bool
+    searchable: bool
+    line_paging: bool
+    byte_paging: bool
+    inventory_uri: str | None = None
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scheme, str) or _READER_SCHEME_PATTERN.fullmatch(self.scheme) is None:
+            raise ValueError(f"invalid resource scheme: {self.scheme!r}")
+        for name in ("enumerable", "searchable", "line_paging", "byte_paging"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"resource scheme capabilities {name} must be a boolean")
+        if self.inventory_uri is not None and (not isinstance(self.inventory_uri, str) or not self.inventory_uri.startswith(f"{self.scheme}://")):
+            raise ValueError("resource capabilities inventory_uri must be None or a URI in this scheme")
+        if not isinstance(self.detail, str) or not self.detail.strip():
+            raise ValueError("resource scheme capabilities require a non-empty detail note")
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceEnumRequest:
+    """One enumeration of a scope URI plus a 1-based match cursor."""
+
+    uri: str
+    offset: int = 1
+    limit: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.uri, str) or not self.uri.strip():
+            raise ValueError("resource URI must be a non-empty string")
+        scheme, sep, _rest = self.uri.partition("://")
+        if not sep or _URI_SCHEME_PATTERN.fullmatch(scheme) is None:
+            raise ValueError(f"unsupported resource URI: {self.uri}")
+        if type(self.offset) is not int or self.offset < 1:
+            raise ValueError("resource enumerate offset must be a positive integer")
+        if self.limit is not None and (type(self.limit) is not int or self.limit < 1):
+            raise ValueError("resource enumerate limit must be a positive integer or None")
+
+    @property
+    def scheme(self) -> str:
+        """The lowercased URI scheme used for runtime lookup."""
+        scheme, _, _ = self.uri.partition("://")
+        return scheme.lower()
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceEnumEntry:
+    """One enumerated scope member: its URI plus an optional display label."""
+
+    uri: str
+    label: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.uri, str) or not self.uri.strip():
+            raise ValueError("resource enum entry requires a non-empty URI")
+        scheme, sep, _rest = self.uri.partition("://")
+        if not sep or _URI_SCHEME_PATTERN.fullmatch(scheme) is None:
+            raise ValueError(f"unsupported resource URI: {self.uri}")
+        if self.label is not None and not isinstance(self.label, str):
+            raise ValueError("resource enum entry label must be text or null")
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceEnumPage:
+    """One bounded enumeration page: entries plus the continuation cursor (None = end)."""
+
+    entries: tuple[ResourceEnumEntry, ...]
+    next_offset: int | None
+    total_count: int | None = None
+
+    def __post_init__(self) -> None:
+        entries = tuple(self.entries)
+        object.__setattr__(self, "entries", entries)
+        if any(not isinstance(entry, ResourceEnumEntry) for entry in entries):
+            raise ValueError("resource enum page entries must be ResourceEnumEntry values")
+        if self.next_offset is not None and (type(self.next_offset) is not int or self.next_offset < 1):
+            raise ValueError("resource enum page next_offset must be a positive integer or None")
+        if self.total_count is not None and (type(self.total_count) is not int or self.total_count < 0):
+            raise ValueError("resource enum page total_count must be a non-negative integer or None")
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceSearchRequest:
+    """One scoped pattern search plus a 1-based match cursor."""
+
+    uri: str
+    pattern: str
+    regex: bool = False
+    ignore_case: bool = False
+    offset: int = 1
+    limit: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.uri, str) or not self.uri.strip():
+            raise ValueError("resource URI must be a non-empty string")
+        scheme, sep, _rest = self.uri.partition("://")
+        if not sep or _URI_SCHEME_PATTERN.fullmatch(scheme) is None:
+            raise ValueError(f"unsupported resource URI: {self.uri}")
+        if not isinstance(self.pattern, str) or not self.pattern:
+            raise ValueError("resource search pattern must be a non-empty string")
+        for name in ("regex", "ignore_case"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"resource search {name} must be a boolean")
+        if type(self.offset) is not int or self.offset < 1:
+            raise ValueError("resource search offset must be a positive integer")
+        if self.limit is not None and (type(self.limit) is not int or self.limit < 1):
+            raise ValueError("resource search limit must be a positive integer or None")
+
+    @property
+    def scheme(self) -> str:
+        """The lowercased URI scheme used for runtime lookup."""
+        scheme, _, _ = self.uri.partition("://")
+        return scheme.lower()
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceSearchMatch:
+    """One bounded match line plus whichever address its scope uses."""
+
+    uri: str
+    text: str
+    line: int | None = None
+    byte_offset: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.uri, str) or not self.uri.strip():
+            raise ValueError("resource search match requires a non-empty URI")
+        scheme, sep, _rest = self.uri.partition("://")
+        if not sep or _URI_SCHEME_PATTERN.fullmatch(scheme) is None:
+            raise ValueError(f"unsupported resource URI: {self.uri}")
+        if not isinstance(self.text, str):
+            raise ValueError("resource search match text must be a string")
+        if self.line is not None and (type(self.line) is not int or self.line < 1):
+            raise ValueError("resource search match line must be a positive integer or None")
+        if self.byte_offset is not None and (type(self.byte_offset) is not int or self.byte_offset < 0):
+            raise ValueError("resource search match byte_offset must be a non-negative integer or None")
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceSearchPage:
+    """One bounded search page: matches plus the continuation cursor (None = end)."""
+
+    matches: tuple[ResourceSearchMatch, ...]
+    next_offset: int | None
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        matches = tuple(self.matches)
+        object.__setattr__(self, "matches", matches)
+        if any(not isinstance(match, ResourceSearchMatch) for match in matches):
+            raise ValueError("resource search page matches must be ResourceSearchMatch values")
+        if self.next_offset is not None and (type(self.next_offset) is not int or self.next_offset < 1):
+            raise ValueError("resource search page next_offset must be a positive integer or None")
+        if type(self.truncated) is not bool:
+            raise ValueError("resource search page truncated must be a boolean")
+
+
+class ResourceUnsupported(ValueError):
+    """A known scheme does not offer the requested capability."""
+
+
 @runtime_checkable
 class ResourceReaderServices(Protocol):
     """The narrow read surface a resource handler may use.
@@ -206,9 +372,17 @@ class ResourceReader:
 
     scheme: str
     handler: Callable[[ResourceReadRequest, ResourceReadCaller, ResourceReaderServices], ResourcePage | None]
+    capabilities: ResourceSchemeCaps | None = None
+    enumerate: Callable[[ResourceEnumRequest, ResourceReadCaller, ResourceReaderServices], ResourceEnumPage | None] | None = None
+    search: Callable[[ResourceSearchRequest, ResourceReadCaller, ResourceReaderServices], ResourceSearchPage | None] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.scheme, str) or _READER_SCHEME_PATTERN.fullmatch(self.scheme) is None:
             raise ValueError(f"invalid resource scheme: {self.scheme!r}")
         if not callable(self.handler):
             raise ValueError(f"resource reader {self.scheme!r} handler must be callable")
+        if self.capabilities is not None and not isinstance(self.capabilities, ResourceSchemeCaps):
+            raise ValueError(f"resource reader {self.scheme!r} capabilities must be ResourceSchemeCaps or None")
+        for name in ("enumerate", "search"):
+            if getattr(self, name) is not None and not callable(getattr(self, name)):
+                raise ValueError(f"resource reader {self.scheme!r} {name} must be callable or None")
