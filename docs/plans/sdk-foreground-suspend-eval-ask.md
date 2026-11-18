@@ -347,4 +347,4 @@ No HTML/DSL form language; no new renderer protocol or view kinds; no permission
 - Eval×ask synergy is free: an eval cell can call the `ask` tool through the ordinary inner pipeline (park-within-composition: inner ask parks the session with both bindings, like inner approval) and consume `AskResultBody` via `try_validate_tool_body`. No extra contract needed.
 - Available for review iterations; no files written, no tests run (design task, read-only as instructed).
 
-Recording note (2026-11-18): accepted, unimplemented. Implement from this doc; open questions live in A§7/B§7 (including B7.2 sequential asks, still awaiting product).
+Recording note (2026-11-18): accepted, unimplemented. Implement from this doc; open questions live in A§7/B§7 (B7.2 sequential asks decided 2026-11-18 — sequential asks accepted; all other items still open).
