@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import hashlib
 import json
@@ -88,7 +89,7 @@ from .activation import (
     plan_state_copies,
     write_private_snapshot,
 )
-from .artifacts import ArtifactNotFoundError, ArtifactStore
+from .artifacts import SHA256_PATTERN, ArtifactNotFoundError, ArtifactStore
 from .coverage import (
     ProjectionAllocation,
     ProjectionRequiresReference,
@@ -1334,6 +1335,72 @@ class Core:
         self._drive_pending(session_id)
         return result
 
+    def _spill_followup_images(self, images: tuple[ImageAttachment, ...]) -> list[dict[str, object]]:
+        """Spill queued follow-up image bytes to the artifact store, returning references.
+
+        Each reference is `{"media_type", "sha256", "bytes"}` — the same content
+        address the tool-result spill path publishes, never a second blob store.
+        The continuation payload carries only these small references, so a large
+        image no longer blows the continuation bound; delivery rehydrates to the
+        same base64 bytes the direct path commits. Invalid base64 fails here,
+        visibly, before any row is staged.
+        """
+        decoded: list[bytes] = []
+        for index, img in enumerate(images):
+            try:
+                decoded.append(base64.b64decode(img.data, validate=True))
+            except ValueError as exc:
+                raise ValueError(f"queued follow-up image {index} has invalid base64 data") from exc
+        refs: list[dict[str, object]] = []
+        for img, raw in zip(images, decoded, strict=True):
+            spill_id, spill = self._artifacts.start_spill(img.media_type, owner="kernel")
+            try:
+                spill.append(raw)
+                digest, size, _media_type = self._artifacts.finish(spill_id)
+            except BaseException:
+                self._artifacts.discard(spill_id)
+                raise
+            refs.append({"media_type": img.media_type, "sha256": digest, "bytes": size})
+        return refs
+
+    def _rehydrate_followup_images(self, raw_images: list[dict[str, object]], continuation_id: str) -> tuple[ImageAttachment, ...]:
+        """Rebuild provider-visible images from continuation references.
+
+        Legacy inline entries (`{"media_type", "data"}`) still decode in place;
+        reference entries (`{"media_type", "sha256", "bytes"}`) read back through
+        the shared artifact pager with digest+size verification. Missing,
+        unreadable, or malformed references raise `StoreConflict` — the caller
+        completes the continuation as failed first, so delivery never falls back
+        to text-only pretending completeness.
+        """
+        if not raw_images:
+            return ()
+        rehydrated: list[ImageAttachment] = []
+        for index, entry in enumerate(raw_images):
+            if not isinstance(entry, Mapping):
+                raise StoreConflict(f"queued follow-up {continuation_id!r} image {index} is malformed")
+            if "data" in entry:
+                try:
+                    rehydrated.append(ImageAttachment.from_payload(entry))
+                except ValueError as exc:
+                    raise StoreConflict(f"queued follow-up {continuation_id!r} image {index} is malformed") from exc
+                continue
+            media_type = entry.get("media_type")
+            sha = entry.get("sha256")
+            size = entry.get("bytes")
+            if not isinstance(media_type, str) or not media_type:
+                raise StoreConflict(f"queued follow-up {continuation_id!r} image {index} has no media type")
+            if not isinstance(sha, str) or SHA256_PATTERN.fullmatch(sha) is None:
+                raise StoreConflict(f"queued follow-up {continuation_id!r} image {index} has an invalid artifact reference")
+            if type(size) is not int or size < 0:
+                raise StoreConflict(f"queued follow-up {continuation_id!r} image {index} has an invalid artifact size")
+            try:
+                content = read_artifact_content(ArtifactReference(sha, size, media_type), self._artifact_page)
+            except (ValueError, OSError) as exc:
+                raise StoreConflict(f"queued follow-up {continuation_id!r} image {index} references missing or unreadable artifact {sha}") from exc
+            rehydrated.append(ImageAttachment(media_type, base64.b64encode(content).decode("ascii"), sha))
+        return tuple(rehydrated)
+
     def _queue_followup(
         self,
         session: SessionRecord,
@@ -1357,7 +1424,7 @@ class Core:
         if max_steps is not None:
             payload["max_steps"] = max_steps
         if images:
-            payload["images"] = [img.as_payload() for img in images]
+            payload["images"] = self._spill_followup_images(images)
         self.store.enqueue_continuation(
             cid,
             "kernel",
@@ -1687,8 +1754,24 @@ class Core:
             followup = self.store.claim_pending_followup(session_id)
             if followup is not None:
                 cid, prompt, steps, raw_images, root_id, root_budget = followup
-                images = tuple(ImageAttachment.from_payload(img) for img in raw_images) if raw_images else ()
-                run_res = self._execute_user_followup(session_id, cid, prompt, steps, root_id, root_budget, images=images)
+                try:
+                    images = self._rehydrate_followup_images(raw_images, cid)
+                except Exception:
+                    try:
+                        if self.store.continuation_status(cid) == "claimed":
+                            self.store.complete_continuation(cid, status="failed")
+                    except Exception:
+                        pass
+                    raise
+                try:
+                    run_res = self._execute_user_followup(session_id, cid, prompt, steps, root_id, root_budget, images=images)
+                except Exception:
+                    try:
+                        if self.store.continuation_status(cid) == "claimed":
+                            self.store.complete_continuation(cid, status="failed")
+                    except Exception:
+                        pass
+                    raise
                 if run_res.status not in ("completed", "idle"):
                     return
                 continue
