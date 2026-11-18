@@ -5583,12 +5583,15 @@ class Core:
         if not isinstance(grant_id, str) or not grant_id or len(grant_id) > 128 or "\0" in grant_id:
             raise ValueError("root_action_grant_id must be nonempty text within 128 characters")
 
+    def _drive_session_abort(self, execution: _Execution) -> Cancellation | None:
+        """The session abort entry for this drive, if any; the process abort stays on self."""
+        with self._aborts_lock:
+            entry = self._session_aborts.get(execution.session.session_id)
+            return None if entry is None else entry[1]
+
     def _drive(self, execution: _Execution) -> CoreResult:
         while True:
-            session_abort = None
-            with self._aborts_lock:
-                entry = self._session_aborts.get(execution.session.session_id)
-                session_abort = None if entry is None else entry[1]
+            session_abort = self._drive_session_abort(execution)
             if (session_abort and session_abort.cancelled) or self._abort.cancelled:
                 cause = (session_abort.stop_cause if session_abort and session_abort.cancelled else "shutdown") or "user_stop"
                 reason = (session_abort.reason if session_abort and session_abort.cancelled else self._abort.reason) or "cancelled"
