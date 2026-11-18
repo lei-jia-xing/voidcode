@@ -21,7 +21,7 @@
   - 当前资源读取边界：`Core.read_artifact`, `SessionClient.read_artifact`, and authenticated `artifact.read` provide exact workspace-scoped byte pages. The API conformance group reported 6 passed; real Chromium artifact/image rendering 1 passed/14.1s and Kitty CLI/renderers 6 passed/17.70s. The gated-shell live-progress PTY also showed pre-release stdout/stderr, preserved a running draft, one durable completion, and exact full output via artifact pages. Web `ToolResultCard` consumes the same API/reference. These samples are not an audit of every plugin or every `MAX_*`.
   - AST 切片移除了路径 256 字符截断；声明工具的结果/完整 native JSONL 回归覆盖可继续使用的长路径。Monitor 按现有 SDK `MAX_VIEW_DATA_BYTES` 的实际 JSON 转义字节计费分页，不新增 label MAX；只有单行本身超过 payload 预算时才折叠，并显式进入保留完整 label/activity/父节点的 detail 游标页。刷新和取消仍携带完整 session/run 身份。孤立 prepare/invoke 消费者测试与真实 Core/客户端验收分开记录，不能把前者当成后者已通过。
   - 新的边界证据：`sdk/views.py:229-234` 先按 JSON 字节检查、再补 dataclass 默认字段；只计算原始 UTF-8 或忽略 `style`/`prepare_input` 默认值会低估最终页大小。Monitor 的预算计算包含这些默认字段。此 64 KiB 是当前 SDK 消费契约，不是外部协议硬限制的证明。
-  - Monitor 尚未收敛的实时一致性：`monitor._render` 每次重新取 `list_descendants()`，detail 字符游标应用于当次重新生成的 metadata/history 文本；状态或 activity 在翻页间改变时，目前没有不可变快照或版本检测保证。静态长值与 payload 分页回归不能证明这个并发场景，真实运行态验收须单独覆盖。
+  - Monitor 实时一致性已收敛：detail 字符游标携带内容版本戳（`_detail_version`，渲染文本 SHA-256 前 16 hex）；同窗口翻页带版本，history 窗口推进因寻址新文本而不带版本、到达即重打戳；版本不符返回显式 stale notice（Back to roster / Re-open detail）而非错位内容。`detail_version` 进 schema（versionless 入口行为不变）。新 `test_monitor_consistency.py` 6 passed；集成 `test_subagents_monitor.py` 的 6 个失败经 pristine-HEAD worktree 对比确认为预先存在（detail marker 分页 + 5 个 gate/disarm/fence 节点，两树同集合同断言），与本改动无关。
   - 目标：逐项标注上限的消费者、单位、真实依据及达到后行为；无独立必要性则删除。展示按客户端视窗折叠，结果按调用者分页/按需读取，模型按上下文预算投影，保留完整原件与资源身份；可由现有 page/window 推导的数值不再单设常量。保留必要的解码/内存/协议保护，但不把每个常量改成配置，也不新造 LimitManager。
   - 验收：长标签、长路径、长 goal、长中英文输出及大量匹配仍可查看/复制/结构化读取完整内容；UI 的折叠不拒绝合法任务、不截短实际资源标识；没有连续多层“预览的预览”。原件已经可靠保存的 web/artifact 路径继续可用；真资源上限触发时明确报告，不宣称完整捕获。模型投影整改见 [Core TODO](../core/TODO.md)。
 
@@ -60,10 +60,11 @@
   - Subagents 插件的无参 `wait` 只对该父 session 已记录 children 做新鲜结果交付；Core 用现有 condition/cursors 等待 undelivered durable `(child, run)` facts，返回精确 run 身份。旧 A 可在 B 当前运行时交付，B 的 pending live 状态独立列出。`notify_on_completion=False` 不排除事实；approval parked 不会被当成完成。
   - `task_batch.output` 先非阻塞读取各成员当前 run；无当前可报告结果时才首就绪等待。结果携带实际完整 output/ref 和 URI，pending 状态独立；大/内联分页继续走不可变 URI 与 UTF-8-safe byte cursor。显式 output reread 仍可读当前 run；`agent://` latest publication 不代替具体 run 输出。
   - Delivery receipt 与成功的 tool result 原子提交；只读 snapshot 不消费。有效 callback 返回的 `ToolFailure`（`status="error"`）仍提交显式暂存的 delivery；callback exception、invalid result、abort/revocation/shutdown 会回滚。Core proof 的三个 gated child、52,000 UTF-8 bytes、普通 URI read/reread、去重及 reopen 已通过；窄 lifecycle regression 覆盖 approval resume、cancel、steering、shutdown、foreign parent 与 failed outcome。
-  - 未包含：task_batch 顶层 shared context、accepted-yield、通用 peer/process waits；另外现有单 run `join_child` 的 0.2s SQL/Condition polling 未由此功能修复。
-- [ ] **task_batch 顶层共享 context。**
-  - 当前每项任务各自携带 prompt；本 slice 没有加入顶层 context 字段或把上下文重复拼接到每个 child。需要单独定义声明、来源与 prompt 合并语义后再实现。
-  - 验收：共同背景只声明一次，批次结果仍分别保留每个 child 的精确 run/output 身份；不掩盖 accepted-yield 或 permission/lineage 边界。
+  - 未包含：accepted-yield、通用 peer/process waits；另外现有单 run `join_child` 的 0.2s SQL/Condition polling 未由此功能修复。
+- [x] **task_batch 顶层共享 context。**
+  - 声明：spawn 调用可选顶层 `context: string`，整组声明一次；严格解析（未知顶层字段拒绝），`operation=output` 携带 context 直接拒绝（spawn-only）。合并：固定模板 `Shared context:\n{context}\n\nTask:\n{prompt}` 在 profile 前缀之前拼入每个 item 的 spawn prompt；None/空白保持 item prompt 字节全等（identity no-op）。来源：仅当次 batch 请求，绝不持久化到 `DelegationState`/`ChildRecord`，跨调用不继承，output 读取不加宽。
+  - 指纹：batch 本无 keyed retry（每次 fresh uuid group，spawn 不带 `idempotency_key`，`ChildRecord` 无指纹字段）；context 并入 prompt 字符串即自动进入 Core `_spawn_spec_hash`（prompt 为哈希字段之一，`core/delegation.py:387`），换 context 永不复用另一 context 的 settled 结果——与 `test_same_key_different_schema_is_refused` 同 bug 类。纯插件改动，无 Core/SDK/permission/lineage/scope 变化。
+  - 验收：共同背景声明一次，每 child 结果保留精确 run/output 身份，batch output/ref/pending 语义与 permission/lineage 边界不变。7 新单元测试（合并、模板原文、空 no-op×3、校验、指纹分离、profile 顺序、不继承）+ real-Core e2e（child 实际收到的 user prompt 即合并模板，wait 保留精确 run/output 身份）；`test_subagents_plugin.py` 单元 80 passed，集成 subagents 模块 8 passed，全单元 2025 passed + 1 skipped，lint + typecheck green。
 
 ## P2：高频读写检索能力
 
