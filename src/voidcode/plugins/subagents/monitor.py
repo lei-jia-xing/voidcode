@@ -7,6 +7,7 @@ governed, confirmed command invocation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from typing import ClassVar
@@ -161,6 +162,40 @@ def _detail_text(node: DescendantNode, parent: DescendantNode | None, history: s
     return "\n".join(lines)
 
 
+def _detail_version(text: str) -> str:
+    # Content version stamp for the exact detail text a character cursor pages.
+    # 64 bits of SHA-256: change detection, not security.
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _detail_stale(node: DescendantNode, *, roster_offset: int, limit: int) -> CommandPresentation:
+    current = f"{node.status} · run {node.run_id or 'none'} · turn {node.turn} · last event {node.last_event_sequence}"
+    text = (
+        f"Subagent {_short(node.session_id)} changed since this page was rendered (now {current}). "
+        "The saved page cursor no longer lines up with the fresh detail text, so paging is paused "
+        "instead of showing shifted content. Re-open the detail view to continue."
+    )
+    data: dict[str, object] = {
+        "content": text,
+        "actions": [
+            {"label": "Back to roster", "action": MONITOR_COMMAND, "arguments": {"roster_offset": roster_offset}, "prepare_input": True},
+            {
+                "label": "Re-open detail",
+                "action": MONITOR_COMMAND,
+                "arguments": {"target_session_id": node.session_id, "roster_offset": roster_offset, "limit": limit},
+                "prepare_input": True,
+            },
+        ],
+        "style": None,
+    }
+    return CommandPresentation(
+        title=f"Subagent {_short(node.session_id)} (stale)",
+        view_type="markdown",
+        data=data,
+        refresh_after_ms=MONITOR_REFRESH_MS,
+    )
+
+
 def _detail(
     node: DescendantNode,
     parent: DescendantNode | None,
@@ -174,15 +209,20 @@ def _detail(
     next_after: int,
     next_offset: int,
     truncated: bool,
+    expected_version: str | None = None,
 ) -> CommandPresentation:
-    base: dict[str, object] = {
+    text = _detail_text(node, parent, page_text, truncated=truncated)
+    version = _detail_version(text)
+    if expected_version is not None and expected_version != version:
+        return _detail_stale(node, roster_offset=roster_offset, limit=limit)
+    window: dict[str, object] = {
         "target_session_id": node.session_id,
         "after_sequence": after_sequence,
         "history_offset": history_offset,
         "limit": limit,
         "roster_offset": roster_offset,
     }
-    text = _detail_text(node, parent, page_text, truncated=truncated)
+    base: dict[str, object] = {**window, "detail_version": version}
 
     def _data(end: int) -> dict[str, object]:
         actions: list[dict[str, object]] = [
@@ -195,7 +235,11 @@ def _detail(
             },
         ]
         if end < len(text) or truncated:
-            following = {**base, "detail_offset": end} if end < len(text) else {**base, "after_sequence": next_after, "history_offset": next_offset}
+            if end < len(text):
+                following = {**base, "detail_offset": end}
+            else:
+                # A history-window advance addresses new text: it carries no version and is stamped fresh on arrival.
+                following = {**window, "after_sequence": next_after, "history_offset": next_offset}
             actions.append({"label": "Next page", "action": MONITOR_COMMAND, "arguments": following, "prepare_input": True})
         actions.append({"label": "Refresh", "action": MONITOR_COMMAND, "arguments": {**base, "detail_offset": detail_offset}, "prepare_input": True})
         return {"content": text[detail_offset:end], "actions": actions, "style": None}
@@ -241,6 +285,13 @@ def _render(arguments: Mapping[str, object], services: PluginServices) -> Comman
         raise ValueError(f"{MONITOR_COMMAND} unknown subagent: {target}")
     after_sequence = _non_negative(arguments.get("after_sequence"), "after_sequence")
     history_offset = _non_negative(arguments.get("history_offset"), "history_offset")
+    raw_version = arguments.get("detail_version")
+    if raw_version is None:
+        expected_version = None
+    elif isinstance(raw_version, str) and raw_version:
+        expected_version = raw_version
+    else:
+        raise ValueError(f"{MONITOR_COMMAND} detail_version must be a non-empty string")
     limit = _bounded_limit(arguments.get("limit"))
     page = services.read_session_history(target, after_sequence=after_sequence, offset=history_offset, limit=limit, page_bytes=DETAIL_PAGE_BYTES)
     return _detail(
@@ -255,6 +306,7 @@ def _render(arguments: Mapping[str, object], services: PluginServices) -> Comman
         next_after=page.next_after_sequence,
         next_offset=page.next_offset,
         truncated=page.truncated,
+        expected_version=expected_version,
     )
 
 
@@ -271,6 +323,7 @@ class MonitorCommand:
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_DETAIL_EVENTS},
                 "roster_offset": {"type": "integer", "minimum": 0},
                 "detail_offset": {"type": "integer", "minimum": 0, "description": "Character cursor within the current detail/history page."},
+                "detail_version": {"type": "string", "description": "Content version stamp guarding the detail character cursor."},
                 "selection": {"type": "string", "description": "Opaque roster navigation selection."},
             },
             "additionalProperties": False,
