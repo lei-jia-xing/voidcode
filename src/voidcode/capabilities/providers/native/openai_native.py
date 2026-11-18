@@ -33,7 +33,9 @@ from ._wire_common import (
     abort_signal_cancelled,
     iter_stream_with_timeout,
     normalize_tool_call_id,
+    parse_tool_arguments,
     resolve_extra_request_headers,
+    safe_tool_name,
     usage_int,
 )
 from .config import OpenAIProviderConfig, ProviderEndpointConfig
@@ -76,7 +78,6 @@ _DEFAULT_OPENAI_BASE_URL = PROVIDER_TABLE_BY_ID["openai"].default_base_url
 # satisfies that check -- ``_auth_headers``/``_request_headers`` decide what is sent.
 _PLACEHOLDER_API_KEY = "voidcode-no-api-key"
 _DEFAULT_TIMEOUT_SECONDS = 300.0
-_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _MAX_TOOL_NAME_LENGTH = 64
 _TOOL_NAME_HASH_LENGTH = 8
 
@@ -266,14 +267,6 @@ def normalize_openai_base_url(base_url: str | None) -> str:
     return value if re.search(r"/v[0-9]+(?:beta|alpha)?$", value, flags=re.IGNORECASE) else f"{value}/v1"
 
 
-def _safe_tool_name(name: str) -> str:
-    if _TOOL_NAME_PATTERN.fullmatch(name) and len(name) <= _MAX_TOOL_NAME_LENGTH:
-        return name
-    normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", name).strip("_") or "tool"
-    suffix = "_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:_TOOL_NAME_HASH_LENGTH]
-    return f"{normalized[: _MAX_TOOL_NAME_LENGTH - len(suffix)]}{suffix}"
-
-
 def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
     raw = payload.get("usage")
     if not isinstance(raw, Mapping):
@@ -340,17 +333,6 @@ def _reasoning(message: Mapping[str, object]) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
-
-
-def _parse_arguments(value: object) -> dict[str, object]:
-    if isinstance(value, Mapping):
-        return dict(value)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("tool input was empty")
-    decoded = json.loads(value)
-    if not isinstance(decoded, dict):
-        raise ValueError("tool input was not an object")
-    return dict(decoded)
 
 
 def _session_id(request: ProviderTurnRequest) -> str:
@@ -506,7 +488,7 @@ class OpenAIChatCompletionsProvider:
             if message.tool_name:
                 names.append(message.tool_name)
         for name in dict.fromkeys(names):
-            candidate = _safe_tool_name(name)
+            candidate = safe_tool_name(name)
             if candidate in reverse and reverse[candidate] != name:
                 suffix = "_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:_TOOL_NAME_HASH_LENGTH]
                 candidate = f"{candidate[: _MAX_TOOL_NAME_LENGTH - len(suffix)]}{suffix}"
@@ -829,7 +811,7 @@ class OpenAIChatCompletionsProvider:
             parsed.append(
                 ToolCall(
                     tool_name=runtime_name,
-                    arguments=_parse_arguments(function.get("arguments")),
+                    arguments=parse_tool_arguments(function.get("arguments")),
                     tool_call_id=normalize_tool_call_id(explicit_id, fallback=f"tool_call_{index + 1}"),
                 )
             )

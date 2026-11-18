@@ -8,6 +8,8 @@ the one-slot transport holder a frozen provider uses to own its client.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -37,6 +39,32 @@ def normalize_tool_call_id(value: str | None, *, fallback: str) -> str:
     """Map an inbound tool-call id onto the alphabet every wire accepts."""
     raw = value if isinstance(value, str) and value.strip() else fallback
     return re.sub(r"[^a-zA-Z0-9_-]", "_", raw.strip()) or fallback
+
+
+_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+_MAX_TOOL_NAME_length = 64
+_TOOL_NAME_HASH_length = 8
+
+
+def safe_tool_name(name: str) -> str:
+    """Map a model-chosen tool name onto the alphabet every wire accepts."""
+    if _TOOL_NAME_PATTERN.fullmatch(name) and len(name) <= _MAX_TOOL_NAME_length:
+        return name
+    normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", name).strip("_") or "tool"
+    suffix = "_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:_TOOL_NAME_HASH_length]
+    return f"{normalized[: _MAX_TOOL_NAME_length - len(suffix)]}{suffix}"
+
+
+def parse_tool_arguments(value: object) -> dict[str, object]:
+    """Decode one tool-call argument payload into a plain object map."""
+    if isinstance(value, Mapping):
+        return dict(value)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("tool input was empty")
+    decoded = json.loads(value)
+    if not isinstance(decoded, dict):
+        raise ValueError("tool input was not an object")
+    return dict(decoded)
 
 
 def resolve_extra_request_headers(declared: Mapping[str, str], session_id: str | None) -> dict[str, str]:

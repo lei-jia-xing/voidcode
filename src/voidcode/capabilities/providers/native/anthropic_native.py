@@ -33,7 +33,9 @@ from ._wire_common import (
     abort_signal_cancelled,
     iter_stream_with_timeout,
     normalize_tool_call_id,
+    parse_tool_arguments,
     resolve_extra_request_headers,
+    safe_tool_name,
     usage_int,
 )
 from .config import AnthropicProviderConfig
@@ -232,25 +234,6 @@ def _merge_usage(previous: ProviderTokenUsage | None, current: ProviderTokenUsag
     )
 
 
-def _safe_tool_name(name: str) -> str:
-    if re.fullmatch(r"[a-zA-Z0-9_-]+", name) and len(name) <= 64:
-        return name
-    normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", name).strip("_") or "tool"
-    suffix = "_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
-    return f"{normalized[: 64 - len(suffix)]}{suffix}"
-
-
-def _parse_arguments(value: object) -> dict[str, object]:
-    if isinstance(value, Mapping):
-        return dict(value)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("tool input was empty")
-    decoded = json.loads(value)
-    if not isinstance(decoded, dict):
-        raise ValueError("tool input was not an object")
-    return dict(decoded)
-
-
 def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
     metadata: dict[str, object] = {}
     if isinstance(payload.get("id"), str) and payload["id"]:
@@ -355,7 +338,7 @@ class AnthropicMessagesProvider:
                 names.append(message.tool_name)
             names.extend(call.tool_name for call in message.tool_calls)
         for name in dict.fromkeys(name for name in names if name):
-            candidate = _safe_tool_name(name)
+            candidate = safe_tool_name(name)
             if candidate in reverse and reverse[candidate] != name:
                 suffix = "_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
                 candidate = f"{candidate[: 64 - len(suffix)]}{suffix}"
@@ -570,7 +553,7 @@ class AnthropicMessagesProvider:
                 calls.append(
                     ToolCall(
                         tool_name=name,
-                        arguments=_parse_arguments(raw.get("input")),
+                        arguments=parse_tool_arguments(raw.get("input")),
                         tool_call_id=normalize_tool_call_id(
                             raw.get("id") if isinstance(raw.get("id"), str) else None, fallback=f"tool_call_{index + 1}"
                         ),
@@ -754,7 +737,7 @@ class AnthropicMessagesProvider:
             # message_stop is terminal; without deltas the wire's explicit input object is complete.
             for index, accumulator in sorted(accumulators.items()):
                 try:
-                    parsed = _parse_arguments(accumulator.arguments) if accumulator.fragments else accumulator.initial_input
+                    parsed = parse_tool_arguments(accumulator.arguments) if accumulator.fragments else accumulator.initial_input
                 except (ValueError, json.JSONDecodeError) as exc:
                     raise ProviderExecutionError(
                         kind="provider_error",
