@@ -42,6 +42,7 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - 设计已接受待实现：`sdk/suspend.py`（`SuspendPark`/`ParkIdentity`/`ParkError`）＋ `sdk/foreground.py`（`CompositionDraft`/`CompositionReceipt`/`ForegroundContext`：`invoke`/`wait_tool`→`ToolAwaitResult`/`stage_terminal`）＋ `PluginServices.suspend_foreground_composition`。
   - 语义：suspend-by-unwind（无帧保持）→ Core 原子 park（`COMPOSITION_PARKED`＋row＋checkpoint 绑定＋`waiting`）→ 驱动线程无 lease 等待、经原 pipeline 调可见工具 → 终值领养不重放；详见 `docs/plans/sdk-foreground-suspend-eval-ask.md` §0＋Contract A。
   - 状态：accepted，unimplemented；open questions 见该文档 A§7。
+  - SDK surface 已落地（Core 实现仍缺，本项保持 open）：新模块 `sdk/suspend.py`（`SuspendPark`/`ParkIdentity`/`ParkError`/`ParkRevisionError`）＋ `sdk/foreground.py`（`CompositionDraft`/`CompositionReceipt`/`ForegroundContext`/`SuspendComposition`/`CompositionNestedRefused`）＋ `PluginServices.suspend_foreground_composition`；证据：`tests/unit/sdk/test_suspend.py` 21 passed、`test_foreground.py` 14 passed；`test_sdk_direction.py`、`ruff check`/`format --check`、`ty check` 全绿。
 
 - [x] **Discoverable tool-result/body schemas and content capabilities.** Consumers: eval/tool bridges and generated typed proxies.
   - On-definition declaration: `ToolDefinition.output_schema` (`tools.py:173`) holds the Draft 2020-12 success-body contract (`None` = undeclared/unknown, never "any shape is valid"); `__post_init__` owns the JSON (`tools.py:177-178`). Catalog admission check-schemas it and refuses invalid contracts visibly (`../core/plugins.py:492-498`).
@@ -57,6 +58,7 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - 设计已接受待实现：`RawStreamCapture`（`bytes_captured`/`bytes_dropped`/`artifact`/`capture_error` exactly-one-of）＋ `ProcessResult.raw` ＋ `run_process`/`run_query_process`/`shell_exec` 的 `raw_capture`/`raw_media_type` 开关。
   - 语义：增量 spill 原始字节（CRLF 保留、不解码），取消/超时发布精确前缀，存储失败记 verbatim cause 且 run 继续；治理/取消/重启语义不变；详见 `docs/plans/sdk-resource-discovery-streaming-capture.md` Contract B。
   - 状态：accepted，unimplemented；open questions 见该文档 B§7。
+  - SDK surface 已落地（Core 实现仍缺，本项保持 open）：`services.py` 新增 `RawStreamCapture`（exactly-one-of）＋ `ProcessResult.raw` ＋ `run_process`/`run_query_process` 的 `raw_capture`/`raw_media_type` 参数；证据：`tests/unit/sdk/test_process_capture_shapes.py` 12 passed；`test_sdk_direction.py`、`ruff check`/`format --check`、`ty check` 全绿。
 
 - [x] **Typed child budget exhaustion.** Consumers: `task`, `task_batch`, review, and workflows.
   - `ChildOutcome.budget_exhaustion: BudgetExhaustion | None` carries the committed run's dimension/source/limit/consumed/remaining/continue-with fields. Core reads a recoverable pause from that exact run's committed `RUN_INTERRUPTED` payload and terminal outcomes from its `CHILD_FINISHED` fact; reopen and join do not infer usage from current root counters.
@@ -72,6 +74,7 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - 设计已接受待实现：`resources.py`（`ResourceSchemeCaps`/`ResourceEnumRequest`/`ResourceEnumPage`/`ResourceSearchRequest`/`ResourceSearchPage`/`ResourceUnsupported`＋`ResourceReader` 默认字段）＋ `PluginServices` 4 方法（`resource_schemes`/`resource_capabilities`/`enumerate_resources`/`search_resources`）。
   - 语义：同注册入口、无第二 registry；`read`/`grep`/`glob` 经 `://` 判别消费（grep 截断复用既有 `GrepResultBody.truncated`＋`OutputBounds`）；详见 `docs/plans/sdk-resource-discovery-streaming-capture.md` Contract A。
   - 状态：accepted，unimplemented；open questions 见该文档 A§7。
+  - SDK surface 已落地（Core 实现仍缺，本项保持 open）：`resources.py` 新增 `ResourceSchemeCaps`/枚举·搜索请求/页/条目/`ResourceUnsupported` ＋ `ResourceReader` 默认字段，`PluginServices` 新增 4 方法（`resource_schemes`/`resource_capabilities`/`enumerate_resources`/`search_resources`）；证据：`tests/unit/sdk/test_resource_caps.py` 36 passed；`test_sdk_direction.py`、`ruff check`/`format --check`、`ty check` 全绿。
 
 - [x] **组合工具内容与有界声明式展示。** 消费方：`eval` 的表格/图像、MCP 混合媒体、TUI/Web 工具结果卡。
   - 现状：[`ToolOutput`](tools.py) 是单个 `TextOutput | EmptyOutput | AttachmentOutput`，不能表达按序混合的文本和多张图片；`ToolBody` 已能表达结构化业务数据，不缺第二套 JSON body。[`ResourcePage`](resources.py) 同样只容纳单个文本或附件；[`views.py`](views.py) 的有限视图没有 table/JSON tree/media 类型。MCP [结果投影](../plugins/mcp/mcp_tool.py) 仅在恰好一张且足够小时选用附件输出，其余回退文本和 artifact 引用。
@@ -89,6 +92,7 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - 设计已接受待实现：`sdk/ask.py`（`AskRequestDraft`/`AskRequest`/`AskAnswer`/`AskResultBody`/`AskMultiSelect`＋`validate_ask_answer`）＋ `PluginServices.suspend_for_ask` ＋ `RunSpec`/`ResumeSpec.interaction` ＋ `RunResult.pending_ask`（omit-when-None）。
   - 语义：`ASK_REQUESTED` 停车 → `ask.answer`/`ask.cancel` 精确恢复（CAS exactly-once，答案为数据不授权）→ 超时、取消、无人值守均为类型化失败且 run 继续；详见 `docs/plans/sdk-foreground-suspend-eval-ask.md` Contract B。
   - 状态：accepted，unimplemented；open questions（含 B7.2 sequential asks）见该文档 B§7。
+  - SDK surface 已落地（Core 实现仍缺，本项保持 open）：新模块 `sdk/ask.py`（含 `validate_ask_answer` 与 `AskAlreadyParked`）＋ `PluginServices.suspend_for_ask` ＋ gates `AskGate`/`AskRequested` ＋ `RunSpec`/`ResumeSpec.interaction` ＋ `RunResult.pending_ask`；证据：`tests/unit/sdk/test_ask.py` 86 passed；`test_sdk_direction.py`、`ruff check`/`format --check`、`ty check` 全绿。
 
 - [x] **First-settled owned child wait and atomic result delivery.** Consumers: Subagents `wait`, parallel `task`, batches, and scripts.
   - `PluginServices.wait_children(child_session_ids)` uses the existing Core condition and durable event cursors, not timed polling or a new job registry. It first drains every eligible, unconsumed exact `(child_session_id, run_id)` fact for the selected owned children, then binds outstanding reservations/current runs at entry. It returns exact run identities (including an older unconsumed run beside a live follow-up) without child-id collapsing; current live/pending states are a separate snapshot.
