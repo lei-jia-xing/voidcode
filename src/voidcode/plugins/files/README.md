@@ -9,7 +9,7 @@ This package is a thin adapter: `create_plugin` wraps the shared `voidcode.capab
 - Tool `read` (`READ`): read a file or resource URI. Regular-file pages report a SHA-256 content hash callers can pass back as `expectedHash`; attachment and resource-URI pages carry no such hash authorization. Any `scheme://` URI dispatches to the plugin that registered the scheme; disabling that plugin makes the scheme unsupported with no fallback.
 - Resource readers `tool://`, `artifact://`, `transcript://`: the default namespaces this plugin serves (tool docs, stored-artifact pages, lineage-gated transcript pages). Each parses its own URI and default; `read` itself knows no scheme table.
 - Tool `write` (`WRITE`, never replayed): write a UTF-8 text file inside the workspace.
-- Tool `edit` (`WRITE`): replace text (single replacement or ordered batch) or apply a marker patch. Single/batch replacement requires the caller's `expectedHash` to match current bytes plus exact old-string matching; patch mode takes only `patch` text and validates through exact marker preflight plus checked commits, with no mandatory `expectedHash`.
+- Tool `edit` (`WRITE`): replace text (single replacement or ordered batch) with deterministic exact matching; requires the caller's `expectedHash` to match current bytes plus exact old-string matching.
 - Tool `apply_workspace_edit` (`WRITE`): apply validated LSP text edits; each edit is checked against its caller-supplied `expectedHash` and, when given, an LSP document version from the document-state query.
 - Tool `glob` (`READ`): find files matching a glob pattern.
 - Tool `grep` (`READ`): search workspace files; literal by default, `regex=true` for regular expressions.
@@ -20,7 +20,7 @@ Takes no plugin config; `create_plugin` ignores it. See [configuration](../../..
 
 ## Behavior and limits
 
-- File mutations validate explicit caller evidence and exact matching — replacement modes compare caller-supplied content hashes, patch mode preflights exact marker chunks and re-checks bytes at commit, and no mode requires a prior session read. Read observations are historical facts, not write permissions (see [facts](../../../../docs/contracts/facts.md)). Stale-hash, commit-race, and ambiguous-match failures surface as typed `ToolFailure` results with retry guidance — the boundary this adapter adds.
+- File mutations validate explicit caller evidence and exact matching — replacement modes compare caller-supplied content hashes, and no mode requires a prior session read. Read observations are historical facts, not write permissions (see [facts](../../../../docs/contracts/facts.md)). Stale-hash, commit-race, and ambiguous-match failures surface as typed `ToolFailure` results with retry guidance — the boundary this adapter adds.
 
 - `TextOutput.text` is the selected page. Its typed body retains machine fields such as `raw_content`, line records, and content hash at the canonical result artifact when Core omits that redundant body; omission alone does not mark the page or `ReadObservation` clipped.
 - Raster reads publish original bytes through streaming artifact ingress rather than an arbitrary media-size cutoff. Real Core/native Anthropic and Google routes preserve valid decoded PNG pixels above the 256 KiB artifact-page size; complete bytes remain pageable by digest. Viewer and image-terminal integration are tracked separately from this plugin contract.

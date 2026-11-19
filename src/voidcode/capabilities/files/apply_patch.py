@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Literal
 
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.tools import Change, ConfirmedStop, OutputBounds, TextOutput, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import ConfirmedStop, OutputBounds, TextOutput, ToolFailure, ToolResult, ToolSuccess
 
+from ._common import make_file_change, normalize_line_endings, resolve_workspace_path, to_display_path
 from ._replace import replace_file
 from .errors import raise_tool_diagnostic
 
@@ -81,7 +82,7 @@ def _patch_result(
 ) -> ToolResult:
     summary = "\n".join(f"M {change.old_path} -> {change.path}" if change.status == "R" else f"{change.status} {change.path}" for change in changes)
     body = ApplyPatchResultBody(changes=tuple(changes), count=len(changes))
-    resources = tuple(Change(change.path, _CHANGE_OPERATIONS[change.status], change.old_path) for change in changes)
+    resources = tuple(make_file_change(change.path, _CHANGE_OPERATIONS[change.status], old_path=change.old_path) for change in changes)
     if error is not None:
         return ToolFailure(
             tool_name=tool_name,
@@ -176,7 +177,7 @@ def _parse_marker_update_chunks(lines: list[str], index: int) -> tuple[tuple[_Ma
 
 
 def _parse_marker_patch(patch_text: str) -> tuple[_MarkerHunk, ...]:
-    lines = patch_text.strip().replace("\r\n", "\n").split("\n")
+    lines = normalize_line_endings(patch_text.strip()).split("\n")
     if len(lines) < 2 or lines[0].strip() != "*** Begin Patch" or lines[-1].strip() != "*** End Patch":
         raise ValueError("Invalid patch format: missing Begin/End markers")
     end_index = len(lines) - 1
@@ -317,15 +318,15 @@ def _derive_marker_update_content_from_text(
 
 
 def _resolve_patch_path(workspace: Path, raw_path: str) -> Path:
-    candidate = Path(raw_path)
-    return candidate.resolve() if candidate.is_absolute() else (workspace / candidate).resolve()
+    candidate, _ = resolve_workspace_path(workspace, raw_path)
+    return candidate
 
 
 def _apply_marker_patch(
     patch_text: str,
     *,
     context: ToolContext,
-    tool_name: str = "edit",
+    tool_name: str = "patch",
 ) -> ToolResult:
     workspace = context.require_workspace().resolve()
     hunks = _parse_marker_patch(patch_text)
@@ -360,9 +361,7 @@ def _apply_marker_patch(
                 raise ValueError(f"Failed to read file to update: {source}")
             content = expected_content.decode("utf-8")
             if hunk.chunks:
-                content = _derive_marker_update_content_from_text(
-                    content.replace("\r\n", "\n").replace("\r", "\n"), file_path=source, chunks=hunk.chunks
-                )
+                content = _derive_marker_update_content_from_text(normalize_line_endings(content), file_path=source, chunks=hunk.chunks)
             if hunk.move_path is None:
                 staged_contents[source] = content.encode("utf-8")
                 prepared.append(_PreparedMarkerChange(status="M", path=source.as_posix(), content=content, expected_content=expected_content))
@@ -390,8 +389,8 @@ def _apply_marker_patch(
             return _patch_result(changes, tool_name=tool_name, error="patch cancelled before committing the next operation", cancelled=True)
         target = Path(change.path)
         old_target = Path(change.old_path or change.path)
-        display = target.relative_to(workspace).as_posix() if target.is_relative_to(workspace) else target.as_posix()
-        old_display = old_target.relative_to(workspace).as_posix() if old_target.is_relative_to(workspace) else old_target.as_posix()
+        display = to_display_path(target, workspace)
+        old_display = to_display_path(old_target, workspace) if change.old_path else None
         try:
             if change.status in {"D", "R"} and (old_target.is_symlink() or old_target.read_bytes() != change.expected_content):
                 raise OSError(errno.ESTALE, "File changed since patch validation", str(old_target))
@@ -414,7 +413,7 @@ def execute_patch(
     arguments: Mapping[str, object],
     *,
     context: ToolContext,
-    tool_name: str = "edit",
+    tool_name: str = "patch",
 ) -> ToolResult:
     context.require_workspace()
     if context.abort_signal is not None and context.abort_signal.cancelled:

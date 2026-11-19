@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -11,7 +10,6 @@ from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
-    TOOL_OUTPUT_BYTES,
     ConfirmedStop,
     OutputBounds,
     TextOutput,
@@ -23,7 +21,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from ._common import MAX_RESULT_LIMIT
+from ._common import MAX_RESULT_LIMIT, resolve_workspace_path
 from .gitignore import GitIgnoreMatcher
 
 DEFAULT_IGNORE_PATTERNS = frozenset(
@@ -137,7 +135,6 @@ class GlobTool:
         limit: int = LIMIT,
     ) -> tuple[list[Path], bool, str | None]:
         matched: list[Path] = []
-        result_bytes = 2  # JSON list brackets.
 
         def fail_walk(error: OSError) -> None:
             raise error
@@ -165,13 +162,9 @@ class GlobTool:
                         continue
                     if not match.is_file():
                         continue
-                    # Bound both workspace-relative paths and resolved external symlinks.
-                    match_bytes = max(len(json.dumps(str(path), ensure_ascii=False).encode("utf-8")) for path in (match, match.resolve()))
-                    match_bytes += 2 if matched else 0
-                    if len(matched) == limit or result_bytes + match_bytes > TOOL_OUTPUT_BYTES:
+                    if len(matched) == limit:
                         return matched, True, None
                     matched.append(match)
-                    result_bytes += match_bytes
         except OSError as exc:
             return matched, False, str(exc)
         return matched, False, None
@@ -188,8 +181,7 @@ class GlobTool:
         pattern_value = args.pattern
         include_hidden, respect_gitignore, limit = args.include_hidden, args.respect_gitignore, args.limit
         workspace_root = workspace.resolve()
-        requested_path = Path(args.path)
-        search_path = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
+        search_path, _ = resolve_workspace_path(workspace, args.path)
         if not search_path.exists():
             raise ValueError(f"glob path does not exist: {args.path}")
         if not search_path.is_dir():
@@ -227,8 +219,6 @@ class GlobTool:
             path_display = str(search_path)
 
         output = "\n".join(relative_matches) or "No files found."
-        if truncated:
-            output += "\n[TRUNCATED] Narrow the search path or pattern to see more files."
 
         body = GlobResultBody(
             pattern=pattern_value,

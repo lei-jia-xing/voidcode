@@ -15,7 +15,6 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices, QueryContractError, QueryUnavailable
 from voidcode.sdk.tools import (
-    Change,
     ConfirmedStop,
     OutputBounds,
     TextOutput,
@@ -28,8 +27,8 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
+from ._common import make_file_change, resolve_workspace_path, summarize_diff
 from ._replace import replace_file
-from .edit_tool import summarize_diff
 
 
 class _TextEdit(BaseModel):
@@ -133,7 +132,6 @@ class ApplyWorkspaceEditTool:
         document_states: dict[Path, DocumentState | None] = {}
         grouped: dict[Path, list[tuple[int, int, str]]] = {}
         display_by_path: dict[Path, str] = {}
-        workspace_root = workspace.resolve()
         for edit in args.edits:
             if context.abort_signal is not None and context.abort_signal.cancelled:
                 return ToolFailure(
@@ -141,10 +139,7 @@ class ApplyWorkspaceEditTool:
                     error="apply_workspace_edit cancelled before committing files",
                     execution=ConfirmedStop(cancellation_signalled=True),
                 )
-            requested_path = Path(edit.path)
-            path = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
-            is_external = not path.is_relative_to(workspace_root)
-            display_path = path.as_posix() if is_external else path.relative_to(workspace_root).as_posix()
+            path, display_path = resolve_workspace_path(workspace, edit.path)
             if not path.is_file():
                 raise ValueError(f"apply_workspace_edit target does not exist: {edit.path}")
             if path not in raw_contents:
@@ -306,7 +301,7 @@ class ApplyWorkspaceEditTool:
                 error=message,
                 output=TextOutput(message, bounds=OutputBounds(partial=True)),
                 body=ApplyWorkspaceEditResultBody(paths=tuple(applied_paths), files=tuple(file_results[: len(applied_paths)])),
-                changes=tuple(Change(path) for path in applied_paths),
+                changes=tuple(make_file_change(path) for path in applied_paths),
                 execution=ConfirmedStop(cancellation_signalled=cancelled),
             )
 
@@ -314,7 +309,7 @@ class ApplyWorkspaceEditTool:
         return ToolSuccess(
             tool_name=self.definition.name,
             output=TextOutput(f"Applied {len(args.edits)} workspace edit(s)."),
-            changes=tuple(Change(path) for path in display_paths),
+            changes=tuple(make_file_change(path) for path in display_paths),
             body=ApplyWorkspaceEditResultBody(
                 paths=display_paths,
                 files=tuple(file_results),

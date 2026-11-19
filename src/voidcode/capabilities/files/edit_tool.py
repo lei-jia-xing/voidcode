@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import difflib
 import hashlib
 from dataclasses import dataclass
-from io import StringIO
-from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -14,7 +11,6 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
-    Change,
     ConfirmedStop,
     TextOutput,
     ToolCall,
@@ -25,8 +21,15 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
+from ._common import (
+    convert_line_endings,
+    detect_line_ending,
+    make_file_change,
+    read_utf8_text,
+    resolve_workspace_path,
+    summarize_diff,
+)
 from ._replace import replace_file
-from .apply_patch import execute_patch
 from .errors import ToolDiagnosticError, raise_tool_diagnostic
 
 
@@ -50,44 +53,6 @@ class EditResultBody:
         if self.content_hash is not None:
             payload["content_hash"] = self.content_hash
         return payload
-
-
-def _normalize_line_endings(text: str) -> str:
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _detect_line_ending(text: str) -> str:
-    if "\r\n" in text:
-        return "\r\n"
-    return "\n"
-
-
-def _convert_line_endings(text: str, ending: str) -> str:
-    normalized = _normalize_line_endings(text)
-    return normalized if ending == "\n" else normalized.replace("\n", "\r\n")
-
-
-def read_utf8_text(path: Path) -> str:
-    try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            return handle.read()
-    except UnicodeDecodeError as exc:
-        raise ValueError("edit only supports UTF-8 text files") from exc
-
-
-def summarize_diff(*, path: Path, before: str, after: str) -> tuple[str, int, int]:
-    lines = list(
-        difflib.unified_diff(
-            StringIO(before, newline="").readlines(),
-            StringIO(after, newline="").readlines(),
-            fromfile=str(path),
-            tofile=str(path),
-        )
-    )
-    additions = sum(line.startswith("+") for line in lines[2:])
-    deletions = sum(line.startswith("-") for line in lines[2:])
-    diff = "".join(line if line.endswith(("\r", "\n")) else line + "\n\\ No newline at end of file\n" for line in lines)
-    return diff, additions, deletions
 
 
 def _replace(
@@ -155,13 +120,7 @@ class _BatchEdit(BaseModel):
     edits: list[_Replacement] = Field(min_length=1)
 
 
-class _PatchEdit(BaseModel):
-    model_config = ConfigDict(strict=True, extra="forbid")
-
-    patch: str = Field(min_length=1, description="*** Begin Patch / *** End Patch text with Add File, Update File or Delete File operations.")
-
-
-_EDIT_ARGS = TypeAdapter(_SingleEdit | _BatchEdit | _PatchEdit)
+_EDIT_ARGS = TypeAdapter(_SingleEdit | _BatchEdit)
 
 
 class EditTool:
@@ -169,8 +128,8 @@ class EditTool:
         name="edit",
         icon=Icon(glyph="✎"),
         description=(
-            "Edit files by replacing text (single replacement or ordered batch) or applying a patch. "
-            "Replacements require exact current file text. Patches use *** Begin Patch marker format with add, update, delete and move operations. "
+            "Edit files by replacing text (single replacement or ordered batch). "
+            "Replacements require exact current file text. "
             "When constructing oldString from read output, omit any leading line-number prefix such as '42: ' and pass only the file's actual text."
         ),
         input_schema={"type": "object", **_EDIT_ARGS.json_schema()},
@@ -186,8 +145,6 @@ class EditTool:
         services: PluginServices,  # noqa: ARG002 - required by the frozen Tool ABI
     ) -> ToolResult:
         args = _EDIT_ARGS.validate_python(json_wire_object(call.arguments))
-        if isinstance(args, _PatchEdit):
-            return execute_patch(args.model_dump(exclude_none=True), context=context, tool_name=self.definition.name)
         return self._invoke_replacements(args, context=context)
 
     def _invoke_replacements(self, args: _SingleEdit | _BatchEdit, *, context: ToolContext) -> ToolResult:
@@ -196,16 +153,11 @@ class EditTool:
         batch = isinstance(args, _BatchEdit)
         parsed_edits = args.edits if isinstance(args, _BatchEdit) else (args,)
 
-        workspace_root = workspace.resolve()
-        requested_path = Path(path_value)
-        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
-        is_external = not candidate.is_relative_to(workspace_root)
+        candidate, display_path = resolve_workspace_path(workspace, path_value)
         if not candidate.exists():
             raise ValueError(f"edit target does not exist: {path_value}")
         if not candidate.is_file():
             raise ValueError(f"edit target is not a file: {path_value}")
-
-        display_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
 
         expected_hash = args.expectedHash
         content_before = read_utf8_text(candidate)
@@ -219,7 +171,7 @@ class EditTool:
                 details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
             )
 
-        ending = _detect_line_ending(content_before)
+        ending = detect_line_ending(content_before)
 
         # Preflight all edits against exact current text entirely in memory.
         current_content = content_before
@@ -273,7 +225,7 @@ class EditTool:
             current_content = next_content
             total_matches += match_count
 
-        final_text = _convert_line_endings(current_content, ending)
+        final_text = convert_line_endings(current_content, ending)
         final_bytes = final_text.encode("utf-8")
         final_disk_hash = hashlib.sha256(final_bytes).hexdigest()
         diff, additions, deletions = summarize_diff(
@@ -300,7 +252,7 @@ class EditTool:
         return ToolSuccess(
             self.definition.name,
             output=TextOutput(content),
-            changes=(Change(display_path),),
+            changes=(make_file_change(display_path),),
             body=EditResultBody(
                 path=display_path,
                 additions=additions,
@@ -310,3 +262,6 @@ class EditTool:
                 content_hash=final_disk_hash,
             ),
         )
+
+
+__all__ = ["EditResultBody", "EditTool", "read_utf8_text", "summarize_diff"]

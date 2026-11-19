@@ -141,10 +141,9 @@ the runtime serves them as the init catalog, and the
 core admits, validates, approves, dispatches, and records every call. The
 engine-owned model tool `core_reload` is not plugin-declared; `core.reload`
 is the corresponding user command. Product tools belong in plugins, not in a
-legacy tools directory.
-`edit` accepts exact text replacements or `*** Begin Patch` marker patches for
-add/update/delete/move operations. File editing uses Python filesystem operations
-and does not require Git; unified diffs are output previews, not edit input.
+`edit` accepts exact text replacements (single replacement or ordered batch).
+File editing uses Python filesystem operations and does not require Git;
+unified diffs are output previews, not edit input.
 
 `read` reads regular files and bounded resource URIs. It does not list directories
 or parse notebook, PDF, SQLite or archive formats; use shell tools for those

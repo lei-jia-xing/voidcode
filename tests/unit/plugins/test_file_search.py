@@ -88,6 +88,7 @@ def test_search_limit_reports_an_incomplete_page(tmp_path: Path, tool, pattern):
     assert result.status == "ok"
     assert result.output.bounds.truncated is True
     assert result.output.bounds.partial is True
+    assert "[TRUNCATED]" not in result.output.text
 
 
 @pytest.mark.parametrize("failure", ["walk", "read"])
@@ -145,3 +146,44 @@ def test_glob_reports_directory_scan_failure(tmp_path: Path, monkeypatch: pytest
 def test_glob_requires_patterns_relative_to_search_directory(tmp_path: Path, pattern: str) -> None:
     with pytest.raises(ValueError, match="must be relative"):
         invoke(GlobTool(), tmp_path, {"pattern": pattern})
+
+
+def test_grep_and_glob_do_not_prematurely_truncate_on_output_bytes(tmp_path: Path) -> None:
+    long_line = "needle " + ("x" * 1000)
+    lines = [f"{long_line} line {i}" for i in range(80)]
+    (tmp_path / "large.txt").write_text("\n".join(lines), encoding="utf-8")
+
+    grep_result = invoke(GrepTool(), tmp_path, {"pattern": "needle", "limit": 80})
+    assert grep_result.status == "ok"
+    assert len(grep_result.body.matches) == 80
+    assert grep_result.output.bounds.truncated is False
+    assert grep_result.body.truncated is False
+    assert "[TRUNCATED]" not in grep_result.output.text
+
+    glob_dir = tmp_path / "glob_dir"
+    glob_dir.mkdir()
+    nested_dir = glob_dir / ("d1_" + "a" * 100) / ("d2_" + "b" * 100) / ("d3_" + "c" * 100) / ("d4_" + "d" * 100)
+    nested_dir.mkdir(parents=True)
+    for i in range(100):
+        (nested_dir / f"file_{i:03d}.txt").write_text("data")
+
+    glob_result = invoke(GlobTool(), glob_dir, {"pattern": "**/*.txt", "limit": 100})
+    assert glob_result.status == "ok"
+    assert len(glob_result.body.matches) == 100
+    assert glob_result.output.bounds.truncated is False
+    assert glob_result.body.truncated is False
+
+    # When limit is smaller than total results, both truncate at limit:
+    grep_limited = invoke(GrepTool(), tmp_path, {"pattern": "needle", "limit": 79})
+    assert grep_limited.status == "ok"
+    assert len(grep_limited.body.matches) == 79
+    assert grep_limited.output.bounds.truncated is True
+    assert grep_limited.body.truncated is True
+    assert "[TRUNCATED]" not in grep_limited.output.text
+
+    glob_limited = invoke(GlobTool(), glob_dir, {"pattern": "**/*.txt", "limit": 99})
+    assert glob_limited.status == "ok"
+    assert len(glob_limited.body.matches) == 99
+    assert glob_limited.output.bounds.truncated is True
+    assert glob_limited.body.truncated is True
+    assert "[TRUNCATED]" not in glob_limited.output.text

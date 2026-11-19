@@ -13,7 +13,6 @@ from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
-    Change,
     ConfirmedStop,
     TextOutput,
     ToolCall,
@@ -23,6 +22,8 @@ from voidcode.sdk.tools import (
     ToolResult,
     ToolSuccess,
 )
+
+from ._common import make_file_change, resolve_workspace_path
 
 MAX_WRITE_BYTES = 64 * 1024  # Max single-file write 64 KiB to fit comfortably in 1 MiB wire frames
 
@@ -97,18 +98,17 @@ class WriteTool:
                 error=f"Content exceeds size limit ({len(content_bytes)} bytes > {MAX_WRITE_BYTES} bytes)",
             )
 
-        p = Path(raw_path)
         try:
-            candidate = p.resolve() if p.is_absolute() else (workspace / p).resolve()
+            candidate, display_path = resolve_workspace_path(workspace, raw_path, allow_outside_workspace=False)
+        except ValueError as exc:
+            return ToolFailure(self.definition.name, error=str(exc))
         except Exception as exc:
             return ToolFailure(self.definition.name, error=f"Invalid path: {exc}")
-
-        if not candidate.is_relative_to(workspace):
-            return ToolFailure(self.definition.name, error=f"Path escapes workspace: {raw_path}")
 
         if candidate.is_dir():
             return ToolFailure(self.definition.name, error=f"Cannot write to directory: {raw_path}")
 
+        p = Path(raw_path)
         raw_target = p if p.is_absolute() else (workspace / p)
         if raw_target.is_symlink() or candidate.is_symlink():
             return ToolFailure(self.definition.name, error=f"Cannot write to symlink: {raw_path}")
@@ -182,7 +182,6 @@ class WriteTool:
             temp_path.unlink(missing_ok=True)
 
         written_hash = hashlib.sha256(content_bytes).hexdigest()
-        display_path = candidate.relative_to(workspace).as_posix()
         output_text = f"Wrote {len(content_bytes)} byte(s) to {display_path} (SHA-256: {written_hash})"
 
         body = WriteResultBody(
@@ -194,5 +193,5 @@ class WriteTool:
             self.definition.name,
             output=TextOutput(output_text),
             body=body,
-            changes=(Change(display_path, "create" if initial_stat is None else "update"),),
+            changes=(make_file_change(display_path, "create" if initial_stat is None else "update"),),
         )

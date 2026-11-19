@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fnmatch
-import json
 import re
 from collections import deque
 from collections.abc import Iterator
@@ -17,7 +16,6 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
-    TOOL_OUTPUT_BYTES,
     ConfirmedStop,
     OutputBounds,
     TextOutput,
@@ -29,7 +27,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from ._common import MAX_RESULT_LIMIT, validate_glob_patterns, validate_non_empty
+from ._common import MAX_RESULT_LIMIT, resolve_workspace_path, validate_glob_patterns, validate_non_empty
 from .errors import raise_tool_diagnostic
 from .gitignore import GitIgnoreMatcher
 
@@ -262,10 +260,8 @@ class GrepTool:
         args = GrepArgs.model_validate(json_wire_object(call.arguments))
 
         workspace_root = workspace.resolve()
-        requested_path = Path(args.path)
-        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
+        candidate, relative_path = resolve_workspace_path(workspace, args.path)
         is_external = not candidate.is_relative_to(workspace_root)
-        relative_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
 
         if not candidate.exists():
             raise ValueError(f"grep target does not exist: {args.path}")
@@ -300,18 +296,15 @@ class GrepTool:
         )
 
         matches: list[GrepResultMatch] = []
-        result_bytes = 2  # JSON list brackets.
         truncated = False
         try:
             for target in targets:
                 file_display = str(target.resolve()) if is_external else target.relative_to(workspace_root).as_posix()
                 for match in self._iter_matches(target, relative_path=file_display, pattern=pattern, context=args.context, invocation=context):
-                    match_bytes = len(json.dumps(match.as_payload(), ensure_ascii=False).encode("utf-8")) + (2 if matches else 0)
-                    if len(matches) == args.limit or result_bytes + match_bytes > TOOL_OUTPUT_BYTES:
+                    if len(matches) == args.limit:
                         truncated = True
                         break
                     matches.append(match)
-                    result_bytes += match_bytes
                 if truncated:
                     break
         except OSError as exc:
@@ -343,8 +336,6 @@ class GrepTool:
         summary = f"Found {total_occurrences} match(es) for {args.pattern!r} in {path_display}"
         if rendered_lines:
             summary += "\n" + "\n".join(rendered_lines)
-        if truncated:
-            summary += "\n[TRUNCATED] Narrow the search path or pattern, or reduce context, to see more results."
 
         body = GrepResultBody(
             path=path_display,

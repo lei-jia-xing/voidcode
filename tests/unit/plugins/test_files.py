@@ -913,6 +913,35 @@ def test_searches_respect_gitignore_double_star_and_negation(tmp_path: Path, too
     assert "drop.log" not in result.output.text
 
 
+@pytest.mark.parametrize("tool_name", ["glob", "grep"])
+def test_searches_do_not_prematurely_truncate_on_output_bytes(tmp_path: Path, tool_name: str) -> None:
+    tool = next(t for t in create_plugin({}).tools if t.definition.name == tool_name)
+    if tool_name == "grep":
+        long_line = "needle " + ("x" * 1000)
+        lines = [f"{long_line} line {i}" for i in range(80)]
+        (tmp_path / "large.txt").write_text("\n".join(lines), encoding="utf-8")
+        result = tool.invoke(
+            ToolCall(tool_name="grep", arguments={"pattern": "needle", "limit": 80}),
+            context=_context(tmp_path),
+        )
+        assert isinstance(result, ToolSuccess)
+        assert len(result.body.matches) == 80  # type: ignore[union-attr]
+        assert result.body.truncated is False  # type: ignore[union-attr]
+        assert "[TRUNCATED]" not in result.output.text  # type: ignore[union-attr]
+    else:
+        nested_dir = tmp_path / ("d1_" + "a" * 100) / ("d2_" + "b" * 100) / ("d3_" + "c" * 100) / ("d4_" + "d" * 100)
+        nested_dir.mkdir(parents=True)
+        for i in range(100):
+            (nested_dir / f"file_{i:03d}.txt").write_text("data")
+        result = tool.invoke(
+            ToolCall(tool_name="glob", arguments={"pattern": "**/*.txt", "limit": 100}),
+            context=_context(tmp_path),
+        )
+        assert isinstance(result, ToolSuccess)
+        assert len(result.body.matches) == 100  # type: ignore[union-attr]
+        assert result.body.truncated is False  # type: ignore[union-attr]
+
+
 @pytest.mark.parametrize("operation", ["single", "batch"])
 @pytest.mark.parametrize("stale", [False, True])
 def test_edit_without_read_history_keeps_hash_checks(tmp_path: Path, operation: str, stale: bool) -> None:
@@ -1252,3 +1281,75 @@ def test_marker_patch_preflights_sequential_file_state(tmp_path: Path, operation
     else:
         assert isinstance(execute_patch(arguments, context=_context(tmp_path)), ToolSuccess)
     assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == expected
+
+
+def test_edit_schema_excludes_patch_and_strictly_requires_replacements(tmp_path: Path) -> None:
+    from pydantic import ValidationError
+
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    tool = EditTool()
+    schema = tool.definition.input_schema
+    defs = schema.get("$defs", {})
+    assert "_PatchEdit" not in defs
+    assert "patch" not in schema.get("properties", {})
+    assert set(defs.keys()) == {"_SingleEdit", "_BatchEdit", "_Replacement"}
+
+    with pytest.raises(ValidationError):
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"patch": "*** Begin Patch\n*** End Patch\n"},
+            ),
+            context=_context(tmp_path),
+            services=_SERVICES,
+        )
+
+
+def test_shared_primitives_path_and_diff(tmp_path: Path) -> None:
+    from voidcode.capabilities.files._common import (
+        convert_line_endings,
+        detect_line_ending,
+        make_file_change,
+        normalize_line_endings,
+        resolve_workspace_path,
+        summarize_diff,
+        to_display_path,
+    )
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    target = sub / "file.txt"
+    resolved, display = resolve_workspace_path(tmp_path, "sub/file.txt")
+    assert resolved == target
+    assert display == "sub/file.txt"
+    assert to_display_path(target, tmp_path) == "sub/file.txt"
+
+    outside = tmp_path.parent / "outside.txt"
+    resolved_out, display_out = resolve_workspace_path(tmp_path, outside)
+    assert resolved_out == outside.resolve()
+    assert display_out == outside.resolve().as_posix()
+    assert to_display_path(outside, tmp_path) == outside.resolve().as_posix()
+
+    with pytest.raises(ValueError, match="Path escapes workspace"):
+        resolve_workspace_path(tmp_path, outside, allow_outside_workspace=False)
+
+    diff, additions, deletions = summarize_diff(
+        path="test.py",
+        before="def foo():\n    return 1\n",
+        after="def foo():\n    return 2\n",
+    )
+    assert additions == 1
+    assert deletions == 1
+    assert "-    return 1" in diff
+    assert "+    return 2" in diff
+
+    change = make_file_change("sub/file.txt", "update", content_hash="abc")
+    assert change.path == "sub/file.txt"
+    assert change.operation == "update"
+    assert change.content_hash == "abc"
+
+    assert detect_line_ending("line1\r\nline2") == "\r\n"
+    assert detect_line_ending("line1\nline2") == "\n"
+    assert normalize_line_endings("a\r\nb\rc\n") == "a\nb\nc\n"
+    assert convert_line_endings("a\nb\n", "\r\n") == "a\r\nb\r\n"

@@ -34,7 +34,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from ._common import validate_non_empty
+from ._common import resolve_workspace_path, validate_non_empty
 
 
 class ReadArgs(BaseModel):
@@ -359,11 +359,7 @@ class ReadTool:
         if args.byte_offset is not None or args.byte_limit is not None:
             raise ValueError("byte_offset and byte_limit require a resource URI")
         workspace = context.require_workspace()
-        workspace_root = workspace.resolve()
-        requested_path = Path(args.path)
-        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
-        is_external = not candidate.is_relative_to(workspace_root)
-        relative_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
+        candidate, relative_path = resolve_workspace_path(workspace, args.path)
         offset = args.offset or 1
         limit = args.limit or DEFAULT_READ_LIMIT
 
