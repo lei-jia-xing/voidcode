@@ -236,7 +236,7 @@ def test_post_tool_hook_appends_its_guidance_to_the_successful_result(tmp_path: 
         assert core.run("write a note", session_id=session_id).status == "completed"
 
         assert (tmp_path / "workspace" / "note.txt").read_text(encoding="utf-8") == "hello"
-        texts = [text for text in _model_messages(server) if "wrote note" in text]
+        texts = [json.loads(text)["text"] for text in _model_messages(server) if "wrote note" in text]
         assert texts, _model_messages(server)
         assert texts[0].endswith(guidance), texts[0]
 
@@ -260,7 +260,7 @@ def test_disabled_hooks_config_leaves_both_paths_normal(tmp_path: Path) -> None:
         assert (tmp_path / "workspace" / "note.txt").read_text(encoding="utf-8") == "hello"
         texts = _model_messages(server)
         assert any("wrote note" in text for text in texts)
-        assert not any(text.endswith(guidance) for text in texts)
+        assert not any(guidance in text for text in texts)
         assert not any(diagnostic in text for text in texts)
 
 
@@ -270,7 +270,7 @@ def test_no_commands_configured_is_a_transparent_no_op(tmp_path: Path) -> None:
         session_id = core.create_session().session_id
         assert core.run("write a note", session_id=session_id).status == "completed"
         assert (tmp_path / "workspace" / "note.txt").read_text(encoding="utf-8") == "hello"
-        texts = [text for text in _model_messages(server) if "wrote note" in text]
+        texts = [json.loads(text)["text"] for text in _model_messages(server) if "wrote note" in text]
         assert texts == ["wrote note"]
 
 
@@ -303,7 +303,7 @@ def test_read_only_policy_skips_a_matching_gate_and_notes_it_on_the_result(tmp_p
         assert core.run("read the note", session_id=session_id).status == "completed"
 
         # The read-tier call ran normally, and its result carries the core's skip clause.
-        texts = [text for text in _model_messages(server) if "note contents" in text]
+        texts = [json.loads(text)["text"] for text in _model_messages(server) if "note contents" in text]
         assert texts, _model_messages(server)
         assert texts[-1].endswith("[hook hooks skipped: read-only policy]"), texts[-1]
 
@@ -326,7 +326,7 @@ def test_read_only_read_ignores_a_write_only_hook(tmp_path: Path) -> None:
         assert core.run("read the note", session_id=session_id).status == "completed"
 
         # A write-only hook never touches a read: no note, no run, exact read text.
-        texts = [text for text in _model_messages(server) if "note contents" in text]
+        texts = [json.loads(text)["text"] for text in _model_messages(server) if "note contents" in text]
         assert texts == ["note contents"], _model_messages(server)
         assert not marker.exists()
 
@@ -339,5 +339,5 @@ def test_read_only_read_with_no_hooks_configured_is_exact(tmp_path: Path) -> Non
         assert core.run("read the note", session_id=session_id).status == "completed"
 
         # Empty hooks config registers nothing: the read result is byte-exact, no skip-note.
-        texts = [text for text in _model_messages(server) if "note contents" in text]
+        texts = [json.loads(text)["text"] for text in _model_messages(server) if "note contents" in text]
         assert texts == ["note contents"], _model_messages(server)

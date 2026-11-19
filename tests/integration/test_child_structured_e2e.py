@@ -13,7 +13,8 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.plugins.subagents.subagents_plugin import ChildRecord, DelegationState, TaskTool
-from voidcode.plugins.workflows.workflows_plugin import WorkflowNode, WorkflowRun, WorkflowState, _FinishNode
+from voidcode.plugins.workflows import workflows_plugin
+from voidcode.plugins.workflows.workflows_plugin import WorkflowNode, WorkflowRun, _FinishNode
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.tools import ToolCall
 
@@ -111,7 +112,6 @@ def test_task_and_workflow_read_one_real_fact_identically(tmp_path: Path) -> Non
         agent="review",
         child_session_id=child_id,
         effective_input_sha256="d" * 64,
-        prompt_sha256="e" * 64,
         result_schema=dict(_SCHEMA),
     )
     run = WorkflowRun(
@@ -120,12 +120,13 @@ def test_task_and_workflow_read_one_real_fact_identically(tmp_path: Path) -> Non
         workflow="review",
         source_path="flows/review.py",
         source_sha256="a" * 64,
-        source_artifact="b" * 64,
         task="t",
         input_sha256="c" * 64,
         nodes=(node,),
     )
-    flow_services.seed_state(WorkflowState.from_payload(None).with_run(run).to_payload(), version=1)
+    _flow_store = workflows_plugin._store(flow_services)
+    _flow_state, _flow_version = _flow_store.load()
+    _flow_store.save(_flow_state.with_run(run), _flow_version)
     flow_context = ToolContext(workspace=Path("/workspace"), session_id="s1", run_id="r1", invocation_id="i1", revision_id="rev", actor="model")
     finished = _FinishNode("run-1", "a", outcome)(flow_context, flow_services)
     assert finished.error is None and not finished.cancelled
@@ -133,7 +134,7 @@ def test_task_and_workflow_read_one_real_fact_identically(tmp_path: Path) -> Non
     assert finished.structured.data is not None and finished.structured.as_payload()["data"] == expected
     assert finished.structured.raw_text == _DELIVERY
 
-    flow_state = WorkflowState.from_payload(flow_services.get_state("session")[0])
+    flow_state = workflows_plugin._store(flow_services).load()[0]
     stored = flow_state.runs["run-1"].node("a")
     assert stored is not None and stored.data is not None
-    assert dict(stored.data) == dict(task_payload["data"])  # type: ignore[arg-type]
+    assert stored.to_payload()["data"] == dict(task_payload["data"])  # type: ignore[arg-type]

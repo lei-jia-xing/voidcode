@@ -161,7 +161,7 @@ def test_skill_catalog_context_and_on_demand_body_on_the_real_stack(tmp_path: Pa
 
         tool_messages = [message for message in _messages(server.requests[1]) if message.get("role") == "tool"]
         assert len(tool_messages) == 1
-        body = str(tool_messages[0]["content"])
+        body = str(json.loads(str(tool_messages[0]["content"]))["text"])
         assert f"## Skill: release\n**Description**: Cut a release\nsourcePath: {entry}\nbaseDirectory: {entry.parent}" in body
         assert "# Steps\n\n1. bump the version" in body
 

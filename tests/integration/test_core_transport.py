@@ -633,9 +633,10 @@ def test_malformed_conversational_record_is_a_terminal_error_not_a_null_transcri
         sentinel = "SENTINEL-CREDENTIAL-malformed-probe"
         connection = sqlite3.connect(state / "voidcode.db")
         try:
+            payload_text = json.dumps({"content": {"leaked": sentinel}, "eligible_owners": []})
             connection.execute(
-                "INSERT INTO session_events(session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO session_events(session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "malformed-1",
                     tip + 1,
@@ -644,7 +645,8 @@ def test_malformed_conversational_record_is_a_terminal_error_not_a_null_transcri
                     "kernel",
                     "user",
                     catalog["revision_id"],
-                    json.dumps({"content": {"leaked": sentinel}, "eligible_owners": []}),
+                    payload_text,
+                    len(payload_text.encode("utf-8")),
                 ),
             )
             connection.execute("UPDATE sessions SET last_event_sequence = ? WHERE session_id = ?", (tip + 1, "malformed-1"))

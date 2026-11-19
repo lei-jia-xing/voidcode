@@ -14,7 +14,7 @@ from dataclasses import asdict
 from typing import get_args
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.hooks import ObservedFactKind, RunFinishedFact, UsageFact
-from voidcode.sdk.tools import (ToolDefinition, ToolEffect, ToolSuccess, TextOutput, OutputBounds, ReadObservation, ResourceChange)
+from voidcode.sdk.tools import (ToolDefinition, ToolEffect, ToolSuccess, TextOutput, OutputBounds, ReadObservation, Change)
 
 class Substitute:
     definition = ToolDefinition("replace_any_name", "replacement", {"type": "object"},
@@ -23,7 +23,7 @@ class Substitute:
     def invoke(self, call, *, context, services):
         return ToolSuccess(call.tool_name, TextOutput("done", bounds=OutputBounds(partial=True)),
             coverage=(ReadObservation("a.py", "a" * 64, (1,), 2),),
-            changes=(ResourceChange("a.py"), ResourceChange("b.py")))
+            changes=(Change("a.py"), Change("b.py")))
 
 _spawned = False
 

@@ -351,7 +351,7 @@ def test_safe_read_recovery_reuses_the_durable_invocation_identity(tmp_path: Pat
             assert recovered["status"] == "completed"
             identities = (workspace / "read.invocations").read_text().splitlines()
             assert len(identities) == 2 and identities[0] == identities[1]
-            assert server.requests[1]["messages"][-1]["content"] == "fresh recovery observation\n"
+            assert json.loads(server.requests[1]["messages"][-1]["content"])["text"] == "fresh recovery observation\n"
         finally:
             if process.poll() is None:
                 process.kill()
