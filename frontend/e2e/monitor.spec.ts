@@ -5,6 +5,7 @@ import { createServer } from "net";
 import * as os from "os";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { gotoAuthed } from "./auth";
 /**
  * Monitor smoke on the real served core: the hidden shortcut action opens a
  * live roster through `command.input` only, navigates without touching the
@@ -51,7 +52,7 @@ async function rpc(
       `${window.location.origin.replace("http", "ws")}/api/rpc`,
       "voidcode.rpc.v1",
     );
-    const token = new URLSearchParams(window.location.search).get("token");
+    const token = window.sessionStorage.getItem("voidcode:bearer:same-origin");
     const send = (id: string, method: string, params: object) =>
       new Promise<Record<string, unknown>>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("rpc timeout")), 15000);
@@ -306,7 +307,7 @@ test("the monitor action browses read-only and restores the composer", async ({
       }
     }),
   );
-  await page.goto(`${base}/?token=${token}`);
+  await gotoAuthed(page, base, token);
   await expect(page.locator('[data-testid^="session-tab-"]')).toHaveCount(1);
 
   // Hidden action: no slash suggestion, but an accessible button by description.
@@ -355,7 +356,7 @@ test("the monitor action browses read-only and restores the composer", async ({
 test("disabling subagents removes the monitor action and open panel", async ({
   page,
 }) => {
-  await page.goto(`${base}/?token=${token}`);
+  await gotoAuthed(page, base, token);
   await expect(page.locator('[data-testid^="session-tab-"]')).toHaveCount(1);
   const action = page.getByTestId("shortcut-action-subagents.monitor");
   await expect(action).toBeVisible();
@@ -378,7 +379,7 @@ test("disabling subagents removes the monitor action and open panel", async ({
       `${window.location.origin.replace("http", "ws")}/api/rpc`,
       "voidcode.rpc.v1",
     );
-    const token = new URLSearchParams(window.location.search).get("token");
+    const token = window.sessionStorage.getItem("voidcode:bearer:same-origin");
     const send = (id: string, method: string, params: object) =>
       new Promise<Record<string, unknown>>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("rpc timeout")), 15000);
@@ -431,7 +432,7 @@ test("a gated live scene browses, denies, allows, and restores the draft", async
     const context = await browser.newContext();
     const live = await context.newPage();
     try {
-      await live.goto(`${liveBase}/?token=${liveToken}`);
+      await gotoAuthed(live, liveBase, liveToken);
       await live.getByTestId(`session-tab-${rootId}`).click();
       await live.getByTestId("prompt-input").fill("live draft here");
       await live.getByTestId("shortcut-action-subagents.monitor").click();
@@ -506,7 +507,7 @@ test("a gated live scene browses, denies, allows, and restores the draft", async
     const settledContext = await browser.newContext();
     const settledPage = await settledContext.newPage();
     try {
-      await settledPage.goto(`${liveBase}/?token=${liveToken}`);
+      await gotoAuthed(settledPage, liveBase, liveToken);
       const settled = await rpc(settledPage, [
         { id: "c1", method: "session.get", params: { session_id: childId } },
         {

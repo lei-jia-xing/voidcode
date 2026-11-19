@@ -36,24 +36,23 @@ bun install --cwd frontend && bun run --cwd frontend build
 uv run voidcode --workspace . serve --port 8765
 ```
 
-The command prints `core bearer token: <token>` at launch and `web client: http://127.0.0.1:8765/`. Open the printed URL with the token as a query parameter:
+The command prints `core bearer token: <token>` at launch and `web client: http://127.0.0.1:8765/`. Open the printed URL and paste the token into the token gate when prompted; it is kept in per-tab session storage. The token never goes in the URL (no history, Referer, or access-log leak), and a `?token=` query parameter is ignored.
 
 ```text
-http://127.0.0.1:8765/?token=<token>
+http://127.0.0.1:8765/
 ```
 
-Only `/api/*` is authenticated; the static bundle is public. The client takes its identity from two query parameters (both optional; same origin and no token by default):
+Only `/api/*` is authenticated; the static bundle is public. The client takes one optional query parameter:
 
 | Parameter | Meaning |
 |---|---|
 | `server` | Core base URL, e.g. `http://127.0.0.1:8765`; default is the page's own origin. |
-| `token` | Bearer token sent as `Authorization: Bearer <token>` on every `/api` request. |
 
-For development with HMR, run the dev server against a core server instead of building:
+For development with HMR, run the dev server against a core server instead of building, then paste the printed token into the gate:
 
 ```bash
 VITE_BACKEND_URL=http://127.0.0.1:8765 bun run dev
-# then open http://127.0.0.1:5173/?token=<token>
+# then open http://127.0.0.1:5173/?server=http://127.0.0.1:8765
 ```
 
 The core reads one config file, `voidcode.json` in the workspace (`{"schema_version": 1}` is a complete minimal file). Any other filename (including a legacy `.voidcode.json`) is ignored, not detected or converted.

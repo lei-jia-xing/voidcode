@@ -204,7 +204,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
       />,
@@ -251,7 +251,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
       />,
@@ -316,7 +316,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         argumentSchema={schema}
         onSubmit={onSubmit}
@@ -376,7 +376,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         argumentSchema={{
           type: "object",
@@ -411,7 +411,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         argumentSchema={{
           type: "object",
@@ -444,7 +444,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
       />,
@@ -474,7 +474,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
       />,
@@ -518,7 +518,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={[
           ...dummyCatalog,
           {
@@ -571,7 +571,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={mixedCatalog}
         onSubmit={onSubmit}
       />,
@@ -611,7 +611,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
       />,
@@ -660,7 +660,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
       />,
@@ -684,7 +684,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-2"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
       />,
@@ -735,7 +735,7 @@ describe("FormView", () => {
         }}
         sessionId="sess-1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={dummyCatalog}
         onSubmit={onSubmit}
       />,
@@ -791,7 +791,7 @@ describe("PluginViewRenderer", () => {
         }}
         sessionId="s1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={[]}
       />,
     );
@@ -1036,7 +1036,7 @@ it("binds detail actions to the displayed revision and distinguishes input prepa
       }}
       sessionId="s"
       revisionId="shown-revision"
-      client={{} as CoreClient}
+      getClient={() => ({}) as CoreClient}
       catalog={[]}
       onAction={action}
     />,
@@ -1062,7 +1062,7 @@ it("keeps fixed form arguments out of editable fields and resets drafts for a ne
   const props = {
     sessionId: "s",
     revisionId: "r",
-    client: {} as CoreClient,
+    getClient: () => ({}) as CoreClient,
     catalog: [],
     onSubmit: submit,
   };

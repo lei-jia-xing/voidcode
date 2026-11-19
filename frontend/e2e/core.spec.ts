@@ -5,6 +5,7 @@ import { createServer } from "net";
 import * as os from "os";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { gotoAuthed } from "./auth";
 
 /**
  * Core client smoke, offline: the real `voidcode serve` process owns the
@@ -131,10 +132,26 @@ test.afterAll(() => {
   proc = undefined;
 });
 
+test("the bearer token is pasted, never read from the URL", async ({
+  page,
+}) => {
+  await page.goto(`${baseUrl}/`);
+  // No seeded token: the gate prompts instead of failing silently, and the
+  // token never appears in the address bar.
+  await expect(page.getByTestId("token-gate")).toBeVisible();
+  expect(page.url()).not.toContain("token=");
+  await page.getByTestId("token-gate-input").fill(token);
+  await page.getByTestId("token-gate-submit").click();
+  await expect(page.getByTestId("token-gate")).toHaveCount(0);
+  expect(page.url()).not.toContain(token);
+  // The pasted token authenticates the stream: bootstrap proceeds.
+  await expect(page.locator('[data-testid^="session-tab-"]')).toHaveCount(1);
+});
+
 test("the core client creates a session and renders a command result", async ({
   page,
 }) => {
-  await page.goto(`${baseUrl}/?token=${token}`);
+  await gotoAuthed(page, baseUrl, token);
 
   // The SPA the core serves is the core client, not the deleted legacy app.
   await expect(page.getByTestId("core-app")).toBeVisible();

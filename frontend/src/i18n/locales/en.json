@@ -96,5 +96,10 @@
   "core.choicesNoMatch": "No matching options.",
   "core.shortcutActions": "Actions",
   "core.shortcutConflict": "Shortcut {{chord}} is claimed by {{names}}; no key bound",
-  "core.shortcutConflicted": "shortcut conflicted, button still available"
+  "core.shortcutConflicted": "shortcut conflicted, button still available",
+  "core.tokenGateTitle": "Core bearer token required",
+  "core.tokenGateHint": "Paste the bearer token for {{server}} (printed by `serve`; never put it in the URL).",
+  "core.tokenGatePlaceholder": "Paste bearer token…",
+  "core.tokenGateConnect": "Connect",
+  "core.tokenGateEdit": "Token"
 }

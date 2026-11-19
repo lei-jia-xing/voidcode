@@ -5,6 +5,7 @@ import { createServer } from "net";
 import * as os from "os";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { gotoAuthed } from "./auth";
 
 test.setTimeout(90000);
 const root = path.resolve(
@@ -148,7 +149,7 @@ test("keyboard discovery, todo editing, passive replay and paged skills work in 
       if (message.method) calls.push(message);
     }),
   );
-  await page.goto(`${base}/?token=${token}`);
+  await gotoAuthed(page, base, token);
   await expect(page.locator('[data-testid^="session-tab-"]')).toHaveCount(1);
   const input = page.getByTestId("prompt-input");
   await input.fill("/sk");
@@ -291,7 +292,7 @@ test("guided review, schedule cancellation and diagnostic panels work without a 
       if (message.method) calls.push(message);
     }),
   );
-  await page.goto(`${base}/?token=${token}`);
+  await gotoAuthed(page, base, token);
   const input = page.getByTestId("prompt-input");
   const panel = page.getByTestId("command-presentation");
   async function command(text: string) {

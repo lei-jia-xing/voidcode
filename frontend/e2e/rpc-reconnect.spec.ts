@@ -5,6 +5,7 @@ import { createServer } from "net";
 import * as os from "os";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { gotoAuthed } from "./auth";
 
 /** Restart the genuine core while the browser is attached; no model or live network. */
 test.setTimeout(120000);
@@ -111,7 +112,7 @@ test("RPC reconnect restores events once and accepts a new command", async ({
   });
   let process = await launch();
   try {
-    await page.goto(`${base}/?token=${token}`);
+    await gotoAuthed(page, base, token);
     const commands = page
       .locator('[data-testid^="event-"]')
       .filter({ hasText: "/plan status [ok]" });

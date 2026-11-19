@@ -96,5 +96,10 @@
   "core.choicesNoMatch": "没有匹配的选项。",
   "core.shortcutActions": "操作",
   "core.shortcutConflict": "快捷键 {{chord}} 被 {{names}} 同时声明；未绑定按键",
-  "core.shortcutConflicted": "快捷键冲突，按钮仍可用"
+  "core.shortcutConflicted": "快捷键冲突，按钮仍可用",
+  "core.tokenGateTitle": "需要核心 bearer 令牌",
+  "core.tokenGateHint": "粘贴 {{server}} 的 bearer 令牌（由 `serve` 打印；切勿放入 URL）。",
+  "core.tokenGatePlaceholder": "粘贴 bearer 令牌…",
+  "core.tokenGateConnect": "连接",
+  "core.tokenGateEdit": "令牌"
 }

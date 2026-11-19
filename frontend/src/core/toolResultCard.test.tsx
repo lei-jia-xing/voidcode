@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
-import { ToolResultCard } from "./CoreApp";
+import { ToolResultCard } from "./ToolResultCard";
 import type { CoreClient } from "../lib/core/client";
 import type { TranscriptTool } from "../lib/core/types";
 
@@ -75,7 +75,7 @@ describe("ToolResultCard composite", () => {
       <ToolResultCard
         evSequence={7}
         tool={compositeTool({})}
-        client={client}
+        getClient={() => client}
         sessionId="s"
         revisionId="rev"
         coreStatus="ok"
@@ -105,7 +105,7 @@ describe("ToolResultCard composite", () => {
       <ToolResultCard
         evSequence={8}
         tool={compositeTool({ status: "error", error: "boom happened" })}
-        client={client}
+        getClient={() => client}
         sessionId="s"
         revisionId="rev"
         coreStatus="ok"
@@ -125,7 +125,7 @@ describe("ToolResultCard composite", () => {
       <ToolResultCard
         evSequence={9}
         tool={compositeTool({ interrupted: true })}
-        client={client}
+        getClient={() => client}
         sessionId="s"
         revisionId="rev"
         coreStatus="ok"
@@ -161,7 +161,7 @@ describe("ToolResultCard composite", () => {
       <ToolResultCard
         evSequence={10}
         tool={tool}
-        client={client}
+        getClient={() => client}
         sessionId="s"
         revisionId="rev"
         coreStatus="ok"
@@ -204,7 +204,7 @@ describe("ToolResultCard composite", () => {
       <ToolResultCard
         evSequence={11}
         tool={compositeTool({})}
-        client={client}
+        getClient={() => client}
         sessionId="s"
         revisionId="rev"
         coreStatus="ok"

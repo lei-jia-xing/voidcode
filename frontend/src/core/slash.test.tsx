@@ -39,6 +39,7 @@ interface Harness {
   rpcMock: Mock;
   invokes: Array<{ method: string; params: Record<string, unknown> }>;
   unmount: () => void;
+  settled: boolean;
 }
 
 async function mount(
@@ -108,10 +109,20 @@ async function mount(
   await waitFor(() => {
     expect(screen.getByTestId(`session-tab-${SESSION}`)).toBeVisible();
   });
-  return { rpcMock, invokes, unmount };
+  return { rpcMock, invokes, unmount, settled: false };
 }
 
 async function submitSlash(harness: Harness, text: string) {
+  if (!harness.settled) {
+    // Drain the mount race before the first submit: the initial reconcile
+    // sets "Connected" once its health resolves, and a submit that lands
+    // first would have its status clobbered. Later submits need no wait:
+    // nothing else reconciles spontaneously.
+    await waitFor(() => {
+      expect(screen.getByText(/Connected to session/)).toBeVisible();
+    });
+    harness.settled = true;
+  }
   fireEvent.change(screen.getByTestId("prompt-input"), {
     target: { value: text },
   });

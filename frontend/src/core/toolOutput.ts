@@ -85,30 +85,61 @@ export function toolOutputParts(output: ToolOutput): string[] {
   }
 }
 
+/** Explicit sha256-hex check (TUI `_artifact_ref_uri` parity); never a regex. */
+function isArtifactDigest(value: unknown): value is string {
+  if (typeof value !== "string" || value.length !== 64) return false;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    const hex = (code >= 48 && code <= 57) || (code >= 97 && code <= 102);
+    if (!hex) return false;
+  }
+  return true;
+}
+
+/**
+ * Coerce one whole value to an artifact reference: a declared
+ * `ArtifactReference` shape or a whole `artifact://` URI. Free-form text is
+ * never substring-scanned: a string only matches when the entire value is the
+ * URI, and an object only when it carries the exact reference shape.
+ */
+function asReference(
+  value: unknown,
+): { sha256: string; reference?: ArtifactReference } | null {
+  if (typeof value === "string") {
+    if (!value.startsWith("artifact://")) return null;
+    const sha256 = value.slice("artifact://".length);
+    return isArtifactDigest(sha256) ? { sha256 } : null;
+  }
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (
+      isArtifactDigest(record.sha256) &&
+      Number.isSafeInteger(record.bytes) &&
+      (record.bytes as number) >= 0 &&
+      typeof record.media_type === "string"
+    ) {
+      return {
+        sha256: record.sha256,
+        reference: value as ArtifactReference,
+      };
+    }
+  }
+  return null;
+}
+
 export function artifactSources(result: ToolResult): ArtifactSource[] {
   const sources: ArtifactSource[] = [];
   const seen = new Set<string>();
   const add = (label: string, value: unknown): boolean => {
-    let sha256: string | undefined;
-    let reference: ArtifactReference | undefined;
-    if (typeof value === "string" && value.startsWith("artifact://")) {
-      sha256 = value.slice(11);
-    } else if (value !== null && typeof value === "object") {
-      const record = value as Record<string, unknown>;
-      if (
-        typeof record.sha256 === "string" &&
-        Number.isSafeInteger(record.bytes) &&
-        (record.bytes as number) >= 0 &&
-        typeof record.media_type === "string"
-      ) {
-        sha256 = record.sha256;
-        reference = value as ArtifactReference;
-      }
-    }
-    if (!sha256 || !/^[0-9a-f]{64}$/.test(sha256)) return false;
-    if (!seen.has(sha256)) {
-      sources.push({ label, sha256, reference });
-      seen.add(sha256);
+    const found = asReference(value);
+    if (!found) return false;
+    if (!seen.has(found.sha256)) {
+      sources.push({
+        label,
+        sha256: found.sha256,
+        reference: found.reference,
+      });
+      seen.add(found.sha256);
     }
     return true;
   };
@@ -118,6 +149,14 @@ export function artifactSources(result: ToolResult): ArtifactSource[] {
       add(`Part ${index} (${part.kind})`, part.reference);
     });
   }
+  // Body-carried references: real tool bodies carry ArtifactReference payloads
+  // and whole artifact:// URIs outside the declared output envelope (shell_exec
+  // stdout/stderr, read_tool/resource_pages/web_fetch/user_shell `artifact`,
+  // mcp result_artifact/artifacts, review/subagents output_uri, workflows
+  // result_uri; the e2e artifact scene covers body.* explicitly). Only whole
+  // well-formed reference values are accepted here; free-form text is never
+  // substring-scanned. This walk stays until the backend projects every body
+  // reference into declared output/result_reference fields.
   const visit = (value: unknown, path: string) => {
     if (add(path, value)) return;
     if (Array.isArray(value))

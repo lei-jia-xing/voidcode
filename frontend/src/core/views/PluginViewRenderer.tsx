@@ -37,7 +37,7 @@ export interface PluginViewRendererProps {
    * captured under one generation is ever relabelled with a later one.
    */
   revisionId: string;
-  client: CoreClient;
+  getClient: () => CoreClient;
   catalog: CommandDescriptor[];
   onAction?: (
     action: string,
@@ -58,7 +58,7 @@ export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
   descriptor,
   sessionId,
   revisionId,
-  client,
+  getClient,
   catalog,
   onAction = () => {},
   onConfirm = () => {},
@@ -116,7 +116,7 @@ export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
           data={data as unknown as FormViewData}
           sessionId={sessionId}
           revisionId={revisionId}
-          client={client}
+          getClient={getClient}
           catalog={catalog}
           argumentSchema={
             catalog.find((c) => c.name === (data as FormViewData).action)

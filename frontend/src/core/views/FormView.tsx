@@ -22,7 +22,7 @@ export interface FormViewProps {
    * read action is invoked under exactly this revision, never under a newer one.
    */
   revisionId: string;
-  client: CoreClient;
+  getClient: () => CoreClient;
   catalog: CommandDescriptor[];
   onSubmit: (action: string, args: Record<string, unknown>) => void;
   onCancel?: () => void;
@@ -154,7 +154,7 @@ export const FormView: React.FC<FormViewProps> = ({
   data,
   sessionId,
   revisionId,
-  client,
+  getClient,
   catalog,
   argumentSchema,
   onSubmit,
@@ -162,6 +162,7 @@ export const FormView: React.FC<FormViewProps> = ({
   disabled = false,
 }) => {
   const { t } = useTranslation();
+  const client = getClient();
   const fields = useMemo(() => data.fields || [], [data.fields]);
   const fg = componentFg(data);
 

@@ -153,7 +153,7 @@ describe("PluginViewRenderer composite kinds", () => {
         }}
         sessionId="s1"
         revisionId={DISPLAYED_REVISION}
-        client={mockClient}
+        getClient={() => mockClient}
         catalog={[]}
       />,
     );

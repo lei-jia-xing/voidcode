@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { gotoAuthed } from "./auth";
 
 // This runs the current built bundle against an authenticated real Core. No RPC mocks.
 test.setTimeout(120000);
@@ -72,7 +73,7 @@ test("real immutable text/binary/error pages and decoded read-tool PNG", async (
     const message = JSON.parse(String(event.payload));
     if (message.method === "artifact.read") reads.push(message.params);
   }));
-  await page.goto(`${base}/?token=${token}`);
+  await gotoAuthed(page, base, token);
   await page.getByTestId(`session-tab-${scene.text_session}`).click();
   const card = page.getByTestId(`event-${scene.text_sequence}`);
   await expect(card).toContainText("SELECTED_INLINE_SUMMARY");
