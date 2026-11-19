@@ -65,11 +65,9 @@ def create_plugin(config):
                 time.sleep(0.01)
             assert (source / "started").exists()
             if mode != "unsolicited":
-                keys = iter((b"\x1b", b""))
-                monkeypatch.setattr(terminal, "read_bytes", lambda **kwargs: next(keys))
-                app._process_input()
+                app._handle_input_bytes(b"\x1b")
                 time.sleep(0.1)  # let the lone-Esc decoder disambiguate the byte
-                app._process_input()
+                app._handle_input_bytes(b"")
             expected_status = "failed" if mode == "unsolicited" else "interrupted"
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:

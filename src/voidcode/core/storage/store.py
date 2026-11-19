@@ -1301,58 +1301,6 @@ class SqliteStore:
                 (status, int(time.time() * 1000), wakeup_id),
             )
 
-    def pending_wakeups(self, workspace: str | None = None, limit: int = 100) -> tuple[WakeupRecord, ...]:
-        """Read pending wakeups (diagnostics and tests); ordered by due time."""
-        with self._lock:
-            self._check_open()
-            if workspace is None:
-                cursor = self._connection.execute(
-                    """
-                    SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
-                    FROM wakeups WHERE status = 'pending' ORDER BY due_at ASC LIMIT ?
-                    """,
-                    (max(1, limit),),
-                )
-            else:
-                cursor = self._connection.execute(
-                    """
-                    SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
-                    FROM wakeups WHERE workspace = ? AND status = 'pending' ORDER BY due_at ASC LIMIT ?
-                    """,
-                    (workspace, max(1, limit)),
-                )
-            items: list[WakeupRecord] = []
-            for row in cursor.fetchall():
-                stored = json.loads(row[4])
-                if not isinstance(stored, Mapping):
-                    raise StoreConflict(f"wakeup {str(row[0])!r} has a malformed payload")
-                items.append(
-                    WakeupRecord(
-                        wakeup_id=str(row[0]),
-                        owner=str(row[1]),
-                        workspace=str(row[2]),
-                        session_id=str(row[3]),
-                        payload=own_json_object(stored),
-                        root_id=str(row[5]),
-                        role=str(row[7]),
-                        due_at=int(row[8]),
-                        status=str(row[9]),
-                        claim_run_id=str(row[10]) if row[10] is not None else None,
-                        root_action_budget=None if row[6] is None else int(row[6]),
-                    )
-                )
-            return tuple(items)
-
-    def count_root_children(self, root_session_id: str) -> int:
-        """How many child sessions one chain root has already spawned (its durable budget)."""
-        with self._lock:
-            self._check_open()
-            row = self._connection.execute(
-                "SELECT COUNT(*) FROM sessions WHERE root_session_id = ? AND parent_session_id IS NOT NULL",
-                (root_session_id,),
-            ).fetchone()
-            return int(row[0]) if row is not None else 0
-
     def session(self, session_id: str) -> SessionRecord:
         """Fetch session metadata by session ID."""
         with self._lock:

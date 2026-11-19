@@ -162,7 +162,30 @@ def _schedules(core: Core, session_id: str) -> dict[str, object]:
 
 
 def _pending(core: Core) -> list[WakeupRecord]:
-    return list(core.store.pending_wakeups(str(core.workspace)))
+    with core.store._lock:
+        cursor = core.store._connection.execute(
+            """
+            SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
+            FROM wakeups WHERE workspace = ? AND status = 'pending' ORDER BY due_at ASC
+            """,
+            (str(core.workspace),),
+        )
+        return [
+            WakeupRecord(
+                wakeup_id=str(row[0]),
+                owner=str(row[1]),
+                workspace=str(row[2]),
+                session_id=str(row[3]),
+                payload=json.loads(row[4]),
+                root_id=str(row[5]),
+                role=str(row[7]),
+                due_at=int(row[8]),
+                status=str(row[9]),
+                claim_run_id=str(row[10]) if row[10] is not None else None,
+                root_action_budget=None if row[6] is None else int(row[6]),
+            )
+            for row in cursor.fetchall()
+        ]
 
 
 def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -> None:
@@ -325,5 +348,5 @@ def test_loop_command_returns_usage_without_side_effects(tmp_path: Path) -> None
 
         assert result.status == "ok"
         assert result.output == USAGE_MESSAGE
-        assert core.store.pending_wakeups(str(core.workspace)) == ()
+        assert _pending(core) == []
         assert _schedules(core, session_id) == {}

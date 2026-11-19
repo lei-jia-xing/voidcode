@@ -2157,7 +2157,7 @@ def test_concurrent_spawns_at_budget_accept_exactly_one_child(tmp_path: Path) ->
         for index in range(3):
             child = core.spawn_child(parent, f"setup child {index}", notify_on_completion=False)
             assert _join(core, parent, child).status == "completed"
-        assert core.store.count_root_children(parent) == 3
+        assert len(core.store.descendant_sessions(parent)) == 3
 
         contender_barrier = threading.Barrier(2, timeout=30)
         original_create = core.store.create_child_session
@@ -2165,7 +2165,7 @@ def test_concurrent_spawns_at_budget_accept_exactly_one_child(tmp_path: Path) ->
         captured: dict[str, int] = {}
 
         def gated_create(session_id: str, *args: object, **kwargs: object) -> object:
-            count = core.store.count_root_children(parent)
+            count = len(core.store.descendant_sessions(parent))
             if threading.get_ident() != mainstream and count == 3:
                 captured[threading.current_thread().name] = count
                 contender_barrier.wait()

@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING
-
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
@@ -13,15 +9,9 @@ from voidcode.sdk.foreground import (
     CompositionDraft,
     CompositionNestedRefused,
     CompositionReceipt,
-    ForegroundContext,
     SuspendComposition,
 )
 from voidcode.sdk.suspend import ParkError
-
-if TYPE_CHECKING:
-    from voidcode.sdk.invocation import ToolContext
-    from voidcode.sdk.services import PluginServices, ToolAwaitResult, ToolInvocationReceipt
-    from voidcode.sdk.tools import ToolResult
 
 
 def test_composition_draft_round_trip() -> None:
@@ -73,60 +63,6 @@ def test_composition_receipt_payload_and_validation() -> None:
         CompositionReceipt(composition_id="c", tool_name="t", depth=-1)
     with pytest.raises(ValueError):
         CompositionReceipt(composition_id="c", tool_name="t", depth=True)  # type: ignore[arg-type]
-
-
-class _FakeForegroundContext:
-    """Minimal driver handle proving the Protocol shape; single-shot terminal staging."""
-
-    def __init__(self) -> None:
-        self._staged: ToolResult | None = None
-
-    @property
-    def composition_id(self) -> str:
-        return "comp-1"
-
-    @property
-    def session_id(self) -> str:
-        return "s-1"
-
-    @property
-    def owner(self) -> str:
-        return "eval"
-
-    @property
-    def payload(self) -> Mapping[str, object]:
-        return CompositionDraft(cell_source="x", namespace_key="ns").as_payload()
-
-    @property
-    def abort_signal(self) -> threading.Event:
-        return threading.Event()
-
-    def invoke[T](self, callback: Callable[[ToolContext, PluginServices], T]) -> T:
-        raise NotImplementedError
-
-    def wait_tool(self, receipt: ToolInvocationReceipt) -> ToolAwaitResult:
-        raise NotImplementedError
-
-    def stage_terminal(self, result: ToolResult, *, for_tool: str) -> None:
-        if self._staged is not None:
-            raise ValueError("composition already terminal")
-        _ = for_tool
-        self._staged = result
-
-
-def test_foreground_context_protocol_shape() -> None:
-    assert isinstance(_FakeForegroundContext(), ForegroundContext)
-    assert not isinstance(object(), ForegroundContext)
-
-
-def test_single_shot_stage_terminal_fake_refuses_second_call() -> None:
-    from voidcode.sdk.tools import TextOutput, ToolSuccess
-
-    ctx = _FakeForegroundContext()
-    first = ToolSuccess(tool_name="eval_exec", output=TextOutput("one"))
-    ctx.stage_terminal(first, for_tool="eval_exec")
-    with pytest.raises(ValueError, match="already terminal"):
-        ctx.stage_terminal(first, for_tool="eval_exec")
 
 
 def test_suspend_composition_carries_draft_intent() -> None:

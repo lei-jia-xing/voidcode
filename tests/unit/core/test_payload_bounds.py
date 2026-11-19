@@ -7,6 +7,7 @@ while keyed retries still name their existing row without restaging.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,8 +21,35 @@ from voidcode.core.storage.store import (
     MAX_CONTINUATION_PAYLOAD_BYTES,
     MAX_WAKEUP_PAYLOAD_BYTES,
     SqliteStore,
+    WakeupRecord,
     canonical_json,
 )
+
+
+def _pending_wakeups(store: SqliteStore) -> tuple[WakeupRecord, ...]:
+    with store._lock:
+        cursor = store._connection.execute(
+            """
+            SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
+            FROM wakeups WHERE status = 'pending' ORDER BY due_at ASC
+            """
+        )
+        return tuple(
+            WakeupRecord(
+                wakeup_id=str(row[0]),
+                owner=str(row[1]),
+                workspace=str(row[2]),
+                session_id=str(row[3]),
+                payload=json.loads(row[4]),
+                root_id=str(row[5]),
+                role=str(row[7]),
+                due_at=int(row[8]),
+                status=str(row[9]),
+                claim_run_id=str(row[10]) if row[10] is not None else None,
+                root_action_budget=None if row[6] is None else int(row[6]),
+            )
+            for row in cursor.fetchall()
+        )
 
 
 def _payload_of_size(size: int) -> dict[str, object]:
@@ -113,7 +141,7 @@ def test_schedule_wakeup_rejects_oversized_payload(tmp_path: Path) -> None:
     with _services(tmp_path) as (services, _lease, store):
         with pytest.raises(ValueError, match=f"{MAX_WAKEUP_PAYLOAD_BYTES + 1} bytes.*{MAX_WAKEUP_PAYLOAD_BYTES}-byte"):
             services.schedule_wakeup(payload, due_at_ms=0)
-        assert store.pending_wakeups() == ()
+        assert _pending_wakeups(store) == ()
 
 
 def test_schedule_wakeup_accepts_payload_at_bound(tmp_path: Path) -> None:
@@ -121,6 +149,6 @@ def test_schedule_wakeup_accepts_payload_at_bound(tmp_path: Path) -> None:
     payload = _payload_of_size(MAX_WAKEUP_PAYLOAD_BYTES)
     with _services(tmp_path) as (services, _lease, store):
         wid = services.schedule_wakeup(payload, due_at_ms=0)
-        (record,) = store.pending_wakeups()
+        (record,) = _pending_wakeups(store)
         assert record.wakeup_id == wid
         assert record.payload == payload

@@ -186,16 +186,25 @@ class _TwoFlightBarrier:
         self._second = second
         self.arrived = Event()
         self.release = Event()
+        self._aborted = False
         self._count = 0
         self._guard = Lock()
 
+    def abort(self) -> None:
+        self._aborted = True
+        self.release.set()
+
     def __call__(self, payload: dict[str, object], index: int) -> dict[str, object] | None:
+        if index > 2:
+            return None
         _ = payload
         with self._guard:
             self._count += 1
             if self._count == 2:
                 self.arrived.set()
-        assert self.release.wait(timeout=60.0), "barrier never released"
+        assert self.release.wait(timeout=10.0), "barrier never released"
+        if self._aborted:
+            raise RuntimeError("barrier aborted to simulate mid-flight interruption")
         return self._first if index == 1 else self._second if index == 2 else None
 
 
@@ -427,8 +436,8 @@ def test_close_during_blocked_children_then_reopen_resume_rejoins(tmp_path: Path
         workspace = tmp_path / "workspace"
         state_dir = tmp_path / "state"
         _CREATED_CORES.remove(core)
+        barrier.abort()
         core.close()
-        barrier.release.set()
         reopened = open_core(workspace, state_dir=state_dir)
         _CREATED_CORES.append(reopened)
         status = _invoke(reopened, session_id, "workflow.status", {"run_id": run_id})

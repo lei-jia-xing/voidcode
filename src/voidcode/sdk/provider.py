@@ -141,15 +141,6 @@ class ProviderTokenUsage:
             "cost_usd": self.cost_usd,
         }
 
-    @property
-    def cache_hit_rate(self) -> float | None:
-        if self.cache_read_tokens is None or self.uncached_input_tokens is None:
-            return None
-        denominator = self.cache_read_tokens + self.uncached_input_tokens
-        if denominator <= 0:
-            return None
-        return self.cache_read_tokens / denominator
-
 
 @dataclass(frozen=True, slots=True)
 class ProviderTurnResult:

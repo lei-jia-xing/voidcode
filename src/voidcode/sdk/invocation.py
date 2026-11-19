@@ -75,8 +75,3 @@ class ToolContext:
         if not self.session_id:
             raise RuntimeError("tool requires an explicit session identity")
         return self.session_id
-
-    def require_revision(self) -> str:
-        if not self.revision_id:
-            raise RuntimeError("tool requires an explicit capability revision")
-        return self.revision_id

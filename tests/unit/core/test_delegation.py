@@ -170,7 +170,7 @@ def test_child_limits_and_scope_are_enforced_by_the_core(tmp_path: Path) -> None
         assert session.depth == 0
 
         # The chain's child quota is finite and counts every child of the root chain.
-        while core.store.count_root_children("root") < budget:
+        while len(core.store.descendant_sessions("root")) < budget:
             children.append(core.spawn_child("root", "budget child"))
         with pytest.raises(ValueError, match="spawn budget exhausted"):
             core.spawn_child("root", "one too many")

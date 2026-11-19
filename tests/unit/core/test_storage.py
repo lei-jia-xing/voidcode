@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -26,8 +27,44 @@ from voidcode.core.storage.store import (
     StorageError,
     StoreConflict,
     StoredEvent,
+    WakeupRecord,
     canonical_json,
 )
+
+
+def _pending_wakeups(store: SqliteStore, workspace: str | None = None) -> tuple[WakeupRecord, ...]:
+    with store._lock:
+        if workspace is None:
+            cursor = store._connection.execute(
+                """
+                SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
+                FROM wakeups WHERE status = 'pending' ORDER BY due_at ASC
+                """
+            )
+        else:
+            cursor = store._connection.execute(
+                """
+                SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
+                FROM wakeups WHERE workspace = ? AND status = 'pending' ORDER BY due_at ASC
+                """,
+                (workspace,),
+            )
+        return tuple(
+            WakeupRecord(
+                wakeup_id=str(row[0]),
+                owner=str(row[1]),
+                workspace=str(row[2]),
+                session_id=str(row[3]),
+                payload=json.loads(row[4]),
+                root_id=str(row[5]),
+                role=str(row[7]),
+                due_at=int(row[8]),
+                status=str(row[9]),
+                claim_run_id=str(row[10]) if row[10] is not None else None,
+                root_action_budget=None if row[6] is None else int(row[6]),
+            )
+            for row in cursor.fetchall()
+        )
 
 
 def _file_sha256(path: Path) -> str:
@@ -685,7 +722,7 @@ def test_schedule_wakeup_rejects_oversized_payload(tmp_path: Path) -> None:
         store.create_session("sess-wake", "/ws", rev_id)
         with pytest.raises(StoreConflict, match=f"{MAX_WAKEUP_PAYLOAD_BYTES + 1} bytes.*{MAX_WAKEUP_PAYLOAD_BYTES}-byte"):
             store.schedule_wakeup("wake-big", "owner", "/ws", "sess-wake", payload, 0, root_action_id="root-1", root_action_budget=None)
-        assert store.pending_wakeups() == ()
+        assert _pending_wakeups(store) == ()
 
 
 def test_schedule_wakeup_accepts_payload_at_bound(tmp_path: Path) -> None:
@@ -700,7 +737,7 @@ def test_schedule_wakeup_accepts_payload_at_bound(tmp_path: Path) -> None:
             store.schedule_wakeup("wake-edge", "owner", "/ws", "sess-wake", payload, 0, root_action_id="root-1", root_action_budget=None)
             == "wake-edge"
         )
-        (record,) = store.pending_wakeups()
+        (record,) = _pending_wakeups(store)
         assert record.payload == payload
 
 
@@ -737,7 +774,7 @@ def test_commit_staged_rejects_oversized_staged_wakeup_atomically(tmp_path: Path
             )
         assert store.session("sess-wake").last_event_sequence == 1
         assert len(store.events("sess-wake")) == 1
-        assert store.pending_wakeups() == ()
+        assert _pending_wakeups(store) == ()
         cp = store.checkpoint("sess-wake")
         assert cp is not None
         assert cp.payload == {"call_index": 0}
@@ -763,7 +800,7 @@ def test_commit_staged_accepts_staged_wakeup_at_bound(tmp_path: Path) -> None:
             root_action_budget=None,
         )
         assert store.session("sess-wake").last_event_sequence == 1
-        (record,) = store.pending_wakeups()
+        (record,) = _pending_wakeups(store)
         assert record.wakeup_id == "staged-wake-edge"
         assert record.payload == payload
 

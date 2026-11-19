@@ -118,13 +118,13 @@ def test_enable_rules_by_name_and_path_and_resolution_errors(tmp_path: Path) -> 
     _write_skill(tmp_path, name="beta", description="b", body="B")
     registry = SkillRegistry.discover(workspace=tmp_path)
     registry.apply_config_rules((SkillEnableRule(name="alpha", enabled=False),))
-    assert registry.is_enabled("alpha") is False
-    assert [skill.name for skill in registry.enabled_skills()] == ["beta"]
+    assert registry.skills["alpha"].enabled is False
+    assert [skill.name for skill in registry.skills.values() if skill.enabled] == ["beta"]
 
     by_path = SkillRegistry.discover(workspace=tmp_path)
     by_path.apply_config_rules((SkillEnableRule(path=str(entry.parent), enabled=False),))
-    assert by_path.is_enabled("alpha") is False
-    assert by_path.is_enabled("beta") is True
+    assert by_path.skills["alpha"].enabled is False
+    assert by_path.skills["beta"].enabled is True
 
     with pytest.raises(ValueError, match="unknown skill: gamma"):
         by_path.resolve("gamma")

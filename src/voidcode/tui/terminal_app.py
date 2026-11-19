@@ -1872,17 +1872,6 @@ class CoreTuiApp:
         if self._suspended_live is not None:
             self._restore_suspended_live()
 
-    def _process_input(self) -> None:
-        with self._terminal_read_lock:
-            chunk = self.terminal.read_bytes(timeout=0.001)
-            replies = list(self.terminal.drain_kitty_replies())
-        for reply in replies:
-            self._apply_kitty_reply(reply)
-        if self.terminal.eof:
-            self.running = False
-            return
-        self._handle_input_bytes(chunk)
-
     def _apply_kitty_reply(self, reply: Any) -> None:
         viewer = self.active_overlay
         if isinstance(viewer, InteractiveArtifactViewer) and viewer.source.sha256 == reply.sha256:

@@ -296,23 +296,3 @@ def create_core_app(
         workspace=resolved_workspace,
         state_dir=resolved_state,
     )
-
-
-def create_core_app_with_factory(
-    *,
-    core_factory: Callable[[], Core | None],
-    bearer_token: str | None = None,
-    allow_origin: str | None = None,
-    frontend_dist: Path | None = None,
-    workspace: Path | None = None,
-    state_dir: Path | None = None,
-) -> CoreTransportApp:
-    """Build the app against an explicit factory (tests)."""
-    return CoreTransportApp(
-        core_factory=core_factory,
-        bearer_token=bearer_token,
-        allow_origin=allow_origin,
-        frontend_dist=frontend_dist,
-        workspace=workspace,
-        state_dir=state_dir,
-    )

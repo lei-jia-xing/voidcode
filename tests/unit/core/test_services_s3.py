@@ -15,8 +15,35 @@ from tests.fixtures.reload_plugin import SERVICES_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
+from voidcode.core.storage.store import SqliteStore, WakeupRecord
 
 PLUGIN_ID = "reload-fixture"
+
+
+def _pending_wakeups(store: SqliteStore) -> tuple[WakeupRecord, ...]:
+    with store._lock:
+        cursor = store._connection.execute(
+            """
+            SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
+            FROM wakeups WHERE status = 'pending' ORDER BY due_at ASC
+            """
+        )
+        return tuple(
+            WakeupRecord(
+                wakeup_id=str(row[0]),
+                owner=str(row[1]),
+                workspace=str(row[2]),
+                session_id=str(row[3]),
+                payload=json.loads(row[4]),
+                root_id=str(row[5]),
+                role=str(row[7]),
+                due_at=int(row[8]),
+                status=str(row[9]),
+                claim_run_id=str(row[10]) if row[10] is not None else None,
+                root_action_budget=None if row[6] is None else int(row[6]),
+            )
+            for row in cursor.fetchall()
+        )
 
 
 def _call(identity: str, name: str, **arguments: object) -> dict[str, object]:
@@ -161,7 +188,7 @@ def test_bounded_event_read_and_governed_model_query(tmp_path: Path) -> None:
         )
         assert scheduled_far == "future"
         assert core.tick()["fired"] in (None, "future")
-        assert all(record.due_at > int(time.time() * 1000) for record in core.store.pending_wakeups())
+        assert all(record.due_at > int(time.time() * 1000) for record in _pending_wakeups(core.store))
 
 
 def test_wakeup_claim_is_atomic_and_never_replayed(tmp_path: Path) -> None:
@@ -195,6 +222,6 @@ def test_wakeup_claim_is_atomic_and_never_replayed(tmp_path: Path) -> None:
             event for session in core.sessions() for event in core.events_after(session.session_id) if event.event_type == "core.wakeup_fired"
         ]
         assert len(fired_facts) == 1
-        assert core.store.pending_wakeups() == ()
+        assert _pending_wakeups(core.store) == ()
         # Later ticks never replay the claimed wakeup.
         assert core.tick()["fired"] is None

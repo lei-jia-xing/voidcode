@@ -102,10 +102,10 @@ def test_models_state_transitions() -> None:
     assert restored.time_used_seconds == 42.5
     assert restored.cost_usd == 0.05
     assert len(restored.active_windows) == 2
-    assert restored.in_active_window(3) is True  # (0, 5]
-    assert restored.in_active_window(0) is False  # <= 0 is outside
-    assert restored.in_active_window(7) is False  # outside windows
-    assert restored.in_active_window(15) is True  # (10, inf)
+    assert any(window.contains(3) for window in restored.active_windows) is True  # (0, 5]
+    assert any(window.contains(0) for window in restored.active_windows) is False  # <= 0 is outside
+    assert any(window.contains(7) for window in restored.active_windows) is False  # outside windows
+    assert any(window.contains(15) for window in restored.active_windows) is True  # (10, inf)
 
     # Strict parsing: extra keys rejected!
     bad_dict = dict(serialized)

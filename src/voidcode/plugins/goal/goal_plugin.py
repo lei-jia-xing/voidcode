@@ -158,17 +158,10 @@ class GoalState:
         return self.status == "active"
 
     @property
-    def is_complete(self) -> bool:
-        return self.status == "complete"
-
-    @property
     def remaining_tokens(self) -> int | None:
         if self.token_budget is None or self.tokens_used is None:
             return None
         return max(0, self.token_budget - self.tokens_used)
-
-    def in_active_window(self, dispatch_sequence: int) -> bool:
-        return any(window.contains(dispatch_sequence) for window in self.active_windows)
 
     def to_dict(self) -> dict[str, object]:
         return {

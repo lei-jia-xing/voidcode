@@ -303,20 +303,21 @@ def test_monitor_shortcut_opens_restored_roster_and_restores_draft(tmp_path: Pat
             # Draft abcd with the caret at offset 2: close must restore it, so Z
             # typed afterwards lands in the middle.
             terminal.send(b"abcd\x1b[D\x1b[D")
-            time.sleep(0.4)
+            terminal.until("abcd")
+            time.sleep(0.05)
             terminal.send(b"\x1ba")  # Alt+A: legacy ESC prefix chord
             terminal.until("Running subagents")
             terminal.until(_CHILD_LABEL)
             terminal.until(_GRANDCHILD_LABEL)
-            visible = terminal.settle()
+            visible = terminal.settle(0.05)
             assert "Running subagents" in visible, f"roster not on screen:\n{visible}"
             assert _CHILD_LABEL in visible, f"child label not on screen:\n{visible}"
             assert _GRANDCHILD_LABEL in visible, f"grandchild label not on screen:\n{visible}"
             terminal.send(b"\x1b")  # lone Esc closes the roster
-            time.sleep(0.6)
+            terminal.until_gone("Running subagents")
             terminal.send(b"Z")
-            time.sleep(0.4)
-            visible = terminal.settle()
+            terminal.until("abZcd")
+            visible = terminal.settle(0.05)
             assert "abZcd" in visible, f"caret not restored at offset 2:\n{visible}"
             assert "/subagents monitor" not in visible, f"hidden action leaked a slash path:\n{visible}"
             terminal.quit()
@@ -349,11 +350,10 @@ def test_monitor_empty_roster_stays_open_and_refreshable(tmp_path: Path) -> None
             assert "Running subagents" in visible, f"empty roster not mounted:\n{visible}"
             assert "No options" in visible, f"empty state missing:\n{visible}"
             terminal.send(b"\r")  # Enter on zero options must not dispatch/cancel
-            time.sleep(0.6)
-            visible = terminal.settle()
+            visible = terminal.settle(0.05)
             assert "Running subagents" in visible, f"empty roster closed on Enter:\n{visible}"
             terminal.send(b"\x1b")
-            time.sleep(0.4)
+            terminal.until_gone("Running subagents")
             terminal.quit()
         finally:
             terminal.close()
@@ -430,8 +430,7 @@ def test_monitor_open_view_invalidates_on_remote_plugin_disable(tmp_path: Path) 
                 assert "Running subagents" not in visible, f"stale roster still on screen:\n{visible}"
                 # The chord is dead after disable: Alt+A opens nothing new.
                 terminal.send(b"\x1ba")
-                time.sleep(1.5)
-                visible = terminal.settle()
+                visible = terminal.settle(0.1)
                 assert "Running subagents" not in visible, f"disabled binding reopened the roster:\n{visible}"
                 terminal.quit()
             finally:
@@ -624,13 +623,14 @@ def test_live_remote_tui_browses_gated_roster_and_detail(tmp_path: Path) -> None
         try:
             terminal.until("exact-mode")
             terminal.send(b"draft-live\x1b[D\x1b[D")
-            time.sleep(0.4)
+            terminal.until("draft-live")
+            time.sleep(0.05)
             terminal.send(b"\x1ba")
             terminal.until("Running subagents")
             terminal.until("LIVE-CHILD-label")
             terminal.until("LIVE-GRAND-label")
             terminal.until("LIVE-SIB-label")
-            visible = terminal.settle()
+            visible = terminal.settle(0.05)
             assert "LIVE-CHILD-label" in visible, f"child missing:\n{visible}"
             assert "LIVE-GRAND-label" in visible, f"grandchild missing:\n{visible}"
             assert "LIVE-SIB-label" in visible, f"sibling missing:\n{visible}"
@@ -638,18 +638,18 @@ def test_live_remote_tui_browses_gated_roster_and_detail(tmp_path: Path) -> None
             # (Esc closes the whole monitor by design).
             terminal.send(b"\r")
             terminal.until("Subagent")
-            visible = terminal.settle()
+            visible = terminal.settle(0.05)
             assert "Subagent" in visible, f"detail not on screen:\n{visible}"
             assert "Back to roster" in visible, f"back action missing:\n{visible}"
             terminal.send(b"\r")
             terminal.until("Running subagents")
-            visible = terminal.settle()
+            visible = terminal.settle(0.05)
             assert "LIVE-CHILD-label" in visible, f"roster not restored:\n{visible}"
             terminal.send(b"\x1b")
-            time.sleep(0.6)
+            terminal.until_gone("Running subagents")
             terminal.send(b"Z")
-            time.sleep(0.4)
-            visible = terminal.settle()
+            terminal.until("draft-liZve")
+            visible = terminal.settle(0.05)
             assert "draft-liZve" in visible, f"draft/caret not restored:\n{visible}"
             terminal.quit()
         finally:
@@ -667,32 +667,33 @@ def test_live_remote_tui_cancel_deny_preserves_and_allow_settles(tmp_path: Path)
         try:
             terminal.until("exact-mode")
             terminal.send(b"keep-draft\x1b[D\x1b[D")
-            time.sleep(0.4)
+            terminal.until("keep-draft")
+            time.sleep(0.05)
             terminal.send(b"\x1ba")
             terminal.until("LIVE-CHILD-label")
             terminal.send(b"\r")
             terminal.until("Subagent")
-            visible = terminal.settle()
+            visible = terminal.settle(0.05)
             assert scene.child_id in visible, f"child detail not on screen:\n{visible}"
             assert "Cancel subtree" in visible, f"cancel action missing:\n{visible}"
             # Move to Cancel subtree (second action) and invoke: deny first.
             terminal.send(b"\t")
-            time.sleep(0.4)
-            visible = terminal.settle()
+            terminal.until("❯ Cancel subtree")
+            visible = terminal.settle(0.05)
             assert "❯ Cancel subtree" in visible, f"cancel not selected:\n{visible}"
             terminal.send(b"\r")
             terminal.until("Action Confirmation")
-            visible = terminal.settle()
+            visible = terminal.settle(0.05)
             assert "1 descendant(s)" in visible, f"scope count missing:\n{visible}"
             assert "siblings are unaffected" in visible, f"scope text missing:\n{visible}"
             assert scene.child_id[:8] in visible, f"cancel scope missing:\n{visible}"
             # Deny is the second decision: denied work keeps running. Sync on
             # the confirmation leaving the visible screen.
             terminal.send(b"\t")
-            time.sleep(0.4)
+            time.sleep(0.05)
             terminal.send(b"\r")
             terminal.until_gone("Action Confirmation")
-            visible = terminal.settle()
+            visible = terminal.settle(0.05)
             assert "❯ Cancel subtree" in visible, f"cancel selection not retained:\n{visible}"
             assert scene.child_id in visible, f"child detail not retained:\n{visible}"
             assert client.get_session(scene.child_id).status == "running"
@@ -704,21 +705,21 @@ def test_live_remote_tui_cancel_deny_preserves_and_allow_settles(tmp_path: Path)
             terminal.until("Action Confirmation")
             terminal.send(b"\r")
             terminal.until("Cancellation requested")
-            visible = terminal.settle()
+            visible = terminal.settle(0.05)
             assert scene.child_id[:8] in visible, f"receipt missing target:\n{visible}"
             scene.gate.set()
             _wait_for(lambda: client.get_session(scene.child_id).status == "interrupted", what="child owner-cancel settle")
             _wait_for(lambda: client.get_session(scene.grandchild_id).status == "interrupted", what="grandchild owner-cancel settle")
             terminal.until("interrupted")
-            visible = terminal.settle()
+            visible = terminal.settle(0.05)
             assert "owner_cancel" in visible, f"settled stop cause missing:\n{visible}"
             # One Esc from the confirmed-open detail returns to the composer;
             # typing then proves the retained draft/caret.
             terminal.send(b"\x1b")
-            time.sleep(0.6)
+            terminal.until_gone("Subagent")
             terminal.send(b"Z")
-            time.sleep(0.4)
-            visible = terminal.settle()
+            terminal.until("keep-draZft")
+            visible = terminal.settle(0.05)
             assert "keep-draZft" in visible, f"draft/caret not restored:\n{visible}"
             terminal.quit()
         finally:

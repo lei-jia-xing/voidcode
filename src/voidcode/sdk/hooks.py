@@ -327,16 +327,6 @@ class RequestWindow:
             total += segment.image_count
         return total
 
-    @property
-    def total_image_bytes(self) -> int | None:
-        """Measured base64-text bytes carried, or ``None`` when any segment is unknown."""
-        total = 0
-        for segment in self.segments:
-            if segment.image_bytes is None:
-                return None
-            total += segment.image_bytes
-        return total
-
     def as_payload(self) -> dict[str, object]:
         return {
             "message_characters": self.message_characters,

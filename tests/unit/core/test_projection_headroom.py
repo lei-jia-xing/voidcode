@@ -448,7 +448,7 @@ def test_window_image_inventory_round_trip_and_unknown_poisoning() -> None:
     assert WindowSegment.from_payload(segment.as_payload()) == segment
     window = RequestWindow(message_characters=10, tool_schema_characters=5, segments=(segment,), tool_count=1)
     assert RequestWindow.from_payload(window.as_payload()) == window
-    assert window.total_image_count == 2 and window.total_image_bytes == 300
+    assert window.total_image_count == 2
     legacy = WindowSegment(role="user", characters=3, sha256="1" * 64)
     assert legacy.image_count is None and legacy.image_bytes is None
     assert RequestWindow(message_characters=3, tool_schema_characters=0, segments=(legacy,)).total_image_count is None
@@ -603,7 +603,7 @@ def test_image_window_keeps_fixed_policy_and_forwards_image_intact(tmp_path: Pat
         tool_messages = [message for message in turns[1]["messages"] if message["role"] == "tool"]
         assert len(tool_messages) == 1 and tool_messages[0]["images"] == [raw]
         window = RequestWindow.from_payload(intents[1].payload["request_window"])
-        assert window.total_image_count == 1 and window.total_image_bytes == len(raw.encode("utf-8"))
+        assert window.total_image_count == 1
 
 
 def test_budget_below_identity_minimum_keeps_ceiling_without_refusing_dispatch(tmp_path: Path) -> None:

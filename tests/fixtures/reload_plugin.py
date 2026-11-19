@@ -590,7 +590,9 @@ def create_plugin(config):
             _mp = Path({str(marker) if marker else ""!r})
             if not _mp.exists():
                 _mp.write_text("migrating", encoding="utf-8")
-                time.sleep(60)
+                _deadline = time.monotonic() + 10.0
+                while time.monotonic() < _deadline:
+                    time.sleep(0.05)
         else:
             Path({str(marker) if marker else ""!r}).write_text(str(os.getpid()), encoding="utf-8")
     if {migration == "crash"!r}:

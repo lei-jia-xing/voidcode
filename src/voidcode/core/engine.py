@@ -3721,7 +3721,13 @@ class Core:
                     else:
                         raise StoreConflict(f"keyed child {retry_id!r} has an invalid captured root budget")
             if root_action_id is None:
-                root_action_id, initial_root_budget = self._capture_root_authorization(self.store.session(parent_session_id))
+                parent_sess = self.store.session(parent_session_id)
+                if idempotency_key is not None and parent_sess.parent_session_id is None and parent_sess.status not in ("running", "waiting"):
+                    retry_id = self._delegation._keyed_child_id(parent_session_id, owner, idempotency_key)
+                    root_action_id = hashlib.sha256(f"root:{retry_id}".encode()).hexdigest()
+                    initial_root_budget = None
+                else:
+                    root_action_id, initial_root_budget = self._capture_root_authorization(parent_sess)
         return self._delegation.spawn_child(
             parent_session_id,
             prompt,

@@ -17,7 +17,7 @@ import uvicorn
 from voidcode.bootstrap import bundled_sources, open_core
 from voidcode.core.storage.store import EventDraft
 from voidcode.sdk.client import StreamCancellation
-from voidcode.transport.http import create_core_app_with_factory
+from voidcode.transport.http import CoreTransportApp
 from voidcode.transport.rpc import RpcConnection
 from voidcode.tui.client import CoreRpcClient
 from voidcode.tui.terminal_app import CoreTuiApp
@@ -76,7 +76,7 @@ def remote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[st
             closed[params.session_id].set()
 
     monkeypatch.setattr(RpcConnection, "_events", watch)
-    app = create_core_app_with_factory(core_factory=lambda: core)
+    app = CoreTransportApp(core_factory=lambda: core)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]

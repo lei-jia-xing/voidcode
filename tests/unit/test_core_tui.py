@@ -1522,13 +1522,12 @@ def test_ctrl_c_clears_input_then_quits_without_cancelling_run(monkeypatch: pyte
     app.composer.set_text("draft")
     cancelled: list[bool] = []
     monkeypatch.setattr(app, "_cancel_active_run", lambda: cancelled.append(True))
-    monkeypatch.setattr(terminal, "read_bytes", lambda **kwargs: b"\x03")
-    app._process_input()
+    app._handle_input_bytes(b"\x03")
     assert app.running
     assert app.composer.value == ""
     app._render_frame()
     assert any("Ctrl+C again" in row for row in terminal.frames[-1])
-    app._process_input()
+    app._handle_input_bytes(b"\x03")
     assert not app.running
     assert not cancelled
 
@@ -1630,13 +1629,12 @@ def test_ctrl_d_edits_nonempty_draft(monkeypatch: pytest.MonkeyPatch) -> None:
     app.running = True
     app.composer.set_text("draft")
     app.composer.handle_key(Key("home"))
-    monkeypatch.setattr(terminal, "read_bytes", lambda **kwargs: b"\x04")
-    app._process_input()
+    app._handle_input_bytes(b"\x04")
     assert app.running
     assert app.composer.value == "raft"
 
 
-def test_ctrl_c_does_not_decide_pending_approval(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ctrl_c_does_not_decide_pending_approval() -> None:
     from voidcode.tui.terminal_app import CoreTuiApp
     from voidcode.tui.views import InteractiveApproval
 
@@ -1645,26 +1643,24 @@ def test_ctrl_c_does_not_decide_pending_approval(monkeypatch: pytest.MonkeyPatch
     app.running = True
     approval = InteractiveApproval(_approval_gate())
     app.pending_approval = approval
-    monkeypatch.setattr(terminal, "read_bytes", lambda **kwargs: b"\x03")
-    app._process_input()
+    app._handle_input_bytes(b"\x03")
     assert app.running
     assert app.pending_approval is approval
     assert not app._in_flight
-    app._process_input()
+    app._handle_input_bytes(b"\x03")
     assert not app.running
     assert app.pending_approval is approval
 
 
-def test_ctrl_c_exit_window_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ctrl_c_exit_window_expires() -> None:
     from voidcode.tui.terminal_app import CoreTuiApp
 
     terminal = _StubTerminal()
     app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)
     app.running = True
-    monkeypatch.setattr(terminal, "read_bytes", lambda **kwargs: b"\x03")
-    app._process_input()
+    app._handle_input_bytes(b"\x03")
     app._quit_armed_at -= 2
-    app._process_input()
+    app._handle_input_bytes(b"\x03")
     assert app.running
 
 

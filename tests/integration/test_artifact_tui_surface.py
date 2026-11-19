@@ -175,17 +175,25 @@ class KittyPty:
 
     def wait_for(self, predicate: Callable[[], bool], *, seconds: float = 10) -> None:
         deadline = time.monotonic() + seconds
+        eof = False
         while not predicate() and time.monotonic() < deadline:
-            ready, _, _ = select.select([self.master], [], [], min(0.05, max(0.0, deadline - time.monotonic())))
-            if ready:
-                try:
-                    data = os.read(self.master, 65536)
-                except OSError:
-                    break
-                if not data:
-                    break
-                self.consume(data)
-            if self.process.poll() is not None:
+            if not eof:
+                ready, _, _ = select.select([self.master], [], [], min(0.05, max(0.0, deadline - time.monotonic())))
+                if ready:
+                    try:
+                        data = os.read(self.master, 65536)
+                    except OSError:
+                        eof = True
+                        data = b""
+                    if not data:
+                        eof = True
+                    else:
+                        self.consume(data)
+            else:
+                time.sleep(0.02)
+            if predicate():
+                break
+            if self.process.poll() is not None and eof:
                 break
         if not predicate():
             visible = re.sub(rb"\x1b_G.*?\x1b\\", b"[graphics]", bytes(self.output), flags=re.DOTALL)
@@ -201,7 +209,11 @@ class KittyPty:
     def close(self) -> None:
         if self.process.poll() is None:
             self.write(b"\x03\x03")
-            self.wait_for(lambda: self.process.poll() is not None, seconds=5)
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5)
         while select.select([self.master], [], [], 0)[0]:
             try:
                 remaining = os.read(self.master, 65536)

@@ -28,8 +28,8 @@ MARKER_NAME = "restart-marker.txt"
 
 
 async def run(ctx, task):
-    first = await ctx.agent("default", f"FIRST-NODE appends one line to {MARKER_NAME} with {task}", key="first")
-    second = await ctx.agent("default", f"SECOND-NODE writes second.txt with {task}", key="second")
+    first = await ctx.agent("execute", f"FIRST-NODE appends one line to {MARKER_NAME} with {task}", key="first")
+    second = await ctx.agent("execute", f"SECOND-NODE writes second.txt with {task}", key="second")
     return f"summary: {first} + {second}"
 '''
 
@@ -80,6 +80,7 @@ def _configure(tmp_path: Path, server: OpenAILoopbackServer) -> Path:
         "plugins": {
             "files": {"enabled": True},
             "exec": {"enabled": True},
+            "subagents": {"enabled": True},
             "workflows": {"enabled": True, "config": {"workflows": {"restart_flow": "restart_flow.py"}}},
         },
     }

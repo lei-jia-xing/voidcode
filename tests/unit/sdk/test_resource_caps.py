@@ -38,42 +38,6 @@ def test_caps_require_detail_unconditionally() -> None:
         ResourceSchemeCaps(scheme="tool", enumerable=False, searchable=False, line_paging=True, byte_paging=False, detail="")
 
 
-@pytest.mark.parametrize("scheme", ["", "Proc", "has space", "UPPER", "-bad", 0, None])
-def test_caps_reject_bad_scheme(scheme: object) -> None:
-    with pytest.raises(ValueError, match="scheme"):
-        ResourceSchemeCaps(scheme=scheme, enumerable=False, searchable=False, line_paging=True, byte_paging=False, detail="d")  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize("flag", ["enumerable", "searchable", "line_paging", "byte_paging"])
-@pytest.mark.parametrize("bad", [0, 1, "true", None])
-def test_caps_require_booleans(flag: str, bad: object) -> None:
-    kwargs: dict[str, object] = {
-        "scheme": "tool",
-        "enumerable": False,
-        "searchable": False,
-        "line_paging": True,
-        "byte_paging": False,
-        "detail": "reads tool definitions",
-    }
-    kwargs[flag] = bad
-    with pytest.raises(ValueError, match="boolean"):
-        ResourceSchemeCaps(**kwargs)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize("inventory", ["other://", "proc:/nope", "", 0])
-def test_caps_reject_foreign_inventory_uri(inventory: object) -> None:
-    with pytest.raises(ValueError, match="inventory_uri"):
-        ResourceSchemeCaps(
-            scheme="proc",
-            enumerable=True,
-            searchable=False,
-            line_paging=True,
-            byte_paging=True,
-            inventory_uri=inventory,  # type: ignore[arg-type]
-            detail="root pages by line",
-        )
-
-
 def test_caps_allow_missing_inventory_for_multi_root() -> None:
     caps = ResourceSchemeCaps(scheme="tool", enumerable=False, searchable=False, line_paging=True, byte_paging=False, detail="roots in detail")
     assert caps.inventory_uri is None

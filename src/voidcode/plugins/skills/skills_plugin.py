@@ -223,13 +223,6 @@ class SkillRegistry:
     def all(self) -> tuple[SkillMetadata, ...]:
         return tuple(self.skills.values())
 
-    def enabled_skills(self) -> tuple[SkillMetadata, ...]:
-        return tuple(skill for skill in self.skills.values() if skill.enabled)
-
-    def is_enabled(self, skill_name: str) -> bool:
-        skill = self.skills.get(skill_name)
-        return skill is not None and skill.enabled
-
     def apply_config_rules(self, rules: Iterable[SkillEnableRule]) -> None:
         for rule in rules:
             if rule.name and rule.name in self.skills:

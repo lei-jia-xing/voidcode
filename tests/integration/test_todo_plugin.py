@@ -16,6 +16,7 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
+from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.commands import CommandResult
 
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
@@ -128,12 +129,19 @@ def test_todo_tool_call_writes_plan_context_and_survives_restart(tmp_path: Path)
         # The tool was advertised to the provider under its declared name.
         assert "todo" in _tool_names(server.requests[0])
 
-        # The tool result the model received carries the durable body, not just prose.
+        # The tool result the model received references the durable body and carries formatted prose.
         tool_messages = [message for message in _messages(server.requests[1]) if message.get("role") == "tool"]
         assert len(tool_messages) == 1
-        tool_text = str(tool_messages[0]["content"])
-        assert '"mutated": true' in tool_text
-        assert tool_text.endswith("Todo init applied.\nBuild:\n- [in_progress] compile\n- [pending] test")
+        tool_payload = json.loads(str(tool_messages[0]["content"]))
+        assert tool_payload.get("body_omitted") is True
+        assert str(tool_payload.get("text", "")).endswith("Todo init applied.\nBuild:\n- [in_progress] compile\n- [pending] test")
+        uri = str(tool_payload.get("result_uri", ""))
+        assert uri.startswith("artifact://")
+        digest = uri.removeprefix("artifact://")
+        artifact_page = core.read_artifact(digest)
+        durable_result = decode_tool_result(json.loads(artifact_page.data.decode("utf-8")))
+        assert durable_result.body is not None
+        assert durable_result.body.as_payload().get("mutated") is True
 
         # The next provider dispatch carries the plan truth while active tasks remain.
         second_request_text = _request_text(server.requests[1])

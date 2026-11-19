@@ -313,7 +313,7 @@ def test_keyed_spawn_returns_one_child_and_refuses_a_differing_spec(tmp_path: Pa
         core.create_session("parent")
         first = core.spawn_child("parent", "child work", owner=PLUGIN_ID, idempotency_key="node-a")
         assert core.spawn_child("parent", "child work", owner=PLUGIN_ID, idempotency_key="node-a") == first
-        assert core.store.count_root_children("parent") == 1
+        assert len(core.store.descendant_sessions("parent")) == 1
         with pytest.raises(ValueError, match="different spec"):
             core.spawn_child("parent", "DIFFERENT work", owner=PLUGIN_ID, idempotency_key="node-a")
         assert core.find_keyed_child("parent", PLUGIN_ID, "node-a") == first
@@ -396,14 +396,14 @@ def test_full_budget_still_refetches_a_keyed_child(tmp_path: Path) -> None:
         assert core.config.max_root_children == 4
         for index in range(4):
             core.spawn_child("parent", f"work {index}", owner=PLUGIN_ID, idempotency_key=f"fill-{index}")
-        assert core.store.count_root_children("parent") == 4
+        assert len(core.store.descendant_sessions("parent")) == 4
         assert core.spawn_child("parent", "work 0", owner=PLUGIN_ID, idempotency_key="fill-0") == core.find_keyed_child("parent", PLUGIN_ID, "fill-0")
         # Full budget never bypasses spec verification for a mapped key.
         with pytest.raises(ValueError, match="different spec"):
             core.spawn_child("parent", "DIFFERENT work 0", owner=PLUGIN_ID, idempotency_key="fill-0")
         with pytest.raises(ValueError, match="budget exhausted"):
             core.spawn_child("parent", "one too many", owner=PLUGIN_ID, idempotency_key="fill-9")
-        assert core.store.count_root_children("parent") == 4
+        assert len(core.store.descendant_sessions("parent")) == 4
 
 
 def test_message_and_action_share_one_key_without_swallowing(tmp_path: Path) -> None:
@@ -551,7 +551,7 @@ def test_crash_between_child_row_and_parent_fact_stays_recoverable(tmp_path: Pat
         with pytest.raises(RuntimeError, match="injected crash"):
             core.spawn_child("parent", "crash-window work", owner=PLUGIN_ID, idempotency_key="crash-node")
         monkeypatch.setattr(core, "_commit_control_event", original_commit)
-        assert core.store.count_root_children("parent") == 1
+        assert len(core.store.descendant_sessions("parent")) == 1
         found = core.find_keyed_child("parent", PLUGIN_ID, "crash-node")
         assert found is not None
         # The birth record is core bookkeeping: no public fact, transcript, or history block.
@@ -564,11 +564,11 @@ def test_crash_between_child_row_and_parent_fact_stays_recoverable(tmp_path: Pat
         assert fact_for_event(birth, ()) is None
         assert transcript_entry(birth) is None
         assert render_event_block(birth) is None
-        assert core.store.count_root_children("parent") == 1
+        assert len(core.store.descendant_sessions("parent")) == 1
         with pytest.raises(ValueError, match="different spec"):
             core.spawn_child("parent", "DIFFERENT work", owner=PLUGIN_ID, idempotency_key="crash-node")
         assert core.spawn_child("parent", "crash-window work", owner=PLUGIN_ID, idempotency_key="crash-node") == found
-        assert core.store.count_root_children("parent") == 1
+        assert len(core.store.descendant_sessions("parent")) == 1
         assert core.join_child("parent", found, timeout_seconds=30).status == "completed"
 
 
@@ -633,8 +633,9 @@ def test_concurrent_same_key_spawns_start_exactly_one_initial_run(tmp_path: Path
         finally:
             core._delegation._run_child = original_run_child  # type: ignore[method-assign]
         assert not [thread for thread in threads if thread.is_alive()]
+        assert len(results) == 2
         assert set(results.values()) == {core.find_keyed_child("parent", PLUGIN_ID, "race-node")}
-        assert core.store.count_root_children("parent") == 1
+        assert len(core.store.descendant_sessions("parent")) == 1
         child = next(iter(results.values()))
         joined = core.join_child("parent", child, timeout_seconds=30)
         assert (joined.status, joined.output) == ("completed", "one winner")
