@@ -30,7 +30,6 @@ dependencies = [
   "lsprotocol",
   "pydantic",
   "pydantic-settings",
-  "tiktoken",
   "typing-extensions",
   "regex>=2024.11.6",
   "rich>=15.0.0",
@@ -63,7 +62,6 @@ dev = [
   "pytest-xdist>=3.8.0",
   "ruff",
   "ty>=0.0.104",
-  "zstandard",
 ]
 syntax = [
     "tree-sitter>=0.24",

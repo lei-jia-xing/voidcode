@@ -8,10 +8,9 @@ import os
 import sys
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 from uuid import uuid4
 
 from .config import (
@@ -38,7 +37,6 @@ from .core.plugins import PluginRuntime, PluginSource
 from .core.sandbox import SandboxBackend, check_helper
 from .core.storage.store import (
     DATABASE_FILENAME,
-    SCHEMA_VERSION,
     EventDraft,
     SqliteStore,
     canonical_json,
@@ -109,15 +107,34 @@ def _plugin_root(
     return root
 
 
-def admit_live(
+class _PluginInputs(NamedTuple):
+    """One admission's resolved plugin layer: runtime inputs plus the private record."""
+
+    providers: Mapping[str, object]
+    plugins: tuple[PluginSource, ...]
+    snapshot_plugins: dict[str, object]
+
+
+def _factory_config(plugin_config: Mapping[str, object], providers: Mapping[str, object]) -> dict[str, object]:
+    """Factory input for one plugin: its own config plus the resolved providers map.
+
+    Single injection point for the reserved ``config["providers"]`` contract; the
+    private snapshot keeps the raw per-plugin config without it.
+    """
+    merged = dict(plugin_config)
+    if providers:
+        merged["providers"] = providers
+    return merged
+
+
+def _plugin_inputs(
     config: Config,
     *,
     workspace: Path,
     bundled_sources: Mapping[str, Path],
-    revision_id: str | None = None,
-    use_environment: bool = True,
-) -> Admission:
-    """Resolve every enabled configured plugin to a runtime input and build Admission."""
+    use_environment: bool,
+) -> _PluginInputs:
+    """Resolve entries, providers, runtime plugin inputs, and the private plugin record."""
     workspace = Path(workspace).resolve(strict=True)
     entries = merged_entries(config, bundled_sources)
     provider_entry = entries.get("providers")
@@ -139,39 +156,13 @@ def admit_live(
         root = _plugin_root(workspace, bundled_sources, plugin_id, entry)
         if "providers" in entry.config:
             raise ValueError(f"plugin {plugin_id} must configure provider credentials in the root providers section")
-        resolved = dict(entry.config)
-        if providers:
-            resolved["providers"] = providers
-        plugins.append(PluginSource(root=root, plugin_id=plugin_id, config=resolved))
+        plugins.append(PluginSource(root=root, plugin_id=plugin_id, config=_factory_config(entry.config, providers)))
+    return _PluginInputs(providers=providers, plugins=tuple(plugins), snapshot_plugins=snapshot_plugins)
 
-    policy_section = {
-        "approval_mode": config.policy.approval_mode,
-        "read_only": config.policy.read_only,
-        "max_root_children": config.policy.max_root_children,
-    }
-    snapshot: dict[str, object] = {
-        "version": PRIVATE_SNAPSHOT_VERSION,
-        "providers": providers,
-        "model": {"model": config.model.model, "reasoning_effort": config.model.reasoning_effort},
-        "policy": policy_section,
-        "plugins": snapshot_plugins,
-    }
-    if config.sandbox is not None:
-        snapshot["sandbox"] = {
-            "mode": config.sandbox.mode,
-            "network": config.sandbox.effective_network,
-            "writable_roots": list(config.sandbox.writable_roots),
-        }
-    plugin_tuple = tuple(plugins)
-    payload: dict[str, object] = {
-        "python": sys.implementation.cache_tag,
-        "dependencies": {name: version(name) for name in ("openai", "pydantic", "jsonschema")},
-        "model": {"model": config.model.model, "reasoning_effort": config.model.reasoning_effort},
-        "policy": dict(policy_section),
-        "plugins": sorted(plugin.plugin_id for plugin in plugin_tuple),
-        "private_config_sha256": hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
-    }
-    execution_config = ExecutionConfig(
+
+def _execution_config(config: Config) -> ExecutionConfig:
+    """Runtime view of model/policy: typed and range-checked for the core."""
+    return ExecutionConfig(
         model=config.model.model,
         reasoning_effort=config.model.reasoning_effort,
         policy=ExecutionPolicy(
@@ -180,23 +171,64 @@ def admit_live(
         ),
         max_root_children=config.policy.max_root_children,
     )
+
+
+def admit_live(
+    config: Config,
+    *,
+    workspace: Path,
+    bundled_sources: Mapping[str, Path],
+    revision_id: str | None = None,
+    use_environment: bool = True,
+) -> Admission:
+    """Resolve every enabled configured plugin to a runtime input and build Admission."""
+    inputs = _plugin_inputs(config, workspace=workspace, bundled_sources=bundled_sources, use_environment=use_environment)
+    # The model/policy sections are built once and shared: the private snapshot owns the
+    # credential-bearing record, the public payload carries the same values credential-free,
+    # and Admission deep-copies each side into its own read-only snapshot.
+    model = {"model": config.model.model, "reasoning_effort": config.model.reasoning_effort}
+    policy = {
+        "approval_mode": config.policy.approval_mode,
+        "read_only": config.policy.read_only,
+        "max_root_children": config.policy.max_root_children,
+    }
+    snapshot: dict[str, object] = {
+        "version": PRIVATE_SNAPSHOT_VERSION,
+        "providers": inputs.providers,
+        "model": model,
+        "policy": policy,
+        "plugins": inputs.snapshot_plugins,
+    }
+    snapshot["sandbox"] = (
+        {
+            "mode": config.sandbox.mode,
+            "network": config.sandbox.effective_network,
+            "writable_roots": list(config.sandbox.writable_roots),
+        }
+        if config.sandbox is not None
+        else None
+    )
+    payload: dict[str, object] = {
+        "python": sys.implementation.cache_tag,
+        "dependencies": {name: version(name) for name in ("openai", "pydantic", "jsonschema")},
+        "model": model,
+        "policy": policy,
+        "plugins": sorted(plugin.plugin_id for plugin in inputs.plugins),
+        "private_config_sha256": hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
+    }
     return Admission(
         revision_id=uuid4().hex if revision_id is None else revision_id,
-        plugins=plugin_tuple,
+        plugins=inputs.plugins,
         revision_payload=payload,
         private_snapshot=snapshot,
-        config=execution_config,
-        validate=lambda registered: validate_providers(config, registered, providers=providers),
+        config=_execution_config(config),
+        validate=lambda registered: validate_providers(config, registered, providers=inputs.providers),
     )
 
 
 def config_from_snapshot(snapshot: Mapping[str, object]) -> Config:
     """Rebuild the effective configuration a stored revision was admitted with."""
-    if snapshot.get("version") != PRIVATE_SNAPSHOT_VERSION:
-        raise ValueError(
-            "private configuration snapshot predates this build; this build reads only its own snapshot shape: start a fresh state directory"
-        )
-    missing = [name for name in ("providers", "model", "policy", "plugins") if name not in snapshot]
+    missing = [name for name in ("providers", "model", "policy", "plugins", "sandbox") if name not in snapshot]
     if missing:
         raise ValueError("private configuration snapshot is missing " + ", ".join(missing))
     sections: dict[str, object] = {}
@@ -205,11 +237,12 @@ def config_from_snapshot(snapshot: Mapping[str, object]) -> Config:
         if not isinstance(section, Mapping):
             raise ValueError(f"private configuration snapshot section {name!r} must be an object")
         sections[name] = json_wire_object(section)
-    # Optional section: old snapshots without it rebuild to an absent sandbox (unconfined).
-    sandbox = snapshot.get("sandbox")
-    if sandbox is not None:
+    sandbox = snapshot["sandbox"]
+    if sandbox is None:
+        sections["sandbox"] = None
+    else:
         if not isinstance(sandbox, Mapping):
-            raise ValueError("private configuration snapshot section 'sandbox' must be an object")
+            raise ValueError("private configuration snapshot section 'sandbox' must be an object or null")
         sections["sandbox"] = json_wire_object(sandbox)
     return parse_config({"schema_version": 1, **sections})
 
@@ -221,27 +254,32 @@ def restore_admission(
     revision_id: str,
     workspace: Path,
     bundled_sources: Mapping[str, Path],
+    config: Config,
 ) -> Admission:
-    """Rebuild a generation from durable records, importing the CURRENT plugin source."""
+    """Rebuild a generation from durable records, importing the CURRENT plugin source.
+
+    ``config`` is the recorded configuration, parsed once by the caller from the same
+    snapshot whose digest is verified here. The recorded payload/snapshot are reused
+    verbatim; only the plugin inputs and runtime config are freshly resolved.
+    """
     payload = json_wire_object(payload)
     snapshot = json_wire_object(snapshot)
     digest = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
     if payload.get("private_config_sha256") != digest:
         raise ValueError("private configuration snapshot does not match the revision it belongs to")
-    config = config_from_snapshot(snapshot)
-    admission = admit_live(config, workspace=workspace, bundled_sources=bundled_sources, revision_id=revision_id, use_environment=False)
+    inputs = _plugin_inputs(config, workspace=workspace, bundled_sources=bundled_sources, use_environment=False)
     recorded = payload.get("plugins")
     if not isinstance(recorded, list) or not all(isinstance(plugin_id, str) for plugin_id in recorded):
         raise ValueError("revision payload has no plugin composition")
-    if set(recorded) != {plugin.plugin_id for plugin in admission.plugins}:
+    if set(recorded) != {plugin.plugin_id for plugin in inputs.plugins}:
         raise ValueError("recorded plugin composition does not match the recorded configuration")
-    return replace(
-        admission,
+    return Admission(
         revision_id=revision_id,
-        plugins=admission.plugins,
+        plugins=inputs.plugins,
         revision_payload=payload,
         private_snapshot=snapshot,
-        config=admission.config,
+        config=_execution_config(config),
+        validate=lambda registered: validate_providers(config, registered, providers=inputs.providers),
     )
 
 
@@ -262,11 +300,6 @@ def _workspace_lease(workspace: Path) -> Generator[None]:
         yield
     finally:
         os.close(descriptor)
-
-
-def _assert_workspace_free(workspace: Path) -> None:
-    with _workspace_lease(workspace):
-        pass
 
 
 def _deactivation_unavailable(
@@ -313,15 +346,6 @@ def locate_sandbox_helper() -> Path | None:
     for candidate in (package_root / "bin" / suffix, package_root / "native" / suffix):
         if candidate.is_file():
             return candidate
-    # Dev tree: <repo>/native/sandbox-adapter/target/{debug,release}/.
-    for parent in Path(__file__).resolve().parents:
-        adapter = parent / "native" / "sandbox-adapter" / "target"
-        if adapter.is_dir():
-            for profile in ("debug", "release"):
-                candidate = adapter / profile / suffix
-                if candidate.is_file():
-                    return candidate
-            break
     return None
 
 
@@ -408,25 +432,23 @@ def open_core(
 
     if current_revision is None:
         config = load_config(workspace, allow_missing=fresh_first_adoption)
-        _assert_workspace_free(workspace)
         admission = admit_callback(config=config)
         write_private_snapshot(state_dir, admission.revision_id, admission.private_snapshot)
     else:
         if current_payload is None or recorded_schema is None:
             raise ValueError(f"workspace revision {current_revision} disappeared from the database")
-        if recorded_schema != SCHEMA_VERSION:
-            raise ValueError(f"workspace state is at schema {recorded_schema}; this build reads schema {SCHEMA_VERSION}")
         snapshot = load_private_snapshot(state_dir, current_revision)
+        config = config_from_snapshot(snapshot)
         admission = restore_admission(
             current_payload,
             snapshot,
             revision_id=current_revision,
             workspace=workspace,
             bundled_sources=bundled_sources(),
+            config=config,
         )
     # The recorded configuration — not the live file — decides the backend: a restart
     # rebuilds the generation it recorded, and only an explicit reload changes it.
-    recorded = config_from_snapshot(load_private_snapshot(state_dir, admission.revision_id))
     return Core(
         workspace=workspace,
         state_dir=state_dir,
@@ -436,7 +458,7 @@ def open_core(
         revision_payload=admission.revision_payload,
         admission=admission,
         admits=admit_callback,
-        sandbox_backend=sandbox_backend_for(config=recorded, workspace=workspace, state_dir=state_dir, admission=admission),
+        sandbox_backend=sandbox_backend_for(config=config, workspace=workspace, state_dir=state_dir, admission=admission),
         config_filename=CONFIG_FILE_NAME,
     )
 
