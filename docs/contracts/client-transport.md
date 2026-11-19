@@ -88,9 +88,9 @@ execute concurrently, so a long run never blocks session cancellation.
 
 `transport/rpc.py` owns the method registry; `transport/models.py` owns strict
 parameter models. Unknown fields and invalid types fail at ingress. The schema
-served at `/api/openapi.json` contains the remaining HTTP paths, all shared SDK
-DTOs, `x-rpc-methods`, and `x-rpc-notifications`. The frontend generator derives
-both DTOs and typed RPC method mappings from this same registry.
+served at `/api/openapi.json` is the method table built straight from that
+registry: shared SDK DTOs, `x-rpc-methods`, and `x-rpc-notifications`. The
+frontend generator derives both DTOs and typed RPC method mappings from it.
 
 Standard errors are -32700 (parse), -32600 (invalid request), -32601 (method),
 -32602 (parameters), and -32603 (internal failure). Application refusals use

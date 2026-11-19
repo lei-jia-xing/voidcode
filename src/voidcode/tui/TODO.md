@@ -55,3 +55,36 @@
   - 验收：真实终端缩放/分屏、图形能力受限或无探测响应时，composer 可用、光标正确、旧历史不被擦除/复制。只借鉴 viewport 稳态；不引入 OMP rebuild、ED3 清历史或历史 replay。
 
 结构化 `ask` 的两端表单闭环由 SDK/插件 TODO 统一验收，TUI 复用已有 form/choices，不再建设第二套问答或审批 UI。
+
+## 清算：Outer / Transport / TUI 架构与代码质量问题（P0，零向后兼容）
+
+- [ ] **清理 `bootstrap.py`、`config.py`、`cli.py` 的配置三重投影、死兼容分支与重复解析。**
+  - 证据：
+    1. `bootstrap.py:140-194` `admit_live` 将同一份 `model/policy/plugins` 同时投影成 `snapshot` dict、`payload` dict 和 `ExecutionConfig` 三份结构，并对每个 plugin config 反复拷贝塞入 `providers`；`restore_admission`（`:224-244`）先把 `payload` 和 `snapshot` 各自 `json_wire_object` + `canonical_json` 哈希比对，再调 `admit_live`，再用 `replace(...)` 覆盖回原字段。
+    2. `bootstrap.py:196-222` `config_from_snapshot` 保留 `version != 2` 与注释 `old snapshots without sandbox` 的向后兼容分支，把字典重新拼回 `{"schema_version": 1, ...}` 再调一次 `parse_config`。
+    3. `bootstrap.py:411` `open_core` 先调用 `_assert_workspace_free` 获取并立刻释放一次 `flock`，随后 `Core.__init__` 又锁一次（TOCTOU 仪式）；`:429` 在已有 `admission` 的情况下又重新 `config_from_snapshot(load_private_snapshot(...))` 读盘解析一次传给 `sandbox_backend_for`；`locate_sandbox_helper`（`:302-328`）在生产代码中硬编码搜索 cargo 开发目录 `native/sandbox-adapter/target/{debug,release}`。
+    4. `cli.py:74-102` `_normalized_argv` 手写 30 行 argv 扫描重排以支持子命令后置 `--workspace`；`_tui_prefs`（`:403-430`）在启动 TUI 时把 `voidcode.json` 重新读盘并 `parse_config` 解析第二遍，异常还用 `except Exception: file_tui = {}` 静默吞掉；`_show`（`:335-401`）在 CLI 层直接手写 raw SQL 查 `sessions`/`checkpoints`/`session_events`，与 `Core.show` 及 `transport/projection.py` 重复。
+  - 整改：删除 `config_from_snapshot` 的旧版本兼容分支、重复读盘解析和 `_assert_workspace_free` 空锁；`Admission` 直接持有强类型 `Config`；CLI 使用标准 `argparse` 层级并复用统一只读查询入口，禁止静默吞配置异常。
+  - 部分：`version != 2`/`old snapshots` 分支、`_assert_workspace_free` 空锁、cargo 硬编码路径、`cli` 静默吞配置异常与手写 raw SQL 已删；`ExecutionConfig` 改由 `_execution_config` 单次构建。保留（已接受）：snapshot/payload 双字典（凭据边界：私有快照 vs 去敏载荷，`admit_live` 已注释）。未动：`cli._normalized_argv` 手写 argv 扫描（`:73`）仍在，未切标准 argparse 层级。
+
+- [x] **削除 `transport/` 与 `tui/{client,local_client}.py` 的死参数、字符串匹配定错、进程内字典往返与 100ms 轮询流。**
+  - 证据：
+    1. `transport/http.py:68-94,284-330` 中的 `control_token`、`fenced`、`generation`、`upgrade_id` 是彻底的死代码（`control_token` 存入属性后全仓零读取，`serve_core` 从不传这四个参数）。
+    2. `transport/projection.py:145-173` `core_error_status` 靠 `if "is stale; refresh the catalog" in message:` 等子串匹配来决定 HTTP/RPC 错误码；`validated_session_id` 在 `projection.py:139`、`models.py:25`、`local_client.py:109` 重复实现 3 遍；`model_payload`（`projection.py:60-116`）在每次 `/health` 请求时都重新加载静态 catalog 与 thinking rules（而 TUI 高频轮询 health）。
+    3. `tui/local_client.py:104,115,144,164,287,294,311` 作为**同进程**客户端，竟然把 `Core` 返回的强类型 dataclass 先转成 dict（`session_payload(record)` / `result.as_payload()` / `event_payload(...)`），再立即调 `SessionRow.from_payload(...)` / `RunResult.from_payload(...)`（内部再走一遍 `json_wire_object → json.dumps → TypeAdapter.validate_json`）转回 dataclass！
+    4. `transport/rpc.py:397`、`tui/local_client.py:300` 与 `tui/client.py:347-363` 的事件流全部依赖 `FOLLOW_POLL_SECONDS = 0.1` 的 `asyncio.sleep(0.1)` 或 `to_thread(sink.get, True, 0.2)` 轮询数据库，且客户端每收到一帧还要手发 `session.ack`。
+  - 整改：删除 `http.py` 死参数与手工拼接的 50 行 `openapi`（`:179-228`）；用 Core 强类型异常取代 `core_error_status` 字符串匹配；`CoreLocalClient` 直接透传 Core 强类型对象，零 JSON/dict 往返；将 `events_stream` 改为 Core 提交时的 Condition/队列事件推送，彻底消灭 100ms/200ms 轮询。
+  - 已落地：`http.py` 死参数与手拼 openapi 已删（`/api/openapi.json` 改为注册表构建，components-only）；`core_error_status` 改 typed exception（`projection.py:155`）；`validated_session_id` 收敛为单定义（`projection.py:149`）；`model_payload` 改调用方喂行；`CoreLocalClient` 零 dict 往返透传；事件流改推送，`FOLLOW_POLL` 清零。
+
+- [ ] **拆分 `terminal_app.py`（3345 行）、`term.py`（1508 行）、`composer.py`（1152 行）、`views.py`（1096 行），清除跨层越权与渲染性能黑洞。**
+  - 证据：
+    1. **`terminal_app.py`（3345 行）**：`CoreTuiApp.__init__`（`:578-686`）塞了 ~40 个状态字段（含 `_generation`、`_reconcile_serial`、`_interaction_serial`、`_live_serial` 四重序号守卫）；`_main_loop`（`:826-833`）无论是否空闲都以 `time.sleep(0.033)` 固定 30fps 空转，且每帧在 `_footer_context`（`:861-909`）里执行函数内 lazy import 并查 catalog；`_drain_events`（`:926-1238`）是 312 行 20 分支的字符串 `if kind == ...`；每次操作（`CoreRun`/`CoreFollowup`/`CoreFormLoad`/`CoreCommandInput`/`ArtifactPage`）都裸起 `threading.Thread`；`_tui_switch_model`（`:2799-2867`）甚至在 TUI 客户端里直接读盘修改 `voidcode.json`、调 `replace_file` 再发 `core.reload`；同时硬编码 `/tui` 命名空间与 11 个本地命令（`help/output/sessions/session/new/cancel/views/model/thinking/quit/exit`），与 Web 端各自维护一套 slash 解析。
+    2. **`term.py`（1508 行）**：`render_lines`（`:289-333`）在每次渲染单行文本时都重新实例化一个 `rich.Console(width=..., height=32768)`；`open()` 启动时同步阻塞 `0.1s + 0.12s` 做 DECRQM 与 Kitty 图形探测（`:1038-1107`）；`:1250-1320` 甚至藏着 70 行用 `getattr(ctypes, "Win" + "DLL")("kernel32")` 混淆调用的 Windows Console 后端。
+    3. **`composer.py`（1152 行）**：`:98-297` 从零写了第二套 CJK/grapheme/word 分词与折行宽度计算引擎（`_is_cjk`/`_classify`/`_display_width`/`_wrap_display_line`），与 `term.py:170-253` 的 `grapheme_spans`/`visible_width` 完全重复。
+    4. **`views.py`（1096 行）**：`render_tool_result`、`render_plugin_view`（11 分支 `if view_type == ...`）和 `InteractiveForm` 与前端 `frontend/src/core/toolOutput.ts`、`views/FormView.tsx` 重复实现同一套工具输出提取、artifact 引用扫描和表单校验。
+  - 整改：
+    - 删除 `term.py` 的 Win32 `ctypes` 后端，复用单一 `Console` 实例，将 Kitty 探测改为首次渲染图片时懒加载；
+    - 删除 `composer.py` 重复的 CJK/宽度引擎，统一复用 `term.py` 的 `grapheme_spans`/`cell_len`；
+    - `_main_loop` 改为事件/dirty 驱动渲染，消灭空闲 30fps 空转与每帧 catalog 查找；
+    - 禁止 TUI 直接改写 `voidcode.json`；拆分 `CoreTuiApp` 的事件流跟随、浮层栈、slash 分发与视图渲染。
+  - 部分：输入线程 + `SessionFollower`（4 重序号守卫已删）+ 到达时间戳 ESC 消歧 + kitty ack 生命周期 + 1s idle park；`_main_loop` 改事件驱动（`queue.get` 常驻，30fps 空转已删），footer 改读缓存 revision；`_render_frame` 拆为 4 个 `render_*`，composer if-chain 改数据驱动 `_KEYMAP`；`term.py` Win32 后端、逐调用 `Console` 已删，Kitty 探测懒加载（首图渲染时）；`views.py` 的 `view_type` if-chain 已重构。保留（已接受）：composer 自有宽度引擎（与粘贴块显示映射耦合，不与 `term` 渲染代码共享）；`/tui` + 11 本地命令双系统（slash 统一已证伪：12/13 无 catalog 对应项，产品决策保留）。未动：`_drain_events` 仍是 26 分支 kind 链；每操作裸起线程模式仍在；TUI 直接改写 `voidcode.json` 切模型仍在（`terminal_app.py:2928-2950`，有校验与 CAS）。

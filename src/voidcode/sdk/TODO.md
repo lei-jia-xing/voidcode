@@ -122,3 +122,37 @@ SDK 表达力：只记录有具体消费方、不能靠现有公开契约完整�
   - Core 搬运：schema 随 spawn 门禁（`../core/services.py:637-673`）→ engine spawn（`../core/engine.py:3106-3199`）→ delegation birth 记录与 `spawned` payload（`../core/delegation.py:241,273,348`）；`compose_child_prompt`（`child_schema.py:53`）只给 child prompt 追加固定交付指令，不碰 facts；`CHILD_FINISHED` 不增 accepted-yield 标记，不引入 OMP 专用 `yield` builtin，不设固定重试轮数。
   - 消费方-only 校验：`StructuredChildResult`（`services.py:88`）只在读取侧由 `validate_child_text`（`child_schema.py:69`）构造——`data`/`parse_error`/`unavailable` 三态，无效结果永不标为成功；`ChildOutcome`（`services.py:277-314`）不增结构化字段，身份/run/引用语义不变。`task` 经 `_StructuredFacts`（`../plugins/subagents/subagents_plugin.py:760-812`）把 `data`/`parse_error` 拼到结果首行 JSON；workflow 经 `agent_structured`（`../plugins/workflows/workflows_plugin.py:681`）与 `_settled_structured`（`:988`）读同一契约，声明的 schema 进入节点有效输入指纹（`:955-967`），换契约即换指纹、不复用旧结果（`:809`）。
   - 验收：5 个新文件 43 passed（`test_child_schema` 11、`test_child_structured` 6、`test_task_structured` 13、`test_workflows_structured` 12、`test_child_structured_e2e` 1）+ `test_subagents_plugin.py` 4 处断言迁移；keyed retry 两向 schema 不符拒绝（未声明 spec hash 与 legacy 8 字段一致）；取消/预算耗尽/失败携带无 structured keys，部分成果保留但不满足 schema。
+
+## 清算：悬空契约、上帝接口与 JSON 克隆税（P0，零向后兼容）
+
+- [x] **处置 `core/` 零引用的悬空契约（`sdk/suspend.py`、`sdk/foreground.py`、`sdk/ask.py`）——要么立即在 Core 跑通闭环，要么从 SDK 删除。**
+  - 证据：`sdk/suspend.py:1-103`（`SuspendPark(BaseException)`）、`sdk/foreground.py:1-184`（`CompositionDraft`/`ForegroundContext`/`SuspendComposition`）、`sdk/ask.py:1-654`（`Ask*`）以及 `sdk/services.py:1266-1289` 的 `suspend_foreground_composition`/`suspend_for_ask` 在 `src/voidcode/core/` 下**零引用、零实现**（`PluginRuntime.invoke` 只捕 `Exception`，从不捕 `SuspendPark`）。禁止在 SDK 中长期停放只有单元测试和 `FakeServices` 消费的“协议建筑学”。
+  - 整改：在实现 Core 停车/恢复闭环前，不保留空壳接口；同时删除 `sdk/ask.py:36-130` 中 `__post_init__` 与 `from_payload` 完全重复的 30 行字段校验，复用 `views.py` 的表单/选项契约与数字正则（`views.py:454-455`）。
+  - 已落地（走闭环分支，限 ask）：ask 跑通 Core park/answer 闭环——捕获（`core/plugins.py:1183`）→ 暂存（`core/services.py:1446`）→ park 提交（`core/engine.py:6621`，event+binding，无独立 park 表）→ `answer_ask`/`cancel_ask` 恢复（`engine.py:1984,2053`），`tests/unit/core/test_ask.py` 真 Core park/answer/cancel 测试为证（系清算外部落地，视为既定）。未动：foreground composition 仍未接线（P1 项保持 open 跟踪）；`ask.py` 的 `__post_init__`/`from_payload` 双重手写校验（`:45-128`）未复用 `views` 契约。
+
+- [x] **消除 `own_json_object → json_wire_object → json.dumps → validate_json` 的四重克隆与序列化税。**
+  - 证据：
+    1. 几乎所有 SDK DTO（`sdk/client.py:144,302,374`、`sdk/commands.py:80,118,245`、`sdk/tools.py:176,204,422`、`sdk/views.py`）在 `__post_init__` 中无条件递归调用 `own_json_object` 将 dict/list 复制为 `MappingProxyType`/tuple；而 `ToolCall.__deepcopy__`（`tools.py:207`）却直接返回 `self`，语义自相矛盾。
+    2. `sdk/client.py:32`、`sdk/codec.py:69`、`sdk/commands.py:23`、`sdk/views.py:317,327-332,357,393,425`、`sdk/transcript.py:356` 的 `_decode` 对已在内存中的映射先递归 `json_wire_object` 复制回 dict/list，再 `json.dumps` 成字符串，再交由 Pydantic `TypeAdapter.validate_json` 解析回 Python 对象，接着构造 DTO 时又 `own_json_object` 冻结一遍。
+    3. `sdk/tools.py:64-110` `ToolDiagnostics` 先递归遍历一遍 `_sanitize_diagnostic_value`，紧接着又递归遍历一遍 `own_json_value`。
+    4. `sdk/child_schema.py:64` 与 `core/services.py:565,1013` 连续调用 `json_wire_object(own_json_object(x))` 只为做一次 `json.dumps`。
+  - 整改：仅在外部 I/O 边界（SQLite 读写、WebSocket 收发）做一次 JSON 解析与 Pydantic `validate_python(strict=True)`；内部 DTO 直接持有已验证的不可变结构，禁止在进程内调用链上反复 `own ↔ wire ↔ dumps ↔ loads`。
+  - 结论（2026-11-19）：`_decode` 保留 `validate_json`，不再动。Pydantic 的 strict dataclass 只能走 JSON 往返：`validate_python(strict=True)` 对 dict 直接 `dataclass_exact_type` 拒绝，去掉 strict 又静默放宽字段校验（`"1"`→`1`）；嵌套 dataclass（`TranscriptMessageWire.body`）同理。行为矩阵 + 24 个红 case 已证伪，Strict* 注解迁移成本远超克隆税。`_sanitize+own` 已合并为单遍 `_freeze_diagnostic_value`（3 万 fuzz 零差异）；`child_schema` 改为 wire-once。
+  - 已落地（结论见上行）：`_decode` 保留 `validate_json`（`validate_python(strict)` 已证伪）；`ToolDiagnostics` 合并为单遍 `_freeze_diagnostic_value`；`child_schema` 改为 wire-once。
+
+- [x] **删除 SDK 内的向后兼容补丁与重复 Wire/Schema 体系。**
+  - 证据：
+    1. `sdk/codec.py:88-96` `encode_tool_definition` 专门 `if tool.output_schema is None: payload.pop("output_schema", None)`，注释声称“Definitions without an output contract encode byte-identically to before the field existed”。
+    2. `sdk/services.py:178-196` `BudgetExhaustion.from_payload` 保留“absent legacy data remains unknown”及手写 `set(value) != 6 keys` 校验。
+    3. `sdk/gates.py:175-177` `GateState.arrival` 设置 `compare=False`，只为让“reducer output still compares equal to hand-built states that predate it”。
+    4. `sdk/transcript.py:85-434` 与 `sdk/codec.py:108-280` 维护了两套平行的 `ToolCall`/`ToolResult` Pydantic Wire 模型。
+    5. `sdk/child_schema.py:38-99` 与 `sdk/result_schema.py:37-79` 复制了完全相同的 `Draft202012Validator` 校验与错误封装逻辑。
+    6. `sdk/observed_effects.py:38-80` `ObservedChange` 与 `sdk/tools.py:138-160` `ResourceChange` 字段与校验完全一致（注释自认 1:1 映射）。
+    7. `sdk/tools.py:512,532` 与 `codec.py:238` 在 `ToolResult` 上挂自由字符串 `steering_context: str | None`。
+  - 整改：删掉 `codec.py`、`services.py`、`gates.py` 的全部兼容分支；合并 `transcript.py` 与 `codec.py` 的 Wire 定义；合并 `child_schema.py` 与 `result_schema.py` 为单一 schema 校验器；合并 `ObservedChange` 与 `ResourceChange`。
+  - 已落地：`codec` 的 `output_schema` pop、`BudgetExhaustion` legacy 分支、`gates` `compare=False` 已删；`transcript` 复用 `codec.ToolResultWire`（`transcript.py:13`，`ToolCallWire` 已删，调用侧走 `ToolCall` dataclass）；`ObservedChange`/`ResourceChange` 合并为 `Change`；`child_schema`/`result_schema` 拆分为用途单一、无复制逻辑的校验器。保留：`ToolResultWire.steering_context`（`codec.py:236`，engine 透传工具侧设置值，有生产者，非死字段）。
+
+- [x] **拆分 45 方法的 `PluginServices` 上帝 Protocol 与碎片微型模块。**
+  - 证据：`sdk/services.py:934-1561` 的 `@runtime_checkable class PluginServices(Protocol)` 塞入了状态、事件、续跑、子会话（spawn/send/join/wait/ack/cancel/list）、窗口投影、overlay、wakeup、facts/transcript/history、query、resource（5 方法）、tool invoke、suspend（2 方法）、process（2 方法）、artifact 等 ~45 个方法；同时 `sdk/icons.py`（30 行只包一个 `glyph: str`）、`sdk/limits.py`（12 行 6 个常量）、`sdk/history.py`（50 行）、`sdk/rpc.py`（50 行含 `Any` payload）过度碎裂，而客户端快捷键规范化 `normalize_default_shortcut`（`sdk/commands.py:30-60`）与 UI 门控状态机 `reduce_gates`（`sdk/gates.py`）却越界塞在 SDK 里。
+  - 整改：按职责将 `PluginServices` 拆分为正交子能力（状态/子会话/进程/资源/历史），收拢 `icons.py`/`limits.py`/`history.py`，将 `rpc.py`、`gates.py` 与快捷键归一化迁回 `transport/` 和客户端层。
+  - 已落地：`PluginServices` 拆为 State/Child/ScheduledWork/History/Tool/Artifact/Suspend/Process/Budget 子 Protocol（`services.py:924-1630` 组合）；`limits.py`/`history.py`/`rpc.py` 已删（rpc 内容归位 `transport/rpc.py`）；`gates.py` 迁至 `tui/gates.py`。保留（已接受）：`icons.py`（`Icon` 被全仓工具定义共享引用）；`normalize_default_shortcut` 留在 `sdk/commands.py:32`（纯函数，各客户端共享）。

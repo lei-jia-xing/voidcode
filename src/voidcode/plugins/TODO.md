@@ -88,3 +88,35 @@
   - `task`（含 batch）与 workflow 同读 SDK 契约：spawn 声明 `result_schema`，读取侧严格校验后返回 `data` 及其 run 身份；schema 不符/未交付/预算耗尽/正常完成严格区分（`data`/`parse_error`/`unavailable` 三态），完整数据按引用读取。无 `yield` builtin、无固定提醒/重试 MAX。
   - task↔workflow parity：声明/未声明、合法/违例/不可解析、preview-only、预算/取消/失败、复用与指纹拒绝两侧一致；schema 进入 workflow 有效规格指纹，`test_same_key_different_schema_is_refused` 锁定换契约不复用旧结果。
   - 验收：5 新文件 43 passed + e2e 子 spawn→交付全链路；`test_subagents_plugin.py` 4 处断言迁移到首行结构化 JSON。
+
+## 清算：插件巨石、遗产移植与 Capabilities 膨胀（P0，零向后兼容）
+
+- [x] **删除 `capabilities/providers/native/tokenizer.py`、`claude_tokenizer/` 与 `tokenizer_data/*.bz2` 整套离线分词器工程。**
+  - 证据：`tokenizer.py:1-240`、`claude_tokenizer/{engine,normalize,constants}.py`（~700 行）及 `tokenizer_data/` 下的 bzip2 词表从 OMP 移植了 6 套 tiktoken 正则、DeepSeek 13 分支 CJK 边界正则和 `ctok` 动态规划最小代价切分引擎；但 Core 的自适应上下文分配（`coverage.py`）只用 provider 实测 token/char 比率，离线分词器仅被 `pricing.py` 等边缘路径拿来做估算，`known_tokenizers()` 在 Core 中根本无人调用。
+  - 整改：彻底删除 `tokenizer.py`、`claude_tokenizer/`、`tokenizer_data/`；所有计费与上下文窗口只认 provider 返回的真实 usage facts。
+  - 已落地：`tokenizer.py`、`claude_tokenizer/`、`tokenizer_data/` 全部删除；`native/` 下无残留。
+
+- [ ] **削平四大巨石插件（`workflows` 2352 行、`subagents` 1789 行、`goal` 1729 行、`todo` 1378 行）的重复造轮子与历史包袱。**
+  - 证据：
+    1. **`workflows/workflows_plugin.py`（2352 行）**：在 async 驱动器里自己建 `threading.Lock` 与 `threading.Semaphore(8)`（`:57-67`）去串行化 Core 本就用 CAS 串行化的状态提交；`WorkflowNode`（`:72-124,175-360`）持久化 7 个 sha256 字段（`source_sha256`、`source_artifact`、`input_sha256`、`effective_input_sha256`、`prompt_sha256`、`output_sha256`、`result_sha256`）并在反序列化时写 150 行 `len(sha) != 64` 校验；`_run_node`（`:753`）与 `_run_node_structured`（`:822`）把 80 行的 `1.0s` 轮询 `join_child` 状态机复制粘贴了两遍；在 `:289,412,503,527,966,1291,1368` 反复执行 `json_wire_object(own_json_object(...))` 三重往返。
+    2. **`goal/goal_plugin.py`（1729 行）**：把一个目标插件写成了 23 字段的财务分类账（`KNOWN_GOAL_STATE_FIELDS:60-89`，含 8 个 token 计数器、`ActiveWindow` 列表、`blocked_turns`、`objective_edited` 等），`to_dict`/`from_dict` 达 200 行；`read_full_objective`（`:378-427`）至今保留读取工作区 `.voidcode/attachments/...` 旧文件的向后兼容分支；`render_context_prompt`（`:429-700`）拼接 5 套冗长提示词模板与 `<objective>` 伪 XML 标签，并在 observer 中散落 6 处 `services.set_budget(...)`。
+    3. **`todo/todo_plugin.py`（1378 行）**：将派生统计 `summary` 持久化到状态中并在每次 `TodoState.from_payload`（`:158`）时重算比对；维护两套提醒状态机（`TodoReminderState` 与 `TodoMidRunState`，`:649-850`，含 `12` 次变更阈值、`2/cycle`、`3/cycle` 魔法常数和 `<system-reminder>` 字符串注入）；`todo_observer`（`:819-900`）在每次工具调用 fact 到达时都跑 `for _ in range(3): read_facts(limit=200)` 重建 `ToolEffect` 集合并无条件 `replace_state`。
+    4. **`subagents/subagents_plugin.py`（1789 行）+ `monitor.py`（436 行）**：手写 10 个 `_parse_*` 函数（`:207-310`）替代 schema 校验；保留 `_CHILD_OPTIONAL_KEYS` 兼容“rows written before preset selection”；`monitor.py:114-252` 把按钮参数 `json.dumps` 塞进 `_choice_id` 字符串，并对超长行用 `json.dumps` 二分查找截断标签长度。
+  - 整改：
+    - 抽提共享的强类型插件状态读写 helper，删除 6 个插件（`workflows`/`goal`/`todo`/`subagents`/`cron`/`compaction`）各自手抄的 `_STATE_KEYS` + `from_payload`/`to_payload` + `replace_state(expected_version)` 样板；
+    - `workflows` 删掉自建线程锁、合并 `_run_node` 与 `_run_node_structured`、砍掉冗余 sha256 账本（只留 `run_id`/`nodes`/`status`/artifact 引用）；
+    - `goal` 彻底删除 `.voidcode/attachments` 旧工作区文件读取分支与 18 个冗余统计字段（直接读 Core `UsageFact`/`SessionUsageReport`），合并 5 套提示词模板；
+    - `todo` 删除持久化 `summary` 和双提醒状态机，改为基于内存游标的单次增量读取，无状态变更时不写库；
+    - `subagents` 删除 `_CHILD_OPTIONAL_KEYS` 旧行兼容与手写 `_parse_*`，`monitor.py` 删除二分序列化截断与 JSON-in-choice-id。
+  - 部分：`workflows` 三重 JSON 往返清零、`_run_node` 双体合并、sha 账本 7→3（`source`/`effective_input`/`output`）；`goal` 删 `.voidcode/attachments` 双读、字段 23→19、提示词收敛为模块函数、`set_budget` 收敛至 1 处；`todo` 的 `summary` 改为派生属性、双提醒机合并为单 policy 解析、observer 的 3 页重扫 + 无条件写库已删；`subagents` 手写 `_parse_*`、`_CHILD_OPTIONAL_KEYS`、monitor JSON-in-choice-id 已删。未动：共享插件状态读写 helper——各插件仍手写 `from_payload`/`to_payload`。
+
+- [x] **清理其余插件与 Capabilities 中的“verbatim legacy copy”、轮询锁与重复实现。**
+  - 证据：
+    1. **`cron/cron_plugin.py:1-32`** 与 **`compaction/projection.py:3-4`** 顶部直接写着“verbatim legacy copy” / “Ported from legacy runtime/context/window.py”，保留了 `_clock_ms` 模块级测试钩子、3×200 页事件扫描与 4 个硬编码字符截断常量。
+    2. **`review/review_plugin.py:80-260`** 重新实现了一遍 `subagents` 的 child join 与 artifact 分页拼接逻辑。
+    3. **`lsp/lsp_manager.py:1-1012`**（10 个文件）手写 stdio `Content-Length` 帧解析、3 把锁（`request_lock`/`_lock`/`_lifecycle_lock`）与 `time.sleep(0.01)` 轮询读循环；**`mcp/mcp_manager.py:1-710`** 维护两把 `RLock` + `BlockingPortal` + `json_wire_object(own_json_object(...))`，`mcp_tool.py:210-213` 用 `preview_bytes[:MAX_VIEW_DATA_BYTES].decode(errors="ignore")` 静默截断。
+    4. **`capabilities/exec/background_process.py:406-445,625`** 用 `time.sleep(0.03)`（30ms 轮询，注释写“as legacy manager polled”）等待进程就绪与退出。
+    5. **`capabilities/files/`** 存在三套重叠的编辑/补丁引擎（`edit_tool.py`、`apply_patch.py`、`apply_workspace_edit.py`），且 `grep_tool.py`、`glob_tool.py`、`find_tool.py`、`skills_plugin.py` 各自复制了一份 `DEFAULT_IGNORE_PATTERNS`、限制常量与非空字符串校验器。
+    6. **`capabilities/providers/`** 中 `openai_native.py`（1189 行）、`anthropic_native.py`（826 行）、`google_native.py`（701 行）三处重复实现 `_usage`/`_done_reason`/`_merge_usage`/`_normalize_base_url` 与 Transport Protocol；`panels.py:87` `last_dispatch` 每次打开 `/model` 面板都用 `while True: read_transcript(limit=200)` 从头扫完整个会话历史。
+  - 整改：删除所有 legacy 移植垫片；`review` 复用共享 child output 分页 helper；`background_process` 与 `lsp` 改为事件/管道唤醒，删除 10ms/30ms `time.sleep` 轮询；合并 `files/` 的 ignore 列表与校验器，收敛多余补丁实现；在 `providers/` 中提取统一的 HTTP/SSE 传输底座，并为 `last_dispatch` 提供逆序单条查询而非全量扫 transcript。
+  - 已落地：`_wire_common.py` 统一传输底座 + `last_dispatch` 改 `latest_event` 逆序单查（`panels.py:84`）；MCP 预览超限改为显式抛错；`find`/`skills` 去掉自带 ignore 表。保留（已接受）：`cron`/`compaction` 的 legacy 移植注释仍在（超出清算范围，不动）；`review` 保留本地 output pager（`_first_output_page`/`_paged_output_text`）；`background_process` 就绪轮询保留为命名常量 `_READY_POLL_SECONDS`（`:50`，进程就绪无事件可等）；`grep`/`glob` 各保留自有 ignore 表（按名 vs 按路径段匹配，语义不同）；files pager 的 4KiB 包络余量（`resource_pages.py:21`，注释已说明）。`lsp`/`mcp` 由专职 worker 重写（stdio 帧解析保留、`sleep(0.01)` 已删）。未动：`files/` 三套编辑/补丁引擎仍并存。

@@ -53,3 +53,69 @@
 - [x] **Adjacent observation resolved (mechanism mapped; no fix needed): follow-up notify delivery thread pile-up.**
   - Mechanism: `CoreChildDeliver` threads pile on the parent `_session_lock` via `_deliver_child_notice`→drain; the child lock is released before the parent drain, so this is single-lock contention, not a lock-order cycle. `join` is unaffected (CAS read path, no drain). Post-fix reruns show a clean drain with no pile-up.
   - Residual unknown: how one follow-up yielded ~97 threads is still unexplained; the throwaway fixture is gone, and one send constructs exactly one deliver thread, so that count was never reproduced minimally.
+
+## 清算：Schema 乱象、JSON 偷渡与死兼容（P0，零向后兼容）
+
+- [x] **废除 `kernel_identity` 表与 `_verify_existing_file` 的 9 次探针仪式。**
+  - 证据：`schema.sql:6-10` 专门建单行表 `kernel_identity (id=1, magic='voidcode-kernel-v1', schema_version=6)`；`store.py:399-528` 在正式连接前先开一个独立 `mode=ro` 探针连接，查 `kernel_identity`、查 `sqlite_master` 15 张表名、再连跑 7 条 `PRAGMA table_info(...)` 逐列比对，甚至在 `store.py:516` 检查 `"generation" in receipt_cols`（v5 废弃列）。`open_read_only`（`store.py:536-546`）和 `inspect_existing_workspace`（`store.py:549-578`）又重复开连接再查一遍 `kernel_identity`，且保留毫无消费方的 `enforce_version=False` / `READABLE_SCHEMA_VERSIONS` 过渡接口。
+  - 整改：删掉 `kernel_identity` 表、`_verify_existing_file`、`READABLE_SCHEMA_VERSIONS` 及 7 条 `PRAGMA table_info` 探针；直接用 SQLite 原生文件头 `PRAGMA application_id` 与 `PRAGMA user_version = 6` 在单个连接上校验身份与版本，不匹配直接拒绝。
+  - 已落地：表、探针函数、`READABLE_SCHEMA_VERSIONS` 及全部 `PRAGMA table_info` 探针已删；`PRAGMA application_id` + `user_version = 6` 在单个连接上校验（`store.py:537-548`），旧库直接 `ForeignDatabaseError` 拒绝。锁死测试：`tests/unit/core/test_schema.py`、`test_storage.py`。
+
+- [x] **禁止因逃避改表而向 `payload_json` 偷渡核心字段（`wakeups` / `continuations` / `checkpoints`）。**
+  - 证据：
+    1. `wakeups` 表（`schema.sql:128-140`）缺少 `root_id` 与 `root_action_budget` 列，`store.py:72-94,1209-1215,1993-2016` 用魔法键 `_voidcode_core_wakeup` 把 `{root_id, root_action_budget, payload}` 嵌进 `payload_json`，每次读取再 `_decode_wakeup_payload` 解包。
+    2. `continuations` 表（`schema.sql:96-110`）被当作万能垃圾桶：靠 `source = '@core/background'`（`store.py:287`）、`owner = 'kernel' AND source = 'user_message'`（`store.py:1441,3982`）、`json_extract(payload_json, '$.kind') IN ('child_followup', 'child_finished')`（`store.py:1397,3167,3459`）混装普通 continuation、用户输入队列、子会话消息与后台任务；后台任务在 `claim_background_action`（`store.py:3819-3832`）和 `complete_background_action`（`store.py:3868-3882`）时甚至原地改写 `payload_json` 塞入 `claim`/`action`/`error`/`tool_wait_authority` 信封。
+    3. `session_info`（`store.py:1494-1496`）和 `root_budget_grant`（`store.py:1745`）在 SQL `LEFT JOIN`/`WHERE` 中直接跑 `json_extract(c.payload_json, '$.approval_sequence')`、`json_extract(c.payload_json, '$.root_id')`、`json_extract(payload_json, '$.root_action_grant_id')` 全表扫 JSON。
+  - 整改：在 `schema.sql` 中给 `wakeups` 补齐 `root_id TEXT NOT NULL`、`root_action_budget INTEGER` 列，删掉 `_WAKEUP_PAYLOAD_KEY`；将 `background_actions` 拆为独立表（含 `claim_json`/`error`/`root_action_budget`/`authority_json` 列）或为 `continuations` 明确 `kind` 列，绝不原地覆写业务 `payload_json`；将 `checkpoints` 的 `root_id`/`approval_sequence` 提升为表列并建索引，消除 JOIN/WHERE 上的 `json_extract`。
+  - 已落地：`wakeups` 补齐 `root_id`/`root_action_budget` 列（`schema.sql:186-187`），魔法键已删；`background_actions` 独立成表（`schema.sql:137`）；`checkpoints` 补齐 `root_id`/`approval_sequence` 列（`schema.sql:81-82`）；`json_extract` 已从 `store.py` SQL 中消除。
+
+- [x] **彻底清除 Core 与 Store 中的遗产兼容分支。**
+  - 证据：
+    1. `_session_record`（`store.py:374-380`）对 11 列 `sessions` 表做 `len(row) > 10`、`len(row) > 8`、`len(row) > 7` 防御，兼容早已不存在的旧版短行。
+    2. `_rehydrate_followup_images`（`engine.py:1375,1388-1393`）保留 `if "data" in entry:` 的 legacy inline base64 图片分支。
+    3. `_publish_child_terminal`（`delegation.py:1614-1624`）专门捕获无 `root_id` 旧 child birth 的 `StoreConflict` 并静默降级 `notify = False`（连 `core/TODO.md:31` 都承认“the store forbids persisting rootless births, so a true legacy-row end-to-end is untestable”）。
+    4. `_spawn_spec_hash`（`delegation.py:384-386`）为了兼容“pre-change keyed retries”刻意省略 `result_schema=None`；`_recover_keyed_spawn`（`delegation.py:506-513`）保留 `fact_missing_notify = "notify_on_completion" not in fact` 的旧事件修补分支。
+    5. `core/transcript.py:66-76` `_icon` 兼容“old events carry none”的字典/空值形态。
+  - 整改：全部删除，按当前 schema v6+ 唯一合法形态直接解构，不满足契约直接抛错。
+  - 已落地：`_session_record` 直接下标解构；legacy inline 图片分支、无 `root_id` 降级、`_spawn_spec_hash` 的 pre-change 省略全部删除；旧事件修补改为显式抛错（`delegation.py:517` `KeyError`）。保留：`transcript._icon` 的 `None → None`（`:102-109`，icon 字段可选语义，非版本兼容）。
+
+## 清算：上帝对象、O(N²) 全量事件重扫与线程/轮询反模式（P0）
+
+- [ ] **拆分 `engine.py`（6986 行）、`store.py`（4031 行）、`delegation.py`（2081 行）、`plugins.py`（1828 行）、`services.py`（1535 行）。**
+  - 证据：
+    - `Core`（`engine.py:674-6986`）把生命周期锁、主驱动循环、工具/命令分发、热激活（activation）、后台任务驱动、模型 side-query、用量核算、结果持久化/投影揉在同一个类里；`__init__`（`engine.py:745-783`）与 `_prepare_activation_locked`（`engine.py:3115-3153`）把 25 个 callback 参数原样复制了两遍构造 `PluginRuntime`。
+    - `PluginRuntime`（`plugins.py:1-1828`）集成了模块加载、catalog 校验、25 字段可变 `LeaseContext`（`plugins.py:121-182`）、工具/命令/hook/view/observer/resource/query 全部分发。
+    - `RuntimeServices`（`services.py:1-1535`）在每个方法里手抄 `if self._lease.hook` / `if self._lease.readonly`，并在 `services.py:790-965` 用 175 行代码把同进程 `DelegationManager.wait_children`/`join_child` 刚构造的 `ChildOutcome.as_payload()` 字典再逐字段做一遍 `isinstance` 校验和组装。
+    - `DelegationManager`（`delegation.py:101-2081`）在内存里维护 6 个重叠集合（`_child_finished`、`_published_child_runs`、`_child_publication_inflight`、无界增长的 `_started_children`、`_cancel_fences`、`_child_finished_generation`）。
+  - 整改：
+    - `DelegationManager.wait_children`/`join_child` 直接向 `RuntimeServices` 返回强类型 `ChildOutcome`，删掉 `services.py:790-965` 的 dict 往返和二次校验；
+    - 提取单一 `PluginRuntimeCallbacks` 或直接传入宿主页接口，消除 `engine.py` 两处 40 行构造重复；
+    - 将 `LeaseContext` 拆为不可变 `LeaseIdentity` 与显式 `StagingBuffer`；
+    - 将 `engine.py` 的 activation、background driver、output projection/compaction、usage 拆为独立协作者模块；将 `store.py` 按领域（session/checkpoint、continuations/background/wakeups、activation/state）拆开。
+  - 部分：`services.wait_children` 直接返回强类型 `ChildOutcome`（dict 往返已删）；`activation.py` 已从 `engine.py` 抽出。未动：`PluginRuntime` 仍两处 ~29 参数重复构造（`engine.py:814,3560`）；`LeaseContext` 未拆（`plugins.py:144` 仍是单一可变类）；`store.py` 仍是单模块。
+
+- [x] **消除热路径上的 `store.events(session_id)` 全量拉取与重复 JSON 编解码。**
+  - 证据：
+    1. 每次工具完成或 provider 轮次前，`_get_session_usage`（`engine.py:2066`）、`measured_tokens_per_character`（`coverage.py:393-446`）、`_settle_unsettled_dispatches`（`engine.py:4970`）、`_measured_run_elapsed_fields`（`engine.py:5166`）、`_pending_activation_request`（`engine.py:2984`）都遍历全会话事件并反序列化 `ProviderTurnResult`。
+    2. `_drain_deferred_requests`（`engine.py:1808`）、`_cancel_background_tool_requests`（`engine.py:3689`）、`_reconcile_lost_background_tool_waits`（`engine.py:3802`）、`_drain_pending_background_tool_waits`（`engine.py:3843`）在 while 循环里反复全量拉取 `list(self.store.events(session_id))`。
+    3. `delegation.py` 中 `_spawned_fact`（`:404`）、`_child_fact`（`:1851`）、`_child_fact_event`（`:1863`）、`_child_label`（`:1883`）、`_notify_requested`（`:1912`）、`read_child_snapshot`（`:1237`）、`_child_fact_payload`（`:1732`）每次都把父或子会话的全部 `session_events` 拉进内存后 `reversed(...)` 线性找一条事件。
+    4. `core/transcript.py:120-144` `context_records` 对每条事件做完整 Pydantic 解码后再 `json.dumps(json_wire_object(payload), sort_keys=True)` 算字节数；`core/plugins.py:905-933` `event_views` 对每条事件连续序列化 3 次（测长、截断、构造 wire）；`core/coverage.py:92-110` `_fit_field` 在二分查找里每次调用 `_fits` 重新 `json.dumps` 整个文档 O(log N) 次。
+    5. `core/history_renderer.py:108-144` 每个事件块调用 `.encode("utf-8")` 3 次，并在循环早退时反复 `"\n\n".join(chunks)`。
+  - 整改：
+    - 在 `session_events` 上按 `(session_id, event_type, sequence DESC)` 建索引并提供精确 SQL 查询（按类型/run_id 查最新单条或游标增量），严禁拉全表到 Python 里 `reversed()` 找单条记录；
+    - `session_events` 入库时直接存储 `payload_bytes INTEGER NOT NULL`（入库本就已算过 `len(payload_json.encode("utf-8"))`），删除 `transcript.py` 与 `plugins.py` 中的二次序列化测长；
+    - `_fit_field` 改为常数次算术预算切片 + 单次最终序列化 verification。
+  - 已落地（部分）：`session_events_lookup_idx(session_id, event_type, sequence)`（`schema.sql:52`）+ `events_by_types` 精确查询（`store.py:1696`，如 `delegation.py:1863` 已迁移）+ 入库 `payload_bytes`（`schema.sql:49`）+ `_fit_field` 改算术预算。保留：`_Execution` 构造仍全量拉取（`engine.py:1171` 等）——per-turn rebuild 模型所需，非疏漏。
+
+- [x] **消灭每次调用建线程、20Hz 轮询 watcher 与 `time.sleep` 同步。**
+  - 证据：
+    1. `PluginRuntime.invoke`（`plugins.py:814-827,1123-1130`）每次调用任何工具/命令/hook 都要新建一个 `threading.Thread(target=self._watch_invocation_cancel)` 以 20Hz（`stop.wait(0.05)`）轮询 `abort_signal.cancelled`，结束时再 `watcher.join(timeout=5)`。
+    2. `Cancellation`（`engine.py:135-183`）与 `_EventAbortSignal`（`engine.py:185-214`）重复包装 `threading.Event`，却不直接把底层 `Event` 或回调钩子暴露给 `LeaseContext`，才导致 `plugins.py` 与 `retry.py:68-85` 退化为 50ms 轮询（`retry_sleep` 甚至在无 abort 时每次新建 `threading.Event().wait(seconds)` 来当 `sleep` 用）。
+    3. `ProcessRegistry.run`（`processes.py:329-342,373-382`）每个子进程起 3 个线程并用 `cancel_event.wait(0.05)` 轮询 `process.poll()`；还手写 `/proc/<pid>/stat` 解析（`processes.py:95-170`）。
+    4. `DelegationManager._start_child_run`（`delegation.py:579`）和 `send_child`（`delegation.py:1116`）每次调用裸起 unmanaged `threading.Thread(daemon=True)`；`_commit_child_fact`（`delegation.py:1847`）遇到 `StoreConflict` 用 `time.sleep(0.1)` 忙等长达 30 分钟；`Core.wait_background_actions`（`engine.py:4201,4241`）用 `time.sleep(0.2)` 猜测 claim 与 live 集合的竞态。
+  - 整改：
+    - 给 `Cancellation` 增加订阅回调（`on_cancel(cb)`），直接触发 `lease.cancel_event.set()`，彻底删除 `plugins.py` 的 per-invoke watcher 线程与 `retry.py` 的 50ms 轮询；
+    - 后台 action claim 与 `_background_live` 登记放入同一把锁临界区，删除 `engine.py:4201,4241` 的 `time.sleep(0.2)`；
+    - 子会话驱动与消息投递收敛到受控线程池，并在 `Core.close()` 中明确排空；
+    - 删除 `core/child_history.py` 薄包装模块（仅 `delegation.py:1741` 一处调用，且 `snapshot_id` 无实际用途），内联到 `delegation`；修复 `core/sandbox.py:68-105` `with_stdin`/`with_effects_path` 把刚序列化的帧再 `json.loads(frame[8:])` 反解出来加字段的荒谬写法；将 `core/artifacts.py` 的 `.media` 旁路文件与目录 `fsync` 收敛到统一元数据表或单次原子落盘。
+  - 已落地：per-invoke watcher、`retry` 50ms 轮询、`sleep(0.1)` 30 分钟忙等、`wait_background_actions` 的 `sleep(0.2)` 全部删除（`Cancellation.on_cancel` 订阅 + `engine.py:209` 回调表 + claim 同锁）；`DelegationManager` 收敛到 `ThreadPoolExecutor`（`delegation.py:138`）；`child_history.py` 已删除；`sandbox.py` 反解帧写法已修。未动：`artifacts.py` 的 `.media` 旁路文件与 `fsync`（`:111,136`）仍在。
