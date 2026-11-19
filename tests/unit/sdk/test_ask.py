@@ -19,9 +19,9 @@ from voidcode.sdk.ask import (
     validate_ask_answer,
 )
 from voidcode.sdk.commands import ConfirmationRequest
-from voidcode.sdk.gates import AskGate, ConfirmationGate
 from voidcode.sdk.services import ArtifactReference
 from voidcode.sdk.views import ChoiceOption, FormField
+from voidcode.tui.gates import AskGate, ConfirmationGate
 
 GOOD_SHA = "ab" * 32
 
@@ -392,7 +392,7 @@ def _confirmation_gate(request_id: str, revision_id: str = "rev-1") -> Confirmat
 
 
 def test_ask_gate_reducer_and_arrival_order() -> None:
-    from voidcode.sdk.gates import (
+    from voidcode.tui.gates import (
         AskRequested,
         ConfirmationRequested,
         GateDecided,
@@ -419,7 +419,7 @@ def test_ask_gate_reducer_and_arrival_order() -> None:
 
 
 def test_ask_gate_activation_drops_stale_revision() -> None:
-    from voidcode.sdk.gates import ActivationCommitted, AskRequested, GateState, pending_gates, reduce_gates
+    from voidcode.tui.gates import ActivationCommitted, AskRequested, GateState, pending_gates, reduce_gates
 
     state = reduce_gates(GateState(), AskRequested(_ask_gate("ask-old", revision_id="rev-1")))
     assert [gate.request_id for gate in pending_gates(state)] == ["ask-old"]
@@ -431,7 +431,7 @@ def test_ask_gate_activation_drops_stale_revision() -> None:
 
 
 def test_ask_gate_validates_request() -> None:
-    from voidcode.sdk.gates import AskGate
+    from voidcode.tui.gates import AskGate
 
     with pytest.raises(ValueError):
         AskGate(request="nope", revision_id="rev-1")  # type: ignore[arg-type]

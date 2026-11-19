@@ -4,7 +4,7 @@ import os
 from collections.abc import Iterator, Mapping
 from contextlib import closing
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 from google import genai
@@ -26,7 +26,18 @@ from voidcode.sdk.provider import (
 )
 from voidcode.sdk.tools import ToolCall
 
-from ._wire_common import OwnedResource, iter_stream_with_timeout, normalize_tool_call_id, resolve_extra_request_headers, usage_int
+from ._wire_common import (
+    OwnedResource,
+    abort_signal_cancelled,
+    build_usage,
+    cancelled_events,
+    fallback_execution_error,
+    iter_stream_with_timeout,
+    map_done_reason,
+    normalize_tool_call_id,
+    resolve_extra_request_headers,
+    usage_int,
+)
 from .config import GoogleProviderConfig
 from .errors import provider_execution_error_from_payload
 from .model_catalog import catalog_model_limits, static_catalog_metadata
@@ -95,6 +106,54 @@ def _service_account_project_id(credentials: Any) -> str | None:
     """Return the project named by the loaded credentials, when they expose one."""
     project_id = getattr(credentials, "project_id", None)
     return project_id if isinstance(project_id, str) and project_id else None
+
+
+class GoogleWireCodec:
+    """Google wire knowledge: usage attributes, finish tokens, reported checks."""
+
+    DONE_REASONS: ClassVar[dict[str, ProviderDoneReason]] = {
+        "stop": "stop",
+        "end_turn": "stop",
+        "max_tokens": "length",
+        "length": "length",
+        "safety": "content_filter",
+        "recitation": "content_filter",
+        "blocklist": "content_filter",
+        "prohibited_content": "content_filter",
+        "spii": "content_filter",
+        "other": "content_filter",
+        "malformed_function_call": "error",
+        "unexpected_tool_call": "error",
+        "no_image": "error",
+    }
+
+    @staticmethod
+    def usage(response: object) -> ProviderTokenUsage | None:
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            return None
+        input_tokens = usage_int(getattr(usage, "prompt_token_count", None))
+        candidates = usage_int(getattr(usage, "candidates_token_count", None))
+        thoughts = usage_int(getattr(usage, "thoughts_token_count", None))
+        # Google reports thinking separately; an incomplete output total stays unknown.
+        output_tokens = candidates + thoughts if candidates is not None and thoughts is not None else None
+        cache_read = usage_int(getattr(usage, "cached_content_token_count", None))
+        # ``prompt_token_count`` is the inclusive prompt total (``cached_content_token_count``
+        # is a component of it), so it is stored as-is and the uncached bucket is the
+        # remainder: without it every Google turn would price its input at zero (the
+        # provider reports no separate uncached count).
+        uncached = input_tokens - cache_read if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else None
+        return build_usage(input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read, uncached_input_tokens=uncached)
+
+    @staticmethod
+    def done_reason(value: object) -> ProviderDoneReason:
+        return map_done_reason(str(getattr(value, "name", value)).split(".")[-1], GoogleWireCodec.DONE_REASONS)
+
+    @staticmethod
+    def finish_reason_reported(value: object) -> bool:
+        raw = getattr(value, "name", value)
+        token = str(raw).split(".")[-1].strip().upper()
+        return value is not None and bool(token) and token not in {"0", "FINISH_REASON_UNSPECIFIED"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,26 +439,6 @@ class GoogleGenAIProvider:
         return types.ThinkingConfig(thinking_budget=budget if budget is not None else -1, include_thoughts=True)
 
     @staticmethod
-    def _finish_reason(value: object) -> ProviderDoneReason:
-        raw = getattr(value, "name", value)
-        normalized = str(raw).split(".")[-1].lower()
-        if normalized in {"stop", "end_turn"}:
-            return "stop"
-        if normalized in {"max_tokens", "length"}:
-            return "length"
-        if normalized in {"safety", "recitation", "blocklist", "prohibited_content", "spii", "other"}:
-            return "content_filter"
-        if normalized in {"malformed_function_call", "unexpected_tool_call", "no_image"}:
-            return "error"
-        return "unknown"
-
-    @staticmethod
-    def _finish_reason_reported(value: object) -> bool:
-        raw = getattr(value, "name", value)
-        token = str(raw).split(".")[-1].strip().upper()
-        return value is not None and bool(token) and token not in {"0", "FINISH_REASON_UNSPECIFIED"}
-
-    @staticmethod
     def _raise_if_prompt_blocked(response: object, *, provider_name: str, model_name: str) -> None:
         feedback = getattr(response, "prompt_feedback", None)
         raw_reason = getattr(feedback, "block_reason", None)
@@ -417,8 +456,6 @@ class GoogleGenAIProvider:
 
     @staticmethod
     def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: str) -> ProviderExecutionError:
-        if isinstance(exc, ProviderExecutionError):
-            return exc
         if isinstance(exc, GoogleAPIError):
             payload = dict(exc.details) if isinstance(exc.details, Mapping) else {}
             payload["status_code"] = exc.code
@@ -430,44 +467,12 @@ class GoogleGenAIProvider:
                 payload=payload,
                 source=source,
             )
-        known_network_failure = isinstance(exc, httpx.TransportError)
-        return ProviderExecutionError(
-            kind="provider_error",
+        return fallback_execution_error(
+            exc,
             provider_name=provider_name,
             model_name=model_name,
-            message="provider request failed",
-            retryable=True if known_network_failure else False,
-            fallback_allowed=True,
-            details={
-                "source": source,
-                "exception_type": type(exc).__name__,
-                **({"network_failure": True} if known_network_failure else {}),
-            },
-        )
-
-    @staticmethod
-    def _usage(response: object) -> ProviderTokenUsage | None:
-        usage = getattr(response, "usage_metadata", None)
-        if usage is None:
-            return None
-        input_tokens = usage_int(getattr(usage, "prompt_token_count", None))
-        candidates = usage_int(getattr(usage, "candidates_token_count", None))
-        thoughts = usage_int(getattr(usage, "thoughts_token_count", None))
-        # Google reports thinking separately; an incomplete output total stays unknown.
-        output_tokens = candidates + thoughts if candidates is not None and thoughts is not None else None
-        cache_read = usage_int(getattr(usage, "cached_content_token_count", None))
-        if all(value is None for value in (input_tokens, output_tokens, cache_read)):
-            return None
-        # ``prompt_token_count`` is the inclusive prompt total (``cached_content_token_count``
-        # is a component of it), so it is stored as-is and the uncached bucket is the
-        # remainder: without it every Google turn would price its input at zero (the
-        # provider reports no separate uncached count).
-        uncached = input_tokens - cache_read if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else None
-        return ProviderTokenUsage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read,
-            uncached_input_tokens=uncached,
+            source=source,
+            network_error=isinstance(exc, httpx.TransportError),
         )
 
     @staticmethod
@@ -538,10 +543,10 @@ class GoogleGenAIProvider:
                     details={"source": "api", "reason": "malformed_response"},
                 )
             raw_finish = getattr(candidates[0], "finish_reason", None)
-            finish = self._finish_reason(raw_finish)
+            finish = GoogleWireCodec.done_reason(raw_finish)
             # Missing and empty SDK values are not provider-reported reasons;
             # unknown enum values remain reported and are retained for diagnostics.
-            finish_reason_reported = self._finish_reason_reported(raw_finish)
+            finish_reason_reported = GoogleWireCodec.finish_reason_reported(raw_finish)
             tool_calls: list[ToolCall] = []
             reasoning_parts: list[str] = []
             text_parts: list[str] = []
@@ -566,7 +571,7 @@ class GoogleGenAIProvider:
                 tool_calls=tuple(tool_calls),
                 output="".join(text_parts),
                 reasoning="".join(reasoning_parts) or None,
-                usage=self._usage(response),
+                usage=GoogleWireCodec.usage(response),
                 done_reason=finish,
                 finish_reason_reported=finish_reason_reported,
                 metadata=metadata or None,
@@ -618,9 +623,8 @@ class GoogleGenAIProvider:
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         provider_name = request.provider_name or self.name
         model_name = request.model_name or "unknown"
-        if request.abort_signal is not None and request.abort_signal.cancelled:
-            yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
-            yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+        if abort_signal_cancelled(request):
+            yield from cancelled_events()
             return
         try:
             system, contents = self._contents(request)
@@ -638,13 +642,13 @@ class GoogleGenAIProvider:
                     timeout_seconds=self._timeout(),
                     provider_name=provider_name,
                     model_name=model_name,
-                    aborted=lambda: request.abort_signal is not None and request.abort_signal.cancelled,
+                    aborted=lambda: abort_signal_cancelled(request),
                 )
             ) as stream:
                 for chunk in stream:
-                    if request.abort_signal is not None and request.abort_signal.cancelled:
+                    if abort_signal_cancelled(request):
                         break
-                    observed_usage = self._usage(chunk)
+                    observed_usage = GoogleWireCodec.usage(chunk)
                     if observed_usage is not None:
                         latest_usage = observed_usage
                     parts.extend(self._parts(chunk))
@@ -653,15 +657,14 @@ class GoogleGenAIProvider:
                     if isinstance(candidates, list) and candidates:
                         saw_candidates = True
                     candidate_finish = getattr(candidates[0], "finish_reason", None) if isinstance(candidates, list) and candidates else None
-                    if self._finish_reason_reported(candidate_finish):
+                    if GoogleWireCodec.finish_reason_reported(candidate_finish):
                         raw_finish = candidate_finish
                     for stream_event in self._events_from_response(chunk, request, ordinal_offset=tool_call_ordinal):
                         yield stream_event
                         if stream_event.kind == "tool_call_end":
                             tool_call_ordinal += 1
-            if request.abort_signal is not None and request.abort_signal.cancelled:
-                yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
-                yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+            if abort_signal_cancelled(request):
+                yield from cancelled_events()
                 return
             if raw_finish is None:
                 if not saw_candidates:
@@ -683,7 +686,7 @@ class GoogleGenAIProvider:
                     fallback_allowed=True,
                     details={"source": "stream", "reason": "missing_terminal_event"},
                 )
-            done_reason = self._finish_reason(raw_finish)
+            done_reason = GoogleWireCodec.done_reason(raw_finish)
             raw_token = str(getattr(raw_finish, "name", raw_finish))
             stream_metadata = self._signed_parts_metadata(parts)
             if done_reason == "unknown":

@@ -9,24 +9,30 @@ other; the wire framing (JSON-RPC messages) stays in ``http.py``.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Final
 
 from voidcode import __version__
 from voidcode.core.artifacts import ArtifactError
-from voidcode.core.storage.store import SessionRecord, StoredEvent
+from voidcode.core.storage.store import (
+    InvalidRevision,
+    SessionRecord,
+    StaleRevision,
+    StoredEvent,
+    UnknownConfirmation,
+    UnknownContinuation,
+    UnknownSession,
+    UnknownWorkspace,
+)
 from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.transcript import encode_transcript_entry
 
+from .models import SESSION_ID_MAX_LENGTH, SESSION_ID_PATTERN
+
 LAUNCH_PROTOCOL_VERSION = 1
 
-#: Follow cadence for live event streams. Measured 2026-10-26: at 1.0 s a
-#: committed progress event waited 0.1-0.9 s (mean ~0.5 s) before delivery,
-#: which makes token streaming feel dead. 0.1 s bounds that wait at ~50 ms
-#: mean for one cheap indexed tail read per idle stream — no wake-up channel
-#: needed until stream counts grow.
-FOLLOW_POLL_SECONDS = 0.1
 FOLLOW_TAIL_LIMIT = 100
 
 
@@ -118,8 +124,8 @@ def health_payload(
     revision_id: str,
     stage: str,
     workspace: str,
-    generation: int,
-    upgrade_id: str | None,
+    generation: int = 1,
+    upgrade_id: str | None = None,
     model: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -137,8 +143,11 @@ def health_payload(
     }
 
 
+_SESSION_ID_RE: Final = re.compile(SESSION_ID_PATTERN)
+
+
 def validated_session_id(value: str) -> str:
-    if not value or "/" in value or "\0" in value or len(value) > 128:
+    if not isinstance(value, str) or len(value) > SESSION_ID_MAX_LENGTH or _SESSION_ID_RE.fullmatch(value) is None:
         raise ValueError("session_id must be a non-empty string without '/' or NUL within 128 characters")
     return value
 
@@ -150,18 +159,17 @@ def core_error_status(error: Exception) -> tuple[int, str | None]:
     are 409 ``stale_revision``, unknown sessions are 404, anything else the
     core raises visibly is 400, and the rest is a 500 with no invented detail.
     """
-    message = str(error)
     # A client acting on a stale or missing displayed revision is refused before
     # any dispatch: the refusal is visible and never retried automatically.
-    if "is stale; refresh the catalog" in message:
+    if isinstance(error, StaleRevision):
         return 409, "stale_revision"
-    if "expected_revision must be the revision the client displayed" in message:
+    if isinstance(error, InvalidRevision):
         return 400, "invalid_params"
     if isinstance(error, FileNotFoundError):
         return 404, "not_found"
     if isinstance(error, ArtifactError):
         return 400, "invalid_params"
-    if isinstance(error, KeyError) or "unknown session" in message or "does not exist" in message:
+    if isinstance(error, (KeyError, UnknownSession, UnknownConfirmation, UnknownContinuation, UnknownWorkspace)):
         return 404, None
     if isinstance(error, PermissionError):
         return 403, None

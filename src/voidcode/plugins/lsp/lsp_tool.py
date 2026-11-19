@@ -17,7 +17,7 @@ from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ProviderAbortSignal
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import ArtifactServices, PluginServices
 from voidcode.sdk.tools import (
     OpaqueToolBody,
     OutputBounds,
@@ -404,7 +404,7 @@ class LspTool:
         self,
         response: LspResponse,
         *,
-        services: PluginServices,
+        services: ArtifactServices,
         operation: LspOperation,
         file_path: str,
         workspace_root: Path,

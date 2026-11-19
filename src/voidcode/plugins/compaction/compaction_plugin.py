@@ -28,10 +28,11 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from voidcode.capabilities.plugin_state import PluginStateStore
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import PluginFact, RunFinishedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import HistoryServices, PluginServices, StateServices, ToolServices
 from voidcode.sdk.tools import ToolEffect
 from voidcode.sdk.transcript import ContextRecord
 
@@ -58,7 +59,6 @@ COMPACTED_FACT_TYPE = "plugin.compaction.context_compacted"
 _MAX_EVENT_PAGES = 3
 _EVENT_PAGE_SIZE = 200
 
-_STATE_KEYS: frozenset[str] = frozenset({"schema_version", "cursor_sequence", "last_projection"})
 _PROJECTION_KEYS: frozenset[str] = frozenset({"covered_from_sequence", "covered_to_sequence", "covered_bytes", "dropped_bytes", "summary_kind"})
 _SUMMARY_KINDS: frozenset[str] = frozenset({"deterministic", "model"})
 
@@ -103,12 +103,7 @@ class CompactionState:
         }
 
     @staticmethod
-    def from_payload(payload: Mapping[str, object] | None) -> CompactionState:
-        if payload is None:
-            return CompactionState()
-        unknown = sorted(set(payload) - _STATE_KEYS)
-        if unknown:
-            raise ValueError(f"compaction state has unsupported field: {unknown[0]}")
+    def from_payload(payload: Mapping[str, object]) -> CompactionState:
         version = payload.get("schema_version", SCHEMA_VERSION)
         if version != SCHEMA_VERSION:
             raise ValueError(f"compaction state schema_version must be {SCHEMA_VERSION}")
@@ -147,9 +142,16 @@ def _projection_from_payload(raw: object) -> LastProjection | None:
     )
 
 
-def _load_state(services: PluginServices) -> tuple[CompactionState, int]:
-    stored, version = services.get_state("session")
-    return CompactionState.from_payload(stored), version
+def _store(services: StateServices) -> PluginStateStore[CompactionState]:
+    """This plugin's session-state store: strict keys, typed parse, CAS save."""
+    return PluginStateStore(
+        services,
+        keys=frozenset({"schema_version", "cursor_sequence", "last_projection"}),
+        parse=CompactionState.from_payload,
+        serialize=CompactionState.to_payload,
+        empty=CompactionState,
+        unknown=lambda extra: f"compaction state has unsupported field: {extra[0]}",
+    )
 
 
 # --- Configuration (strict) ---
@@ -201,12 +203,12 @@ class ProjectionOutcome:
         }
 
 
-def _read_window(services: PluginServices) -> tuple[tuple[ContextRecord, ...], bool]:
+def _read_window(services: HistoryServices) -> tuple[tuple[ContextRecord, ...], bool]:
     history = services.read_context_history(limit=_MAX_EVENT_PAGES * _EVENT_PAGE_SIZE)
     return history.records, history.reached_end
 
 
-def _replacement_text(services: PluginServices, plan) -> str:
+def _replacement_text(services: ToolServices, plan) -> str:
     """The replacement: the model's summary, or a loud failure when it cannot be produced.
 
     A failed, blank, or unshrinkable answer raises ``ValueError``: there is no second lane to
@@ -224,7 +226,7 @@ def _replacement_text(services: PluginServices, plan) -> str:
     return replacement
 
 
-def _measured_projection(services: PluginServices) -> tuple[int, int]:
+def _measured_projection(services: StateServices) -> tuple[int, int]:
     """Read back the projection the core just verified and take its measured accounting."""
     row = services.window_projection()
     if not isinstance(row, Mapping):
@@ -291,7 +293,7 @@ def apply_projection(
             summary_kind="model",
         ),
     )
-    services.replace_state(projected.to_payload(), expected_version=version)
+    _store(services).save(projected, version)
     services.stage_event(
         CONTEXT_COMPACTED_EVENT,
         {
@@ -332,7 +334,7 @@ def compaction_observer(
         measured = None if fact.usage is None else fact.usage.input_tokens
         if not should_compact(measured, budget):
             return
-    state, version = _load_state(services)
+    state, version = _store(services).load()
     events, reached_end = _read_window(services)
     if not events:
         return
@@ -411,7 +413,7 @@ class CompactCommand:
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         _ = invocation
-        state, version = _load_state(services)
+        state, version = _store(services).load()
         events, reached_end = _read_window(services)
         if not events:
             return _compact_receipt(

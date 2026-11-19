@@ -20,9 +20,9 @@ from voidcode.plugins.review.review_plugin import (
     resolve_review_target,
 )
 from voidcode.plugins.review.workspace_review import WorkspaceReviewService, git_status_snapshot
+from voidcode.sdk.child_schema import CHILD_PROMPT_MAX_BYTES
 from voidcode.sdk.commands import CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
 from voidcode.sdk.services import BudgetExhaustion, ChildOutcome
 from voidcode.sdk.tools import ToolEffect
 

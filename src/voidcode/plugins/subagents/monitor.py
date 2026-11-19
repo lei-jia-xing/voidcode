@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import ClassVar
 from uuid import uuid4
 
@@ -58,8 +59,72 @@ def _view_bytes(data: Mapping[str, object]) -> int:
     return len(json.dumps(data, allow_nan=False).encode("utf-8"))
 
 
-def _choice_id(**arguments: object) -> str:
-    return json.dumps(arguments, ensure_ascii=False)
+#: Fold marker for a truncated roster label; the row's own detail pages still carry every full field.
+_TRUNCATION_SUFFIX = "… [open full details]"
+
+
+def _escaped_bytes(text: str) -> int:
+    # Escaped payload length of one JSON string value, without its quotes;
+    # same encoder settings as _view_bytes, so per-character costs sum exactly.
+    return len(json.dumps(text).encode("utf-8")) - 2
+
+
+def _fold_label(label: str, payload_budget: int) -> str:
+    """Longest label prefix that fits the escaped-payload budget with the suffix.
+
+    ``payload_budget`` is the byte room for the label's escaped JSON payload; the
+    value quotes are already counted in the measured frame. JSON string escaping
+    is per-character, so the greedy walk over exact escaped costs keeps the
+    maximal fitting prefix.
+    """
+    used = _escaped_bytes(_TRUNCATION_SUFFIX)
+    end = 0
+    for char in label:
+        cost = _escaped_bytes(char)
+        if used + cost > payload_budget:
+            break
+        used += cost
+        end += 1
+    return label[:end] + _TRUNCATION_SUFFIX
+
+
+def _decode_offset(raw: str) -> int:
+    if not raw.isascii() or not raw.isdigit():
+        raise ValueError("invalid monitor selection")
+    return int(raw)
+
+
+@dataclass(frozen=True, slots=True)
+class _ChoiceId:
+    """Typed roster navigation target: a roster page, or one row's detail view.
+
+    The wire form is a plain ``roster:<offset>`` / ``target:<session_id>:<offset>``
+    string: no JSON-in-string, and session ids stay verbatim (the offset is split
+    off the last colon, so ids containing colons still round-trip).
+    """
+
+    roster_offset: int
+    target_session_id: str | None = None
+
+    def encode(self) -> str:
+        if self.target_session_id is None:
+            return f"roster:{self.roster_offset}"
+        return f"target:{self.target_session_id}:{self.roster_offset}"
+
+    @classmethod
+    def decode(cls, raw: str) -> _ChoiceId:
+        """Parse an encoded choice id; anything else is an invalid selection."""
+        kind, separator, rest = raw.partition(":")
+        if not separator:
+            raise ValueError("invalid monitor selection")
+        if kind == "roster":
+            return cls(roster_offset=_decode_offset(rest))
+        if kind == "target":
+            session_id, offset_separator, offset = rest.rpartition(":")
+            if not session_id or not offset_separator:
+                raise ValueError("invalid monitor selection")
+            return cls(roster_offset=_decode_offset(offset), target_session_id=session_id)
+        raise ValueError("invalid monitor selection")
 
 
 def _non_negative(raw: object, field: str) -> int:
@@ -96,18 +161,18 @@ def _roster(nodes: tuple[DescendantNode, ...], *, offset: int = 0) -> CommandPre
 
     options: list[dict[str, object]] = []
     if offset:
-        options.append({"id": _choice_id(roster_offset=0), "label": "Back to first roster page"})
+        options.append({"id": _ChoiceId(roster_offset=0).encode(), "label": "Back to first roster page"})
 
     def _data(rows: list[dict[str, object]]) -> dict[str, object]:
         return {"options": rows, "action": MONITOR_COMMAND, "argument_name": "selection", "prepare_input": True, "style": None}
 
     def _next(index: int) -> list[dict[str, object]]:
-        return [{"id": _choice_id(roster_offset=index), "label": "Next roster page"}] if index < len(ordered) else []
+        return [{"id": _ChoiceId(roster_offset=index).encode(), "label": "Next roster page"}] if index < len(ordered) else []
 
     for index in range(offset, len(ordered)):
         node, level = ordered[index]
         row: dict[str, object] = {
-            "id": _choice_id(target_session_id=node.session_id, roster_offset=offset),
+            "id": _ChoiceId(roster_offset=offset, target_session_id=node.session_id).encode(),
             "label": _node_label(node, indent="  " * level),
         }
         following = _next(index + 1)
@@ -116,16 +181,11 @@ def _roster(nodes: tuple[DescendantNode, ...], *, offset: int = 0) -> CommandPre
                 break
             # Only an individually oversized row is folded. Full, unchanged fields
             # remain available in the detail pages reached by this exact selector.
-            label = str(row["label"])
-            low, high = 0, len(label)
-            while low < high:
-                end = (low + high + 1) // 2
-                row["label"] = label[:end] + "… [open full details]"
-                if _view_bytes(_data([*options, row, *following])) <= MAX_VIEW_DATA_BYTES:
-                    low = end
-                else:
-                    high = end - 1
-            row["label"] = label[:low] + "… [open full details]"
+            # The frame is measured once with an empty label; the folded payload is
+            # then sized with exact escaped-byte accounting instead of a re-serializing
+            # binary search.
+            frame = _view_bytes(_data([*options, {**row, "label": ""}, *following]))
+            row["label"] = _fold_label(str(row["label"]), MAX_VIEW_DATA_BYTES - frame)
             if _view_bytes(_data([*options, row, *following])) > MAX_VIEW_DATA_BYTES:
                 raise ValueError("monitor navigation exceeds the view-data budget")
         options.append(row)
@@ -269,10 +329,10 @@ def _render(arguments: Mapping[str, object], services: PluginServices) -> Comman
     if selection is not None:
         if not isinstance(selection, str):
             raise ValueError("monitor selection must be a string")
-        selected = json.loads(selection)
-        if not isinstance(selected, dict) or set(selected) - {"target_session_id", "roster_offset"}:
-            raise ValueError("invalid monitor selection")
-        arguments = {**arguments, **selected}
+        selected = _ChoiceId.decode(selection)
+        arguments = {**arguments, "roster_offset": selected.roster_offset}
+        if selected.target_session_id is not None:
+            arguments = {**arguments, "target_session_id": selected.target_session_id}
     target = arguments.get("target_session_id")
     roster_offset = _non_negative(arguments.get("roster_offset"), "roster_offset")
     if target is None:

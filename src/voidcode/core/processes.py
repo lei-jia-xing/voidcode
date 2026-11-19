@@ -28,7 +28,7 @@ from uuid import uuid4
 from voidcode.sdk.observed_effects import ObservedEffects
 from voidcode.sdk.services import ProcessHandle, ProcessResult
 
-from .sandbox import SandboxBackend, build_plan, native_backend, read_effects_file, scratch_dir, with_effects_path, with_stdin
+from .sandbox import SandboxBackend, build_plan, native_backend, read_effects_file, scratch_dir
 
 #: Hard ceiling for one stream's capture. The bound exists so a runaway command cannot exhaust the
 #: core's memory; a caller that wants more must spill the output itself.
@@ -427,6 +427,7 @@ class ProcessRegistry:
         """
         anchor = str(workspace.resolve()) if workspace is not None else str((cwd or Path.cwd()).resolve())
         child_cwd = str(cwd.resolve()) if cwd is not None else anchor
+        raw = None if stdin is None else (stdin.encode("utf-8") if isinstance(stdin, str) else bytes(stdin))
         helper_argv, helper_cwd, helper_env, frame = build_plan(
             sandbox,
             argv=tuple(command),
@@ -434,13 +435,8 @@ class ProcessRegistry:
             env_overrides={str(key): str(value) for key, value in dict(env or {}).items()},
             workspace=anchor,
             scratch=scratch_dir(anchor),
+            stdin=raw,
         )
-        if stdin is not None:
-            raw = stdin.encode("utf-8") if isinstance(stdin, str) else bytes(stdin)
-            try:
-                frame = with_stdin(frame, raw)
-            except ValueError as exc:
-                raise ValueError(f"sandbox run cannot carry stdin: invalid plan payload: {exc}") from exc
         started = time.monotonic()
         try:
             process = subprocess.Popen(
@@ -654,6 +650,8 @@ class ProcessRegistry:
         if sandbox is not None:
             anchor = str(workspace.resolve()) if workspace is not None else str((cwd or Path.cwd()).resolve())
             child_cwd = str(cwd.resolve()) if cwd is not None else anchor
+            # The supervisor's cumulative sidecar lives next to the logs (runtime-owned spool).
+            effects_path = stdout_path.parent / f"{identifier}.effects.json"
             helper_argv, helper_cwd, helper_env, frame = build_plan(
                 sandbox,
                 argv=tuple(command),
@@ -661,13 +659,11 @@ class ProcessRegistry:
                 env_overrides={str(key): str(value) for key, value in dict(env or {}).items()},
                 workspace=anchor,
                 scratch=scratch_dir(anchor),
+                effects_path=str(effects_path),
             )
             command = list(helper_argv)
             child_env: dict[str, str] | None = helper_env
             cwd = Path(helper_cwd)
-            # The supervisor's cumulative sidecar lives next to the logs (runtime-owned spool).
-            effects_path = stdout_path.parent / f"{identifier}.effects.json"
-            frame = with_effects_path(frame, str(effects_path))
         else:
             child_env = None if env is None else {**os.environ, **{str(key): str(value) for key, value in env.items()}}
         if service:

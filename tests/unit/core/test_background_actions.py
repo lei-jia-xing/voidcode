@@ -1,7 +1,6 @@
 """Core regressions for owner background actions and idempotent child spawn.
 
-Background actions are plugin-owned drivers claimed from the shared continuations
-table (discriminated by the core-controlled `source` column, never `payload.kind`).
+Background actions are plugin-owned drivers claimed from their own table.
 Each driver `invoke` commits under a fresh lease, so progress is durable action by
 action; the driver never takes the session run lock, so the foreground stays usable.
 Keyed spawns map (parent, owner, key) to one child: retries return it, differing
@@ -22,7 +21,8 @@ import pytest
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
-from voidcode.core.storage.store import BACKGROUND_ACTION_SOURCE
+from voidcode.core.events import EventType
+from voidcode.core.storage.store import EventDraft
 
 PLUGIN_ID = "background-fixture"
 
@@ -287,8 +287,8 @@ def test_stale_claim_reports_interrupted_and_blocks_nothing(tmp_path: Path) -> N
         # live driver is signalled away, so the row stands alone with no driver in this process.
         with core.store._lock:  # noqa: SLF001 - the test simulates a dead claim holder
             core.store._connection.execute(
-                "UPDATE continuations SET status='claimed', payload_json=? WHERE continuation_id=?",
-                (json.dumps({"claim": {"pid": 99999999, "core": "dead"}, "action": {"note": "doomed"}}), doomed),
+                "UPDATE background_actions SET status='claimed', claim_json=? WHERE action_id=?",
+                (json.dumps({"pid": 99999999, "core": "dead"}), doomed),
             )
             core.store._connection.commit()
         with core._background_cond:  # noqa: SLF001 - the test simulates a dead claim holder
@@ -322,6 +322,26 @@ def test_keyed_spawn_returns_one_child_and_refuses_a_differing_spec(tmp_path: Pa
         assert core.join_child("parent", first, timeout_seconds=30).status == "completed"
 
 
+def test_keyed_retry_on_notify_less_spawn_fact_fails_loudly(tmp_path: Path) -> None:
+    """A spawn fact without notify_on_completion is corrupt: KeyError, never silent repair."""
+    with _server([_turn(output="child done")]) as server:
+        core = _open(tmp_path, server)
+        core.create_session("parent")
+        child = core.spawn_child("parent", "child work", owner=PLUGIN_ID, idempotency_key="node-repair")
+        facts = [
+            e.payload for e in core.store.events("parent") if e.event_type == EventType.CHILD_SPAWNED and e.payload.get("child_session_id") == child
+        ]
+        assert len(facts) == 1
+        keyless = dict(facts[0])
+        del keyless["notify_on_completion"]
+        before = len(core.store.events("parent"))
+        core._commit_control_event("parent", EventDraft(EventType.CHILD_SPAWNED, "kernel", "plugin", keyless))
+        assert len(core.store.events("parent")) == before + 1
+        with pytest.raises(KeyError, match="notify_on_completion"):
+            core.spawn_child("parent", "child work", owner=PLUGIN_ID, idempotency_key="node-repair")
+        assert len(core.store.events("parent")) == before + 1, "no repair commit appended"
+
+
 def test_delayed_background_spawn_keeps_its_original_root_authorization(tmp_path: Path) -> None:
     with _server([_turn(output="first root done"), _turn(output="new unlimited root done")]) as server:
         core = _open(tmp_path, server)
@@ -333,19 +353,14 @@ def test_delayed_background_spawn_keeps_its_original_root_authorization(tmp_path
         assert core.store.root_budget_state(original_root_id) == (1, 1)
 
         action_id = "delayed-origin-action"
-        core.store.enqueue_continuation(
+        core.store.enqueue_background_action(
             action_id,
             PLUGIN_ID,
             "parent",
-            BACKGROUND_ACTION_SOURCE,
-            first.run_id,
             core.revision_id,
-            {
-                "action": {"note": "spawn-after-delay", "delay_seconds": 3.0},
-                "root_action_budget": 1,
-            },
+            {"note": "spawn-after-delay", "delay_seconds": 3.0},
             root_id=original_root_id,
-            role="system",
+            root_action_budget=1,
         )
         core._notify_background_loop()  # noqa: SLF001 - seed the durable queue directly to isolate recovery.
         _wait_for(lambda: "first:spawn-after-delay" in _marks(core, "parent"), what="background delay point")

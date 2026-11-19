@@ -9,7 +9,7 @@ from uuid import uuid4
 from websockets.sync.client import connect
 from websockets.typing import Origin, Subprotocol
 
-from voidcode.sdk.rpc import RPC_SUBPROTOCOL
+from voidcode.transport.models import RPC_SUBPROTOCOL
 
 
 def request(base: str, method: str, params: object = None, *, token: str | None = None, origin: str | None = None) -> tuple[int, bytes]:

@@ -13,8 +13,8 @@ from voidcode.plugins.user_shell.user_shell import login_shell_args, parse_shell
 from voidcode.plugins.user_shell.user_shell_plugin import ShellCommand
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessResult
+from voidcode.sdk.tools import TOOL_OUTPUT_BYTES
 
 
 def test_parse_shell_escape_detects_bang_prefix() -> None:

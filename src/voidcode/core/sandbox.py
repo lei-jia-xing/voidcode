@@ -87,6 +87,8 @@ def build_plan(
     env_overrides: dict[str, str],
     workspace: str,
     scratch: str,
+    stdin: bytes | None = None,
+    effects_path: str | None = None,
 ) -> tuple[tuple[str, ...], str, dict[str, str], bytes]:
     """Build helper argv + cwd + explicit full env + framed stdin payload for one exec.
 
@@ -110,27 +112,11 @@ def build_plan(
         "argv": list(argv),
         "cwd": cwd,
         "env": env,
-        "stdin_b64": None,
-        "effects_path": None,
+        "stdin_b64": None if stdin is None else base64.b64encode(stdin).decode("ascii"),
+        "effects_path": effects_path,
     }
     frame = json.dumps(payload, allow_nan=False).encode("utf-8")
     return ((backend.helper_path, "exec"), workspace, env, len(frame).to_bytes(8, "big") + frame)
-
-
-def with_stdin(frame: bytes, stdin: bytes) -> bytes:
-    """Merge caller stdin bytes into a framed plan payload (stdin_b64), re-frame."""
-    payload = json.loads(frame[8:].decode("utf-8"))
-    payload["stdin_b64"] = base64.b64encode(stdin).decode("ascii")
-    raw = json.dumps(payload).encode("utf-8")
-    return len(raw).to_bytes(8, "big") + raw
-
-
-def with_effects_path(frame: bytes, effects_path: str) -> bytes:
-    """Point the plan payload at an explicit supervisor sidecar, re-frame."""
-    payload = json.loads(frame[8:].decode("utf-8"))
-    payload["effects_path"] = effects_path
-    raw = json.dumps(payload).encode("utf-8")
-    return len(raw).to_bytes(8, "big") + raw
 
 
 def scratch_dir(workspace: str) -> str:

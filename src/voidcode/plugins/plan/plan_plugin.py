@@ -26,7 +26,7 @@ from typing import ClassVar
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import ContextContribution
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import PluginServices, StateServices
 from voidcode.sdk.tools import ToolEffect
 
 SCHEMA_VERSION = 1
@@ -74,7 +74,7 @@ class PlanState:
         return {"schema_version": SCHEMA_VERSION, "active": self.active}
 
 
-def _load(services: PluginServices) -> tuple[PlanState, int]:
+def _load(services: StateServices) -> tuple[PlanState, int]:
     state_data, version = services.get_state("session")
     return PlanState.from_payload(state_data), version
 

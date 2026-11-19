@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import ClassVar, Literal
 
 from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES, render_stored_artifact_page
+from voidcode.sdk.child_schema import CHILD_PROMPT_MAX_BYTES
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
 from voidcode.sdk.resources import ResourceReadCaller
-from voidcode.sdk.services import ChildOutcome, PluginServices
+from voidcode.sdk.services import ArtifactServices, ChildOutcome, PluginServices
 from voidcode.sdk.tools import TextOutput, ToolEffect
 
 from .workspace_review import GitStatusSnapshot, ReviewFileDiff, WorkspaceReviewService, git_status_snapshot
@@ -171,7 +171,7 @@ def _data(target: ReviewTarget, child_id: str, outcome: ChildOutcome) -> dict[st
     return data
 
 
-def _first_output_page(services: PluginServices, context: ToolContext, digest: str) -> tuple[str, str, int | None]:
+def _first_output_page(services: ArtifactServices, context: ToolContext, digest: str) -> tuple[str, str, int | None]:
     """Render the first bounded page of output bytes: content, immutable URI, continuation."""
     uri = f"artifact://{digest}"
     caller = ResourceReadCaller(
@@ -232,7 +232,7 @@ def _completed_result(
     target: ReviewTarget,
     child_id: str,
     outcome: ChildOutcome,
-    services: PluginServices,
+    services: ArtifactServices,
     context: ToolContext,
 ) -> CommandResult:
     data = _data(target, child_id, outcome)
@@ -275,7 +275,7 @@ def _outcome_result(
     target: ReviewTarget,
     child_id: str,
     outcome: ChildOutcome,
-    services: PluginServices,
+    services: ArtifactServices,
     context: ToolContext,
 ) -> CommandResult:
     if outcome.status == "completed":

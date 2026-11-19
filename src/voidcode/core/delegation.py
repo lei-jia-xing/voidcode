@@ -7,27 +7,28 @@ durable facts, notice delivery, and continuation merging.
 from __future__ import annotations
 
 import hashlib
+import random
 import sqlite3
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import CancelledError
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
-from ..sdk.child_schema import canonical_result_schema, compose_child_prompt
+from ..sdk.child_schema import CHILD_PROMPT_MAX_BYTES, canonical_result_schema, compose_child_prompt
 from ..sdk.codec import decode_provider_result
 from ..sdk.json_values import json_wire_object
-from ..sdk.limits import CHILD_PROMPT_MAX_BYTES
 from ..sdk.services import BudgetExhaustion, CancelSubtreeReceipt, ChildOutcome, ChildSendReceipt, ChildSessionSnapshot, DescendantNode
-from .child_history import spill_history
 from .events import CHILD_MESSAGE_OWNER, CHILD_OUTCOME_RECEIPT_OWNER, EventType, child_completion_notice_id
+from .history_renderer import iter_event_blocks
 from .storage.store import (
     MAX_CHILD_LABEL_BYTES,
     ContinuationRecord,
     EventDraft,
     FencedSubtree,
+    SequenceConflict,
     SessionRecord,
     SqliteStore,
     StagedContinuationDraft,
@@ -49,9 +50,15 @@ DELEGATION_MAX_DEPTH = 3
 CHILD_INLINE_OUTPUT_BYTES = 32 * 1024
 #: Preview carried by a completion notice when the output is artifact-backed.
 CHILD_OUTPUT_PREVIEW_BYTES = 4 * 1024
-#: A publication waits for the parent's next commit. A long provider turn can be quiet for a
-#: while; beyond this the terminal child session is left for the startup recovery pass.
-CHILD_PUBLICATION_WAIT_SECONDS = 30 * 60
+#: Max concurrent child drivers and notice deliveries on the shared pool.
+_DRIVER_MAX_WORKERS = 32
+#: Child-fact publication retries a moved parent tip this many times before leaving
+#: the terminal child session for the startup recovery pass. Backoff between attempts
+#: is uniform(0, 50ms), (0, 100ms), … capped at 2s; anything that is not a tip race
+#: fails fast instead of spinning.
+_CHILD_FACT_MAX_ATTEMPTS = 8
+_CHILD_FACT_BACKOFF_BASE_SECONDS = 0.05
+_CHILD_FACT_BACKOFF_CAP_SECONDS = 2.0
 
 
 def _utf8_preview(text: str, limit: int) -> str:
@@ -126,11 +133,15 @@ class DelegationManager:
         #: lifecycle lock and lock order never inverts.
         self._lifecycle_lock = threading.Lock()
         self._cancel_fences: dict[str, int] = {}
+        #: One bounded pool for child drivers and notice deliveries instead of bare
+        #: threads. close() cancels queued work; in-flight drivers run to completion.
+        self._driver_executor = ThreadPoolExecutor(max_workers=_DRIVER_MAX_WORKERS, thread_name_prefix="DelegationDriver")
 
     def close(self) -> None:
         with self._child_finished_lock:
             self._child_finished_generation += 1
             self._child_finished_lock.notify_all()
+        self._driver_executor.shutdown(wait=False, cancel_futures=True)
 
     def notify_child_state_changed(self) -> None:
         """Wake first-ready waiters after a durable child or parent-input transition."""
@@ -305,6 +316,7 @@ class DelegationManager:
                 caller_chain=chain,
                 admission_guard=admission_guard,
             )
+            self.core.notify_commit()
         except FencedSubtree as exc:
             raise PermissionError(str(exc)) from exc
         except sqlite3.IntegrityError:
@@ -381,8 +393,8 @@ class DelegationManager:
     ) -> str:
         """Fingerprint stable child spec and captured root authorization, never usage counters.
 
-        An undeclared schema is omitted (not hashed as null) so pre-change keyed
-        retries keep matching; a declared schema alters the fingerprint.
+        The schema slot is always present — a declared schema or an explicit null —
+        so declared and undeclared retries never collide.
         """
         spec: dict[str, object] = {
             "prompt": prompt,
@@ -393,15 +405,15 @@ class DelegationManager:
             "root_action_budget": root_action_budget,
             "label": label,
             "notify_on_completion": notify_on_completion,
+            "result_schema": None if result_schema is None else json_wire_object(result_schema),
         }
-        if result_schema is not None:
-            spec["result_schema"] = json_wire_object(result_schema)
         encoded = canonical_json(spec)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _spawned_fact(self, parent_session_id: str, child_id: str) -> dict[str, object] | None:
         """The durable spawn fact for one child, if the crash window already committed it."""
-        for event in reversed(self.core.store.events(parent_session_id)):
+        spawns = self.core.store.events_by_types(parent_session_id, (EventType.CHILD_SPAWNED,))
+        for event in reversed(spawns):
             if event.event_type == EventType.CHILD_SPAWNED and event.payload.get("child_session_id") == child_id:
                 return dict(event.payload)
         return None
@@ -502,16 +514,16 @@ class DelegationManager:
                 raise ValueError("spawn idempotency key was already used with a different root action authorization")
             if fact.get("spec_hash") != spec_hash:
                 raise ValueError("spawn idempotency key was already used with a different spec")
+            if "notify_on_completion" not in fact:
+                raise KeyError(f"spawn fact for child {child_id!r} is missing notify_on_completion")
             pristine = child.status == "idle" and child.run_id is None
-            fact_missing_notify = "notify_on_completion" not in fact
-            if pristine or fact_missing_notify:
+            if pristine:
                 repaired: dict[str, object] = dict(fact)
                 repaired["notify_on_completion"] = notify_on_completion
                 self.core._commit_control_event(
                     parent_session_id,
                     EventDraft(EventType.CHILD_SPAWNED, "kernel", "plugin", repaired),
                 )
-            if pristine:
                 # Fresh process repairing the crash window; the start claim itself is
                 # atomic, so a retry in the spawning process never starts a second driver.
                 self._start_child_run(parent_session_id, child_id, prompt, max_steps, label, notify_on_completion)
@@ -566,7 +578,7 @@ class DelegationManager:
         label: str,
         notify_on_completion: bool,
     ) -> bool:
-        """Start one child driver thread; False when this process already drives it.
+        """Submit one child driver run; False when this process already drives it.
 
         The check-and-claim is atomic under the publication lock, so concurrent retries
         of one key start exactly one initial run. Follow-up runs go through `send_child`
@@ -576,13 +588,7 @@ class DelegationManager:
             if child_id in self._started_children:
                 return False
             self._started_children.add(child_id)
-        thread = threading.Thread(
-            target=self._run_child,
-            args=(parent_session_id, child_id, prompt, max_steps, label, notify_on_completion),
-            name=f"CoreChild-{child_id[:8]}",
-            daemon=True,
-        )
-        thread.start()
+        self._driver_executor.submit(self._run_child, parent_session_id, child_id, prompt, max_steps, label, notify_on_completion)
         return True
 
     def _child_tool_scope(self, parent: SessionRecord, requested: tuple[str, ...] | None) -> tuple[str, ...] | None:
@@ -1104,6 +1110,7 @@ class DelegationManager:
                     continuation_id=message_id,
                     caller_chain=chain,
                 )
+                self.core.notify_commit()
             except FencedSubtree:
                 # The fence won the race: the message stays queued and the
                 # canceller's disarm sweep owns it. The receipt honestly says queued.
@@ -1113,13 +1120,7 @@ class DelegationManager:
             else:
                 # The receipt names the run the store actually claimed, never an unused token.
                 delivery, started_run = "started", claimed.run_id
-        thread = threading.Thread(
-            target=self._deliver_child_messages,
-            args=(child_id, message_id),
-            name=f"CoreChildDeliver-{child_id[:8]}",
-            daemon=True,
-        )
-        thread.start()
+        self._driver_executor.submit(self._deliver_child_messages, child_id, message_id)
         status = "running" if delivery == "started" else self.core.store.session(child_id).status
         self.notify_child_state_changed()
         return ChildSendReceipt(
@@ -1234,7 +1235,8 @@ class DelegationManager:
 
         latest_outcome: ChildOutcome | None = None
         if parent_session_id is not None:
-            for event in reversed(self.core.store.events(parent_session_id)):
+            finished = self.core.store.events_by_types(parent_session_id, (EventType.CHILD_FINISHED,))
+            for event in reversed(finished):
                 payload = event.payload
                 if event.event_type != EventType.CHILD_FINISHED or payload.get("child_session_id") != child_session_id:
                     continue
@@ -1450,6 +1452,7 @@ class DelegationManager:
                 checkpoint_kind="terminal",
                 checkpoint_payload={"step": 0, "stop_cause": "owner_cancel"},
             )
+            self.core.notify_commit()
         except StoreConflict:
             return False
         self.notify_child_state_changed()
@@ -1493,10 +1496,9 @@ class DelegationManager:
         if stop_payload is None and child.run_id == "":
             # The reserved-claim bookkeeping marker ("") is not a real run, so the
             # run-scoped stop lookup cannot see it; read the claim event itself.
-            for event in reversed(self.core.store.events(child.session_id)):
-                if event.event_type == EventType.RUN_INTERRUPTED:
-                    stop_payload = event.payload
-                    break
+            stop_event = self.core.store.latest_event(child.session_id, EventType.RUN_INTERRUPTED)
+            if stop_event is not None:
+                stop_payload = stop_event.payload
         stop_cause = None if stop_payload is None else stop_payload.get("stop_cause")
         if not isinstance(stop_cause, str):
             stop_cause = None
@@ -1610,19 +1612,7 @@ class DelegationManager:
                 # never double-commit; retry paths observe the terminal child again.
                 return
             resolved_label = label or self._child_label(parent_session_id, child_id)
-            if notify:
-                try:
-                    notice_root_id: str | None = self._captured_child_root_id(child_id)
-                except StoreConflict:
-                    # A child born before captured root authorization carries no budget
-                    # identity to stamp on its notice, and a rootless notice can never
-                    # drain. Suppress the wake-up for this publication only: the durable
-                    # fact still commits below, so the result stays readable via join and
-                    # wait. No migration, no fresh budget, no retry.
-                    notify = False
-                    notice_root_id = None
-            else:
-                notice_root_id = None
+            notice_root_id: str | None = self._captured_child_root_id(child_id) if notify else None
             notice_id = child_completion_notice_id(parent_session_id, child_id, run_id) if notify else None
             payload = self._child_fact_payload(
                 child_id,
@@ -1729,23 +1719,39 @@ class DelegationManager:
         else:
             payload["output"] = None
         try:
-            all_events = self.core.store.events(child_id)
+            run_type_events = self.core.store.events_by_types(child_id, (EventType.RUN_COMPLETED, EventType.RUN_FAILED, EventType.RUN_INTERRUPTED))
             # The snapshot ends exactly at this run's genuine terminal event (prior history
             # included). A late control/progress row tagged with the same run id must not extend
             # an immutable snapshot past the terminal commit.
-            run_events = [event for event in all_events if event.run_id == run_id]
+            run_events = [event for event in run_type_events if event.run_id == run_id]
             terminal = self._terminal_child_event(run_events)
             if terminal is None:
                 raise ValueError(f"no genuine terminal event for child run {run_id!r}; refusing a whole-session snapshot")
-            events = tuple(event for event in all_events if event.sequence <= terminal[1].sequence)
-            payload["history"] = spill_history(
-                self.core._artifacts,
-                child_session_id=child_id,
-                run_id=run_id,
-                status=status,
-                label=label,
-                events=events,
+            items = self.core.store.events(child_id, limit=terminal[1].sequence)
+            header = (
+                f"# Child session {child_id}\n\n"
+                f"- run: {run_id or '(none)'}\n"
+                f"- status: {status}\n"
+                f"- label: {label or '(none)'}\n"
+                f"- events: {len(items)}\n"
+                f"- live view (paged): transcript://{child_id}\n\n"
             )
+            spill_id, spill = self.core._artifacts.start_spill("text/markdown; charset=utf-8", owner="core")
+            try:
+                spill.append(header.encode("utf-8"))
+                for index, block in enumerate(iter_event_blocks(items)):
+                    separator = "\n\n" if index else ""
+                    spill.append(f"{separator}{block}".encode())
+                sha256, size, media_type = self.core._artifacts.finish(spill_id)
+            except Exception:
+                self.core._artifacts.discard(spill_id)
+                raise
+            payload["history"] = {
+                "sha256": sha256,
+                "bytes": size,
+                "media_type": media_type,
+                "events": len(items),
+            }
         except Exception as exc:
             payload["history_error"] = f"{type(exc).__name__}: {exc}"
         return payload
@@ -1819,13 +1825,14 @@ class DelegationManager:
     ) -> bool:
         """Commit the fact and its notice atomically against the parent's fresh tip.
 
-        A parent streaming a provider turn does not commit, so the publisher waits for the next
-        real boundary instead of touching the parent's lock (a parent waiting in join must never
-        be able to deadlock a child). The durable terminal child session remains for recovery
-        if this process exits before the commit.
+        Only a moved tip is retried, with bounded attempts and jittered backoff; a
+        parent waiting in join must never be able to deadlock a child, so anything
+        else fails fast and the next join/recovery path retries. The durable terminal
+        child session remains for recovery if this process exits before the commit.
         """
-        deadline = time.monotonic() + CHILD_PUBLICATION_WAIT_SECONDS
-        while not self.core._closed and time.monotonic() < deadline:
+        for attempt in range(1, _CHILD_FACT_MAX_ATTEMPTS + 1):
+            if self.core._closed:
+                return False
             session = self.core.store.session(parent_session_id)
             if session.active_revision_id != self.core.revision_id:
                 return False
@@ -1842,13 +1849,19 @@ class DelegationManager:
                     checkpoint_payload=None,
                     staged_continuations=(notice,) if notice is not None else (),
                 )
+                self.core.notify_commit()
                 return True
+            except SequenceConflict:
+                if attempt >= _CHILD_FACT_MAX_ATTEMPTS or self.core._closed:
+                    return False
+                time.sleep(random.uniform(0.0, min(_CHILD_FACT_BACKOFF_CAP_SECONDS, _CHILD_FACT_BACKOFF_BASE_SECONDS * (2.0 ** (attempt - 1)))))
             except StoreConflict:
-                time.sleep(0.1)
+                return False
         return False
 
     def _child_fact(self, parent_session_id: str, child_id: str, run_id: str) -> dict[str, object] | None:
-        for event in reversed(self.core.store.events(parent_session_id)):
+        finished = self.core.store.events_by_types(parent_session_id, (EventType.CHILD_FINISHED,))
+        for event in reversed(finished):
             if event.event_type != EventType.CHILD_FINISHED or event.payload.get("child_session_id") != child_id:
                 continue
             fact_run = event.payload.get("run_id")
@@ -1860,7 +1873,8 @@ class DelegationManager:
 
     def _child_fact_event(self, parent_session_id: str, child_id: str, run_id: str) -> StoredEvent | None:
         """Find one exact terminal result event, never a current-session or latest-output substitute."""
-        for event in reversed(self.core.store.events(parent_session_id)):
+        finished = self.core.store.events_by_types(parent_session_id, (EventType.CHILD_FINISHED,))
+        for event in reversed(finished):
             if event.event_type != EventType.CHILD_FINISHED or event.payload.get("child_session_id") != child_id:
                 continue
             if event.payload.get("run_id") == run_id:
@@ -1880,7 +1894,8 @@ class DelegationManager:
         return self._child_fact(parent_session_id, child_id, run_id) is not None
 
     def _child_label(self, parent_session_id: str, child_id: str) -> str:
-        for event in reversed(self.core.store.events(parent_session_id)):
+        spawns = self.core.store.events_by_types(parent_session_id, (EventType.CHILD_SPAWNED,))
+        for event in reversed(spawns):
             if event.event_type == EventType.CHILD_SPAWNED and event.payload.get("child_session_id") == child_id:
                 label = event.payload.get("label")
                 return label if isinstance(label, str) else ""
@@ -1909,7 +1924,8 @@ class DelegationManager:
                 return bool(inner_map.get("notify_on_completion", True))
         parent = session.parent_session_id
         if parent is not None:
-            for event in reversed(self.core.store.events(parent)):
+            spawns = self.core.store.events_by_types(parent, (EventType.CHILD_SPAWNED,))
+            for event in reversed(spawns):
                 if event.event_type == EventType.CHILD_SPAWNED and event.payload.get("child_session_id") == session.session_id:
                     return bool(event.payload.get("notify_on_completion", False))
         return False
@@ -2046,6 +2062,7 @@ class DelegationManager:
                 execution.run_id,
                 revision_id=self.core.revision_id,
             )
+            self.core.notify_commit()
         except StoreConflict:
             return 0
         if not claimed:

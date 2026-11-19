@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
 import logging
 import mimetypes
@@ -27,11 +25,9 @@ from voidcode.sdk.client import (
     CommandCatalog,
     CommandResult,
     CoreClientError,
-    ErrorFrame,
     EventFrame,
     HeadFrame,
     HealthStatus,
-    RestartFrame,
     ResumeSpec,
     RunSpec,
     SessionClient,
@@ -40,18 +36,6 @@ from voidcode.sdk.client import (
 )
 from voidcode.sdk.codec import decode_tool_call, encode_tool_result
 from voidcode.sdk.commands import CommandDescriptor, ConfirmationRequest
-from voidcode.sdk.gates import (
-    ActivationCommitted,
-    ApprovalGate,
-    ApprovalRequested,
-    ConfirmationGate,
-    ConfirmationRequested,
-    GateChange,
-    GateDecided,
-    GateState,
-    RunTerminated,
-    reduce_gates,
-)
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.provider import ProviderMessage, ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.services import ArtifactPage
@@ -75,13 +59,26 @@ from voidcode.sdk.views import (
     is_read_only_load,
     parse_view_data,
 )
+from voidcode.tui.gates import (
+    ActivationCommitted,
+    ApprovalGate,
+    ApprovalRequested,
+    ConfirmationGate,
+    ConfirmationRequested,
+    GateChange,
+    GateDecided,
+    GateState,
+    RunTerminated,
+    reduce_gates,
+)
 
 from .artifact_viewer import ArtifactSource, InteractiveArtifactViewer, artifact_sources, png_dimensions, read_artifact_bytes
 from .composer import Composer, ComposerAction
 from .keys import Key, KeyDecoder
 from .region import TuiFrame
+from .session_follower import AbortToken, SessionFollower
 from .styles import SPINNER_FRAMES, Styles
-from .term import Terminal, clamp_row, copy_to_clipboard, crop_row_right, escape_terminal_controls, visible_width
+from .term import Terminal, TerminalCapabilityError, clamp_row, copy_to_clipboard, crop_row_right, escape_terminal_controls, visible_width
 from .views import (
     InteractiveApproval,
     InteractiveChoices,
@@ -108,6 +105,20 @@ logger = logging.getLogger(__name__)
 #: follows: the decoder buffers it, and the loop resolves it after this window.
 #: Matches the 50 ms window the pre-cutover client used.
 _ESCAPE_FLUSH_SECONDS = 0.05
+
+#: Spinner/live cadence while animations run; matches the pre-cutover 30 fps render loop.
+_SPINNER_TICK_SECONDS = 1 / 30
+#: Retry nap for instant-returning read doubles (tests); real terminals block in read_bytes.
+_INPUT_RETRY_SECONDS = 0.01
+
+#: Input-fd read slice: bounds each locked terminal read so kitty probe/upload
+#: queries never wait long for the input thread (concurrent readers would split replies).
+_INPUT_READ_SLICE_SECONDS = 0.05
+#: Idle queue-block ceiling: bounds the snooze when no timer is armed. Real
+#: events, input, and the shutdown wake return from queue.get immediately; the
+#: one-second ceiling bounds flag-only wakeups (SIGWINCH sets a flag the next
+#: render consumes) without rendering while idle.
+_MAX_IDLE_BLOCK_SECONDS = 1.0
 
 _BUILTIN_BANNER = (
     "███╗      ███╗",
@@ -611,7 +622,6 @@ class CoreTuiApp:
         self._session_cursors: dict[str, int] = {}
         #: Active tools in flight, keyed by invocation id (displayed in Live region).
         self._active_tools: dict[str, ActiveToolProgress] = {}
-        self._generation = 0
         #: Last known server identity/liveness from /api/health. The fence bit
         #: pauses dispatch; the identity triple detects a replaced server.
         self.upgrade: HealthStatus | None = None
@@ -619,16 +629,10 @@ class CoreTuiApp:
         #: the stream worker rearms it on every reconnect so each established
         #: stream reconciles exactly once (announced restart or silent drop).
         self._stream_ready = False
-        #: Monotonic serial: only the newest reconcile round may render, so two
-        #: overlapping health reads cannot reorder (generation alone is not enough).
-        self._reconcile_serial = 0
-        #: Highest reconcile serial already applied; older replies are dropped.
-        self._reconcile_applied = 0
         #: Request ids with a worker in flight (approval/confirmation/invoke):
         #: a held Enter/click while one is outstanding is ignored, never a
         #: second thread. Cleared on response, decided fact, or error.
         self._in_flight: set[str] = set()
-        self._interaction_serial = 0
         self.active_overlay: (
             InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveMarkdown | InteractiveArtifactViewer | None
         ) = None
@@ -641,8 +645,6 @@ class CoreTuiApp:
         self._live_input: dict[str, Any] | None = None
         #: Next monotonic deadline for the live-input refresh worker.
         self._live_refresh_at: float = 0.0
-        #: Serial of the latest live refresh: stale replies never touch the view.
-        self._live_serial: int = 0
         #: Retained live view while a confirmation overlays it: (overlay, live_input).
         self._suspended_live: tuple[Any, dict[str, Any] | None] | None = None
         # Native tool approval (core permission gate) is not a plugin Action
@@ -667,12 +669,21 @@ class CoreTuiApp:
         #: echoes it verbatim. Rendered overlays carry their own captured revision.
         self.catalog_revision: str = ""
         self.status_line = "Connecting to server..."
-        self._stream_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        #: Owns the current generation's session event connection so quit can wake a blocked idle read
-        #: before joining. A replacement stream closes this handle and installs its own; workers
-        #: capture their handle locally so a late detach from an old generation cannot clear it.
-        self._stream_cancel: StreamCancellation | None = None
+        self._follower = SessionFollower(
+            client=client,
+            queue=self.event_queue,
+            stop_event=self._stop_event,
+            cursors=self._session_cursors,
+            on_reconnect=self._note_stream_reconnect,
+        )
+        self._input_stop = threading.Event()
+        #: Serializes terminal input-fd reads: the input thread's slices vs kitty
+        #: probe/upload queries. Concurrent readers would split reply bytes.
+        self._terminal_read_lock = threading.Lock()
+        self._input_thread: threading.Thread | None = None
+        #: Footer context-window cache: (catalog_revision, provider, name, window).
+        self._footer_window_cache: tuple[str, str | None, str | None, int | None] | None = None
         #: Sessions whose welcome mark already committed; each empty visit shows it once.
         self._welcomed_sessions: set[str] = set()
         self._path_replacements: dict[str, str] = {}
@@ -684,6 +695,36 @@ class CoreTuiApp:
         self._latest_tool_artifacts: tuple[str, tuple[ArtifactSource, ...]] | None = None
         self._artifact_exports = tempfile.TemporaryDirectory(prefix="voidcode-artifact-")
         self._artifact_ack_deadline: tuple[str, str, float] | None = None
+
+    @property
+    def _generation(self) -> int:
+        """Session epoch, owned by the follower (read-only here)."""
+        return self._follower.epoch
+
+    @property
+    def _stream_thread(self) -> threading.Thread | None:
+        """Current stream thread, owned by the follower (read-only here)."""
+        return self._follower.thread
+
+    @property
+    def _stream_cancel(self) -> StreamCancellation | None:
+        """Current stream cancel handle, owned by the follower (read-only here)."""
+        return self._follower.cancel_handle
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    @running.setter
+    def running(self, value: bool) -> None:
+        self._running = value
+        if not value:
+            # Wake a main loop blocked in queue.get so tests/quit paths stopping
+            # externally never hang; the drain ignores the wake frame. Guarded
+            # for __init__ order (running is assigned before the queue exists).
+            pending = getattr(self, "event_queue", None)
+            if pending is not None:
+                pending.put_nowait({"kind": "wake"})
 
     def run(self) -> int:
         self.running = True
@@ -768,69 +809,114 @@ class CoreTuiApp:
             raise RuntimeError(f"Failed to fetch command catalog from server: {exc}") from exc
 
     def _start_event_stream(self) -> None:
-        generation = self._generation
-        session_id = self.session_id
-        previous, self._stream_cancel = self._stream_cancel, StreamCancellation()
-        if previous is not None:
-            previous.close()
-        cancel = self._stream_cancel
+        """Begin following the current session; the follower owns thread + cancel lifecycle."""
+        self._follower.start_stream(self.session_id)
 
-        async def stream_worker() -> None:
-            first_connection = True
-            while not self._stop_event.is_set() and generation == self._generation:
-                after_seq = self._session_cursors.get(session_id, 0)
-                if not first_connection:
-                    self._stream_ready = False
-                first_connection = False
-                try:
-                    async with contextlib.aclosing(
-                        self.client.events_stream(session_id, after_sequence=after_seq, follow=True, cancel=cancel)
-                    ) as stream:
-                        async for frame in stream:
-                            if self._stop_event.is_set() or generation != self._generation:
-                                return
-                            if isinstance(frame, HeadFrame):
-                                self.event_queue.put(
-                                    {
-                                        "kind": "stream_head",
-                                        "frame": frame,
-                                        "session_id": session_id,
-                                        "generation": generation,
-                                    }
-                                )
-                            elif isinstance(frame, EventFrame):
-                                self.event_queue.put({"kind": "stream_event", "frame": frame, "session_id": session_id, "generation": generation})
-                            elif isinstance(frame, RestartFrame):
-                                self.event_queue.put({"kind": "server_restart", "session_id": session_id, "generation": generation})
-                                break
-                            elif isinstance(frame, ErrorFrame):
-                                self.event_queue.put({"kind": "error", "error": frame.error, "session_id": session_id, "generation": generation})
-                                return
-                except asyncio.CancelledError:
-                    return
-                except Exception as exc:
-                    if self._stop_event.is_set() or generation != self._generation:
-                        return
-                    if isinstance(exc, CoreClientError) and exc.status_code in {400, 401, 403, 404}:
-                        self.event_queue.put({"kind": "error", "error": str(exc), "session_id": session_id, "generation": generation})
-                        return
-                    logger.debug("session event stream reconnecting after: %s", exc)
-                    await asyncio.sleep(1.0)
-
-        def run_worker() -> None:
-            asyncio.run(stream_worker())
-
-        self._stream_thread = threading.Thread(target=run_worker, daemon=True, name=f"CoreTuiStream{generation}")
-        self._stream_thread.start()
+    def _note_stream_reconnect(self) -> None:
+        """Clear stream readiness; the follower calls this on every reconnect."""
+        self._stream_ready = False
 
     def _main_loop(self) -> int:
-        while self.running:
-            self._drain_events()
-            self._process_input()
-            self._poll_live_input()
+        self._start_input_thread()
+        try:
             self._render_frame()
-            time.sleep(0.033)  # ~30 fps redraw loop
+            while self.running:
+                drained = self._drain_events(timeout=self._idle_timeout())
+                fired = self._fire_due_timers()
+                if drained or fired or self._animations_live():
+                    self._render_frame()
+        finally:
+            self._input_stop.set()
+            thread, self._input_thread = self._input_thread, None
+            if thread is not None:
+                thread.join(timeout=1.0)
         return 0
+
+    def _start_input_thread(self) -> None:
+        """Read terminal bytes on a daemon thread; the main loop stays in queue.get."""
+        self._input_stop.clear()
+
+        def worker() -> None:
+            while not self._input_stop.is_set():
+                try:
+                    with self._terminal_read_lock:
+                        chunk = self.terminal.read_bytes(timeout=_INPUT_READ_SLICE_SECONDS)
+                        replies = list(self.terminal.drain_kitty_replies())
+                except Exception:
+                    if self._input_stop.is_set():
+                        return
+                    time.sleep(_INPUT_RETRY_SECONDS)
+                    continue
+                if not chunk and not replies:
+                    if self._input_stop.is_set():
+                        return
+                    if self.terminal.eof:
+                        self.event_queue.put({"kind": "input_eof"})
+                        return
+                    time.sleep(_INPUT_RETRY_SECONDS)
+                    continue
+                if chunk:
+                    self.event_queue.put({"kind": "input", "chunk": chunk, "t": time.monotonic()})
+                for reply in replies:
+                    self.event_queue.put({"kind": "kitty_reply", "reply": reply})
+
+        self._input_thread = threading.Thread(target=worker, daemon=True, name="CoreTuiInput")
+        self._input_thread.start()
+
+    def _animations_live(self) -> bool:
+        return bool(self._run_active or self._stream_dispatch is not None or self._active_tools)
+
+    def _live_refresh_armed(self) -> bool:
+        """Whether a live refresh would fire now apart from its deadline (mirror of _poll_live_input's gates)."""
+        live = self._live_input
+        if live is None or self._live_refresh_at <= 0.0:
+            return False
+        if self.pending_approval is not None or not isinstance(self.active_overlay, (InteractiveChoices, InteractiveMarkdown)):
+            return False
+        return getattr(self.active_overlay, "revision_id", "") == str(live.get("revision", ""))
+
+    def _idle_timeout(self) -> float:
+        """Seconds until the next timer fire; fully idle parks on the liveness snooze."""
+        now = time.monotonic()
+        best: float | None = None
+
+        def consider(at: float) -> None:
+            nonlocal best
+            wait = max(0.0, at - now)
+            best = wait if best is None else min(best, wait)
+
+        if self._escape_flush_at:
+            consider(self._escape_flush_at)
+        if self._live_refresh_armed():
+            consider(self._live_refresh_at)
+        if self._artifact_ack_deadline is not None:
+            consider(self._artifact_ack_deadline[2])
+        if self._quit_armed_at != float("-inf"):
+            consider(self._quit_armed_at + 1.5)
+        if self._animations_live():
+            consider(now + _SPINNER_TICK_SECONDS)
+        # Fully idle: a long liveness snooze, not a spin. Real events, input,
+        # and the shutdown wake return from queue.get immediately; renders
+        # still happen only on drained frames, fired timers, or animations.
+        return min(best, _MAX_IDLE_BLOCK_SECONDS) if best is not None else _MAX_IDLE_BLOCK_SECONDS
+
+    def _fire_due_timers(self) -> bool:
+        """Run due timer actions; returns True when visible state may have changed."""
+        now = time.monotonic()
+        fired = False
+        self._poll_live_input()
+        if self._handle_input_bytes(b""):
+            fired = True
+        if self.terminal.resize_pending():
+            # A native resize arrived mid-park: force the render that consumes it.
+            fired = True
+        if self._quit_armed_at != float("-inf") and now >= self._quit_armed_at + 1.5:
+            self._quit_armed_at = float("-inf")
+            fired = True
+        deadline = self._artifact_ack_deadline
+        if deadline is not None and now >= deadline[2]:
+            fired = True
+        return fired
 
     def _poll_live_input(self) -> None:
         """Fire one live refresh when its deadline passes and the view still owns focus."""
@@ -858,6 +944,19 @@ class CoreTuiApp:
             return []
         return render_assistant_markdown(text, width, self.styles)
 
+    @staticmethod
+    def _lookup_footer_window(provider: str, name: str) -> int | None:
+        try:
+            from voidcode.capabilities.providers.native.model_catalog import static_catalog_metadata
+
+            meta = static_catalog_metadata(provider, name)
+            meta_win = meta.context_window if meta is not None else None
+            if not isinstance(meta_win, bool) and isinstance(meta_win, int) and meta_win > 0:
+                return meta_win
+        except Exception:
+            pass
+        return None
+
     def _footer_context(self, width: int) -> str:
         """Context row from health DTO and turn usage: workspace · model · effort · context · usage."""
         if self.footer_mode == "off":
@@ -877,15 +976,13 @@ class CoreTuiApp:
                 provider = getattr(model, "provider", None)
                 name = getattr(model, "model", None)
                 if isinstance(provider, str) and isinstance(name, str):
-                    try:
-                        from voidcode.capabilities.providers.native.model_catalog import static_catalog_metadata
-
-                        meta = static_catalog_metadata(provider, name)
-                        meta_win = meta.context_window if meta is not None else None
-                        if not isinstance(meta_win, bool) and isinstance(meta_win, int) and meta_win > 0:
-                            window = meta_win
-                    except Exception:
-                        pass
+                    key = (self.catalog_revision, provider, name)
+                    cached = self._footer_window_cache
+                    if cached is None or cached[:3] != key:
+                        cached = (*key, self._lookup_footer_window(provider, name))
+                        self._footer_window_cache = cached
+                    if not isinstance(cached[3], bool) and isinstance(cached[3], int) and cached[3] > 0:
+                        window = cached[3]
             if not isinstance(window, bool) and isinstance(window, int) and window > 0:
                 win_str = f"{window / 1000.0:.0f}k"
                 context_segment = f"{used_str}/{win_str}"
@@ -923,13 +1020,21 @@ class CoreTuiApp:
             label = "cancelling" if self._cancel_pending else "working · Esc to interrupt"
         return f"{spinner} {label}" if spinner else label
 
-    def _drain_events(self) -> None:
+    def _drain_events(self, timeout: float | None = None) -> int:
+        """Drain available frames; with timeout, block for the first. Returns frames dequeued."""
         rows_to_commit: list[str] = []
+        processed = 0
+        wait = timeout
         while True:
             try:
-                frame = self.event_queue.get_nowait()
+                if wait is None:
+                    frame = self.event_queue.get_nowait()
+                else:
+                    frame = self.event_queue.get(timeout=max(0.0, wait))
+                    wait = None
             except queue.Empty:
                 break
+            processed += 1
 
             frame_generation = frame.get("generation")
             frame_session = frame.get("session_id")
@@ -977,12 +1082,13 @@ class CoreTuiApp:
                 if isinstance(receipt, CommandResult):
                     rows_to_commit.extend(_command_result_rows(raw_name, receipt, self.styles, self.terminal.width))
             elif kind == "command_input_ready":
-                if frame.get("serial") != self._interaction_serial or frame.get("revision_id") != self.catalog_revision:
+                token = frame.get("token")
+                if (not isinstance(token, AbortToken) or token.aborted) or frame.get("revision_id") != self.catalog_revision:
                     continue
                 if self.status_line.startswith("Loading "):
                     self.status_line = ""
                 # The composer draft is intentionally retained under an input
-                # view (Alt+A never clears it); the serial already invalidates a
+                # view (Alt+A never clears it); the token already invalidates a
                 # later edit, so only a gate/overlay blocks the mount.
                 if self.active_overlay is not None or self.pending_approval is not None:
                     continue
@@ -1015,7 +1121,8 @@ class CoreTuiApp:
                     elif not self._mount_interactive_view(view, self.catalog_revision):
                         rows_to_commit.extend(render_plugin_view(view, self.terminal.width, self.styles))
             elif kind == "live_input_ready":
-                if frame.get("serial") != self._live_serial:
+                token = frame.get("token")
+                if not isinstance(token, AbortToken) or token.aborted:
                     continue
                 live = self._live_input
                 if live is None or not isinstance(self.active_overlay, (InteractiveChoices, InteractiveMarkdown)):
@@ -1078,7 +1185,8 @@ class CoreTuiApp:
                     source=self.active_overlay,
                 )
             elif kind == "command_presentation":
-                if frame.get("serial") != self._interaction_serial:
+                token = frame.get("token")
+                if not isinstance(token, AbortToken) or token.aborted:
                     continue
                 view = frame.get("view")
                 revision = str(frame.get("revision_id", ""))
@@ -1178,45 +1286,36 @@ class CoreTuiApp:
                         form.load_error = str(error)
             elif kind == "health":
                 snapshot = frame.get("health")
-                serial = frame.get("reconcile_serial")
-                # Latest serial wins: an older round is dropped even when a
-                # newer round has not applied yet (>= would let the older win
-                # the race). Health and reconciled are two envelopes of ONE
-                # round sharing its serial, so == matches both.
-                if (
-                    isinstance(snapshot, HealthStatus)
-                    and isinstance(serial, int)
-                    and serial == self._reconcile_serial
-                    and serial > self._reconcile_applied
-                ):
-                    self._reconcile_applied = serial
-                    self.upgrade = snapshot
-                    # A cosmetic refresh never overwrites a live gate prompt: the
-                    # approval/confirmation text owns the notice row until decided.
-                    gate_open = self.pending_approval is not None or isinstance(self.active_overlay, InteractiveConfirmation)
-                    if snapshot.fenced:
-                        self.status_line = "Core upgrade in progress: dispatch paused"
-                    elif not gate_open:
-                        self.status_line = ""
+                token = frame.get("token")
+                if not isinstance(snapshot, HealthStatus) or not isinstance(token, AbortToken) or token.aborted:
+                    continue
+                self.upgrade = snapshot
+                # A cosmetic refresh never overwrites a live gate prompt: the
+                # approval/confirmation text owns the notice row until decided.
+                gate_open = self.pending_approval is not None or isinstance(self.active_overlay, InteractiveConfirmation)
+                if snapshot.fenced:
+                    self.status_line = "Core upgrade in progress: dispatch paused"
+                elif not gate_open:
+                    self.status_line = ""
             elif kind == "reconciled":
-                serial = frame.get("reconcile_serial")
-                if isinstance(serial, int) and serial == self._reconcile_serial and serial >= self._reconcile_applied:
-                    # Catalog and session status from the same round as the
-                    # health read above: applied together or not at all.
-                    # Optional views are not part of this round; only the
-                    # explicit /tui views control fetches them. Failures are
-                    # surfaced, never swallowed into None: unknown stays
-                    # visible while last-known state is preserved.
-                    self._reconcile_applied = serial
-                    catalog = frame.get("catalog")
-                    failures = frame.get("failures")
-                    if isinstance(catalog, CommandCatalog):
-                        self._cache_catalog(catalog.commands, catalog.revision_id)
-                    status = frame.get("session_status")
-                    if isinstance(status, str) and status:
-                        self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
-                    if isinstance(failures, list) and failures:
-                        rows_to_commit.append(self.styles.fg("warning", f"[Reconnect refresh incomplete: {', '.join(str(f) for f in failures)}]"))
+                token = frame.get("token")
+                if not isinstance(token, AbortToken) or token.aborted:
+                    continue
+                # Catalog and session status from the same round as the
+                # health read above: applied together or not at all.
+                # Optional views are not part of this round; only the
+                # explicit /tui views control fetches them. Failures are
+                # surfaced, never swallowed into None: unknown stays
+                # visible while last-known state is preserved.
+                catalog = frame.get("catalog")
+                failures = frame.get("failures")
+                if isinstance(catalog, CommandCatalog):
+                    self._cache_catalog(catalog.commands, catalog.revision_id)
+                status = frame.get("session_status")
+                if isinstance(status, str) and status:
+                    self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
+                if isinstance(failures, list) and failures:
+                    rows_to_commit.append(self.styles.fg("warning", f"[Reconnect refresh incomplete: {', '.join(str(f) for f in failures)}]"))
             elif kind == "server_restart":
                 # Watermark only (contract §8.2/§6): the worker already broke
                 # its iterator and is reconnecting from our applied cursor.
@@ -1232,9 +1331,21 @@ class CoreTuiApp:
                 rows_to_commit.extend(_prefixed_rows("Error: event stream:", str(frame.get("error") or "Stream stopped"), self.styles, slot="error"))
                 if isinstance(self.active_overlay, InteractiveArtifactViewer):
                     self.active_overlay.connection_notice = f"Core connection error: {frame.get('error') or 'stream stopped'}"
+            elif kind == "input":
+                chunk = frame.get("chunk")
+                if isinstance(chunk, bytes):
+                    arrived = frame.get("t")
+                    self._handle_input_bytes(chunk, arrived_at=arrived if isinstance(arrived, float) else None)
+            elif kind == "input_eof":
+                self.running = False
+            elif kind == "kitty_reply":
+                reply = frame.get("reply")
+                if reply is not None:
+                    self._apply_kitty_reply(reply)
 
         if rows_to_commit:
             self.terminal.commit_rows(rows_to_commit)
+        return processed
 
     def _handle_stream_event(self, event: StreamEvent, rows: list[str]) -> None:
         if event.session_id != self.session_id:
@@ -1523,7 +1634,9 @@ class CoreTuiApp:
         if cached is not None:
             viewer.mark_image_cached(sha256, cached)
             return
-        if not self.terminal.kitty_graphics_supported:
+        with self._terminal_read_lock:
+            graphics_supported = self.terminal.kitty_graphics_supported
+        if not graphics_supported:
             viewer.fail_image(sha256, "Kitty Graphics probe not confirmed; O explicitly opens a fetched original copy.")
             return
         if self.terminal.cell_pixel_size is None:
@@ -1554,6 +1667,12 @@ class CoreTuiApp:
                 self.event_queue.put({**context, "kind": "artifact_image", "request_id": request_id, "sha256": sha256, "data": data})
                 if self._artifact_cancelled(viewer, sha256):
                     return
+                # Probe under the lock (it reads the reply); transmit outside it:
+                # holding the lock across a bulk PTY write would starve input.
+                with self._terminal_read_lock:
+                    supported = self.terminal.kitty_graphics_supported
+                if not supported:
+                    raise TerminalCapabilityError("Kitty Graphics is not supported by the active terminal")
                 self.terminal.upload_kitty_png(sha256, data, dimensions)
                 self.event_queue.put({**context, "kind": "artifact_transmitted", "request_id": request_id, "sha256": sha256})
             except InterruptedError:
@@ -1688,7 +1807,7 @@ class CoreTuiApp:
         """Stop polling; the open overlay (if any) is the caller's to clear."""
         self._live_input = None
         self._live_refresh_at = 0.0
-        self._live_serial += 1
+        self._follower.abort_live()
         self._suspended_live = None
 
     def _restore_suspended_live(self) -> None:
@@ -1732,7 +1851,7 @@ class CoreTuiApp:
             # direct decision restores it — never a historical replay.
             self._suspended_live = (current, self._live_input)
             self._live_refresh_at = 0.0
-            self._live_serial += 1
+            self._follower.abort_live()
             self.active_overlay = overlay
             self.status_line = "Confirmation required"
             return
@@ -1754,28 +1873,61 @@ class CoreTuiApp:
             self._restore_suspended_live()
 
     def _process_input(self) -> None:
-        now = time.monotonic()
-        chunk = self.terminal.read_bytes(timeout=0.001)
-        for reply in self.terminal.drain_kitty_replies():
-            viewer = self.active_overlay
-            if isinstance(viewer, InteractiveArtifactViewer) and viewer.source.sha256 == reply.sha256:
-                if reply.message != "OK":
-                    viewer.fail_image(reply.sha256, f"Kitty {reply.operation} rejected image: {reply.message}")
-                elif reply.operation == "upload":
-                    viewer.mark_image_uploaded(reply.sha256)
+        with self._terminal_read_lock:
+            chunk = self.terminal.read_bytes(timeout=0.001)
+            replies = list(self.terminal.drain_kitty_replies())
+        for reply in replies:
+            self._apply_kitty_reply(reply)
         if self.terminal.eof:
             self.running = False
             return
+        self._handle_input_bytes(chunk)
+
+    def _apply_kitty_reply(self, reply: Any) -> None:
+        viewer = self.active_overlay
+        if isinstance(viewer, InteractiveArtifactViewer) and viewer.source.sha256 == reply.sha256:
+            if reply.message != "OK":
+                viewer.fail_image(reply.sha256, f"Kitty {reply.operation} rejected image: {reply.message}")
+            elif reply.operation == "upload":
+                viewer.mark_image_uploaded(reply.sha256)
+            if (
+                reply.operation == "upload"
+                and self._artifact_ack_deadline is not None
+                and self._artifact_ack_deadline[:2] == (viewer.identity, reply.sha256)
+            ):
+                # The awaited acknowledgement arrived (success or failure): release the deadline.
+                self._artifact_ack_deadline = None
+
+    def _handle_input_bytes(self, chunk: bytes, *, arrived_at: float | None = None) -> bool:
+        """Decode bytes and dispatch keys; empty input only flushes a due escape. Returns True if any key dispatched."""
+        now = time.monotonic()
+        stamp = arrived_at if arrived_at is not None else now
+        handled = False
+        if chunk and self._escape_flush_at and stamp >= self._escape_flush_at:
+            # Backlogged chunk past the window: resolve the pending escape first
+            # so it can never merge into unrelated later bytes.
+            self._escape_flush_at = 0.0
+            flushed = self.key_decoder.flush()
+            handled = bool(flushed)
+            if self._dispatch_keys(flushed):
+                return True
+            now = time.monotonic()
         if chunk:
             # A lone ESC is ambiguous until no further bytes follow: the standard
             # disambiguation window resolves it as Esc.
-            self._escape_flush_at = now + _ESCAPE_FLUSH_SECONDS
+            self._escape_flush_at = stamp + _ESCAPE_FLUSH_SECONDS
             keys = list(self.key_decoder.feed(chunk))
         elif self._escape_flush_at and now >= self._escape_flush_at:
             self._escape_flush_at = 0.0
             keys = self.key_decoder.flush()
         else:
             keys = []
+        if self._dispatch_keys(keys):
+            return True
+        return handled or bool(keys)
+
+    def _dispatch_keys(self, keys: list[Key]) -> bool:
+        """Dispatch decoded keys; returns True when quitting (caller must stop)."""
         for key in keys:
             if key.name == "escape" and (self.pending_approval is not None or self.active_overlay is not None):
                 # The decoder names the raw byte "escape"; the overlays speak
@@ -1785,21 +1937,21 @@ class CoreTuiApp:
                 now = time.monotonic()
                 if now - self._quit_armed_at < 1.5:
                     self.running = False
-                    return
+                    return True
                 self._quit_armed_at = now
                 self.composer.clear()
                 continue
             self._quit_armed_at = float("-inf")
             if key.name == "ctrl+d" and not self.composer.value and self.pending_approval is None and self.active_overlay is None:
                 self.running = False
-                return
-
+                return True
             if self.pending_approval is not None:
                 self._handle_approval_key(key)
             elif self.active_overlay is not None:
                 self._handle_overlay_key(key)
             else:
                 self._handle_composer_key(key)
+        return False
 
     def _cancel_active_run(self) -> None:
         if not self._run_active or self._cancel_pending:
@@ -1885,9 +2037,10 @@ class CoreTuiApp:
             return
 
         if outcome.get("cancel"):
-            self._interaction_serial += 1
+            self._follower.abort_interaction()
             self._close_live_input()
             self.active_overlay = None
+            self._artifact_ack_deadline = None
             self.status_line = ""
             self._present_queued_confirmation()
             return
@@ -2005,8 +2158,7 @@ class CoreTuiApp:
         answers too would duplicate settled rows. ``surface_result`` comes from
         catalog metadata (owner plus effects), never a client command list.
         """
-        self._interaction_serial += 1
-        serial = self._interaction_serial
+        token = self._follower.begin_interaction()
         submitted_overlay = self.active_overlay
         shown = display_name if display_name else _slash_display(name)
         session_id, generation = self.session_id, self._generation
@@ -2092,7 +2244,7 @@ class CoreTuiApp:
                 self.event_queue.put(
                     {
                         "kind": "command_presentation",
-                        "serial": serial,
+                        "token": token,
                         "view": PluginViewDescriptor(
                             owner="command", name=name, title=presentation.title, view_type=presentation.view_type, data=presentation.data
                         ),
@@ -2135,86 +2287,28 @@ class CoreTuiApp:
 
     def _refresh_health_async(self, *, session_id: str | None = None, generation: int | None = None) -> None:
         """Refresh server identity/liveness off the UI thread; stale replies are dropped."""
-        self._reconcile_serial += 1
-        serial = self._reconcile_serial
-        bound_session = self.session_id if session_id is None else session_id
-        bound_generation = self._generation if generation is None else generation
-
-        def worker() -> None:
-            try:
-                snapshot = self.client.health()
-            except Exception:
-                return  # unreachable during a handoff gap is expected; keep last known
-            self.event_queue.put(
-                {
-                    "kind": "health",
-                    "health": snapshot,
-                    "reconcile_serial": serial,
-                    "session_id": bound_session,
-                    "generation": bound_generation,
-                }
-            )
-
-        threading.Thread(target=worker, daemon=True, name="CoreHealth").start()
+        self._follower.refresh_health(
+            self.session_id if session_id is None else session_id,
+            self._generation if generation is None else generation,
+        )
 
     def _reconcile_connection_async(self) -> None:
         """ONE connection-established reconciliation path, entirely off the UI thread.
 
         Runs on the first frame of every (re)connected stream — announced restart
         or silent drop. Fetches health + catalog + durable session status in one
-        worker round, then hands the UI thread a single serial-tagged envelope.
+        worker round, then hands the UI thread token-tagged envelopes.
         Optional views are never fetched here: only explicit ``/tui views``
         presents them. Only the newest round renders (generation alone cannot
         order overlapping replies). Never resends the prompt, never touches the
         applied cursor.
         """
-        self._reconcile_serial += 1
-        serial = self._reconcile_serial
-        session_id, generation = self.session_id, self._generation
-
-        def worker() -> None:
-            try:
-                health = self.client.health()
-            except Exception:
-                return  # handoff gap: keep last known identity, stay silent
-            failures: list[str] = []
-            try:
-                catalog = self.client.command_catalog()
-            except Exception as exc:
-                catalog = None
-                failures.append(f"catalog ({exc})")
-            try:
-                session_status = self.client.get_session(session_id).status
-            except Exception as exc:
-                session_status = ""
-                failures.append(f"session status ({exc})")
-            self.event_queue.put(
-                {
-                    "kind": "health",
-                    "health": health,
-                    "reconcile_serial": serial,
-                    "session_id": session_id,
-                    "generation": generation,
-                }
-            )
-            self.event_queue.put(
-                {
-                    "kind": "reconciled",
-                    "catalog": catalog,
-                    "session_status": session_status,
-                    "failures": failures,
-                    "reconcile_serial": serial,
-                    "session_id": session_id,
-                    "generation": generation,
-                }
-            )
-
-        threading.Thread(target=worker, daemon=True, name="CoreReconcile").start()
+        self._follower.reconcile_connection(self.session_id)
 
     def _handle_composer_key(self, key: Any) -> None:
         if self.status_line.startswith("Loading "):
             self.status_line = ""
-        self._interaction_serial += 1
+        self._follower.abort_interaction()
         name = key.name
         chord = _normalize_chord(name)
         if chord in self._shortcut_bindings:
@@ -2695,7 +2789,7 @@ class CoreTuiApp:
         if isinstance(self.active_overlay, InteractiveArtifactViewer):
             self.terminal.commit_rows([self.styles.fg("warning", f"Artifact viewer closed on session switch: {self.active_overlay.source.uri}")])
         self._artifact_ack_deadline = None
-        self._generation += 1
+        self._follower.new_epoch()
         while True:
             try:
                 self.event_queue.get_nowait()
@@ -2901,7 +2995,7 @@ class CoreTuiApp:
         the one path allowed to mount one; true approval and confirmation gates
         are restored separately from their durable events.
         """
-        self._interaction_serial += 1
+        self._follower.abort_interaction()
         try:
             snapshot = self.client.views(self.session_id)
         except Exception as exc:
@@ -2985,8 +3079,7 @@ class CoreTuiApp:
 
     def _prepare_command_input_async(self, descriptor: CommandDescriptor, *, arguments: Mapping[str, Any] | None = None) -> None:
         """Read optional plugin input off the UI thread without invoking its action."""
-        self._interaction_serial += 1
-        serial = self._interaction_serial
+        token = self._follower.begin_interaction()
         session_id, generation, revision = self.session_id, self._generation, self.catalog_revision
         owned_arguments = dict(arguments or {})
         # Hidden actions (Alt+A monitor) show their human description, never a
@@ -2996,7 +3089,7 @@ class CoreTuiApp:
         def worker() -> None:
             frame: dict[str, Any] = {
                 "kind": "command_input_ready",
-                "serial": serial,
+                "token": token,
                 "revision_id": revision,
                 "session_id": session_id,
                 "generation": generation,
@@ -3023,8 +3116,7 @@ class CoreTuiApp:
         live = self._live_input
         if live is None:
             return
-        self._live_serial += 1
-        serial = self._live_serial
+        token = self._follower.begin_live()
         session_id, generation = self.session_id, self._generation
         action = str(live.get("name", ""))
         revision = str(live.get("revision", ""))
@@ -3034,7 +3126,7 @@ class CoreTuiApp:
         def worker() -> None:
             frame: dict[str, Any] = {
                 "kind": "live_input_ready",
-                "serial": serial,
+                "token": token,
                 "revision_id": revision,
                 "session_id": session_id,
                 "generation": generation,
@@ -3179,107 +3271,127 @@ class CoreTuiApp:
         notice_rows = tuple(row for row in (notice, quit_hint) if row)
         footer_rows = tuple(row for row in (*context_row, *notice_rows) if row)
         if self.pending_approval is not None:
-            rows = self.pending_approval.render_rows(width, self.styles)
-            frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *footer_rows), cursor=None)
-            self.terminal.paint_frame(frame)
+            self.render_approval(width, footer_rows)
         elif isinstance(self.active_overlay, InteractiveArtifactViewer):
-            viewer = self.active_overlay
-            deadline = self._artifact_ack_deadline
-            if (
-                deadline is not None
-                and deadline[:2] == (viewer.identity, viewer.source.sha256)
-                and viewer.image_status == "transferring"
-                and time.monotonic() >= deadline[2]
-            ):
-                viewer.fail_image(viewer.source.sha256, "Kitty upload acknowledgement timed out; no terminal image success was observed.")
-                self._artifact_ack_deadline = None
-            available = max(1, self.terminal.height - len(footer_rows))
-            rows = viewer.render_rows(width, self.styles, max_rows=available)
-            placement_id = self.terminal.kitty_placement_id(viewer.source.sha256)
-            placement = (
-                viewer.image_placement(
-                    max_columns=width,
-                    max_rows=max(0, available - viewer.image_row),
-                    cell_pixels=self.terminal.cell_pixel_size,
-                    placement_id=placement_id,
-                )
-                if placement_id is not None
-                else None
-            )
-            self.terminal.paint_frame(TuiFrame(chrome_rows=(*rows, *footer_rows), image=placement))
+            self.render_artifact_viewer(width, footer_rows)
         elif self.active_overlay is not None:
-            overlay_rows = (
-                self.active_overlay.render_rows(width, self.styles, max_rows=max(6, getattr(self.terminal, "height", 24) - len(footer_rows)))
-                if isinstance(self.active_overlay, (InteractiveMarkdown, InteractiveChoices))
-                else self.active_overlay.render_rows(width, self.styles)
-            )
-            frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, *footer_rows), cursor=None)
-            self.terminal.paint_frame(frame)
+            self.render_overlay(width, footer_rows)
         else:
-            self.composer.set_width(width)
-            height = getattr(self.terminal, "height", 24)
-            available = max(1, height - len(footer_rows))
-            self.composer.set_max_height(self.composer.input_height(available, status_visible=self.border == "borderless" and self._run_active))
-            composer_rows = self.composer.render(
-                self._border_status() if self.border == "borderless" else "",
-                border_status=self._border_status(),
+            self.render_composer(width, footer_rows)
+
+    def render_approval(self, width: int, footer_rows: tuple[str, ...]) -> None:
+        """Paint the pending tool-approval gate with the shared footer."""
+        assert self.pending_approval is not None
+        rows = self.pending_approval.render_rows(width, self.styles)
+        frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *footer_rows), cursor=None)
+        self.terminal.paint_frame(frame)
+
+    def render_artifact_viewer(self, width: int, footer_rows: tuple[str, ...]) -> None:
+        """Paint the artifact viewer; a past-due upload ack fails the image first."""
+        viewer = self.active_overlay
+        assert isinstance(viewer, InteractiveArtifactViewer)
+        deadline = self._artifact_ack_deadline
+        if (
+            deadline is not None
+            and deadline[:2] == (viewer.identity, viewer.source.sha256)
+            and viewer.image_status == "transferring"
+            and time.monotonic() >= deadline[2]
+        ):
+            viewer.fail_image(viewer.source.sha256, "Kitty upload acknowledgement timed out; no terminal image success was observed.")
+            self._artifact_ack_deadline = None
+        available = max(1, self.terminal.height - len(footer_rows))
+        rows = viewer.render_rows(width, self.styles, max_rows=available)
+        placement_id = self.terminal.kitty_placement_id(viewer.source.sha256)
+        placement = (
+            viewer.image_placement(
+                max_columns=width,
+                max_rows=max(0, available - viewer.image_row),
+                cell_pixels=self.terminal.cell_pixel_size,
+                placement_id=placement_id,
             )
-            cursor = self.composer.cursor_position
-            popup = list(self.composer.completion_rows(max_rows=max(1, min(6, available - len(composer_rows)))))
-            live_space = max(0, available - len(composer_rows) - len(popup))
-            live: list[str] = []
-            if live_space > 0:
-                tools = list(self._active_tools.values())
-                num_tools = len(tools)
-                if num_tools > 0:
-                    spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
-                    if num_tools > live_space:
-                        tool_pairs = [(t.tool_name, max(0.0, time.monotonic() - t.start_time)) for t in tools]
-                        summary_rows = render_active_tools_summary(tool_pairs, width, self.styles, spinner=spinner)
-                        live.extend(summary_rows)
-                        remaining = max(0, live_space - len(live))
-                        tools_to_show = tools[-remaining:] if remaining > 0 else []
-                        for t in tools_to_show:
-                            elapsed = max(0.0, time.monotonic() - t.start_time)
-                            live.extend(
-                                render_active_tool(
-                                    t.tool_name,
-                                    elapsed,
-                                    [],
-                                    width,
-                                    self.styles,
-                                    icon=t.icon,
-                                    spinner=spinner,
-                                    max_tail_rows=0,
-                                )
+            if placement_id is not None
+            else None
+        )
+        self.terminal.paint_frame(TuiFrame(chrome_rows=(*rows, *footer_rows), image=placement))
+
+    def render_overlay(self, width: int, footer_rows: tuple[str, ...]) -> None:
+        """Paint the mounted choices/form/confirmation/markdown overlay with the shared footer."""
+        overlay = self.active_overlay
+        assert overlay is not None
+        overlay_rows = (
+            overlay.render_rows(width, self.styles, max_rows=max(6, getattr(self.terminal, "height", 24) - len(footer_rows)))
+            if isinstance(overlay, (InteractiveMarkdown, InteractiveChoices))
+            else overlay.render_rows(width, self.styles)
+        )
+        frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, *footer_rows), cursor=None)
+        self.terminal.paint_frame(frame)
+
+    def render_composer(self, width: int, footer_rows: tuple[str, ...]) -> None:
+        """Paint live tools/stream, the completion popup, and the composer with the shared footer."""
+        self.composer.set_width(width)
+        height = getattr(self.terminal, "height", 24)
+        available = max(1, height - len(footer_rows))
+        self.composer.set_max_height(self.composer.input_height(available, status_visible=self.border == "borderless" and self._run_active))
+        composer_rows = self.composer.render(
+            self._border_status() if self.border == "borderless" else "",
+            border_status=self._border_status(),
+        )
+        cursor = self.composer.cursor_position
+        popup = list(self.composer.completion_rows(max_rows=max(1, min(6, available - len(composer_rows)))))
+        live_space = max(0, available - len(composer_rows) - len(popup))
+        live: list[str] = []
+        if live_space > 0:
+            tools = list(self._active_tools.values())
+            num_tools = len(tools)
+            if num_tools > 0:
+                spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
+                if num_tools > live_space:
+                    tool_pairs = [(t.tool_name, max(0.0, time.monotonic() - t.start_time)) for t in tools]
+                    summary_rows = render_active_tools_summary(tool_pairs, width, self.styles, spinner=spinner)
+                    live.extend(summary_rows)
+                    remaining = max(0, live_space - len(live))
+                    tools_to_show = tools[-remaining:] if remaining > 0 else []
+                    for t in tools_to_show:
+                        elapsed = max(0.0, time.monotonic() - t.start_time)
+                        live.extend(
+                            render_active_tool(
+                                t.tool_name,
+                                elapsed,
+                                [],
+                                width,
+                                self.styles,
+                                icon=t.icon,
+                                spinner=spinner,
+                                max_tail_rows=0,
                             )
-                    else:
-                        remaining_tail_space = live_space - num_tools
-                        for index, t in enumerate(tools):
-                            elapsed = max(0.0, time.monotonic() - t.start_time)
-                            is_latest = index == num_tools - 1
-                            tail_budget = remaining_tail_space if is_latest else 0
-                            live_tail = t.visible_tail(tail_budget) if tail_budget > 0 else []
-                            live.extend(
-                                render_active_tool(
-                                    t.tool_name,
-                                    elapsed,
-                                    live_tail,
-                                    width,
-                                    self.styles,
-                                    icon=t.icon,
-                                    spinner=spinner,
-                                    max_tail_rows=tail_budget,
-                                )
-                            )
+                        )
                 else:
-                    stream_rows = self._live_stream_rows(width)
-                    live = stream_rows[-live_space:] if stream_rows else []
-            if cursor is not None and (live or popup):
-                row, column = cursor
-                cursor = (row + len(live) + len(popup), column)
-            frame = TuiFrame(transcript_rows=(), chrome_rows=(*live, *popup, *composer_rows, *footer_rows), cursor=cursor)
-            self.terminal.paint_frame(frame)
+                    remaining_tail_space = live_space - num_tools
+                    for index, t in enumerate(tools):
+                        elapsed = max(0.0, time.monotonic() - t.start_time)
+                        is_latest = index == num_tools - 1
+                        tail_budget = remaining_tail_space if is_latest else 0
+                        live_tail = t.visible_tail(tail_budget) if tail_budget > 0 else []
+                        live.extend(
+                            render_active_tool(
+                                t.tool_name,
+                                elapsed,
+                                live_tail,
+                                width,
+                                self.styles,
+                                icon=t.icon,
+                                spinner=spinner,
+                                max_tail_rows=tail_budget,
+                            )
+                        )
+            else:
+                stream_rows = self._live_stream_rows(width)
+                live = stream_rows[-live_space:] if stream_rows else []
+        if cursor is not None and (live or popup):
+            row, column = cursor
+            cursor = (row + len(live) + len(popup), column)
+        frame = TuiFrame(transcript_rows=(), chrome_rows=(*live, *popup, *composer_rows, *footer_rows), cursor=cursor)
+        self.terminal.paint_frame(frame)
 
 
 def run_tui(

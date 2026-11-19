@@ -21,23 +21,28 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal, cast, overload
 from uuid import uuid4
 
 from voidcode.capabilities.agent_queries import AGENT_DEFINITIONS, AgentDefinitionRequest, apply_agent_profile
+from voidcode.capabilities.plugin_state import PluginStateStore
 from voidcode.sdk.child_schema import canonical_result_schema, validate_child_text
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult, ConfirmationRequest
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, json_wire_value, own_json_object, own_json_value
 from voidcode.sdk.services import (
+    ArtifactServices,
     BackgroundActionStatus,
     BackgroundContext,
     BudgetExhaustion,
     ChildOutcome,
+    ChildServices,
     PluginServices,
     QueryContractError,
     QueryUnavailable,
+    ScheduledWorkServices,
+    StateServices,
     StructuredChildResult,
     StructuredQueryParseError,
 )
@@ -78,7 +83,6 @@ _RUN_KEYS = frozenset(
         "workflow",
         "source_path",
         "source_sha256",
-        "source_artifact",
         "task",
         "input_sha256",
         "notify_on_completion",
@@ -102,7 +106,6 @@ _NODE_KEYS = frozenset(
         "child_session_id",
         "run_id",
         "effective_input_sha256",
-        "prompt_sha256",
         "output",
         "output_sha256",
         "output_bytes",
@@ -154,7 +157,7 @@ def parse_workflows_config(config: Mapping[str, object] | None) -> Mapping[str, 
 
 
 def _structured_parse_error_from_payload(value: object, *, run_id: str, key: str) -> StructuredQueryParseError | None:
-    """Parse a persisted structured parse error; absent legacy data remains unknown."""
+    """Parse a persisted structured parse error; absent stays absent."""
     if value is None:
         return None
     if not isinstance(value, Mapping):
@@ -181,7 +184,6 @@ class WorkflowNode:
     child_session_id: str | None = None
     run_id: str | None = None
     effective_input_sha256: str | None = None
-    prompt_sha256: str | None = None
     output: str | None = None
     output_sha256: str | None = None
     output_bytes: int | None = None
@@ -200,6 +202,10 @@ class WorkflowNode:
     #: undelivered, or uncaptured — never valid, never a guess.
     data: Mapping[str, object] | None = None
     parse_error: StructuredQueryParseError | None = None
+
+    def __post_init__(self) -> None:
+        if self.data is not None:
+            object.__setattr__(self, "data", own_json_object(self.data))
 
     @classmethod
     def from_payload(cls, raw: Mapping[str, object], *, run_id: str) -> WorkflowNode:
@@ -246,9 +252,6 @@ class WorkflowNode:
         effective_input_sha256 = raw["effective_input_sha256"]
         if effective_input_sha256 is not None and (not isinstance(effective_input_sha256, str) or len(effective_input_sha256) != 64):
             raise ValueError(f"workflow run '{run_id}' node '{key}' effective_input_sha256 must be a sha256 or null")
-        prompt_sha256 = raw["prompt_sha256"]
-        if prompt_sha256 is not None and (not isinstance(prompt_sha256, str) or len(prompt_sha256) != 64):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' prompt_sha256 must be a sha256 or null")
         output = raw["output"]
         if output is not None and not isinstance(output, str):
             raise ValueError(f"workflow run '{run_id}' node '{key}' output must be text or null")
@@ -286,7 +289,7 @@ class WorkflowNode:
             if not isinstance(data_raw, Mapping):
                 raise ValueError(f"workflow run '{run_id}' node '{key}' data must be an object or null")
             try:
-                data = json_wire_object(own_json_object(data_raw))
+                data = own_json_object(data_raw)
             except ValueError as exc:
                 raise ValueError(f"workflow run '{run_id}' node '{key}' data is not JSON: {exc}") from exc
         parse_error = _structured_parse_error_from_payload(raw.get("parse_error"), run_id=run_id, key=key)
@@ -298,7 +301,6 @@ class WorkflowNode:
             child_session_id=child_session_id,
             run_id=run_id_value,
             effective_input_sha256=effective_input_sha256,
-            prompt_sha256=prompt_sha256,
             output=output,
             output_sha256=output_sha256,
             output_bytes=output_bytes,
@@ -321,7 +323,6 @@ class WorkflowNode:
             "child_session_id": self.child_session_id,
             "run_id": self.run_id,
             "effective_input_sha256": self.effective_input_sha256,
-            "prompt_sha256": self.prompt_sha256,
             "output": self.output,
             "output_sha256": self.output_sha256,
             "output_bytes": self.output_bytes,
@@ -338,7 +339,7 @@ class WorkflowNode:
         if self.result_schema is not None:
             payload["result_schema"] = self.result_schema
         if self.data is not None:
-            payload["data"] = self.data
+            payload["data"] = json_wire_object(self.data)
         if self.parse_error is not None:
             payload["parse_error"] = self.parse_error.as_payload()
         return payload
@@ -351,7 +352,6 @@ class WorkflowRun:
     workflow: str
     source_path: str
     source_sha256: str
-    source_artifact: str
     task: object
     input_sha256: str
     notify_on_completion: bool = False
@@ -404,9 +404,6 @@ class WorkflowRun:
         source_sha256 = raw["source_sha256"]
         if not isinstance(source_sha256, str) or len(source_sha256) != 64:
             raise ValueError(f"workflow run '{run_id}' source_sha256 must be a sha256 hex digest")
-        source_artifact = raw["source_artifact"]
-        if not isinstance(source_artifact, str) or len(source_artifact) != 64:
-            raise ValueError(f"workflow run '{run_id}' source_artifact must be a sha256 hex digest")
         task = raw["task"]
         try:
             owned_task: object = own_json_value(task)
@@ -476,7 +473,6 @@ class WorkflowRun:
             workflow=workflow,
             source_path=source_path,
             source_sha256=source_sha256,
-            source_artifact=source_artifact,
             task=owned_task,
             input_sha256=input_sha256,
             notify_on_completion=notify_on_completion,
@@ -499,7 +495,6 @@ class WorkflowRun:
             "workflow": self.workflow,
             "source_path": self.source_path,
             "source_sha256": self.source_sha256,
-            "source_artifact": self.source_artifact,
             "task": json_wire_value(self.task),
             "input_sha256": self.input_sha256,
             "notify_on_completion": self.notify_on_completion,
@@ -535,12 +530,7 @@ class WorkflowState:
     runs: Mapping[str, WorkflowRun]
 
     @classmethod
-    def from_payload(cls, raw: Mapping[str, object] | None) -> WorkflowState:
-        if raw is None:
-            return cls(MappingProxyType({}))
-        unknown = sorted(str(key) for key in raw if key not in ("schema_version", "runs"))
-        if unknown:
-            raise ValueError(f"workflows state field '{unknown[0]}' is not supported")
+    def from_payload(cls, raw: Mapping[str, object]) -> WorkflowState:
         if raw.get("schema_version", SCHEMA_VERSION) != SCHEMA_VERSION:
             raise ValueError(f"workflows state schema_version must be {SCHEMA_VERSION}")
         runs = raw.get("runs", {})
@@ -565,6 +555,18 @@ class WorkflowState:
         runs = dict(self.runs)
         runs[run.run_id] = run
         return WorkflowState(MappingProxyType(runs))
+
+
+def _store(services: StateServices) -> PluginStateStore[WorkflowState]:
+    """This plugin's session-state store: strict keys, typed parse, CAS save."""
+    return PluginStateStore(
+        services,
+        keys=frozenset({"schema_version", "runs"}),
+        parse=WorkflowState.from_payload,
+        serialize=WorkflowState.to_payload,
+        empty=lambda: WorkflowState(MappingProxyType({})),
+        unknown=lambda extra: f"workflows state field '{extra[0]}' is not supported",
+    )
 
 
 # --- Script loading ---
@@ -675,7 +677,7 @@ class WorkflowContext:
     ) -> str:
         """Run one named-agent child node, or reuse its durable outcome by key."""
         deps, scoped = _checked_node_args(agent_name, prompt, key, depends_on, tool_allowlist, max_steps)
-        outcome = await asyncio.to_thread(self._run_node_guarded, agent_name, prompt, key, deps, label, scoped, max_steps, None)
+        outcome = await asyncio.to_thread(self._drive_node_guarded, agent_name, prompt, key, deps, label, scoped, max_steps, None)
         return outcome
 
     async def agent_structured(
@@ -705,9 +707,9 @@ class WorkflowContext:
             canonical_schema = canonical_result_schema(result_schema)
         except ValueError as exc:
             raise ValueError(f"node '{key}' {exc}") from exc
-        return await asyncio.to_thread(self._run_node_structured_guarded, agent_name, prompt, key, deps, label, scoped, max_steps, canonical_schema)
+        return await asyncio.to_thread(self._drive_node_structured_guarded, agent_name, prompt, key, deps, label, scoped, max_steps, canonical_schema)
 
-    def _run_node_guarded(
+    def _drive_node_guarded(
         self,
         agent_name: str,
         prompt: str,
@@ -719,9 +721,24 @@ class WorkflowContext:
         result_schema: Mapping[str, object] | None,
     ) -> str:
         with self._node_slots:
-            return self._run_node(agent_name, prompt, key, depends_on, label, tool_allowlist, max_steps, result_schema)
+            return self._drive_node(agent_name, prompt, key, depends_on, label, tool_allowlist, max_steps, result_schema, structured=False)
 
-    def _run_node(
+    def _drive_node_structured_guarded(
+        self,
+        agent_name: str,
+        prompt: str,
+        key: str,
+        depends_on: tuple[str, ...],
+        label: str,
+        tool_allowlist: tuple[str, ...] | None,
+        max_steps: int | None,
+        result_schema: Mapping[str, object],
+    ) -> StructuredChildResult:
+        with self._node_slots:
+            return self._drive_node(agent_name, prompt, key, depends_on, label, tool_allowlist, max_steps, result_schema, structured=True)
+
+    @overload
+    def _drive_node(
         self,
         agent_name: str,
         prompt: str,
@@ -731,7 +748,39 @@ class WorkflowContext:
         tool_allowlist: tuple[str, ...] | None,
         max_steps: int | None,
         result_schema: Mapping[str, object] | None,
-    ) -> str:
+        *,
+        structured: Literal[False],
+    ) -> str: ...
+
+    @overload
+    def _drive_node(
+        self,
+        agent_name: str,
+        prompt: str,
+        key: str,
+        depends_on: tuple[str, ...],
+        label: str,
+        tool_allowlist: tuple[str, ...] | None,
+        max_steps: int | None,
+        result_schema: Mapping[str, object],
+        *,
+        structured: Literal[True],
+    ) -> StructuredChildResult: ...
+
+    def _drive_node(
+        self,
+        agent_name: str,
+        prompt: str,
+        key: str,
+        depends_on: tuple[str, ...],
+        label: str,
+        tool_allowlist: tuple[str, ...] | None,
+        max_steps: int | None,
+        result_schema: Mapping[str, object] | None,
+        *,
+        structured: bool,
+    ) -> str | StructuredChildResult:
+
         def stage(context: ToolContext, services: PluginServices) -> _StagedNode:
             return _stage_pending_node(
                 context, services, self.run_id, key, depends_on, agent_name, prompt, tool_allowlist, max_steps, result_schema=result_schema
@@ -739,6 +788,10 @@ class WorkflowContext:
 
         staged = self._commit(stage)
         if staged.settled is not None:
+            if structured:
+                # A fingerprint match means the settled node declared this same schema.
+                assert staged.settled_structured is not None
+                return staged.settled_structured
             return staged.settled
         plan = staged.plan
         assert plan is not None
@@ -761,77 +814,10 @@ class WorkflowContext:
                 if finished.error is not None:
                     raise ValueError(finished.error)
                 assert finished.text is not None
+                if structured:
+                    assert finished.structured is not None
+                    return finished.structured
                 return finished.text
-            if outcome.status in ("waiting", "interrupted"):
-                self._commit(_ParkNode(self.run_id, key, outcome))
-                raise _ParkedNode(key, outcome.status, outcome.error)
-            if outcome.status == "cancelled":
-                finished = self._commit(_FinishNode(self.run_id, key, outcome))
-                if finished.error is not None:
-                    raise ValueError(finished.error)
-                if not finished.cancelled:
-                    raise AssertionError(f"node '{key}' finish swallowed its cancellation")
-                raise _CancelledNode(key)
-            # "running" past this slice: release the lease and re-drive.
-
-    def _run_node_structured_guarded(
-        self,
-        agent_name: str,
-        prompt: str,
-        key: str,
-        depends_on: tuple[str, ...],
-        label: str,
-        tool_allowlist: tuple[str, ...] | None,
-        max_steps: int | None,
-        result_schema: Mapping[str, object],
-    ) -> StructuredChildResult:
-        with self._node_slots:
-            return self._run_node_structured(agent_name, prompt, key, depends_on, label, tool_allowlist, max_steps, result_schema)
-
-    def _run_node_structured(
-        self,
-        agent_name: str,
-        prompt: str,
-        key: str,
-        depends_on: tuple[str, ...],
-        label: str,
-        tool_allowlist: tuple[str, ...] | None,
-        max_steps: int | None,
-        result_schema: Mapping[str, object],
-    ) -> StructuredChildResult:
-        def stage(context: ToolContext, services: PluginServices) -> _StagedNode:
-            return _stage_pending_node(
-                context, services, self.run_id, key, depends_on, agent_name, prompt, tool_allowlist, max_steps, result_schema=result_schema
-            )
-
-        staged = self._commit(stage)
-        if staged.settled is not None:
-            # A fingerprint match means the settled node declared this same schema.
-            assert staged.settled_structured is not None
-            return staged.settled_structured
-        plan = staged.plan
-        assert plan is not None
-
-        def attach(context: ToolContext, services: PluginServices) -> _NodePlan:
-            return _attach_node_child(context, services, self.run_id, key, plan, label)
-
-        node = self._commit(attach).node
-        child_id = node.child_session_id
-        if child_id is None:
-            raise ValueError(f"node '{key}' has no child to drive")
-        while True:
-            outcome = self.invoke(_JoinNode(child_id, JOIN_SLICE_SECONDS))
-            if outcome.status in ("completed", "failed"):
-                finished = self._commit(_FinishNode(self.run_id, key, outcome))
-                # The node truth already committed inside the lease; control flow
-                # raises here so a terminal row is never lost to lease rollback.
-                if finished.cancelled:
-                    raise _CancelledNode(key)
-                if finished.error is not None:
-                    raise ValueError(finished.error)
-                assert finished.text is not None
-                assert finished.structured is not None
-                return finished.structured
             if outcome.status in ("waiting", "interrupted"):
                 self._commit(_ParkNode(self.run_id, key, outcome))
                 raise _ParkedNode(key, outcome.status, outcome.error)
@@ -903,9 +889,8 @@ class _NodePlan:
     node: WorkflowNode
 
 
-def _require_run(services: PluginServices, run_id: str) -> tuple[WorkflowState, WorkflowRun, int]:
-    state_data, version = services.get_state("session")
-    state = WorkflowState.from_payload(state_data)
+def _require_run(services: StateServices, run_id: str) -> tuple[WorkflowState, WorkflowRun, int]:
+    state, version = _store(services).load()
     run = state.runs.get(run_id)
     if run is None:
         raise ValueError(f"unknown workflow run: {run_id!r}")
@@ -963,7 +948,7 @@ def _resolve_effective_plan(
     # An undeclared schema is omitted (not hashed as null) so pre-change resumes
     # keep matching; a declared schema alters the fingerprint.
     if result_schema is not None:
-        digest_input["result_schema"] = json_wire_object(result_schema)
+        digest_input["result_schema"] = result_schema
     effective_input = _digest(digest_input)
     return _EffectivePlan(
         agent_name=agent_name, body=body, readonly=readonly, scope=scope, budget=budget, effective_input=effective_input, result_schema=result_schema
@@ -1050,11 +1035,10 @@ def _stage_pending_node(
         depends_on=tuple(depends_on),
         agent=agent_name,
         effective_input_sha256=plan.effective_input,
-        prompt_sha256=hashlib.sha256(plan.body.encode("utf-8")).hexdigest(),
         result_schema=plan.result_schema,
     )
     run = replace(run, nodes=(*run.nodes, node), updated_at=_clock_ms())
-    services.replace_state(state.with_run(run).to_payload(), version, "session")
+    _store(services).save(state.with_run(run), version)
     return _StagedNode(node=node, plan=plan, settled=None)
 
 
@@ -1085,7 +1069,7 @@ def _attach_node_child(_context: ToolContext, services: PluginServices, run_id: 
         result_schema=plan.result_schema,
     )
     node = replace(node, status="running", child_session_id=child_id)
-    services.replace_state(state.with_run(run.with_node(node)).to_payload(), version, "session")
+    _store(services).save(state.with_run(run.with_node(node)), version)
     return _NodePlan(node)
 
 
@@ -1145,7 +1129,7 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
                 error=outcome.error if terminal != "completed" else None,
                 budget_exhaustion=outcome.budget_exhaustion,
             )
-            services.replace_state(state.with_run(run.with_node(node)).to_payload(), version, "session")
+            _store(services).save(state.with_run(run.with_node(node)), version)
         if run.status == "cancelled":
             return _FinishedNode(node=node, text=None, cancelled=True)
         if run.status == "failed":
@@ -1218,7 +1202,7 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
         parse_error=parse_error,
     )
     run = run.with_node(node)
-    services.replace_state(state.with_run(run).to_payload(), version, "session")
+    _store(services).save(state.with_run(run), version)
     if status == "failed":
         return _FinishedNode(node=node, text=None, error=f"node '{key}' failed: {error or 'no error reported'}")
     if status == "cancelled":
@@ -1241,7 +1225,7 @@ def _finish_node(context: ToolContext, services: PluginServices, run_id: str, ke
     return _FinishedNode(node=node, text=text, structured=structured)
 
 
-def _park_node(context: ToolContext, services: PluginServices, run_id: str, key: str, outcome: ChildOutcome) -> None:
+def _park_node(context: ToolContext, services: StateServices, run_id: str, key: str, outcome: ChildOutcome) -> None:
     _ = context
     state, run, version = _require_run(services, run_id)
     node = run.node(key)
@@ -1267,10 +1251,10 @@ def _park_node(context: ToolContext, services: PluginServices, run_id: str, key:
             parse_error=None,
         )
     )
-    services.replace_state(state.with_run(run).to_payload(), version, "session")
+    _store(services).save(state.with_run(run), version)
 
 
-def _read_full_artifact(services: PluginServices, sha256: str) -> str:
+def _read_full_artifact(services: ArtifactServices, sha256: str) -> str:
     """Read one artifact whole: bounded pages joined as bytes, decoded once as strict UTF-8."""
     chunks: list[bytes] = []
     offset = 0
@@ -1415,26 +1399,25 @@ class _CompleteRun:
 
     def __call__(self, context: ToolContext, services: PluginServices) -> None:
         _ = context
-        state_data, version = services.get_state("session")
-        state = WorkflowState.from_payload(state_data)
+        state, version = _store(services).load()
         run = state.runs.get(self.run_id)
         if run is None or run.status in _TERMINAL_RUN:
             return
         pending = [node.key for node in run.nodes if node.status in ("pending", "running", "waiting", "interrupted")]
         if pending:
             parked = run.with_status("parked", f"nodes still open: {', '.join(sorted(pending))}")
-            services.replace_state(state.with_run(parked).to_payload(), version, "session")
+            _store(services).save(state.with_run(parked), version)
             return
         failed = [node.key for node in run.nodes if node.status == "failed"]
         if failed:
             finished = run.with_status("failed", f"nodes failed: {', '.join(sorted(failed))}")
-            services.replace_state(state.with_run(finished).to_payload(), version, "session")
+            _store(services).save(state.with_run(finished), version)
             _notify_terminal(services, finished)
             return
         cancelled = [node.key for node in run.nodes if node.status == "cancelled"]
         if cancelled:
             finished = run.with_status("cancelled", f"nodes cancelled: {', '.join(sorted(cancelled))}")
-            services.replace_state(state.with_run(finished).to_payload(), version, "session")
+            _store(services).save(state.with_run(finished), version)
             _notify_terminal(services, finished)
             return
         raw = self.result_text.encode("utf-8")
@@ -1444,11 +1427,11 @@ class _CompleteRun:
         else:
             run = replace(run, result=self.result_text, result_sha256=None, result_bytes=len(raw))
         finished = run.with_status("completed", None)
-        services.replace_state(state.with_run(finished).to_payload(), version, "session")
+        _store(services).save(state.with_run(finished), version)
         _notify_terminal(services, finished)
 
 
-def _notify_terminal(services: PluginServices, run: WorkflowRun) -> None:
+def _notify_terminal(services: ChildServices, run: WorkflowRun) -> None:
     """Hand one bounded terminal notice back to the originating session, once per run."""
     if not run.notify_on_completion or run.status not in _TERMINAL_RUN:
         return
@@ -1477,7 +1460,7 @@ class _LoadFailed(Exception):
 
 
 def _load_script_for_action(context: BackgroundContext, run_id: str, workflow: str, workflows: Mapping[str, str]) -> WorkflowScript | None:
-    def describe(tool_context: ToolContext, services: PluginServices) -> tuple[Mapping[str, str], Path, str, str, str, str]:
+    def describe(tool_context: ToolContext, services: PluginServices) -> tuple[Mapping[str, str], Path, str, str, str]:
         return _describe_source(tool_context, services, run_id, workflow, workflows)
 
     def park_unreadable(_context: ToolContext, services: PluginServices) -> None:
@@ -1488,7 +1471,7 @@ def _load_script_for_action(context: BackgroundContext, run_id: str, workflow: s
     except Exception:  # noqa: BLE001 - state failures park visibly, never silently
         context.invoke(park_unreadable)
         return None
-    workflows, workspace, expected_path, expected_digest, _artifact, live = loaded
+    workflows, workspace, expected_path, expected_digest, live = loaded
     if live != expected_digest:
         message = f"workflow '{workflow}' source changed; refusing to resume a different script"
 
@@ -1498,7 +1481,7 @@ def _load_script_for_action(context: BackgroundContext, run_id: str, workflow: s
         context.invoke(mark_changed)
         raise _LoadFailed(message)
     try:
-        source = context.invoke(_ReadSource(_artifact))
+        source = context.invoke(_ReadSource(expected_digest))
     except (ValueError, RuntimeError, KeyError) as broken:
         detail = f"workflow '{workflow}' recorded source is unreadable: {broken}"
 
@@ -1565,23 +1548,21 @@ class _ReadSource:
 
 
 def _describe_source(
-    context: ToolContext, services: PluginServices, run_id: str, workflow: str, workflows: Mapping[str, str]
-) -> tuple[Mapping[str, str], Path, str, str, str, str]:
+    context: ToolContext, services: StateServices, run_id: str, workflow: str, workflows: Mapping[str, str]
+) -> tuple[Mapping[str, str], Path, str, str, str]:
     workspace = context.require_workspace()
-    state_data, _ = services.get_state("session")
-    run = WorkflowState.from_payload(state_data).runs.get(run_id)
+    run = _store(services).load()[0].runs.get(run_id)
     if run is None or run.workflow != workflow:
         raise ValueError(f"unknown workflow run: {run_id!r}")
     try:
         _relative, _source, live = snapshot_workflow_source(workflows, workspace, workflow)
     except ValueError as exc:
         raise ValueError(f"workflow '{workflow}' configured source is unreadable: {exc}") from exc
-    return workflows, workspace, run.source_path, run.source_sha256, run.source_artifact, live
+    return workflows, workspace, run.source_path, run.source_sha256, live
 
 
-def _describe_task(services: PluginServices, run_id: str, workflow: str, script: WorkflowScript) -> object:
-    state_data, _ = services.get_state("session")
-    run = WorkflowState.from_payload(state_data).runs.get(run_id)
+def _describe_task(services: StateServices, run_id: str, workflow: str, script: WorkflowScript) -> object:
+    run = _store(services).load()[0].runs.get(run_id)
     if run is None or run.workflow != workflow:
         raise ValueError(f"unknown workflow run: {run_id!r}")
     if run.source_sha256 != script.source_sha256:
@@ -1590,18 +1571,17 @@ def _describe_task(services: PluginServices, run_id: str, workflow: str, script:
 
 
 def _mark_run(services: PluginServices, run_id: str, status: RunStatus, error: str | None) -> bool:
-    state_data, version = services.get_state("session")
-    state = WorkflowState.from_payload(state_data)
+    state, version = _store(services).load()
     run = state.runs.get(run_id)
     if run is None or run.status in _TERMINAL_RUN:
         return False
     finished = run.with_status(status, error)
-    services.replace_state(state.with_run(finished).to_payload(), version, "session")
+    _store(services).save(state.with_run(finished), version)
     _notify_terminal(services, finished)
     return True
 
 
-def _refuse_live_driver(services: PluginServices, run: WorkflowRun) -> str | None:
+def _refuse_live_driver(services: ScheduledWorkServices, run: WorkflowRun) -> str | None:
     """Refuse resume only when the recorded driver is genuinely still driving.
 
     A close/crash can leave the run row `running` while its action already
@@ -1749,9 +1729,9 @@ def _start_run(
 ) -> _StartedRun:
     """Snapshot one configured script, record the run, and enqueue its driver action."""
     relative, source, digest = snapshot_workflow_source(workflows, workspace, workflow)
-    state_data, version = services.get_state("session")
-    state = WorkflowState.from_payload(state_data)
-    reference = services.spill_artifact(source, media_type="text/x-python; charset=utf-8")
+    state, version = _store(services).load()
+    # The spill persists the recorded bytes; source_sha256 (the same digest) addresses them back.
+    _reference = services.spill_artifact(source, media_type="text/x-python; charset=utf-8")
     run_id = uuid4().hex
     now = _clock_ms()
     run = WorkflowRun(
@@ -1760,7 +1740,6 @@ def _start_run(
         workflow=workflow,
         source_path=relative,
         source_sha256=digest,
-        source_artifact=reference.sha256,
         task=task,
         input_sha256=_digest(task),
         notify_on_completion=notify_on_completion,
@@ -1769,7 +1748,7 @@ def _start_run(
     )
     action_id = services.enqueue_background_action({"kind": "workflow", "run_id": run_id, "workflow": workflow}, idempotency_key=f"workflow:{run_id}")
     run = replace(run, action_id=action_id)
-    services.replace_state(state.with_run(run).to_payload(), version, "session")
+    _store(services).save(state.with_run(run), version)
     return _StartedRun(run_id=run_id, action_id=action_id, workflow=workflow)
 
 
@@ -1840,7 +1819,7 @@ class _WorkflowRunInput:
 
     def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
         _ = invocation
-        state = WorkflowState.from_payload(services.get_state("session")[0])
+        state = _store(services).load()[0]
         action = self.definition.name
         runs = sorted(state.runs.values(), key=lambda run: run.updated_at, reverse=True)
         if action != "workflow.status":
@@ -1900,7 +1879,7 @@ class WorkflowStatusCommand(_WorkflowRunInput):
         if not isinstance(result_offset, int) or isinstance(result_offset, bool) or result_offset < 0:
             return CommandResult(status="error", error="workflow.status 'result_offset' must be a non-negative integer")
         try:
-            state = WorkflowState.from_payload(services.get_state("session")[0])
+            state = _store(services).load()[0]
         except ValueError as exc:
             return CommandResult(status="error", error=str(exc))
         run = state.runs.get(raw)
@@ -2024,7 +2003,7 @@ class WorkflowStatusCommand(_WorkflowRunInput):
         )
 
 
-def _run_result_page(services: PluginServices, run: WorkflowRun, offset: int) -> tuple[str, int]:
+def _run_result_page(services: ArtifactServices, run: WorkflowRun, offset: int) -> tuple[str, int]:
     if run.result is not None:
         raw = run.result.encode("utf-8")
         return _utf8_page(raw, offset), len(raw)
@@ -2035,7 +2014,7 @@ def _run_result_page(services: PluginServices, run: WorkflowRun, offset: int) ->
     return text, total
 
 
-def _result_page(services: PluginServices, node: WorkflowNode, offset: int) -> tuple[str, int]:
+def _result_page(services: ArtifactServices, node: WorkflowNode, offset: int) -> tuple[str, int]:
     if node.output is not None:
         raw = node.output.encode("utf-8")
         return _utf8_page(raw, offset), len(raw)
@@ -2046,7 +2025,7 @@ def _result_page(services: PluginServices, node: WorkflowNode, offset: int) -> t
     return text, total
 
 
-def _read_artifact_page(services: PluginServices, sha256: str, offset: int) -> str:
+def _read_artifact_page(services: ArtifactServices, sha256: str, offset: int) -> str:
     """One bounded artifact page, cut only on UTF-8 character boundaries (strict decode)."""
     page = services.read_artifact(sha256, offset=offset, limit=RESULT_PAGE_BYTES + 3)
     window = bytes(page.data)
@@ -2091,8 +2070,7 @@ class WorkflowPauseCommand(_WorkflowRunInput):
         if not isinstance(raw, str) or not raw:
             return CommandResult(status="error", error="workflow.pause requires a non-empty 'run_id'")
         try:
-            state_data, version = services.get_state("session")
-            state = WorkflowState.from_payload(state_data)
+            state, version = _store(services).load()
         except ValueError as exc:
             return CommandResult(status="error", error=str(exc))
         run = state.runs.get(raw)
@@ -2106,7 +2084,7 @@ class WorkflowPauseCommand(_WorkflowRunInput):
             except (ValueError, RuntimeError) as exc:
                 return CommandResult(status="error", error=f"workflow run '{raw}' failed to pause: {exc}")
         try:
-            services.replace_state(state.with_run(run.with_status("paused", None)).to_payload(), version, "session")
+            _store(services).save(state.with_run(run.with_status("paused", None)), version)
         except (ValueError, RuntimeError) as exc:
             return CommandResult(status="error", error=f"workflow run '{raw}' failed to pause: {exc}")
         return CommandResult(
@@ -2138,8 +2116,7 @@ class WorkflowResumeCommand(_WorkflowRunInput):
             return CommandResult(status="error", error="workflow.resume requires a non-empty 'run_id'")
         try:
             workspace = invocation.context.require_workspace()
-            state_data, version = services.get_state("session")
-            state = WorkflowState.from_payload(state_data)
+            state, version = _store(services).load()
         except (ValueError, RuntimeError) as exc:
             return CommandResult(status="error", error=str(exc))
         run = state.runs.get(raw)
@@ -2165,7 +2142,7 @@ class WorkflowResumeCommand(_WorkflowRunInput):
             return CommandResult(status="error", error=f"workflow run '{raw}' failed to resume: {exc}")
         run = replace(run.with_status("running", None), action_id=action_id)
         try:
-            services.replace_state(state.with_run(run).to_payload(), version, "session")
+            _store(services).save(state.with_run(run), version)
         except (ValueError, RuntimeError) as exc:
             return CommandResult(status="error", error=f"workflow run '{raw}' failed to resume: {exc}")
         return CommandResult(
@@ -2196,8 +2173,7 @@ class WorkflowCancelCommand(_WorkflowRunInput):
         if not isinstance(raw, str) or not raw:
             return CommandResult(status="error", error="workflow.cancel requires a non-empty 'run_id'")
         try:
-            state_data, version = services.get_state("session")
-            state = WorkflowState.from_payload(state_data)
+            state, version = _store(services).load()
         except ValueError as exc:
             return CommandResult(status="error", error=str(exc))
         run = state.runs.get(raw)
@@ -2250,8 +2226,7 @@ class WorkflowCancelCommand(_WorkflowRunInput):
                 return CommandResult(status="error", error=f"workflow run '{raw}' failed to cancel: {exc}")
         # Re-read after the slow RPCs: the driver may have committed while we cancelled.
         try:
-            state_data, version = services.get_state("session")
-            state = WorkflowState.from_payload(state_data)
+            state, version = _store(services).load()
         except ValueError as exc:
             return CommandResult(status="error", error=str(exc))
         run = state.runs.get(raw)
@@ -2265,7 +2240,7 @@ class WorkflowCancelCommand(_WorkflowRunInput):
         )
         run = replace(run.with_status("cancelled", "owner cancellation"), nodes=nodes)
         try:
-            services.replace_state(state.with_run(run).to_payload(), version, "session")
+            _store(services).save(state.with_run(run), version)
         except (ValueError, RuntimeError) as exc:
             return CommandResult(status="error", error=f"workflow run '{raw}' failed to cancel: {exc}")
         return CommandResult(
@@ -2285,7 +2260,7 @@ class WorkflowStatusView:
     def render(self, session_id: str, services: PluginServices) -> PluginViewDescriptor:
         _ = session_id
         try:
-            state = WorkflowState.from_payload(services.get_state("session")[0])
+            state = _store(services).load()[0]
         except ValueError:
             return PluginViewDescriptor(
                 owner="workflows", name=self.name, title="Workflows", view_type="notice", data={"message": "State unreadable."}
@@ -2344,7 +2319,7 @@ def prepare_workflows_deactivation(
 ) -> Mapping[str, object]:
     """Park every live run: the driver is gone, children stay core-owned for resume."""
     _ = (scope, scope_key, tip_sequence)
-    decoded = WorkflowState.from_payload(state if isinstance(state, Mapping) else None)
+    decoded = WorkflowState.from_payload(state) if isinstance(state, Mapping) else WorkflowState(MappingProxyType({}))
     parked = {
         run_id: run.with_status("parked", "workflows disabled; resume after re-enable") if run.status in ("running", "paused") else run
         for run_id, run in decoded.runs.items()

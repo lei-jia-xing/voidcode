@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.sdk.plugin import PluginQuery, PluginQueryCaller
-from voidcode.sdk.services import PluginServices, QueryContractError
+from voidcode.sdk.services import QueryContractError, ToolServices
 
 AGENT_DEFINITION_QUERY = "workspace.agent_definition"
 
@@ -98,7 +98,7 @@ class AgentDefinitionRequest(BaseModel):
 class _AgentDefinitionQuery:
     name: str = AGENT_DEFINITION_QUERY
 
-    def ask(self, services: PluginServices, request: AgentDefinitionRequest) -> AgentDefinition | None:
+    def ask(self, services: ToolServices, request: AgentDefinitionRequest) -> AgentDefinition | None:
         value = services.query(self.name, request.model_dump())
         if value is None:
             return None

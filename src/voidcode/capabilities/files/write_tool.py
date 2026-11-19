@@ -13,8 +13,8 @@ from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
+    Change,
     ConfirmedStop,
-    ResourceChange,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -194,5 +194,5 @@ class WriteTool:
             self.definition.name,
             output=TextOutput(output_text),
             body=body,
-            changes=(ResourceChange(display_path, "create" if initial_stat is None else "update"),),
+            changes=(Change(display_path, "create" if initial_stat is None else "update"),),
         )

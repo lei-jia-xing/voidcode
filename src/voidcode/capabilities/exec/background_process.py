@@ -22,7 +22,7 @@ from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.resources import ResourceReaderServices
-from voidcode.sdk.services import PluginServices, ProcessHandle
+from voidcode.sdk.services import PluginServices, ProcessHandle, ProcessServices, StateServices
 from voidcode.sdk.tools import (
     ConfirmedStop,
     OutputBounds,
@@ -323,7 +323,7 @@ class _ProcessState(BaseModel):
     processes: dict[str, _ProcessRecord]
 
 
-def _read_records(services: PluginServices | ResourceReaderServices) -> tuple[dict[str, _ProcessRecord], int]:
+def _read_records(services: StateServices | ResourceReaderServices) -> tuple[dict[str, _ProcessRecord], int]:
     """Validate persisted identities once; malformed state is never an empty inventory."""
     state, version = services.get_state("workspace")
     if state is None:
@@ -335,7 +335,7 @@ def _read_records(services: PluginServices | ResourceReaderServices) -> tuple[di
     return parsed.processes, version
 
 
-def _write_records(services: PluginServices, records: Mapping[str, _ProcessRecord], version: int) -> int:
+def _write_records(services: StateServices, records: Mapping[str, _ProcessRecord], version: int) -> int:
     return services.replace_state(
         {"schema_version": _STATE_VERSION, "processes": {name: record.model_dump(exclude_unset=True) for name, record in records.items()}},
         expected_version=version,
@@ -386,7 +386,7 @@ def _identity_record(*, handle: ProcessHandle, command: str, description: str, o
     return record
 
 
-def _live_handle(services: PluginServices, process_id: str) -> ProcessHandle | None:
+def _live_handle(services: ProcessServices, process_id: str) -> ProcessHandle | None:
     """This session's handle for one process; `None` when the host does not supervise that id."""
     for handle in services.list_processes():
         if handle.process_id == process_id:
@@ -394,7 +394,7 @@ def _live_handle(services: PluginServices, process_id: str) -> ProcessHandle | N
     return None
 
 
-def _scan_stream(services: PluginServices, process_id: str, stream: _StreamName) -> _StreamScan:
+def _scan_stream(services: ProcessServices, process_id: str, stream: _StreamName) -> _StreamScan:
     """Every line of one stream's log, read out of the host's bounded byte windows.
 
     Lines retain endings with CRLF normalized to LF. The scan stops at a byte
@@ -412,7 +412,7 @@ def _scan_stream(services: PluginServices, process_id: str, stream: _StreamName)
             return _StreamScan(lines=text.splitlines(keepends=True), truncated=not page.eof)
 
 
-def _wait_for_ready(services: PluginServices, process_id: str, *, pattern: str | None, timeout: float, context: ToolContext) -> bool | None:
+def _wait_for_ready(services: ProcessServices, process_id: str, *, pattern: str | None, timeout: float, context: ToolContext) -> bool | None:
     """Whether the process printed `pattern`; `None` when not requested or waiting was cancelled.
 
     Both streams are polled from the byte the last poll consumed, keeping the legacy tail window,

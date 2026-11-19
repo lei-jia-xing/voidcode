@@ -1,4 +1,4 @@
-"""ToolDefinition wire compat: undeclared output schemas encode byte-identically."""
+"""ToolDefinition wire bytes: output_schema is always present (null when undeclared)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ def _canonical(payload: dict[str, object]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def test_definition_without_output_schema_omits_the_key() -> None:
+def test_definition_without_output_schema_emits_null() -> None:
     definition = ToolDefinition(
         name="grep",
         description="Search text.",
@@ -25,7 +25,6 @@ def test_definition_without_output_schema_omits_the_key() -> None:
         icon=Icon(glyph="⌕"),
     )
     payload = encode_tool_definition(definition)
-    assert "output_schema" not in payload
     assert payload == {
         "name": "grep",
         "description": "Search text.",
@@ -34,6 +33,7 @@ def test_definition_without_output_schema_omits_the_key() -> None:
         "path_argument_keys": ["path"],
         "replay_policy": "safe",
         "icon": {"glyph": "⌕"},
+        "output_schema": None,
     }
     assert _canonical(payload) == (
         '{"description":"Search text.",'
@@ -41,12 +41,13 @@ def test_definition_without_output_schema_omits_the_key() -> None:
         '"icon":{"glyph":"⌕"},'
         '"input_schema":{"properties":{"pattern":{"type":"string"}},"type":"object"},'
         '"name":"grep",'
+        '"output_schema":null,'
         '"path_argument_keys":["path"],'
         '"replay_policy":"safe"}'
     )
 
 
-def test_minimal_definition_pins_nulls_and_absence() -> None:
+def test_minimal_definition_pins_nulls() -> None:
     payload = encode_tool_definition(ToolDefinition(name="x", description="y"))
     assert payload == {
         "name": "x",
@@ -56,6 +57,7 @@ def test_minimal_definition_pins_nulls_and_absence() -> None:
         "path_argument_keys": [],
         "replay_policy": None,
         "icon": None,
+        "output_schema": None,
     }
 
 

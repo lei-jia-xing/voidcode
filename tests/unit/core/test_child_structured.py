@@ -28,7 +28,7 @@ _SCHEMA = {
 }
 
 
-def _expected_legacy_hash() -> str:
+def _expected_hash() -> str:
     encoded = canonical_json(
         {
             "prompt": "base",
@@ -39,14 +39,15 @@ def _expected_legacy_hash() -> str:
             "root_action_budget": None,
             "label": "",
             "notify_on_completion": False,
+            "result_schema": None,
         }
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def test_undeclared_spec_hash_matches_legacy_eight_fields() -> None:
-    assert DelegationManager._spawn_spec_hash("base", None, None, False, "root-1", None, "", False) == _expected_legacy_hash()
-    assert DelegationManager._spawn_spec_hash("base", None, None, False, "root-1", None, "", False, result_schema=None) == _expected_legacy_hash()
+def test_undeclared_spec_hash_carries_explicit_null_schema() -> None:
+    assert DelegationManager._spawn_spec_hash("base", None, None, False, "root-1", None, "", False) == _expected_hash()
+    assert DelegationManager._spawn_spec_hash("base", None, None, False, "root-1", None, "", False, result_schema=None) == _expected_hash()
 
 
 def test_declared_schema_alters_spec_hash() -> None:

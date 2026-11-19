@@ -14,11 +14,14 @@ from pathlib import Path
 from typing import Literal, Self, cast
 from uuid import uuid4
 
-from ...sdk.json_values import json_wire_object, own_json_object
+from ...sdk.json_values import json_wire_object, json_wire_value, own_json_object
 from ...sdk.services import PluginBudget, SessionInfo
 from ..events import CHILD_MESSAGE_OWNER, EventType
 
-SCHEMA_MAGIC = "voidcode-kernel-v1"
+#: SQLite file-header identity of a voidcode database: b'VOID' plus the schema version.
+#: The store checks both PRAGMAs on its single connection before setting any write
+#: pragma; foreign or legacy files are refused without a single byte written.
+APPLICATION_ID = 0x564F4944
 SCHEMA_VERSION = 6
 
 #: SQLite filename owned by the store, under the injected state directory.
@@ -69,30 +72,6 @@ class StoreConflict(StorageError):
     """Raised when an optimistic concurrency check fails or state is stale."""
 
 
-_WAKEUP_PAYLOAD_KEY = "_voidcode_core_wakeup"
-
-
-def _decode_wakeup_payload(value: object, wakeup_id: str) -> tuple[Mapping[str, object], str, int | None]:
-    if not isinstance(value, Mapping):
-        raise StoreConflict(f"wakeup {wakeup_id!r} has no captured root authorization")
-    stored = own_json_object(value)
-    envelope = stored.get(_WAKEUP_PAYLOAD_KEY)
-    if not isinstance(envelope, Mapping):
-        raise StoreConflict(f"wakeup {wakeup_id!r} has no captured root authorization")
-    root_id = envelope.get("root_id")
-    root_budget = envelope.get("root_action_budget")
-    payload = envelope.get("payload")
-    if "root_action_budget" not in envelope or not isinstance(root_id, str) or not root_id or "\0" in root_id or not isinstance(payload, Mapping):
-        raise StoreConflict(f"wakeup {wakeup_id!r} has a malformed root authorization envelope")
-    if root_budget is None:
-        validated_budget = None
-    elif type(root_budget) is int and root_budget >= 0:
-        validated_budget = root_budget
-    else:
-        raise StoreConflict(f"wakeup {wakeup_id!r} has a malformed root authorization envelope")
-    return own_json_object(payload), root_id, validated_budget
-
-
 class SequenceConflict(StoreConflict):
     """The session advanced between the caller's snapshot and its atomic CAS.
 
@@ -111,6 +90,15 @@ class RootBudgetExhausted(StoreConflict):
         self.reserved = reserved
 
 
+class AskAnswerConflict(StoreConflict):
+    """An ask already has a terminal answer event; adoption must happen exactly once."""
+
+    def __init__(self, session_id: str, request_id: str) -> None:
+        super().__init__(f"ask {request_id!r} in session {session_id!r} already has a terminal answer")
+        self.session_id = session_id
+        self.request_id = request_id
+
+
 class FencedSubtree(StoreConflict):
     """A child registration or follow-up enqueue landed inside a fenced subtree."""
 
@@ -118,6 +106,55 @@ class FencedSubtree(StoreConflict):
         super().__init__(f"session {session_id!r} is inside subtree {fence!r} under cancellation")
         self.fence = fence
         self.session_id = session_id
+
+
+class StaleRevision(ValueError):
+    """A client acted on a displayed catalog revision that has since moved."""
+
+    def __init__(self, message: str, expected_revision: str, actual_revision: str) -> None:
+        super().__init__(message)
+        self.expected_revision = expected_revision
+        self.actual_revision = actual_revision
+
+
+class InvalidRevision(ValueError):
+    """A client action carried an empty or non-string expected-revision binding."""
+
+    def __init__(self, message: str, value: object) -> None:
+        super().__init__(message)
+        self.value = value
+
+
+class UnknownSession(StoreConflict):
+    """A session id names no known session. Still a StoreConflict: CAS handlers keep working; the transport maps it 404 by type."""
+
+    def __init__(self, message: str, session_id: str) -> None:
+        super().__init__(message)
+        self.session_id = session_id
+
+
+class UnknownConfirmation(StoreConflict):
+    """A confirmation id is unknown or no longer pending (indistinguishable without an extra read)."""
+
+    def __init__(self, message: str, request_id: str) -> None:
+        super().__init__(message)
+        self.request_id = request_id
+
+
+class UnknownContinuation(StoreConflict):
+    """A continuation id names no known continuation."""
+
+    def __init__(self, message: str, continuation_id: str) -> None:
+        super().__init__(message)
+        self.continuation_id = continuation_id
+
+
+class UnknownWorkspace(ValueError):
+    """A workspace path names no existing directory."""
+
+    def __init__(self, message: str, workspace: Path) -> None:
+        super().__init__(message)
+        self.workspace = workspace
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +210,18 @@ class Checkpoint:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", own_json_object(self.payload))
+
+
+@dataclass(frozen=True, slots=True)
+class WaitingAskPark:
+    """One waiting session's live ask binding, as the expiry sweep lists it."""
+
+    session_id: str
+    run_id: str
+    revision_id: str
+    ask_sequence: int
+    ask_request_id: str
+    checkpoint_sequence: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,10 +330,40 @@ class StagedWakeup:
         object.__setattr__(self, "payload", own_json_object(self.payload))
 
 
-#: `continuations.source` value marking one row as a plugin-owned background action. The
-#: discriminator is the core-controlled column, never `payload.kind`: ordinary model
-#: continuations accept arbitrary JSON and must pass through untouched.
+#: `StagedContinuationDraft.source` value routing one staged draft to the background
+#: actions table at commit. Stored rows are namespaced by table; this marker lives
+#: only on the staged draft, never in a stored row.
 BACKGROUND_ACTION_SOURCE = "@core/background"
+
+
+def _background_record(row: Sequence[object], *, status: str | None = None) -> ContinuationRecord:
+    """Project one background_actions row onto the caller-visible continuation shape.
+
+    Columns are the durable truth; the payload dict only reassembles the keys drivers
+    and status readers expect. The stored action passes through verbatim.
+    """
+    action = json.loads(str(row[8]))
+    payload: dict[str, object] = {
+        "action": action if isinstance(action, Mapping) else {},
+        "root_action_budget": row[6],
+        "tool_wait_authority": None if row[9] is None else own_json_object(json.loads(str(row[9]))),
+    }
+    if row[11] is not None:
+        payload["error"] = str(row[11])
+    return ContinuationRecord(
+        continuation_id=str(row[0]),
+        owner=str(row[1]),
+        session_id=str(row[2]),
+        source="",
+        run_id="",
+        revision_id=str(row[3]),
+        idempotency_key=None if row[4] is None else str(row[4]),
+        status=status if status is not None else str(row[7]),
+        payload=payload,
+        created_at=row[12] if isinstance(row[12], int) else 0,
+        updated_at=row[13] if isinstance(row[13], int) else 0,
+        root_id=str(row[5]),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,6 +440,11 @@ def canonical_json(value: Mapping[str, object]) -> str:
     )
 
 
+def _canonical_json_value(value: object) -> str:
+    """Canonical JSON for one pre-validated JSON value (a staged background action part)."""
+    return json.dumps(json_wire_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
 def _allowlist_from_json(raw: object) -> tuple[str, ...] | None:
     """Decode a session tool scope, refusing anything that is not a list of names."""
     if not isinstance(raw, str) or not raw:
@@ -373,10 +457,10 @@ def _allowlist_from_json(raw: object) -> tuple[str, ...] | None:
 
 def _session_record(row: tuple[object, ...]) -> SessionRecord:
     """Map one sessions row onto its immutable record, including delegation lineage."""
-    allowlist = _allowlist_from_json(row[10] if len(row) > 10 else None)
-    root = row[8] if len(row) > 8 and isinstance(row[8], str) and row[8] else str(row[0])
-    parent = row[7] if len(row) > 7 and isinstance(row[7], str) and row[7] else None
-    depth = row[9] if len(row) > 9 and isinstance(row[9], int) else 0
+    allowlist = _allowlist_from_json(row[10])
+    root = row[8] if isinstance(row[8], str) and row[8] else str(row[0])
+    parent = row[7] if isinstance(row[7], str) and row[7] else None
+    depth = row[9] if isinstance(row[9], int) else 0
     return SessionRecord(
         session_id=str(row[0]),
         workspace=str(row[1]),
@@ -392,155 +476,97 @@ def _session_record(row: tuple[object, ...]) -> SessionRecord:
     )
 
 
+def _continuation_kind(payload: Mapping[str, object]) -> str | None:
+    """Derive the indexable child-message kind; non-text kinds stay invisible, never loud.
+
+    Model payloads are arbitrary JSON: only a text kind can ever match the child
+    filters, so anything else maps to NULL exactly like a missing key.
+    """
+    kind = payload.get("kind")
+    return kind if isinstance(kind, str) else None
+
+
+def _checkpoint_index_values(payload: Mapping[str, object]) -> tuple[str | None, int | None, int | None, str | None]:
+    """Derive the indexed checkpoint columns from the payload dict; wrong types fail loudly."""
+    root_value = payload.get("root_id")
+    if root_value is None:
+        root_id: str | None = None
+    elif isinstance(root_value, str):
+        root_id = root_value
+    else:
+        raise ValueError("checkpoint root_id must be text or null")
+    approval_value = payload.get("approval_sequence")
+    if approval_value is None:
+        approval: int | None = None
+    elif type(approval_value) is int:
+        approval = approval_value
+    else:
+        raise ValueError("checkpoint approval_sequence must be an integer or null")
+    ask_sequence_value = payload.get("ask_sequence")
+    if ask_sequence_value is None:
+        ask_sequence: int | None = None
+    elif type(ask_sequence_value) is int:
+        ask_sequence = ask_sequence_value
+    else:
+        raise ValueError("checkpoint ask_sequence must be an integer or null")
+    ask_request_value = payload.get("ask_request_id")
+    if ask_request_value is None:
+        ask_request_id: str | None = None
+    elif isinstance(ask_request_value, str):
+        ask_request_id = ask_request_value
+    else:
+        raise ValueError("checkpoint ask_request_id must be text or null")
+    return (root_id, approval, ask_sequence, ask_request_id)
+
+
 def _load_schema_sql() -> str:
     return files("voidcode.core.storage").joinpath("schema.sql").read_text(encoding="utf-8")
 
 
-def _verify_existing_file(path: Path, *, supported: frozenset[int] | None = None, enforce_version: bool = True) -> int:
-    """Verify an existing file without altering a single byte.
-
-    Returns the recorded schema version. ``supported`` names every version this caller
-    understands (tables are checked after the version, so a recorded version that is not
-    supported refuses before a single table is read). Defaults to the current version only.
-    With ``enforce_version=False`` the magic and table matrix are still verified, but any
-    recorded version passes and the caller classifies it.
-    """
+def _check_regular_nonempty(path: Path) -> None:
+    """Refuse paths that are not a usable pre-existing database file."""
     if not path.is_file():
         raise ForeignDatabaseError(f"database path exists but is not a regular file: {path}")
     if path.stat().st_size == 0:
         raise ForeignDatabaseError(f"refusing pre-existing empty database file: {path}")
 
-    uri = f"{path.resolve().as_uri()}?mode=ro"
+
+def _read_file_identity(connection: sqlite3.Connection, path: Path) -> tuple[int, int]:
+    """Read the file-header identity of an open database without writing anything."""
     try:
-        probe = sqlite3.connect(uri, uri=True)
+        app_id = connection.execute("PRAGMA application_id").fetchone()
+        user_version = connection.execute("PRAGMA user_version").fetchone()
     except sqlite3.Error as exc:
         raise ForeignDatabaseError(f"unsupported database file: {path}") from exc
-
-    expected = frozenset({SCHEMA_VERSION}) if supported is None else supported
-    try:
-        cursor = probe.execute("SELECT magic, schema_version FROM kernel_identity WHERE id = 1")
-        row = cursor.fetchone()
-        if row is None or row[0] != SCHEMA_MAGIC or (enforce_version and row[1] not in expected):
-            raise ForeignDatabaseError(
-                f"database is not a valid voidcode database: unsupported identity in {path}: "
-                f"expected ({SCHEMA_MAGIC!r}, {sorted(expected)}), got {row!r}"
-            )
-        recorded = int(row[1])
-        cursor = probe.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = {r[0] for r in cursor.fetchall()}
-        required = {
-            "kernel_identity",
-            "revisions",
-            "sessions",
-            "session_events",
-            "checkpoints",
-            "plugin_state",
-            "action_confirmations",
-            "continuations",
-            "session_budgets",
-            "observer_receipts",
-            "root_budgets",
-            "workspace_state",
-            "wakeups",
-            "session_overlays",
-            "window_projections",
-        }
-        if not required.issubset(tables):
-            raise ForeignDatabaseError(f"unsupported database file or missing tables in {path}: missing {required - tables}")
-        cursor = probe.execute("PRAGMA table_info(plugin_state)")
-        plugin_state_cols = {r[1] for r in cursor.fetchall()}
-        required_plugin_state_cols = {
-            "scope",
-            "scope_key",
-            "owner",
-            "version",
-            "schema_version",
-            "revision_id",
-            "payload_json",
-            "updated_at",
-        }
-        if not required_plugin_state_cols.issubset(plugin_state_cols):
-            raise ForeignDatabaseError(f"unsupported plugin_state schema in {path}: missing {required_plugin_state_cols - plugin_state_cols}")
-
-        cursor = probe.execute("PRAGMA table_info(continuations)")
-        continuation_cols = {r[1] for r in cursor.fetchall()}
-        required_continuation_cols = {
-            "continuation_id",
-            "owner",
-            "session_id",
-            "source",
-            "run_id",
-            "revision_id",
-            "idempotency_key",
-            "root_id",
-            "status",
-            "payload_json",
-            "created_at",
-            "updated_at",
-        }
-        if not required_continuation_cols.issubset(continuation_cols):
-            raise ForeignDatabaseError(f"unsupported continuations schema in {path}: missing {required_continuation_cols - continuation_cols}")
-
-        cursor = probe.execute("PRAGMA table_info(root_budgets)")
-        root_cols = {r[1] for r in cursor.fetchall()}
-        required_root_cols = {"root_id", "budget", "reserved", "created_at", "updated_at"}
-        if not required_root_cols.issubset(root_cols):
-            raise ForeignDatabaseError(f"unsupported root_budgets schema in {path}: missing {required_root_cols - root_cols}")
-
-        cursor = probe.execute("PRAGMA table_info(session_budgets)")
-        budget_cols = {r[1] for r in cursor.fetchall()}
-        required_budget_cols = {
-            "session_id",
-            "owner",
-            "since_sequence",
-            "max_input_tokens",
-            "max_output_tokens",
-            "max_total_tokens",
-            "max_cost_usd",
-            "max_elapsed_seconds",
-            "created_at",
-            "updated_at",
-        }
-        if not required_budget_cols.issubset(budget_cols):
-            raise ForeignDatabaseError(f"unsupported session_budgets schema in {path}: missing {required_budget_cols - budget_cols}")
-
-        cursor = probe.execute("PRAGMA table_info(wakeups)")
-        wakeup_cols = {r[1] for r in cursor.fetchall()}
-        required_wakeup_cols = {"wakeup_id", "owner", "workspace", "session_id", "payload_json", "role", "due_at", "status", "claim_run_id"}
-        if not required_wakeup_cols.issubset(wakeup_cols):
-            raise ForeignDatabaseError(f"unsupported wakeups schema in {path}: missing {required_wakeup_cols - wakeup_cols}")
-
-        cursor = probe.execute("PRAGMA table_info(observer_receipts)")
-        receipt_cols = {r[1] for r in cursor.fetchall()}
-        required_receipt_cols = {"session_id", "event_sequence", "owner", "created_at"}
-        if not required_receipt_cols.issubset(receipt_cols) or "generation" in receipt_cols:
-            raise ForeignDatabaseError(f"unsupported observer_receipts schema in {path}: expected per-(event, owner) receipts")
-
-        cursor = probe.execute("PRAGMA table_info(workspace_state)")
-        workspace_cols = {r[1] for r in cursor.fetchall()}
-        required_workspace_cols = {"workspace", "active_revision_id", "updated_at"}
-        if not required_workspace_cols.issubset(workspace_cols):
-            raise ForeignDatabaseError(f"unsupported workspace_state schema in {path}: missing {required_workspace_cols - workspace_cols}")
-        return recorded
-    except sqlite3.Error as exc:
-        raise ForeignDatabaseError(f"database is not a valid voidcode database: unsupported database file or missing identity: {path}") from exc
-    finally:
-        probe.close()
+    return (int(app_id[0]), int(user_version[0]))
 
 
-#: Database versions whose table matrix the current code can read. This build reads exactly its
-#: own schema; anything else refuses visibly. A schema change ships with its own transition.
-READABLE_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
+def _check_identity(app_id: int, user_version: int, path: Path) -> None:
+    """Refuse any database whose file-header identity is not this build's own."""
+    if app_id != APPLICATION_ID or user_version != SCHEMA_VERSION:
+        raise ForeignDatabaseError(
+            f"database is not a valid voidcode database: unsupported identity in {path}: "
+            f"expected ({APPLICATION_ID:#x}, {SCHEMA_VERSION}), got ({app_id:#x}, {user_version})"
+        )
 
 
 def open_read_only(database: Path) -> sqlite3.Connection:
     """Open one core database for inspection, with writes refused by the connection itself.
-    Uses a ``mode=ro`` URI plus ``PRAGMA query_only``, after the same identity check a writer runs.
-    Accepts any recorded version whose magic and table matrix verify; foreign files raise.
-    Callers that need version semantics classify the recorded version themselves.
+
+    Uses a ``mode=ro`` URI plus ``PRAGMA query_only``, after the PRAGMA identity
+    check a writer runs. Foreign files raise without a single byte written.
     """
-    _verify_existing_file(database, supported=READABLE_SCHEMA_VERSIONS, enforce_version=False)
-    connection = sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True)
+    _check_regular_nonempty(database)
+    try:
+        connection = sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        raise ForeignDatabaseError(f"unsupported database file: {database}") from exc
+    try:
+        app_id, user_version = _read_file_identity(connection, database)
+        _check_identity(app_id, user_version, database)
+    except Exception:
+        connection.close()
+        raise
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA query_only = ON")
     return connection
@@ -549,18 +575,17 @@ def open_read_only(database: Path) -> sqlite3.Connection:
 def inspect_existing_workspace(database: Path, workspace: str) -> tuple[str | None, Mapping[str, object] | None, int | None]:
     """Read one workspace's adopted revision without creating or changing anything.
 
-    Returns ``(None, None, None)`` when there is no database, ``(None, None, recorded_schema)``
-    when the workspace has no adopted revision, ``(revision_id, payload, recorded_schema)`` when
+    Returns ``(None, None, None)`` when there is no database, ``(None, None, schema)``
+    when the workspace has no adopted revision, ``(revision_id, payload, schema)`` when
     it has one, and raises for a file that is not a core database. Never writes, never sets
-    write pragmas. Accepts every version the current code can read, so the caller can decide
-    between restore and transition.
+    write pragmas. This build opens exactly its own schema; foreign files are refused.
     """
     if not database.exists():
         return (None, None, None)
     probe = open_read_only(database)
     try:
-        identity = probe.execute("SELECT schema_version FROM kernel_identity WHERE id = 1").fetchone()
-        schema = int(identity["schema_version"])
+        identity = probe.execute("PRAGMA user_version").fetchone()
+        schema = int(identity[0])
         cursor = probe.execute("SELECT active_revision_id FROM workspace_state WHERE workspace = ?", (workspace,))
         row = cursor.fetchone()
         if row is None:
@@ -610,7 +635,6 @@ class SqliteStore:
         is_memory = str(path) == ":memory:"
         is_new = False
         resolved_path: Path | None = None
-        recorded_schema = SCHEMA_VERSION
 
         if not is_memory:
             resolved_path = path.resolve()
@@ -618,14 +642,13 @@ class SqliteStore:
             try:
                 descriptor = os.open(resolved_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError:
-                recorded_schema = _verify_existing_file(resolved_path)
+                _check_regular_nonempty(resolved_path)
             else:
                 os.close(descriptor)
                 is_new = True
         else:
             is_new = True
 
-        self._recorded_schema = recorded_schema
         self._connection = sqlite3.connect(
             str(resolved_path) if resolved_path is not None else ":memory:",
             timeout=5.0,
@@ -633,27 +656,24 @@ class SqliteStore:
             check_same_thread=False,
         )
         try:
+            if not is_new:
+                assert resolved_path is not None
+                app_id, user_version = _read_file_identity(self._connection, resolved_path)
+                _check_identity(app_id, user_version, resolved_path)
             self._connection.execute("PRAGMA busy_timeout = 5000")
             self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute("PRAGMA foreign_keys = ON")
             if is_new:
                 self._connection.executescript(_load_schema_sql())
                 self._connection.execute("PRAGMA foreign_keys = ON")
-                self._connection.execute(
-                    "INSERT INTO kernel_identity (id, magic, schema_version) VALUES (1, ?, ?)",
-                    (SCHEMA_MAGIC, SCHEMA_VERSION),
-                )
+                self._connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+                self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         except Exception:
             self._connection.close()
             self._closed = True
             if is_new and resolved_path is not None:
                 resolved_path.unlink(missing_ok=True)
             raise
-
-    @property
-    def recorded_schema(self) -> int:
-        """The schema version the opened file records (this build opens exactly its own schema)."""
-        return self._recorded_schema
 
     @property
     def path(self) -> Path:
@@ -815,13 +835,14 @@ class SqliteStore:
                 if birth is not None:
                     birth_payload = dict(own_json_object(birth))
                     birth_payload["eligible_owners"] = []
+                    birth_payload_json = canonical_json(birth_payload)
                     self._connection.execute(
                         """
                         INSERT INTO session_events (
-                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                        ) VALUES (?, 1, '', ?, 'kernel', 'plugin', ?, ?)
+                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                        ) VALUES (?, 1, '', ?, 'kernel', 'plugin', ?, ?, ?)
                         """,
-                        (session_id, EventType.CHILD_RESERVED, revision_id, canonical_json(birth_payload)),
+                        (session_id, EventType.CHILD_RESERVED, revision_id, birth_payload_json, len(birth_payload_json.encode("utf-8"))),
                     )
                     self._connection.execute(
                         "UPDATE sessions SET last_event_sequence = 1, updated_at = ? WHERE session_id = ?",
@@ -983,7 +1004,7 @@ class SqliteStore:
                 in_transaction = True
                 cursor = self._connection.execute(
                     """
-                    SELECT wakeup_id, owner, workspace, session_id, payload_json, role, due_at, status, claim_run_id
+                    SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
                     FROM wakeups
                     WHERE workspace = ? AND status = 'pending' AND due_at <= ?
                     ORDER BY due_at ASC, created_at ASC
@@ -996,19 +1017,21 @@ class SqliteStore:
                     self._connection.execute("COMMIT")
                     in_transaction = False
                     return None
-                payload, root_id, root_action_budget = _decode_wakeup_payload(json.loads(row[4]), str(row[0]))
+                stored = json.loads(row[4])
+                if not isinstance(stored, Mapping):
+                    raise StoreConflict(f"wakeup {str(row[0])!r} has a malformed payload")
                 wakeup = WakeupRecord(
                     wakeup_id=str(row[0]),
                     owner=str(row[1]),
                     workspace=str(row[2]),
                     session_id=str(row[3]),
-                    payload=payload,
-                    root_id=root_id,
-                    role=str(row[5]),
-                    due_at=int(row[6]),
-                    status=str(row[7]),
-                    claim_run_id=str(row[8]) if row[8] is not None else None,
-                    root_action_budget=root_action_budget,
+                    payload=own_json_object(stored),
+                    root_id=str(row[5]),
+                    role=str(row[7]),
+                    due_at=int(row[8]),
+                    status=str(row[9]),
+                    claim_run_id=str(row[10]) if row[10] is not None else None,
+                    root_action_budget=None if row[6] is None else int(row[6]),
                 )
                 claimed = self._connection.execute(
                     """
@@ -1028,7 +1051,7 @@ class SqliteStore:
                     (wakeup.session_id,),
                 ).fetchone()
                 if session_row is None:
-                    raise StoreConflict(f"wakeup {wakeup.wakeup_id!r} names an unknown session")
+                    raise UnknownSession(f"wakeup {wakeup.wakeup_id!r} names an unknown session", wakeup.session_id)
                 session = _session_record(session_row)
                 if session.active_revision_id != revision_id:
                     raise StoreConflict("wakeup session belongs to another capability revision")
@@ -1057,45 +1080,70 @@ class SqliteStore:
                 self._connection.execute(
                     """
                     INSERT INTO session_events (
-                        session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?)
+                        session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                    ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?, ?)
                     """,
-                    (session.session_id, new_seq, run_id, EventType.WAKEUP_FIRED, f"plugin.{wakeup.owner}", revision_id, fired_payload),
+                    (
+                        session.session_id,
+                        new_seq,
+                        run_id,
+                        EventType.WAKEUP_FIRED,
+                        f"plugin.{wakeup.owner}",
+                        revision_id,
+                        fired_payload,
+                        len(fired_payload.encode("utf-8")),
+                    ),
                 )
-                checkpoint_payload = canonical_json(
-                    {
-                        "batch_sequence": None,
-                        "next_call": 0,
-                        "intent_sequence": None,
-                        "approval_sequence": None,
-                        "deferred_sequence": None,
-                        "deferred_depth": 0,
-                        "deferred_only": False,
-                        "max_steps": None,
-                        "step": 0,
-                        "abandon_batch": False,
-                        "continuation_id": None,
-                        "logical_turn": logical_turn,
-                        "stop_cause": None,
-                        "initial_root_budget": initial_root_budget,
-                        "root_id": wakeup.root_id,
-                        "resume_intent": "",
-                    }
-                )
+                wakeup_checkpoint = {
+                    "batch_sequence": None,
+                    "next_call": 0,
+                    "intent_sequence": None,
+                    "approval_sequence": None,
+                    "deferred_sequence": None,
+                    "deferred_depth": 0,
+                    "deferred_only": False,
+                    "max_steps": None,
+                    "step": 0,
+                    "abandon_batch": False,
+                    "continuation_id": None,
+                    "logical_turn": logical_turn,
+                    "stop_cause": None,
+                    "initial_root_budget": initial_root_budget,
+                    "root_id": wakeup.root_id,
+                    "resume_intent": "",
+                }
+                checkpoint_payload = canonical_json(wakeup_checkpoint)
+                checkpoint_root_id, checkpoint_approval, checkpoint_ask_seq, checkpoint_ask_req = _checkpoint_index_values(wakeup_checkpoint)
                 self._connection.execute(
                     """
                     INSERT INTO checkpoints (
-                        session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
-                    ) VALUES (?, 'ready', ?, ?, ?, ?, ?)
+                        session_id, kind, revision_id, run_id, last_event_sequence, payload_json,
+                        root_id, approval_sequence, ask_sequence, ask_request_id, updated_at
+                    ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (session_id) DO UPDATE SET
                         kind = 'ready',
                         revision_id = excluded.revision_id,
                         run_id = excluded.run_id,
                         last_event_sequence = excluded.last_event_sequence,
                         payload_json = excluded.payload_json,
+                        root_id = excluded.root_id,
+                        approval_sequence = excluded.approval_sequence,
+                        ask_sequence = excluded.ask_sequence,
+                        ask_request_id = excluded.ask_request_id,
                         updated_at = excluded.updated_at
                     """,
-                    (session.session_id, revision_id, run_id, new_seq, checkpoint_payload, now),
+                    (
+                        session.session_id,
+                        revision_id,
+                        run_id,
+                        new_seq,
+                        checkpoint_payload,
+                        checkpoint_root_id,
+                        checkpoint_approval,
+                        checkpoint_ask_seq,
+                        checkpoint_ask_req,
+                        now,
+                    ),
                 )
                 self._connection.execute(
                     """
@@ -1174,7 +1222,7 @@ class SqliteStore:
                     (session_id,),
                 ).fetchone()
                 if session is None:
-                    raise StoreConflict(f"wakeup session {session_id!r} does not exist")
+                    raise UnknownSession(f"wakeup session {session_id!r} does not exist", session_id)
                 if root_action_id is None:
                     if session[0] in ("running", "waiting"):
                         checkpoint = self._connection.execute(
@@ -1206,19 +1254,12 @@ class SqliteStore:
                     raise StoreConflict("wakeup captured an uncapped root with a finite budget row")
                 if root_action_budget is not None and (budget_row is None or int(budget_row[0]) < root_action_budget):
                     raise StoreConflict("wakeup lost its captured finite root authorization")
-                stored_payload = {
-                    _WAKEUP_PAYLOAD_KEY: {
-                        "root_id": root_action_id,
-                        "root_action_budget": root_action_budget,
-                        "payload": json_wire_object(payload),
-                    }
-                }
                 self._connection.execute(
                     """
                     INSERT INTO wakeups (
-                        wakeup_id, owner, workspace, session_id, payload_json, role, due_at,
-                        status, claim_run_id, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
+                        wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget,
+                        role, due_at, status, claim_run_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
                     ON CONFLICT (wakeup_id) DO NOTHING
                     """,
                     (
@@ -1226,7 +1267,9 @@ class SqliteStore:
                         owner,
                         workspace,
                         session_id,
-                        canonical_json(stored_payload),
+                        canonical_json(payload),
+                        root_action_id,
+                        root_action_budget,
                         role if role in ("system", "user") else "system",
                         due_at,
                         now,
@@ -1265,7 +1308,7 @@ class SqliteStore:
             if workspace is None:
                 cursor = self._connection.execute(
                     """
-                    SELECT wakeup_id, owner, workspace, session_id, payload_json, role, due_at, status, claim_run_id
+                    SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
                     FROM wakeups WHERE status = 'pending' ORDER BY due_at ASC LIMIT ?
                     """,
                     (max(1, limit),),
@@ -1273,27 +1316,29 @@ class SqliteStore:
             else:
                 cursor = self._connection.execute(
                     """
-                    SELECT wakeup_id, owner, workspace, session_id, payload_json, role, due_at, status, claim_run_id
+                    SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
                     FROM wakeups WHERE workspace = ? AND status = 'pending' ORDER BY due_at ASC LIMIT ?
                     """,
                     (workspace, max(1, limit)),
                 )
             items: list[WakeupRecord] = []
             for row in cursor.fetchall():
-                payload, root_id, root_action_budget = _decode_wakeup_payload(json.loads(row[4]), str(row[0]))
+                stored = json.loads(row[4])
+                if not isinstance(stored, Mapping):
+                    raise StoreConflict(f"wakeup {str(row[0])!r} has a malformed payload")
                 items.append(
                     WakeupRecord(
                         wakeup_id=str(row[0]),
                         owner=str(row[1]),
                         workspace=str(row[2]),
                         session_id=str(row[3]),
-                        payload=payload,
-                        root_id=root_id,
-                        role=str(row[5]),
-                        due_at=int(row[6]),
-                        status=str(row[7]),
-                        claim_run_id=str(row[8]) if row[8] is not None else None,
-                        root_action_budget=root_action_budget,
+                        payload=own_json_object(stored),
+                        root_id=str(row[5]),
+                        role=str(row[7]),
+                        due_at=int(row[8]),
+                        status=str(row[9]),
+                        claim_run_id=str(row[10]) if row[10] is not None else None,
+                        root_action_budget=None if row[6] is None else int(row[6]),
                     )
                 )
             return tuple(items)
@@ -1394,7 +1439,7 @@ class SqliteStore:
                 """
                 SELECT 1 FROM continuations
                 WHERE session_id = ? AND status = 'pending' AND owner = ?
-                  AND json_extract(payload_json, '$.kind') = 'child_followup'
+                  AND kind = 'child_followup'
                 LIMIT 1
                 """,
                 (session_id, CHILD_MESSAGE_OWNER),
@@ -1491,9 +1536,9 @@ class SqliteStore:
                 FROM sessions s
                 LEFT JOIN checkpoints c ON c.session_id = s.session_id AND c.run_id = s.run_id
                 LEFT JOIN session_events a ON a.session_id = s.session_id
-                    AND a.sequence = json_extract(c.payload_json, '$.approval_sequence')
+                    AND a.sequence = c.approval_sequence
                     AND c.kind = 'approval_wait' AND a.event_type = ?
-                LEFT JOIN root_budgets r ON r.root_id = json_extract(c.payload_json, '$.root_id')
+                LEFT JOIN root_budgets r ON r.root_id = c.root_id
                 LEFT JOIN session_budgets b ON b.session_id = s.session_id AND b.owner = ?
                 WHERE s.session_id = ?
                 """,
@@ -1608,6 +1653,107 @@ class SqliteStore:
         """Bounded tail read of stored events for continuous SSE streaming."""
         return self.events(session_id, after_sequence=after_sequence, limit=limit)
 
+    def latest_event(self, session_id: str, event_type: str, run_id: str | None = None) -> StoredEvent | None:
+        """Newest event of one type (optionally one run), or None when absent."""
+        with self._lock:
+            self._check_open()
+            self.session(session_id)
+            if run_id is None:
+                row = self._connection.execute(
+                    """
+                    SELECT session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                    FROM session_events
+                    WHERE session_id = ? AND event_type = ?
+                    ORDER BY sequence DESC
+                    LIMIT 1
+                    """,
+                    (session_id, event_type),
+                ).fetchone()
+            else:
+                row = self._connection.execute(
+                    """
+                    SELECT session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                    FROM session_events
+                    WHERE session_id = ? AND event_type = ? AND run_id = ?
+                    ORDER BY sequence DESC
+                    LIMIT 1
+                    """,
+                    (session_id, event_type, run_id),
+                ).fetchone()
+            if row is None:
+                return None
+            return StoredEvent(
+                session_id=row[0],
+                sequence=row[1],
+                run_id=row[2],
+                event_type=row[3],
+                source=row[4],
+                actor=row[5],
+                revision_id=row[6],
+                payload=json.loads(row[7]),
+            )
+
+    def events_by_types(self, session_id: str, types: Sequence[str], after_sequence: int = 0, limit: int | None = None) -> tuple[StoredEvent, ...]:
+        """Events of the given types in ascending sequence order, optionally ranged."""
+        if not types:
+            return ()
+        with self._lock:
+            self._check_open()
+            self.session(session_id)
+            placeholders = ", ".join("?" for _ in types)
+            sql = f"""
+                SELECT session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
+                FROM session_events
+                WHERE session_id = ? AND event_type IN ({placeholders}) AND sequence > ?
+                ORDER BY sequence ASC
+                """
+            params: list[object] = [session_id, *types, after_sequence]
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(max(1, limit))
+            cursor = self._connection.execute(sql, tuple(params))
+            return tuple(
+                StoredEvent(
+                    session_id=row[0],
+                    sequence=row[1],
+                    run_id=row[2],
+                    event_type=row[3],
+                    source=row[4],
+                    actor=row[5],
+                    revision_id=row[6],
+                    payload=json.loads(row[7]),
+                )
+                for row in cursor.fetchall()
+            )
+
+    def event_payload_bytes(self, session_id: str, after_sequence: int = 0, limit: int | None = None) -> dict[int, int]:
+        """Stored canonical payload bytes by sequence for a range; no payload decode."""
+        with self._lock:
+            self._check_open()
+            self.session(session_id)
+            if limit is not None:
+                cursor = self._connection.execute(
+                    """
+                    SELECT sequence, payload_bytes
+                    FROM session_events
+                    WHERE session_id = ? AND sequence > ?
+                    ORDER BY sequence ASC
+                    LIMIT ?
+                    """,
+                    (session_id, after_sequence, max(1, limit)),
+                )
+            else:
+                cursor = self._connection.execute(
+                    """
+                    SELECT sequence, payload_bytes
+                    FROM session_events
+                    WHERE session_id = ? AND sequence > ?
+                    ORDER BY sequence ASC
+                    """,
+                    (session_id, after_sequence),
+                )
+            return {int(row[0]): int(row[1]) for row in cursor.fetchall()}
+
     def event_type_counts(self, session_id: str) -> dict[str, int]:
         """Count committed events by type with one SQL aggregate, no payload reads."""
         with self._lock:
@@ -1648,6 +1794,62 @@ class SqliteStore:
                 last_event_sequence=row[3],
                 payload=json.loads(row[4]),
             )
+
+    def waiting_ask_parks(self) -> tuple[WaitingAskPark, ...]:
+        """Waiting sessions holding a live ask binding, from checkpoint columns only.
+
+        Candidates for the ask-expiry sweep: no event scan, no answer resolution.
+        The caller revalidates each candidate (session, binding, request, answer
+        absence) under that session's lock before settling anything.
+        """
+        with self._lock:
+            self._check_open()
+            rows = self._connection.execute(
+                """
+                SELECT s.session_id, c.run_id, c.revision_id,
+                       c.ask_sequence,
+                       c.ask_request_id,
+                       c.last_event_sequence
+                FROM sessions s JOIN checkpoints c ON c.session_id = s.session_id
+                WHERE s.status = 'waiting' AND c.run_id = s.run_id
+                  AND c.kind <> 'terminal'
+                  AND c.ask_request_id IS NOT NULL
+                ORDER BY s.session_id ASC
+                """
+            ).fetchall()
+            parks: list[WaitingAskPark] = []
+            for row in rows:
+                sequence, request_id = row[3], row[4]
+                if type(sequence) is not int or sequence < 1 or not isinstance(request_id, str) or not request_id:
+                    raise StoreConflict(f"session {row[0]!r} holds a malformed live ask binding")
+                parks.append(
+                    WaitingAskPark(
+                        session_id=str(row[0]),
+                        run_id=str(row[1]),
+                        revision_id=str(row[2]),
+                        ask_sequence=sequence,
+                        ask_request_id=request_id,
+                        checkpoint_sequence=int(row[5]),
+                    )
+                )
+            return tuple(parks)
+
+    def _record_event_indexes(self, session_id: str, event_type: str, payload: Mapping[str, object], now: int) -> None:
+        """Mirror indexable event keys into side tables; callers hold the lock and a transaction."""
+        if event_type == EventType.ASK_ANSWERED:
+            request_id = payload.get("request_id")
+            if isinstance(request_id, str) and request_id:
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO ask_answers (session_id, request_id, created_at) VALUES (?, ?, ?)",
+                    (session_id, request_id, now),
+                )
+        elif event_type == EventType.CONTINUATION_STARTED:
+            continuation_id = payload.get("continuation_id")
+            if isinstance(continuation_id, str) and continuation_id:
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO continuation_starts (session_id, continuation_id, created_at) VALUES (?, ?, ?)",
+                    (session_id, continuation_id, now),
+                )
 
     def commit(
         self,
@@ -1705,6 +1907,7 @@ class SqliteStore:
         root_budget_grant: tuple[str, int, str] | None = None,
         root_reservation: tuple[str, int | None] | None = None,
         start_turn: bool = False,
+        ask_answer_guard: str | None = None,
     ) -> SessionRecord:
         """Atomic CAS commit applying staged state updates, continuations, event drafts, and checkpoint.
 
@@ -1739,17 +1942,11 @@ class SqliteStore:
                 if root_budget_grant is not None:
                     root_id, amount, grant_id = root_budget_grant
                     prior = self._connection.execute(
-                        """
-                        SELECT payload_json FROM session_events
-                        WHERE event_type = ?
-                          AND json_extract(payload_json, '$.root_action_grant_id') = ?
-                        LIMIT 1
-                        """,
-                        (EventType.RUN_RESUMED, grant_id),
+                        "SELECT root_id, amount FROM root_grants WHERE grant_id = ?",
+                        (grant_id,),
                     ).fetchone()
                     if prior is not None:
-                        prior_payload = own_json_object(json.loads(prior[0]))
-                        if prior_payload.get("root_id") != root_id or prior_payload.get("extend_root_actions") != amount:
+                        if prior[0] != root_id or prior[1] != amount:
                             raise StoreConflict("root action grant id was already used for a different authorization")
                     else:
                         state = self._connection.execute(
@@ -1763,6 +1960,10 @@ class SqliteStore:
                         self._connection.execute(
                             "UPDATE root_budgets SET budget = budget + ?, updated_at = ? WHERE root_id = ?",
                             (amount, int(time.time() * 1000), root_id),
+                        )
+                        self._connection.execute(
+                            "INSERT INTO root_grants (grant_id, root_id, amount, created_at) VALUES (?, ?, ?, ?)",
+                            (grant_id, root_id, amount, int(time.time() * 1000)),
                         )
 
                 if root_reservation is not None:
@@ -1803,7 +2004,7 @@ class SqliteStore:
                 )
                 row = cursor.fetchone()
                 if row is None:
-                    raise StoreConflict(f"session {session_id!r} does not exist")
+                    raise UnknownSession(f"session {session_id!r} does not exist", session_id)
 
                 (_, workspace, _, curr_revision_id, curr_run_id, curr_turn, curr_seq, curr_parent, curr_root, curr_depth, curr_allowlist) = row
 
@@ -1813,6 +2014,13 @@ class SqliteStore:
                     raise StoreConflict(f"run_id mismatch for session {session_id!r}: expected {expected_run_id!r}, got {curr_run_id!r}")
                 if curr_revision_id != revision_id:
                     raise StoreConflict(f"active revision mismatch for session {session_id!r}: active is {curr_revision_id!r}, got {revision_id!r}")
+                if ask_answer_guard is not None:
+                    decided = self._connection.execute(
+                        "SELECT 1 FROM ask_answers WHERE session_id = ? AND request_id = ? LIMIT 1",
+                        (session_id, ask_answer_guard),
+                    ).fetchone()
+                    if decided is not None:
+                        raise AskAnswerConflict(session_id, ask_answer_guard)
                 now = int(time.time() * 1000)
 
                 # Apply staged state updates
@@ -1829,17 +2037,25 @@ class SqliteStore:
                         cont = cast(StagedContinuationDraft, payload)
                         cont_payload_json = canonical_json(cont.payload)
                         if cont.idempotency_key is not None:
-                            # Namespaced by source family: a background action and a model
-                            # message may share one owner/session/key without swallowing
-                            # each other; only rows of the same family dedupe.
-                            source_clause = "source = ?" if cont.source == BACKGROUND_ACTION_SOURCE else "source <> ?"
-                            c_chk = self._connection.execute(
-                                f"""
-                                SELECT continuation_id FROM continuations
-                                WHERE session_id = ? AND owner = ? AND idempotency_key = ? AND {source_clause}
-                                """,
-                                (session_id, cont.owner, cont.idempotency_key, BACKGROUND_ACTION_SOURCE),
-                            )
+                            # Model rows and background rows live in separate tables: one
+                            # owner/session/key names each independently, and only rows
+                            # of the same table dedupe.
+                            if cont.source == BACKGROUND_ACTION_SOURCE:
+                                c_chk = self._connection.execute(
+                                    """
+                                    SELECT action_id FROM background_actions
+                                    WHERE session_id = ? AND owner = ? AND idempotency_key = ?
+                                    """,
+                                    (session_id, cont.owner, cont.idempotency_key),
+                                )
+                            else:
+                                c_chk = self._connection.execute(
+                                    """
+                                    SELECT continuation_id FROM continuations
+                                    WHERE session_id = ? AND owner = ? AND idempotency_key = ?
+                                    """,
+                                    (session_id, cont.owner, cont.idempotency_key),
+                                )
                             if c_chk.fetchone() is not None:
                                 continue
                         continuation_size = len(cont_payload_json.encode("utf-8"))
@@ -1848,31 +2064,68 @@ class SqliteStore:
                                 f"continuation {cont.continuation_id!r} payload is {continuation_size} bytes, "
                                 f"exceeding the {MAX_CONTINUATION_PAYLOAD_BYTES}-byte continuation-payload bound"
                             )
-                        try:
-                            self._connection.execute(
-                                """
-                                INSERT INTO continuations (
-                                    continuation_id, owner, session_id, source, run_id, revision_id,
-                                    idempotency_key, root_id, role, status, payload_json, created_at, updated_at
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
-                                """,
-                                (
-                                    cont.continuation_id,
-                                    cont.owner,
-                                    session_id,
-                                    cont.source,
-                                    run_id,
-                                    revision_id,
-                                    cont.idempotency_key,
-                                    cont.root_id,
-                                    cont.role if cont.role in ("system", "user") else "system",
-                                    cont_payload_json,
-                                    now,
-                                    now,
-                                ),
-                            )
-                        except sqlite3.IntegrityError as exc:
-                            raise StoreConflict(f"continuation {cont.continuation_id!r} already exists") from exc
+                        if cont.source == BACKGROUND_ACTION_SOURCE:
+                            draft = cont.payload
+                            if "root_action_budget" not in draft:
+                                raise StoreConflict(f"background action {cont.continuation_id!r} has no captured root budget")
+                            staged_budget = draft["root_action_budget"]
+                            if staged_budget is not None and (type(staged_budget) is not int or not 0 <= staged_budget <= 9_223_372_036_854_775_807):
+                                raise StoreConflict(f"background action {cont.continuation_id!r} has an invalid captured root budget")
+                            if not isinstance(cont.root_id, str) or not cont.root_id:
+                                raise StoreConflict(f"background action {cont.continuation_id!r} has no captured root authorization")
+                            staged_authority = draft.get("tool_wait_authority")
+                            try:
+                                self._connection.execute(
+                                    """
+                                    INSERT INTO background_actions (
+                                        action_id, owner, session_id, revision_id, idempotency_key, root_id,
+                                        root_action_budget, status, payload_json, authority_json, claim_json,
+                                        error, created_at, updated_at
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, ?, ?)
+                                    """,
+                                    (
+                                        cont.continuation_id,
+                                        cont.owner,
+                                        session_id,
+                                        revision_id,
+                                        cont.idempotency_key,
+                                        cont.root_id,
+                                        staged_budget,
+                                        _canonical_json_value(draft.get("action")),
+                                        None if staged_authority is None else _canonical_json_value(staged_authority),
+                                        now,
+                                        now,
+                                    ),
+                                )
+                            except sqlite3.IntegrityError as exc:
+                                raise StoreConflict(f"background action {cont.continuation_id!r} already exists") from exc
+                        else:
+                            try:
+                                self._connection.execute(
+                                    """
+                                    INSERT INTO continuations (
+                                        continuation_id, owner, session_id, source, kind, run_id, revision_id,
+                                        idempotency_key, root_id, role, status, payload_json, created_at, updated_at
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                                    """,
+                                    (
+                                        cont.continuation_id,
+                                        cont.owner,
+                                        session_id,
+                                        cont.source,
+                                        _continuation_kind(cont.payload),
+                                        run_id,
+                                        revision_id,
+                                        cont.idempotency_key,
+                                        cont.root_id,
+                                        cont.role if cont.role in ("system", "user") else "system",
+                                        cont_payload_json,
+                                        now,
+                                        now,
+                                    ),
+                                )
+                            except sqlite3.IntegrityError as exc:
+                                raise StoreConflict(f"continuation {cont.continuation_id!r} already exists") from exc
                     else:
                         canc = cast(StagedCancellation, payload)
                         if canc.continuation_id is not None:
@@ -1881,14 +2134,11 @@ class SqliteStore:
                                 UPDATE continuations
                                 SET status = 'cancelled', updated_at = ?
                                 WHERE session_id = ? AND owner = ? AND continuation_id = ?
-                                  AND status IN ('pending', 'claimed') AND source <> ?
-                                  AND (
+                                  AND status IN ('pending', 'claimed') AND (
                                       ? = 0 OR NOT EXISTS (
-                                          SELECT 1 FROM session_events
-                                          WHERE session_events.session_id = continuations.session_id
-                                            AND session_events.event_type = ?
-                                            AND json_extract(session_events.payload_json, '$.continuation_id')
-                                                = continuations.continuation_id
+                                          SELECT 1 FROM continuation_starts
+                                          WHERE continuation_starts.session_id = continuations.session_id
+                                            AND continuation_starts.continuation_id = continuations.continuation_id
                                       )
                                   )
                                 """,
@@ -1897,9 +2147,7 @@ class SqliteStore:
                                     session_id,
                                     canc.owner,
                                     canc.continuation_id,
-                                    BACKGROUND_ACTION_SOURCE,
                                     int(canc.only_if_unstarted),
-                                    EventType.CONTINUATION_STARTED,
                                 ),
                             )
                         else:
@@ -1909,9 +2157,9 @@ class SqliteStore:
                                 """
                                 UPDATE continuations
                                 SET status = 'cancelled', updated_at = ?
-                                WHERE session_id = ? AND owner = ? AND status IN ('pending', 'claimed') AND source <> ?
+                                WHERE session_id = ? AND owner = ? AND status IN ('pending', 'claimed')
                                 """,
-                                (now, session_id, canc.owner, BACKGROUND_ACTION_SOURCE),
+                                (now, session_id, canc.owner),
                             )
 
                 # Apply staged budgets
@@ -1991,24 +2239,18 @@ class SqliteStore:
                         self._connection.execute(
                             """
                             INSERT INTO wakeups (
-                                wakeup_id, owner, workspace, session_id, payload_json, role, due_at,
-                                status, claim_run_id, created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
+                                wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget,
+                                role, due_at, status, claim_run_id, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
                             """,
                             (
                                 wakeup.wakeup_id,
                                 wakeup.owner,
                                 workspace,
                                 wakeup.session_id,
-                                canonical_json(
-                                    {
-                                        _WAKEUP_PAYLOAD_KEY: {
-                                            "root_id": root_action_id,
-                                            "root_action_budget": root_action_budget,
-                                            "payload": json_wire_object(wakeup.payload),
-                                        }
-                                    }
-                                ),
+                                canonical_json(wakeup.payload),
+                                root_action_id,
+                                root_action_budget,
                                 wakeup.role if wakeup.role in ("system", "user") else "system",
                                 wakeup.due_at,
                                 now,
@@ -2086,8 +2328,8 @@ class SqliteStore:
                     self._connection.execute(
                         """
                         INSERT INTO session_events (
-                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             session_id,
@@ -2098,8 +2340,10 @@ class SqliteStore:
                             draft.actor,
                             revision_id,
                             payload_json,
+                            payload_size,
                         ),
                     )
+                    self._record_event_indexes(session_id, draft.event_type, draft.payload, now)
 
                 new_turn = curr_turn + 1 if start_turn else curr_turn
 
@@ -2125,17 +2369,23 @@ class SqliteStore:
                             raise StoreConflict(f"checkpoint binding {bound_field!r} has no {bound_event_type!r} event in this commit")
                         bound_payload[bound_field] = bound_sequence
                     checkpoint_json = canonical_json(bound_payload)
+                    checkpoint_root_id, checkpoint_approval, checkpoint_ask_seq, checkpoint_ask_req = _checkpoint_index_values(bound_payload)
                     self._connection.execute(
                         """
                         INSERT INTO checkpoints (
-                            session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            session_id, kind, revision_id, run_id, last_event_sequence, payload_json,
+                            root_id, approval_sequence, ask_sequence, ask_request_id, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT (session_id) DO UPDATE SET
                             kind = excluded.kind,
                             revision_id = excluded.revision_id,
                             run_id = excluded.run_id,
                             last_event_sequence = excluded.last_event_sequence,
                             payload_json = excluded.payload_json,
+                            root_id = excluded.root_id,
+                            approval_sequence = excluded.approval_sequence,
+                            ask_sequence = excluded.ask_sequence,
+                            ask_request_id = excluded.ask_request_id,
                             updated_at = excluded.updated_at
                         """,
                         (
@@ -2145,6 +2395,10 @@ class SqliteStore:
                             run_id,
                             current_seq,
                             checkpoint_json,
+                            checkpoint_root_id,
+                            checkpoint_approval,
+                            checkpoint_ask_seq,
+                            checkpoint_ask_req,
                             now,
                         ),
                     )
@@ -2258,7 +2512,7 @@ class SqliteStore:
                 )
                 row = cursor.fetchone()
                 if row is None:
-                    raise StoreConflict(f"session {session_id!r} does not exist")
+                    raise UnknownSession(f"session {session_id!r} does not exist", session_id)
                 (_, row_workspace, _, curr_revision_id, curr_run_id, curr_turn, curr_seq, curr_parent, curr_root, curr_depth, curr_allowlist) = row
                 if row_workspace != workspace:
                     raise StoreConflict(f"session {session_id!r} belongs to workspace {row_workspace!r}")
@@ -2337,6 +2591,15 @@ class SqliteStore:
                         """,
                         (now, owner, workspace),
                     )
+                    self._connection.execute(
+                        """
+                        UPDATE background_actions
+                        SET status = 'cancelled', updated_at = ?
+                        WHERE status IN ('pending', 'claimed') AND owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (now, owner, workspace),
+                    )
                     # A deactivated owner's pending wakeups die with it: a schedule nobody owns
                     # must never fire into the new generation. Claimed rows already have their
                     # run; settling them stays with that run's terminal path. Wakeups carry
@@ -2372,6 +2635,14 @@ class SqliteStore:
                     """,
                     (target_revision_id, now, session_id),
                 )
+                self._connection.execute(
+                    """
+                    UPDATE background_actions
+                    SET revision_id = ?, updated_at = ?
+                    WHERE session_id = ? AND status IN ('pending', 'claimed')
+                    """,
+                    (target_revision_id, now, session_id),
+                )
 
                 current_seq = curr_seq
                 first_sequence_by_type: dict[str, int] = {}
@@ -2389,11 +2660,12 @@ class SqliteStore:
                         )
                     current_seq += 1
                     first_sequence_by_type.setdefault(draft.event_type, current_seq)
+                    event_payload_json = canonical_json(draft.payload)
                     self._connection.execute(
                         """
                         INSERT INTO session_events (
-                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             session_id,
@@ -2403,9 +2675,11 @@ class SqliteStore:
                             draft.source,
                             draft.actor,
                             target_revision_id,
-                            canonical_json(draft.payload),
+                            event_payload_json,
+                            len(event_payload_json.encode("utf-8")),
                         ),
                     )
+                    self._record_event_indexes(session_id, draft.event_type, draft.payload, now)
 
                 self._connection.execute(
                     """
@@ -2417,20 +2691,38 @@ class SqliteStore:
                 )
 
                 if checkpoint_kind is not None and checkpoint_payload is not None:
+                    checkpoint_root_id, checkpoint_approval, checkpoint_ask_seq, checkpoint_ask_req = _checkpoint_index_values(checkpoint_payload)
                     self._connection.execute(
                         """
                         INSERT INTO checkpoints (
-                            session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            session_id, kind, revision_id, run_id, last_event_sequence, payload_json,
+                            root_id, approval_sequence, ask_sequence, ask_request_id, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT (session_id) DO UPDATE SET
                             kind = excluded.kind,
                             revision_id = excluded.revision_id,
                             run_id = excluded.run_id,
                             last_event_sequence = excluded.last_event_sequence,
                             payload_json = excluded.payload_json,
+                            root_id = excluded.root_id,
+                            approval_sequence = excluded.approval_sequence,
+                            ask_sequence = excluded.ask_sequence,
+                            ask_request_id = excluded.ask_request_id,
                             updated_at = excluded.updated_at
                         """,
-                        (session_id, checkpoint_kind, target_revision_id, run_id, current_seq, canonical_json(checkpoint_payload), now),
+                        (
+                            session_id,
+                            checkpoint_kind,
+                            target_revision_id,
+                            run_id,
+                            current_seq,
+                            canonical_json(checkpoint_payload),
+                            checkpoint_root_id,
+                            checkpoint_approval,
+                            checkpoint_ask_seq,
+                            checkpoint_ask_req,
+                            now,
+                        ),
                     )
 
                 self._connection.execute("COMMIT")
@@ -2509,11 +2801,6 @@ class SqliteStore:
                 in_transaction = True
                 now = int(time.time() * 1000)
 
-                identity_row = self._connection.execute("SELECT schema_version FROM kernel_identity WHERE id = 1").fetchone()
-                live_schema = int(identity_row[0])
-                if live_schema != SCHEMA_VERSION:
-                    raise StoreConflict(f"schema {live_schema} cannot be adopted")
-
                 acting_was_running = False
                 if session_id is None:
                     count = self._connection.execute("SELECT COUNT(*) FROM sessions WHERE workspace = ?", (workspace,)).fetchone()
@@ -2530,7 +2817,7 @@ class SqliteStore:
                         (session_id,),
                     ).fetchone()
                     if row is None:
-                        raise StoreConflict(f"session {session_id!r} does not exist")
+                        raise UnknownSession(f"session {session_id!r} does not exist", session_id)
                     row_workspace, curr_status, curr_revision_id, curr_run_id, _, curr_seq = row
                     if row_workspace != workspace:
                         raise StoreConflict(f"session {session_id!r} belongs to workspace {row_workspace!r}")
@@ -2630,6 +2917,15 @@ class SqliteStore:
                     )
                     self._connection.execute(
                         """
+                        UPDATE background_actions
+                        SET status = 'cancelled', updated_at = ?
+                        WHERE status IN ('pending', 'claimed') AND owner = ?
+                          AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                        """,
+                        (now, owner, workspace),
+                    )
+                    self._connection.execute(
+                        """
                         UPDATE wakeups
                         SET status = 'cancelled', updated_at = ?
                         WHERE status = 'pending' AND owner = ? AND workspace = ?
@@ -2656,6 +2952,15 @@ class SqliteStore:
                     """,
                     (target_revision_id, now, workspace),
                 )
+                self._connection.execute(
+                    """
+                    UPDATE background_actions
+                    SET revision_id = ?, updated_at = ?
+                    WHERE status IN ('pending', 'claimed')
+                      AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+                    """,
+                    (target_revision_id, now, workspace),
+                )
                 # Every resumable cursor moves with the generation: paused and parked checkpoints
                 # keep their payload and run identity, but a candidate that refused a stale
                 # checkpoint revision would strand them. Terminal history is never read again.
@@ -2674,11 +2979,12 @@ class SqliteStore:
                     current_seq = curr_seq
                     for draft in events:
                         current_seq += 1
+                        event_payload_json = canonical_json(draft.payload)
                         self._connection.execute(
                             """
                             INSERT INTO session_events (
-                                session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 session_id,
@@ -2688,9 +2994,11 @@ class SqliteStore:
                                 draft.source,
                                 draft.actor,
                                 target_revision_id,
-                                canonical_json(draft.payload),
+                                event_payload_json,
+                                len(event_payload_json.encode("utf-8")),
                             ),
                         )
+                        self._record_event_indexes(session_id, draft.event_type, draft.payload, now)
                     self._connection.execute(
                         """
                         UPDATE sessions
@@ -2700,25 +3008,42 @@ class SqliteStore:
                         (status, run_id, now, current_seq, session_id),
                     )
                     if checkpoint_kind is not None and checkpoint_payload is not None:
+                        checkpoint_root_id, checkpoint_approval, checkpoint_ask_seq, checkpoint_ask_req = _checkpoint_index_values(checkpoint_payload)
                         self._connection.execute(
                             """
                             INSERT INTO checkpoints (
-                                session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                                session_id, kind, revision_id, run_id, last_event_sequence, payload_json,
+                                root_id, approval_sequence, ask_sequence, ask_request_id, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT (session_id) DO UPDATE SET
                                 kind = excluded.kind,
                                 revision_id = excluded.revision_id,
                                 run_id = excluded.run_id,
                                 last_event_sequence = excluded.last_event_sequence,
                                 payload_json = excluded.payload_json,
+                                root_id = excluded.root_id,
+                                approval_sequence = excluded.approval_sequence,
+                                ask_sequence = excluded.ask_sequence,
+                                ask_request_id = excluded.ask_request_id,
                                 updated_at = excluded.updated_at
                             """,
-                            (session_id, checkpoint_kind, target_revision_id, run_id, current_seq, canonical_json(checkpoint_payload), now),
+                            (
+                                session_id,
+                                checkpoint_kind,
+                                target_revision_id,
+                                run_id,
+                                current_seq,
+                                canonical_json(checkpoint_payload),
+                                checkpoint_root_id,
+                                checkpoint_approval,
+                                checkpoint_ask_seq,
+                                checkpoint_ask_req,
+                                now,
+                            ),
                         )
 
                 self._connection.execute("COMMIT")
                 in_transaction = False
-                self._recorded_schema = SCHEMA_VERSION
                 return target_revision_id
             except Exception:
                 if in_transaction:
@@ -2765,11 +3090,11 @@ class SqliteStore:
             """
             SELECT session_id, continuation_id, owner
             FROM continuations
-            WHERE status = 'claimed' AND source <> ?
+            WHERE status = 'claimed'
               AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
             ORDER BY continuation_id ASC
             """,
-            (BACKGROUND_ACTION_SOURCE, workspace),
+            (workspace,),
         )
         blockers.extend((str(row[0]), "claimed_continuation") for row in cursor.fetchall())
         return blockers
@@ -2812,11 +3137,19 @@ class SqliteStore:
                 payload = json.loads(str(checkpoint[0]))
                 if isinstance(payload, dict) and isinstance(payload.get("logical_turn"), str):
                     logical_turn = payload["logical_turn"]
+            orphan_payload_json = canonical_json(
+                {
+                    "reason": "the process that owned this run is gone; adoption recovered the session at its last committed boundary",
+                    "stop_cause": "shutdown",
+                    "logical_turn": logical_turn,
+                    "eligible_owners": eligible_owners,
+                }
+            )
             self._connection.execute(
                 """
                 INSERT INTO session_events (
-                    session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                ) VALUES (?, ?, ?, ?, 'core', 'core', ?, ?)
+                    session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                ) VALUES (?, ?, ?, ?, 'core', 'core', ?, ?, ?)
                 """,
                 (
                     str(session_id),
@@ -2824,14 +3157,8 @@ class SqliteStore:
                     str(run_id),
                     EventType.RUN_INTERRUPTED,
                     target_revision_id,
-                    canonical_json(
-                        {
-                            "reason": "the process that owned this run is gone; adoption recovered the session at its last committed boundary",
-                            "stop_cause": "shutdown",
-                            "logical_turn": logical_turn,
-                            "eligible_owners": eligible_owners,
-                        }
-                    ),
+                    orphan_payload_json,
+                    len(orphan_payload_json.encode("utf-8")),
                 ),
             )
             self._connection.execute(
@@ -2934,15 +3261,29 @@ class SqliteStore:
                 # by the activation transaction instead of being rejected.
                 continue
             blockers.append(f"session {row[0]} has a {row[3]} continuation {row[1]} owned by {row[2]}")
+        cursor = self._connection.execute(
+            """
+            SELECT session_id, action_id, owner, status
+            FROM background_actions
+            WHERE status IN ('pending', 'claimed')
+              AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
+            ORDER BY action_id ASC
+            """,
+            (workspace,),
+        )
+        for row in cursor.fetchall():
+            if row[0] == acting_session_id:
+                continue
+            blockers.append(f"session {row[0]} has a {row[3]} continuation {row[1]} owned by {row[2]}")
         if exclude_claimed_in_session:
             cursor = self._connection.execute(
                 """
                 SELECT continuation_id, owner
                 FROM continuations
-                WHERE session_id = ? AND status = 'claimed' AND source <> ?
+                WHERE session_id = ? AND status = 'claimed'
                 ORDER BY continuation_id ASC
                 """,
-                (acting_session_id, BACKGROUND_ACTION_SOURCE),
+                (acting_session_id,),
             )
             claimed = cursor.fetchall()
             if len(claimed) > 1:
@@ -3017,7 +3358,7 @@ class SqliteStore:
                 (decision, now, request_id),
             )
             if cursor.rowcount == 0:
-                raise StoreConflict(f"confirmation {request_id!r} is not in pending state or does not exist")
+                raise UnknownConfirmation(f"confirmation {request_id!r} is not in pending state or does not exist", request_id)
 
     def enqueue_continuation(
         self,
@@ -3037,6 +3378,8 @@ class SqliteStore:
         admission_guard: Callable[[], bool] | None = None,
     ) -> str:
         """Queue a continuation with its stable action-chain identity."""
+        if source == BACKGROUND_ACTION_SOURCE:
+            raise ValueError("enqueue_continuation is model-only; queue background actions with enqueue_background_action")
         if role not in ("system", "user"):
             raise ValueError("continuation role must be 'system' or 'user'")
         if not isinstance(root_id, str) or not root_id:
@@ -3071,9 +3414,9 @@ class SqliteStore:
                 cursor = self._connection.execute(
                     """
                     SELECT continuation_id, root_id, payload_json FROM continuations
-                    WHERE session_id = ? AND owner = ? AND idempotency_key = ? AND source <> ?
+                    WHERE session_id = ? AND owner = ? AND idempotency_key = ?
                     """,
-                    (session_id, owner, idempotency_key, BACKGROUND_ACTION_SOURCE),
+                    (session_id, owner, idempotency_key),
                 )
                 row = cursor.fetchone()
                 if row is not None:
@@ -3100,15 +3443,16 @@ class SqliteStore:
                 self._connection.execute(
                     """
                     INSERT INTO continuations (
-                        continuation_id, owner, session_id, source, run_id, revision_id,
+                        continuation_id, owner, session_id, source, kind, run_id, revision_id,
                         idempotency_key, root_id, role, status, payload_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
                     """,
                     (
                         continuation_id,
                         owner,
                         session_id,
                         source,
+                        _continuation_kind(payload),
                         run_id,
                         revision_id,
                         idempotency_key,
@@ -3153,7 +3497,7 @@ class SqliteStore:
                     (session_id,),
                 ).fetchone()
                 if row is None:
-                    raise StoreConflict(f"session {session_id!r} does not exist")
+                    raise UnknownSession(f"session {session_id!r} does not exist", session_id)
                 status, current_revision, current_run, sequence = row
                 if status != "running" or current_run != run_id or current_revision != revision_id:
                     self._connection.execute("COMMIT")
@@ -3164,7 +3508,7 @@ class SqliteStore:
                     SELECT continuation_id, source, payload_json, role
                     FROM continuations
                     WHERE session_id = ? AND status = 'pending' AND owner = ?
-                      AND json_extract(payload_json, '$.kind') IN ('child_followup', 'child_finished')
+                      AND kind IN ('child_followup', 'child_finished')
                     ORDER BY created_at ASC, rowid ASC
                     LIMIT ?
                     """,
@@ -3191,12 +3535,13 @@ class SqliteStore:
                     )
                     sequence += 1
                     payload = own_json_object(json.loads(payload_json))
+                    child_payload_json = canonical_json({"continuation_id": continuation_id, "payload": payload, "role": str(role)})
                     self._connection.execute(
                         """
-                        INSERT INTO session_events (
-                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                        ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?)
-                        """,
+                    INSERT INTO session_events (
+                        session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                    ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?, ?)
+                    """,
                         (
                             session_id,
                             sequence,
@@ -3204,9 +3549,11 @@ class SqliteStore:
                             EventType.CONTINUATION_STARTED,
                             source,
                             revision_id,
-                            canonical_json({"continuation_id": continuation_id, "payload": payload, "role": str(role)}),
+                            child_payload_json,
+                            len(child_payload_json.encode("utf-8")),
                         ),
                     )
+                    self._record_event_indexes(session_id, EventType.CONTINUATION_STARTED, {"continuation_id": continuation_id}, now)
                     claimed.append(
                         StoredEvent(
                             session_id=session_id,
@@ -3268,18 +3615,18 @@ class SqliteStore:
     def continuation_id_for_idempotency(self, session_id: str, owner: str, idempotency_key: str) -> str | None:
         """Return the durable model-continuation id already recorded for an idempotency key.
 
-        Background actions share the table but own a separate idempotency namespace: the same
-        owner/session/key may name one model message AND one background action, and neither
-        lookup may swallow the other (ordinary keys are arbitrary strings, never prefixed).
+        Background actions live in their own table with their own namespace: the same
+        owner/session/key may name one model message AND one background action, and
+        neither lookup may swallow the other (ordinary keys are arbitrary strings).
         """
         with self._lock:
             self._check_open()
             cursor = self._connection.execute(
                 """
                 SELECT continuation_id FROM continuations
-                WHERE session_id = ? AND owner = ? AND idempotency_key = ? AND source <> ?
+                WHERE session_id = ? AND owner = ? AND idempotency_key = ?
                 """,
-                (session_id, owner, idempotency_key, BACKGROUND_ACTION_SOURCE),
+                (session_id, owner, idempotency_key),
             )
             row = cursor.fetchone()
             return None if row is None else str(row[0])
@@ -3319,11 +3666,11 @@ class SqliteStore:
                 SELECT continuation_id, owner, session_id, source, run_id, revision_id,
                        idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                 FROM continuations
-                WHERE session_id = ? AND status = 'pending' AND source <> ?
+                WHERE session_id = ? AND status = 'pending'
                 ORDER BY created_at ASC
                 LIMIT ?
                 """,
-                (session_id, BACKGROUND_ACTION_SOURCE, max(1, limit)),
+                (session_id, max(1, limit)),
             )
             rows = cursor.fetchall()
             return tuple(
@@ -3358,11 +3705,11 @@ class SqliteStore:
                 SELECT continuation_id, owner, session_id, source, run_id, revision_id,
                        idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                 FROM continuations
-                WHERE session_id = ? AND status = 'claimed' AND source <> ?
+                WHERE session_id = ? AND status = 'claimed'
                 ORDER BY created_at ASC
                 LIMIT ?
                 """,
-                (session_id, BACKGROUND_ACTION_SOURCE, max(1, limit)),
+                (session_id, max(1, limit)),
             )
             rows = cursor.fetchall()
             return tuple(
@@ -3398,7 +3745,7 @@ class SqliteStore:
                 (status, now, continuation_id),
             )
             if cursor.rowcount == 0:
-                raise StoreConflict(f"continuation {continuation_id!r} does not exist")
+                raise UnknownContinuation(f"continuation {continuation_id!r} does not exist", continuation_id)
 
     def claim_and_start_continuation(
         self,
@@ -3436,7 +3783,7 @@ class SqliteStore:
                 )
                 row = cursor.fetchone()
                 if row is None:
-                    raise StoreConflict(f"session {session_id!r} does not exist")
+                    raise UnknownSession(f"session {session_id!r} does not exist", session_id)
                 (_, workspace, status, curr_revision_id, curr_run_id, curr_turn, curr_seq, curr_parent, curr_root, curr_depth, curr_allowlist) = row
                 if curr_revision_id != revision_id:
                     raise StoreConflict(f"active revision mismatch for session {session_id!r}: active is {curr_revision_id!r}, got {revision_id!r}")
@@ -3453,10 +3800,9 @@ class SqliteStore:
                            idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                     FROM continuations
                     WHERE session_id = ? AND status = 'pending'
-                      AND source <> '@core/background'
                       AND owner <> 'kernel'
                       AND (? IS NULL OR continuation_id = ?)
-                      AND NOT (? AND owner = ? AND COALESCE(json_extract(payload_json, '$.kind'), '') = 'child_finished')
+                      AND NOT (? AND owner = ? AND COALESCE(kind, '') = 'child_finished')
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
@@ -3475,7 +3821,6 @@ class SqliteStore:
                                idempotency_key, root_id, status, payload_json, created_at, updated_at, role
                         FROM continuations
                         WHERE session_id = ? AND status = 'claimed'
-                          AND source <> '@core/background'
                           AND owner <> 'kernel'
                           AND (? IS NULL OR continuation_id = ?)
                         ORDER BY created_at ASC
@@ -3546,8 +3891,8 @@ class SqliteStore:
                 if checkpoint_row is not None and checkpoint_row[0] not in ("terminal",):
                     raise StoreConflict(f"session {session_id!r} holds a resumable/parked checkpoint ({checkpoint_row[0]})")
                 claimed_other = self._connection.execute(
-                    "SELECT 1 FROM continuations WHERE session_id = ? AND status = 'claimed' AND source <> ? LIMIT 1",
-                    (session_id, BACKGROUND_ACTION_SOURCE),
+                    "SELECT 1 FROM continuations WHERE session_id = ? AND status = 'claimed' LIMIT 1",
+                    (session_id,),
                 ).fetchone()
                 if claimed_other is not None:
                     raise StoreConflict(f"session {session_id!r} already has claimed work")
@@ -3584,11 +3929,21 @@ class SqliteStore:
                 self._connection.execute(
                     """
                     INSERT INTO session_events (
-                        session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?)
+                        session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                    ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?, ?)
                     """,
-                    (session_id, new_seq, run_id, EventType.CONTINUATION_STARTED, f"plugin.{cont_record.owner}", revision_id, disp_payload),
+                    (
+                        session_id,
+                        new_seq,
+                        run_id,
+                        EventType.CONTINUATION_STARTED,
+                        f"plugin.{cont_record.owner}",
+                        revision_id,
+                        disp_payload,
+                        len(disp_payload.encode("utf-8")),
+                    ),
                 )
+                self._record_event_indexes(session_id, EventType.CONTINUATION_STARTED, {"continuation_id": cont_record.continuation_id}, now)
 
                 new_turn = curr_turn + 1
                 self._connection.execute(
@@ -3621,20 +3976,37 @@ class SqliteStore:
                     "max_steps": effective_steps,
                 }
                 checkpoint_json = canonical_json(checkpoint_payload)
+                checkpoint_root_id, checkpoint_approval, checkpoint_ask_seq, checkpoint_ask_req = _checkpoint_index_values(checkpoint_payload)
                 self._connection.execute(
                     """
                     INSERT INTO checkpoints (
-                        session_id, kind, revision_id, run_id, last_event_sequence, payload_json, updated_at
-                    ) VALUES (?, 'ready', ?, ?, ?, ?, ?)
+                        session_id, kind, revision_id, run_id, last_event_sequence, payload_json,
+                        root_id, approval_sequence, ask_sequence, ask_request_id, updated_at
+                    ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (session_id) DO UPDATE SET
                         kind = excluded.kind,
                         revision_id = excluded.revision_id,
                         run_id = excluded.run_id,
                         last_event_sequence = excluded.last_event_sequence,
                         payload_json = excluded.payload_json,
+                        root_id = excluded.root_id,
+                        approval_sequence = excluded.approval_sequence,
+                        ask_sequence = excluded.ask_sequence,
+                        ask_request_id = excluded.ask_request_id,
                         updated_at = excluded.updated_at
                     """,
-                    (session_id, revision_id, run_id, new_seq, checkpoint_json, now),
+                    (
+                        session_id,
+                        revision_id,
+                        run_id,
+                        new_seq,
+                        checkpoint_json,
+                        checkpoint_root_id,
+                        checkpoint_approval,
+                        checkpoint_ask_seq,
+                        checkpoint_ask_req,
+                        now,
+                    ),
                 )
 
                 self._connection.execute("COMMIT")
@@ -3727,12 +4099,11 @@ class SqliteStore:
             self._check_open()
             row = self._connection.execute(
                 """
-                SELECT 1 FROM session_events
-                WHERE session_id = ? AND event_type = ?
-                  AND json_extract(payload_json, '$.continuation_id') = ?
+                SELECT 1 FROM continuation_starts
+                WHERE session_id = ? AND continuation_id = ?
                 LIMIT 1
                 """,
-                (session_id, EventType.CONTINUATION_STARTED, continuation_id),
+                (session_id, continuation_id),
             ).fetchone()
             return row is not None
 
@@ -3766,13 +4137,79 @@ class SqliteStore:
             )
             return cursor.rowcount
 
+    def enqueue_background_action(
+        self,
+        action_id: str,
+        owner: str,
+        session_id: str,
+        revision_id: str,
+        action: Mapping[str, object],
+        *,
+        root_id: str,
+        root_action_budget: int | None = None,
+        authority: Mapping[str, object] | None = None,
+        idempotency_key: str | None = None,
+    ) -> str:
+        """Queue one background action with its captured root authorization (direct insert)."""
+        if not isinstance(root_id, str) or not root_id:
+            raise StoreConflict(f"background action {action_id!r} has no captured root authorization")
+        if root_action_budget is not None and (type(root_action_budget) is not int or not 0 <= root_action_budget <= 9_223_372_036_854_775_807):
+            raise StoreConflict(f"background action {action_id!r} has an invalid captured root budget")
+        action_json = canonical_json(action)
+        action_size = len(action_json.encode("utf-8"))
+        if action_size > MAX_CONTINUATION_PAYLOAD_BYTES:
+            raise StoreConflict(
+                f"background action {action_id!r} payload is {action_size} bytes, "
+                f"exceeding the {MAX_CONTINUATION_PAYLOAD_BYTES}-byte continuation-payload bound"
+            )
+        authority_json = None if authority is None else canonical_json(authority)
+        now = int(time.time() * 1000)
+        with self._lock:
+            self._check_open()
+            if idempotency_key is not None:
+                row = self._connection.execute(
+                    """
+                    SELECT action_id, root_id, payload_json, authority_json, root_action_budget FROM background_actions
+                    WHERE session_id = ? AND owner = ? AND idempotency_key = ?
+                    """,
+                    (session_id, owner, idempotency_key),
+                ).fetchone()
+                if row is not None:
+                    if row[1] != root_id or row[2] != action_json or row[3] != authority_json or row[4] != root_action_budget:
+                        raise StoreConflict("background action idempotency key was already used with a different authorization or payload")
+                    return str(row[0])
+            try:
+                self._connection.execute(
+                    """
+                    INSERT INTO background_actions (
+                        action_id, owner, session_id, revision_id, idempotency_key, root_id,
+                        root_action_budget, status, payload_json, authority_json, claim_json,
+                        error, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, ?, ?)
+                    """,
+                    (
+                        action_id,
+                        owner,
+                        session_id,
+                        revision_id,
+                        idempotency_key,
+                        root_id,
+                        root_action_budget,
+                        action_json,
+                        authority_json,
+                        now,
+                        now,
+                    ),
+                )
+                return action_id
+            except sqlite3.IntegrityError as exc:
+                raise StoreConflict(f"background action {action_id!r} already exists") from exc
+
     def claim_background_action(self, *, workspace: str, claim_identity: Mapping[str, object]) -> ContinuationRecord | None:
         """Claim ONE pending background action of this workspace; its driver runs it, not a model turn.
 
-        Only rows whose core-controlled `source` marks them background are eligible; ordinary
-        continuations (whose payload may contain anything) are never touched. The `claim_identity`
-        envelope records who holds the claim so another process can tell a live claim from a
-        stale one without a heartbeat framework.
+        The `claim_identity` records who holds the claim in the claim column; the
+        action payload itself is never rewritten by the claim.
         """
         with self._lock:
             self._check_open()
@@ -3782,30 +4219,26 @@ class SqliteStore:
                 in_transaction = True
                 row = self._connection.execute(
                     """
-                    SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                           idempotency_key, root_id, status, payload_json, created_at, updated_at, role
-                    FROM continuations
-                    WHERE source = ? AND status = 'pending'
+                    SELECT action_id, owner, session_id, revision_id, idempotency_key, root_id,
+                           root_action_budget, status, payload_json, authority_json, claim_json, error,
+                           created_at, updated_at
+                    FROM background_actions
+                    WHERE status = 'pending'
                       AND session_id IN (SELECT session_id FROM sessions WHERE workspace = ?)
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
-                    (BACKGROUND_ACTION_SOURCE, workspace),
+                    (workspace,),
                 ).fetchone()
                 if row is None:
                     self._connection.execute("COMMIT")
                     in_transaction = False
                     return None
                 now = int(time.time() * 1000)
-                root_id = row[7]
+                root_id = row[5]
                 if not isinstance(root_id, str) or not root_id:
                     raise StoreConflict(f"background action {row[0]!r} has no captured root authorization")
-                payload = own_json_object(json.loads(row[9]))
-                pending = payload.get("action")
-                action = dict(pending) if isinstance(pending, Mapping) else {}
-                if "root_action_budget" not in payload:
-                    raise StoreConflict(f"background action {row[0]!r} has no captured root budget")
-                root_budget = payload["root_action_budget"]
+                root_budget = row[6]
                 if root_budget is not None and (type(root_budget) is not int or root_budget < 0):
                     raise StoreConflict(f"background action {row[0]!r} has an invalid captured root budget")
                 budget_row = self._connection.execute(
@@ -3816,39 +4249,18 @@ class SqliteStore:
                     raise StoreConflict(f"background action {row[0]!r} captured an uncapped root with a finite budget row")
                 if root_budget is not None and (budget_row is None or int(budget_row[0]) < root_budget):
                     raise StoreConflict(f"background action {row[0]!r} lost its captured finite root authorization")
-                envelope = {
-                    "claim": json_wire_object(claim_identity),
-                    "action": action,
-                    "root_action_budget": root_budget,
-                }
-                if "tool_wait_authority" in payload:
-                    envelope["tool_wait_authority"] = payload["tool_wait_authority"]
                 claimed = self._connection.execute(
                     """
-                    UPDATE continuations SET status = 'claimed', updated_at = ?, payload_json = ?
-                    WHERE continuation_id = ? AND status = 'pending'
+                    UPDATE background_actions SET status = 'claimed', claim_json = ?, updated_at = ?
+                    WHERE action_id = ? AND status = 'pending'
                     """,
-                    (now, canonical_json(envelope), row[0]),
+                    (canonical_json(claim_identity), now, row[0]),
                 )
                 if claimed.rowcount == 0:
                     raise StoreConflict(f"background action {row[0]!r} was claimed concurrently")
                 self._connection.execute("COMMIT")
                 in_transaction = False
-                return ContinuationRecord(
-                    continuation_id=row[0],
-                    owner=row[1],
-                    session_id=row[2],
-                    source=row[3],
-                    run_id=row[4],
-                    revision_id=row[5],
-                    idempotency_key=row[6],
-                    status="claimed",
-                    payload=envelope,
-                    created_at=row[10],
-                    updated_at=now,
-                    root_id=row[7],
-                    role=str(row[12]),
-                )
+                return _background_record(row, status="claimed")
             except Exception:
                 if in_transaction:
                     self._connection.execute("ROLLBACK")
@@ -3857,69 +4269,41 @@ class SqliteStore:
     def complete_background_action(self, action_id: str, *, status: Literal["completed", "failed", "cancelled"], error: str | None = None) -> None:
         """Settle a pending or claimed background action into its terminal state.
 
-        A failed settle records the driver's error as core envelope metadata, leaving
-        the owner's action payload byte-identical: business payloads are arbitrary JSON
+        A failed settle records the driver's error in the error column, leaving the
+        owner's action payload byte-identical: business payloads are arbitrary JSON
         and must never be rewritten or misread as execution errors.
         """
         with self._lock:
             self._check_open()
             if status not in ("completed", "failed", "cancelled"):
                 raise ValueError(f"background action completion must be terminal, got {status!r}")
-            if error is not None and status == "failed":
-                row = self._connection.execute(
-                    "SELECT payload_json FROM continuations WHERE continuation_id = ? AND source = ?",
-                    (action_id, BACKGROUND_ACTION_SOURCE),
-                ).fetchone()
-                if row is not None:
-                    try:
-                        envelope = dict(json.loads(row[0]))
-                    except ValueError:
-                        envelope = {}
-                    envelope["error"] = error
-                    self._connection.execute(
-                        "UPDATE continuations SET payload_json = ? WHERE continuation_id = ?",
-                        (canonical_json(envelope), action_id),
-                    )
             cursor = self._connection.execute(
                 """
-                UPDATE continuations SET status = ?, updated_at = ?
-                WHERE continuation_id = ? AND source = ? AND status IN ('pending', 'claimed')
+                UPDATE background_actions SET status = ?, updated_at = ?, error = ?
+                WHERE action_id = ? AND status IN ('pending', 'claimed')
                 """,
-                (status, int(time.time() * 1000), action_id, BACKGROUND_ACTION_SOURCE),
+                (status, int(time.time() * 1000), error if status == "failed" else None, action_id),
             )
             if cursor.rowcount == 0:
                 raise StoreConflict(f"background action {action_id!r} is not settleable")
 
     def background_action(self, action_id: str) -> ContinuationRecord | None:
-        """One background action row by id, or None when it is not a background row."""
+        """One background action row by id, or None when absent."""
         with self._lock:
             self._check_open()
             row = self._connection.execute(
                 """
-                SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                       idempotency_key, root_id, status, payload_json, created_at, updated_at, role
-                FROM continuations
-                WHERE continuation_id = ? AND source = ?
+                SELECT action_id, owner, session_id, revision_id, idempotency_key, root_id,
+                       root_action_budget, status, payload_json, authority_json, claim_json, error,
+                       created_at, updated_at
+                FROM background_actions
+                WHERE action_id = ?
                 """,
-                (action_id, BACKGROUND_ACTION_SOURCE),
+                (action_id,),
             ).fetchone()
             if row is None:
                 return None
-            return ContinuationRecord(
-                continuation_id=row[0],
-                owner=row[1],
-                session_id=row[2],
-                source=row[3],
-                run_id=row[4],
-                revision_id=row[5],
-                idempotency_key=row[6],
-                status=row[8],
-                payload=own_json_object(json.loads(row[9])),
-                created_at=row[10],
-                updated_at=row[11],
-                root_id=row[7],
-                role=str(row[12]),
-            )
+            return _background_record(row)
 
     def background_action_id_for_idempotency(self, session_id: str, owner: str, idempotency_key: str) -> str | None:
         """The durable background action id already recorded for an idempotency key."""
@@ -3927,10 +4311,10 @@ class SqliteStore:
             self._check_open()
             row = self._connection.execute(
                 """
-                SELECT continuation_id FROM continuations
-                WHERE session_id = ? AND owner = ? AND idempotency_key = ? AND source = ?
+                SELECT action_id FROM background_actions
+                WHERE session_id = ? AND owner = ? AND idempotency_key = ?
                 """,
-                (session_id, owner, idempotency_key, BACKGROUND_ACTION_SOURCE),
+                (session_id, owner, idempotency_key),
             ).fetchone()
             return None if row is None else str(row[0])
 
@@ -3940,33 +4324,17 @@ class SqliteStore:
             self._check_open()
             rows = self._connection.execute(
                 """
-                SELECT continuation_id, owner, session_id, source, run_id, revision_id,
-                       idempotency_key, root_id, status, payload_json, created_at, updated_at, role
-                FROM continuations
-                WHERE session_id = ? AND source = ? AND status IN ('pending', 'claimed')
+                SELECT action_id, owner, session_id, revision_id, idempotency_key, root_id,
+                       root_action_budget, status, payload_json, authority_json, claim_json, error,
+                       created_at, updated_at
+                FROM background_actions
+                WHERE session_id = ? AND status IN ('pending', 'claimed')
                 ORDER BY created_at ASC
                 LIMIT 64
                 """,
-                (session_id, BACKGROUND_ACTION_SOURCE),
+                (session_id,),
             ).fetchall()
-            return tuple(
-                ContinuationRecord(
-                    continuation_id=row[0],
-                    owner=row[1],
-                    session_id=row[2],
-                    source=row[3],
-                    run_id=row[4],
-                    revision_id=row[5],
-                    idempotency_key=row[6],
-                    status=row[8],
-                    payload=own_json_object(json.loads(row[9])),
-                    created_at=row[10],
-                    updated_at=row[11],
-                    root_id=row[7],
-                    role=str(row[12]),
-                )
-                for row in rows
-            )
+            return tuple(_background_record(row) for row in rows)
 
     def claim_pending_followup(
         self,

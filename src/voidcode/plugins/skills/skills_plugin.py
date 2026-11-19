@@ -20,8 +20,9 @@ from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES, format
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.resources import ResourcePage, ResourceReadCaller, ResourceReaderServices, ResourceReadRequest
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import HistoryServices, PluginServices, StateServices
 from voidcode.sdk.tools import OutputBounds, ToolEffect
 from voidcode.sdk.views import MAX_VIEW_DATA_BYTES
 
@@ -103,9 +104,7 @@ def _parse_skill_frontmatter_fields(payload: Mapping[str, object]) -> dict[str, 
         if key not in payload:
             continue
         value = payload[key]
-        if not isinstance(value, str) or not value.strip():
-            raise SkillManifestParseError(f"skill frontmatter field '{key}' must be a non-empty string")
-        parsed[key] = value.strip()
+        parsed[key] = _validated_non_empty_string(value, field_name=f"skill frontmatter field '{key}'")
 
     missing_keys = SUPPORTED_FRONTMATTER_KEYS.difference(parsed)
     if missing_keys:
@@ -118,8 +117,8 @@ def parse_skill_manifest(contents: str, *, entry_path: Path) -> SkillMetadata:
     try:
         raw_frontmatter, body = split_frontmatter(contents)
         parsed = _parse_skill_frontmatter_fields(load_frontmatter_mapping(raw_frontmatter))
-        if not body.strip():
-            raise ValueError("content must be a non-empty string")
+        # Validated but kept verbatim: content preserves its original whitespace.
+        _validated_non_empty_string(body, field_name="content")
         return SkillMetadata(
             name=parsed["name"],
             description=parsed["description"],
@@ -606,7 +605,9 @@ class SkillShowCommand:
             if end < len(skill.content):
                 actions.append({"label": "Next page", "action": "skills.show", "arguments": {"name": skill.name, "offset": end, "limit": limit}})
             actions.append({"label": "Back to skills", "action": "skills"})
-            if len(json.dumps({"content": content, "actions": actions}).encode("utf-8")) <= MAX_VIEW_DATA_BYTES - 4096:
+            # Exact SDK acceptance: validate_view_data measures this same data mapping
+            # with json.dumps(json_wire_object(data), allow_nan=False); no headroom fudge.
+            if len(json.dumps(json_wire_object({"content": content, "actions": actions}), allow_nan=False).encode("utf-8")) <= MAX_VIEW_DATA_BYTES:
                 break
             if end <= offset + 1:
                 return CommandResult(status="error", error="Skill metadata exceeds the detail view limit; shorten its name or description")
@@ -706,12 +707,12 @@ def _record_touched_paths(state: RulesState, *, workspace_root: Path, raw_paths:
     return replace(state, touched_paths=tuple(touched[-TOUCHED_PATHS_LIMIT:]))
 
 
-def _load_rules_state(services: PluginServices) -> tuple[RulesState, int]:
+def _load_rules_state(services: StateServices) -> tuple[RulesState, int]:
     payload, version = services.get_state("session")
     return RulesState.from_payload(payload), version
 
 
-def _consume_resource_facts(state: RulesState, services: PluginServices) -> tuple[int, tuple[str, ...]]:
+def _consume_resource_facts(state: RulesState, services: HistoryServices) -> tuple[int, tuple[str, ...]]:
     """Read committed resource observations without depending on event or tool names."""
     cursor = state.cursor_sequence
     found: list[str] = []

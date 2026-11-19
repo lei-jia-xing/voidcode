@@ -30,6 +30,7 @@ from voidcode.sdk.client import (
     ResumeSpec,
     RunResult,
     RunSpec,
+    SessionClient,
     SessionFrame,
     SessionRow,
     SessionUsageReport,
@@ -38,14 +39,14 @@ from voidcode.sdk.client import (
     parse_session_frame,
 )
 from voidcode.sdk.commands import CommandInputSnapshot
-from voidcode.sdk.rpc import RPC_MAX_MESSAGE_BYTES, RPC_QUEUE_MESSAGES, RPC_SUBPROTOCOL, RpcFailure, RpcNotification, RpcSuccess
 from voidcode.sdk.services import ArtifactPage
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage, decode_context_history, decode_transcript_page
+from voidcode.transport.models import RPC_MAX_MESSAGE_BYTES, RPC_QUEUE_MESSAGES, RPC_SUBPROTOCOL, RpcFailure, RpcNotification, RpcSuccess
 
 _END = object()
 
 
-class CoreRpcClient:
+class CoreRpcClient(SessionClient):
     """One reconnectable connection; lost operations are never transparently retried."""
 
     def __init__(self, base_url: str, *, token: str | None = None) -> None:

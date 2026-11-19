@@ -8,7 +8,7 @@ from typing import Literal
 
 from .json_values import own_json_object
 from .provider import ProviderTokenUsage
-from .tools import ReadObservation, ResourceChange
+from .tools import Change, ReadObservation
 
 ObservedFactKind = Literal[
     "usage", "invocation_finished", "run_finished", "run_requested", "approval_requested", "child_spawned", "context_projected", "wakeup_fired"
@@ -86,7 +86,7 @@ class InvocationFinishedFact:
     error_kind: str | None = None
     has_retry_guidance: bool = False
     reads: tuple[ReadObservation, ...] = ()
-    changes: tuple[ResourceChange, ...] = ()
+    changes: tuple[Change, ...] = ()
     resource_paths: tuple[str, ...] = ()
 
 

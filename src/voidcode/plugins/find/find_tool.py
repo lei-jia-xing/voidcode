@@ -13,8 +13,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from voidcode.capabilities.files._common import validate_glob_patterns, validate_non_empty
 from voidcode.capabilities.files.errors import ToolDiagnosticError
 from voidcode.capabilities.files.grep_tool import MAX_MATCHES, GrepResultBody, GrepResultMatch, GrepTool
 from voidcode.capabilities.files.read_tool import ReadResultBody, ReadTool
@@ -153,21 +154,8 @@ class FindArgs(BaseModel):
     model: str | None = None
     max_output_tokens: int = Field(default=2000, ge=1)
 
-    @field_validator("query", "path", mode="after")
-    @classmethod
-    def _validate_non_empty(cls, value: str, info: ValidationInfo) -> str:
-        if not value.strip():
-            raise ValueError(f"{info.field_name} must not be empty")
-        return value
-
-    @field_validator("include", "exclude", mode="after")
-    @classmethod
-    def _validate_glob_patterns(cls, value: list[str] | None) -> list[str] | None:
-        if value is None:
-            return None
-        if not all(item.strip() for item in value):
-            raise ValueError("glob patterns must be non-empty strings")
-        return value
+    _non_empty = field_validator("query", "path", mode="after")(validate_non_empty)
+    _glob_patterns = field_validator("include", "exclude", mode="after")(validate_glob_patterns)
 
 
 @dataclass(frozen=True, slots=True)

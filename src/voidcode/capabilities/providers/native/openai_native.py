@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any, Protocol, cast
+from typing import Any, ClassVar, cast
 
 import httpx2
 from openai import APIConnectionError as OpenAIAPIConnectionError
@@ -30,12 +30,20 @@ from voidcode.sdk.tools import ToolCall
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     OwnedResource,
+    Transport,
+    TransportError,
     abort_signal_cancelled,
+    build_usage,
+    cancelled_events,
+    fallback_execution_error,
     iter_stream_with_timeout,
+    map_done_reason,
     normalize_tool_call_id,
+    open_event_stream,
     parse_tool_arguments,
     resolve_extra_request_headers,
     safe_tool_name,
+    strip_base_url,
     usage_int,
 )
 from .config import OpenAIProviderConfig, ProviderEndpointConfig
@@ -80,16 +88,6 @@ _PLACEHOLDER_API_KEY = "voidcode-no-api-key"
 _DEFAULT_TIMEOUT_SECONDS = 300.0
 _MAX_TOOL_NAME_LENGTH = 64
 _TOOL_NAME_HASH_LENGTH = 8
-
-
-class OpenAITransport(Protocol):
-    def request(self, payload: dict[str, object], *, timeout_seconds: float) -> object: ...
-
-
-@dataclass(frozen=True, slots=True)
-class OpenAITransportError(Exception):
-    payload: dict[str, object]
-    message: str = "provider request failed"
 
 
 def _stream_event_error_payload(exc: Exception) -> dict[str, object]:
@@ -142,7 +140,7 @@ class OpenAIChatCompletionsTransport:
         ssl_verify: bool | None = None,
         http_client: httpx2.Client | None = None,
     ) -> None:
-        self.base_url = normalize_openai_base_url(base_url)
+        self.base_url = OpenAIWireCodec.normalize_base_url(base_url)
         self.api_key = api_key
         self.organization = organization
         self.project = project
@@ -239,7 +237,7 @@ class OpenAIChatCompletionsTransport:
         try:
             result = self._sdk().chat.completions.create(**cast(Any, self._request_headers(payload)), timeout=timeout_seconds)
         except OpenAIAPIError as exc:
-            raise OpenAITransportError(self._api_error_payload(exc)) from exc
+            raise TransportError(self._api_error_payload(exc)) from exc
         return result
 
     def list_models(self, *, extra_headers: Mapping[str, str], timeout_seconds: float) -> tuple[str, ...]:
@@ -248,59 +246,58 @@ class OpenAIChatCompletionsTransport:
         except OpenAIAPIError as exc:
             status = getattr(exc, "status_code", None)
             detail = f"HTTP {status}" if status is not None else type(exc).__name__
-            raise OpenAITransportError({"message": f"Model listing failed ({detail})", "status_code": status}) from None
+            raise TransportError({"message": f"Model listing failed ({detail})", "status_code": status}) from None
         data = getattr(response, "data", None)
         if not isinstance(data, list):
-            raise OpenAITransportError({"message": "Model listing must contain a data array"})
+            raise TransportError({"message": "Model listing must contain a data array"})
         names: set[str] = set()
         for item in data:
             name = getattr(item, "id", None)
             if not isinstance(name, str) or not name.strip():
-                raise OpenAITransportError({"message": "Model listing requires non-empty string model IDs"})
+                raise TransportError({"message": "Model listing requires non-empty string model IDs"})
             names.add(name)
         return tuple(sorted(names))
 
 
-def normalize_openai_base_url(base_url: str | None) -> str:
-    """Normalize a chat-completions base URL exactly as the transport will use it."""
-    value = (base_url or _DEFAULT_OPENAI_BASE_URL).strip().rstrip("/") or _DEFAULT_OPENAI_BASE_URL
-    return value if re.search(r"/v[0-9]+(?:beta|alpha)?$", value, flags=re.IGNORECASE) else f"{value}/v1"
+class OpenAIWireCodec:
+    """OpenAI wire knowledge: usage fields, done tokens, base-URL rules."""
 
+    DONE_REASONS: ClassVar[dict[str, ProviderDoneReason]] = {
+        "stop": "stop",
+        "end_turn": "stop",
+        "tool_calls": "tool_calls",
+        "tool_use": "tool_calls",
+        "function_call": "function_call",
+        "length": "length",
+        "max_tokens": "length",
+        "content_filter": "content_filter",
+        "error": "error",
+    }
 
-def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
-    raw = payload.get("usage")
-    if not isinstance(raw, Mapping):
-        return None
-    # ``prompt_tokens`` is the inclusive prompt total (``cached_tokens`` is a
-    # component of it), so it is stored as-is; the uncached remainder is derived
-    # for pricing/telemetry only.
-    input_tokens = usage_int(raw.get("prompt_tokens"))
-    output_tokens = usage_int(raw.get("completion_tokens"))
-    details = raw.get("prompt_tokens_details")
-    cache_read = usage_int(details.get("cached_tokens")) if isinstance(details, Mapping) else None
-    if all(value is None for value in (input_tokens, output_tokens, cache_read)):
-        return None
-    uncached = input_tokens - cache_read if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else None
-    return ProviderTokenUsage(input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read, uncached_input_tokens=uncached)
+    @staticmethod
+    def normalize_base_url(base_url: str | None) -> str:
+        """Normalize a chat-completions base URL exactly as the transport will use it."""
+        value = strip_base_url(base_url, _DEFAULT_OPENAI_BASE_URL)
+        return value if re.search(r"/v[0-9]+(?:beta|alpha)?$", value, flags=re.IGNORECASE) else f"{value}/v1"
 
+    @staticmethod
+    def usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
+        raw = payload.get("usage")
+        if not isinstance(raw, Mapping):
+            return None
+        # ``prompt_tokens`` is the inclusive prompt total (``cached_tokens`` is a
+        # component of it), so it is stored as-is; the uncached remainder is derived
+        # for pricing/telemetry only.
+        input_tokens = usage_int(raw.get("prompt_tokens"))
+        output_tokens = usage_int(raw.get("completion_tokens"))
+        details = raw.get("prompt_tokens_details")
+        cache_read = usage_int(details.get("cached_tokens")) if isinstance(details, Mapping) else None
+        uncached = input_tokens - cache_read if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else None
+        return build_usage(input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read, uncached_input_tokens=uncached)
 
-def _done_reason(value: object) -> ProviderDoneReason:
-    if not isinstance(value, str) or not value.strip():
-        return "unknown"
-    value = value.strip().lower()
-    if value in {"stop", "end_turn"}:
-        return "stop"
-    if value in {"tool_calls", "tool_use"}:
-        return "tool_calls"
-    if value == "function_call":
-        return "function_call"
-    if value in {"length", "max_tokens"}:
-        return "length"
-    if value == "content_filter":
-        return "content_filter"
-    if value == "error":
-        return "error"
-    return "unknown"
+    @staticmethod
+    def done_reason(value: object) -> ProviderDoneReason:
+        return map_done_reason(value, OpenAIWireCodec.DONE_REASONS)
 
 
 def _raw_finish_reason(value: object) -> str | None:
@@ -363,7 +360,7 @@ class _ToolAccumulator:
 class OpenAIChatCompletionsProvider:
     name: str = "openai"
     config: OpenAIProviderConfig | ProviderEndpointConfig | None = None
-    transport: OpenAITransport | None = None
+    transport: Transport | None = None
     synthetic_tool_feedback_models: frozenset[str] = frozenset()
     # Headers this gateway requires on every request it serves. They reach the wire
     # through the SDK's ``extra_headers`` argument, which the transport passes to
@@ -372,7 +369,7 @@ class OpenAIChatCompletionsProvider:
     # One transport -- and therefore one SDK client and HTTP connection pool --
     # per provider, reused across every turn. Building it per request leaked a
     # pool per turn. First-use initialization is serialized.
-    _owned_transport: OwnedResource[OpenAITransport] = field(default_factory=OwnedResource, compare=False, repr=False)
+    _owned_transport: OwnedResource[Transport] = field(default_factory=OwnedResource, compare=False, repr=False)
 
     def provider_config(self) -> OpenAIProviderConfig | ProviderEndpointConfig | None:
         return self.config
@@ -424,10 +421,10 @@ class OpenAIChatCompletionsProvider:
             timeout = min(timeout, self.config.timeout_seconds)
         try:
             return transport.list_models(extra_headers=self.extra_request_headers, timeout_seconds=timeout)
-        except OpenAITransportError as exc:
+        except TransportError as exc:
             raise self._map_exception(exc, provider_name=self.name, model_name="", source="model_listing") from None
 
-    def _transport(self) -> OpenAITransport:
+    def _transport(self) -> Transport:
         if self.transport is not None:
             return self.transport
         owned = self._owned_transport
@@ -734,12 +731,10 @@ class OpenAIChatCompletionsProvider:
         try:
             return OpenAIChatCompletionsProvider._response_payload(value)
         except ValueError as exc:
-            raise OpenAITransportError(_stream_event_error_payload(exc)) from exc
+            raise TransportError(_stream_event_error_payload(exc)) from exc
 
     @staticmethod
     def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: str) -> ProviderExecutionError:
-        if isinstance(exc, ProviderExecutionError):
-            return exc
         if isinstance(exc, OpenAIAPIError):
             return provider_execution_error_from_payload(
                 provider_name=provider_name, model_name=model_name, payload=OpenAIChatCompletionsTransport._api_error_payload(exc), source=source
@@ -748,21 +743,14 @@ class OpenAIChatCompletionsProvider:
             return provider_execution_error_from_payload(
                 provider_name=provider_name, model_name=model_name, payload=_stream_event_error_payload(exc), source=source
             )
-        if isinstance(exc, OpenAITransportError):
+        if isinstance(exc, TransportError):
             return provider_execution_error_from_payload(provider_name=provider_name, model_name=model_name, payload=exc.payload, source=source)
-        known_network_failure = isinstance(exc, (httpx2.TransportError, OpenAIAPITimeoutError, OpenAIAPIConnectionError))
-        return ProviderExecutionError(
-            kind="provider_error",
+        return fallback_execution_error(
+            exc,
             provider_name=provider_name,
             model_name=model_name,
-            message="provider request failed",
-            retryable=known_network_failure,
-            fallback_allowed=True,
-            details={
-                "source": source,
-                "exception_type": type(exc).__name__,
-                **({"network_failure": True} if known_network_failure else {}),
-            },
+            source=source,
+            network_error=isinstance(exc, (httpx2.TransportError, OpenAIAPITimeoutError, OpenAIAPIConnectionError)),
         )
 
     @staticmethod
@@ -824,8 +812,8 @@ class OpenAIChatCompletionsProvider:
             payload = self._payload(request, stream=False)
             response_payload = self._response_payload(self._transport().request(payload, timeout_seconds=self._timeout()))
             if response_payload.get("error") is not None or response_payload.get("type") == "error":
-                raise OpenAITransportError(response_payload)
-            usage = _usage(response_payload)
+                raise TransportError(response_payload)
+            usage = OpenAIWireCodec.usage(response_payload)
             metadata = _response_metadata(response_payload)
             choices = response_payload.get("choices")
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
@@ -863,7 +851,7 @@ class OpenAIChatCompletionsProvider:
                     details={"source": "api", "reason": "malformed_response"},
                 )
             raw_finish_reason = choice.get("finish_reason")
-            done_reason = _done_reason(raw_finish_reason)
+            done_reason = OpenAIWireCodec.done_reason(raw_finish_reason)
             raw_token = _raw_finish_reason(raw_finish_reason)
             if done_reason == "error" and raw_token is not None:
                 _raise_finish_reason_error(raw_token, provider_name=provider_name, model_name=model_name)
@@ -889,17 +877,12 @@ class OpenAIChatCompletionsProvider:
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         provider_name = request.provider_name or self.name
         model_name = request.model_name or "unknown"
-        if request.abort_signal is not None and request.abort_signal.cancelled:
-            yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
-            yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+        if abort_signal_cancelled(request):
+            yield from cancelled_events()
             return
         try:
             payload = self._payload(request, stream=True)
-            stream = self._transport().request(payload, timeout_seconds=self._timeout())
-            if isinstance(stream, BaseException):
-                raise stream
-            if not isinstance(stream, Iterator):
-                raise ValueError("provider stream transport did not return an iterator")
+            stream = open_event_stream(self._transport(), payload, timeout_seconds=self._timeout())
             latest_usage: ProviderTokenUsage | None = None
             metadata: dict[str, object] = {}
             done_reason = "unknown"
@@ -915,15 +898,14 @@ class OpenAIChatCompletionsProvider:
                 first_event_timeout_seconds=DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
                 aborted=lambda: abort_signal_cancelled(request),
             ):
-                if request.abort_signal is not None and request.abort_signal.cancelled:
-                    yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
-                    yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+                if abort_signal_cancelled(request):
+                    yield from cancelled_events()
                     return
                 chunk = self._stream_chunk_payload(raw_chunk)
                 if chunk.get("error") is not None or chunk.get("type") == "error":
-                    raise OpenAITransportError(chunk)
+                    raise TransportError(chunk)
                 metadata.update(_response_metadata(chunk))
-                latest_usage = _usage(chunk) or latest_usage
+                latest_usage = OpenAIWireCodec.usage(chunk) or latest_usage
                 choices = chunk.get("choices")
                 if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
                     continue
@@ -931,7 +913,7 @@ class OpenAIChatCompletionsProvider:
                 raw_finish_reason = choice.get("finish_reason")
                 if isinstance(raw_finish_reason, str) and raw_finish_reason.strip():
                     finish_reason_reported = True
-                    done_reason = _done_reason(raw_finish_reason)
+                    done_reason = OpenAIWireCodec.done_reason(raw_finish_reason)
                     raw_finish_reason_token = raw_finish_reason if done_reason in {"error", "unknown"} else None
                 delta = choice.get("delta")
                 if not isinstance(delta, Mapping):
@@ -1183,7 +1165,4 @@ def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
 __all__ = [
     "OpenAIChatCompletionsProvider",
     "OpenAIChatCompletionsTransport",
-    "OpenAITransport",
-    "OpenAITransportError",
-    "normalize_openai_base_url",
 ]

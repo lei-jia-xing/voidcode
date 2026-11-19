@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .ask import AskRequest
-from .commands import ConfirmationRequest
-from .hooks import ApprovalRequestedFact
-from .tools import ToolCall
-from .views import ConfirmationViewData, parse_view_data
+from voidcode.sdk.ask import AskRequest
+from voidcode.sdk.commands import ConfirmationRequest
+from voidcode.sdk.hooks import ApprovalRequestedFact
+from voidcode.sdk.tools import ToolCall
+from voidcode.sdk.views import ConfirmationViewData, parse_view_data
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,10 +168,8 @@ class GateState:
     confirmations: tuple[ConfirmationGate, ...] = ()
     asks: tuple[AskGate, ...] = ()
     decided: frozenset[str] = frozenset()
-    #: Cross-kind arrival order of confirmation/ask request ids. Ordering only:
-    #: excluded from equality so reducer output still compares equal to
-    #: hand-built states that predate it.
-    arrival: tuple[str, ...] = field(default=(), compare=False, repr=False)
+    #: Cross-kind arrival order of confirmation/ask request ids.
+    arrival: tuple[str, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         if self.approval is not None and not isinstance(self.approval, ApprovalGate):

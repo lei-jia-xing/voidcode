@@ -33,7 +33,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
             version=SCHEMA_VERSION,
             schema={
                 "type": "object",
-                "required": ["schema_version", "revision", "phases", "summary", "reminders"],
+                "required": ["schema_version", "revision", "phases", "reminders"],
                 "additionalProperties": False,
                 "properties": {
                     "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
@@ -62,20 +62,6 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                             },
                         },
                     },
-                    "summary": {
-                        "type": "object",
-                        "required": ["total", "pending", "in_progress", "completed", "abandoned", "blocked", "active"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "total": {"type": "integer"},
-                            "pending": {"type": "integer"},
-                            "in_progress": {"type": "integer"},
-                            "completed": {"type": "integer"},
-                            "abandoned": {"type": "integer"},
-                            "blocked": {"type": "integer"},
-                            "active": {"type": "integer"},
-                        },
-                    },
                     "reminders": {
                         "type": "object",
                         "required": ["todo", "todo_mid_run", "invocations", "cursor_sequence", "cycle_run_id"],
@@ -83,21 +69,25 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                         "properties": {
                             "todo": {
                                 "type": "object",
-                                "required": ["attempts", "awaiting_progress", "progress_watermark", "cycle_run_id"],
+                                "required": ["attempts", "awaiting_progress", "progress_watermark", "mutations", "mutation_baseline", "cycle_run_id"],
                                 "additionalProperties": False,
                                 "properties": {
                                     "attempts": {"type": "integer", "minimum": 0},
                                     "awaiting_progress": {"type": "boolean"},
                                     "progress_watermark": {"type": "integer", "minimum": 0},
+                                    "mutations": {"type": "integer", "minimum": 0},
+                                    "mutation_baseline": {"type": "integer", "minimum": 0},
                                     "cycle_run_id": {"type": ["string", "null"]},
                                 },
                             },
                             "todo_mid_run": {
                                 "type": "object",
-                                "required": ["attempts", "mutations", "mutation_baseline", "cycle_run_id"],
+                                "required": ["attempts", "awaiting_progress", "progress_watermark", "mutations", "mutation_baseline", "cycle_run_id"],
                                 "additionalProperties": False,
                                 "properties": {
                                     "attempts": {"type": "integer", "minimum": 0},
+                                    "awaiting_progress": {"type": "boolean"},
+                                    "progress_watermark": {"type": "integer", "minimum": 0},
                                     "mutations": {"type": "integer", "minimum": 0},
                                     "mutation_baseline": {"type": "integer", "minimum": 0},
                                     "cycle_run_id": {"type": ["string", "null"]},

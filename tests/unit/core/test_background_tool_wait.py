@@ -19,7 +19,6 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.events import EventType
-from voidcode.core.storage.store import BACKGROUND_ACTION_SOURCE
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.tools import ToolFailure, UnconfirmedStop
 
@@ -752,24 +751,19 @@ def test_delayed_tool_request_keeps_original_root_budget(tmp_path: Path) -> None
             started = workspace / "started"
             release = workspace / "release"
             action_id = "delayed-original-root-wait"
-            core.store.enqueue_continuation(
+            core.store.enqueue_background_action(
                 action_id,
                 PLUGIN_ID,
                 "parent",
-                BACKGROUND_ACTION_SOURCE,
-                first.run_id,
                 core.revision_id,
-                {
-                    "action": {"mode": "root-gate", "started_path": str(started), "release_path": str(release)},
-                    "root_action_budget": 1,
-                    "tool_wait_authority": {
-                        "visible_tools": list(core._visible_tool_names_for_session("parent", core._snapshot)),
-                        "readonly": False,
-                        "revision_id": core.revision_id,
-                    },
-                },
+                {"mode": "root-gate", "started_path": str(started), "release_path": str(release)},
                 root_id=original_root,
-                role="system",
+                root_action_budget=1,
+                authority={
+                    "visible_tools": list(core._visible_tool_names_for_session("parent", core._snapshot)),
+                    "readonly": False,
+                    "revision_id": core.revision_id,
+                },
             )
             core._notify_background_loop()
             _wait_for(lambda: started.exists(), what="delayed driver gate")
@@ -816,24 +810,19 @@ def test_hidden_stale_and_missing_wait_authority_are_refused(tmp_path: Path) -> 
             core.create_session("parent")
             visible = list(core._visible_tool_names_for_session("parent", core._snapshot))
             visible.remove("root_probe")
-            core.store.enqueue_continuation(
+            core.store.enqueue_background_action(
                 "hidden-tool-wait",
                 PLUGIN_ID,
                 "parent",
-                BACKGROUND_ACTION_SOURCE,
-                "wait-scope-run",
                 core.revision_id,
-                {
-                    "action": {"mode": "scope-probe"},
-                    "root_action_budget": None,
-                    "tool_wait_authority": {
-                        "visible_tools": visible,
-                        "readonly": False,
-                        "revision_id": core.revision_id,
-                    },
-                },
+                {"mode": "scope-probe"},
                 root_id="wait-scope-root",
-                role="system",
+                root_action_budget=None,
+                authority={
+                    "visible_tools": visible,
+                    "readonly": False,
+                    "revision_id": core.revision_id,
+                },
             )
             core._notify_background_loop()
             _wait_for(
@@ -854,16 +843,14 @@ def test_hidden_stale_and_missing_wait_authority_are_refused(tmp_path: Path) -> 
             )
             assert "expected_revision differs from the active revision" in _plugin_state(core, "parent")["last_refusal"]
 
-            core.store.enqueue_continuation(
+            core.store.enqueue_background_action(
                 "legacy-missing-authority",
                 PLUGIN_ID,
                 "parent",
-                BACKGROUND_ACTION_SOURCE,
-                "wait-scope-run",
                 core.revision_id,
-                {"action": {"mode": "missing-authority"}, "root_action_budget": None},
+                {"mode": "missing-authority"},
                 root_id="legacy-root",
-                role="system",
+                root_action_budget=None,
             )
             core._notify_background_loop()
             _wait_for(

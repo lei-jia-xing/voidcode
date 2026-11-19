@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 import jsonschema
 
-from .json_values import json_wire_object, own_json_object
+from .json_values import json_wire_object, json_wire_value, own_json_object
 from .tools import ToolFailure
 
 if TYPE_CHECKING:
@@ -43,6 +43,14 @@ def resolve_output_schema(definition: ToolDefinition) -> Mapping[str, object] | 
     return definition.output_schema
 
 
+def validate_json_against_schema(schema: Mapping[str, object], payload: object) -> None:
+    """Raise jsonschema.ValidationError unless the payload satisfies the schema.
+
+    Each side is wired exactly once; thin per-consumer wrappers map the error.
+    """
+    jsonschema.Draft202012Validator(json_wire_object(schema)).validate(json_wire_value(payload))
+
+
 def validate_tool_body(schema: Mapping[str, object], result: ToolResult) -> dict[str, object]:
     """Validate a success result's body against an explicit schema.
 
@@ -61,7 +69,7 @@ def validate_tool_body(schema: Mapping[str, object], result: ToolResult) -> dict
     except ValueError as exc:
         raise ToolBodyValidationError(result.tool_name, None, f"body is not JSON: {exc}") from exc
     try:
-        jsonschema.Draft202012Validator(json_wire_object(schema)).validate(json_wire_object(owned))
+        validate_json_against_schema(schema, owned)
     except jsonschema.ValidationError as exc:
         raise ToolBodyValidationError(result.tool_name, exc.json_path, exc.message) from exc
     return dict(owned)

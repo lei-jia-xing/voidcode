@@ -5,9 +5,8 @@ from __future__ import annotations
 from typing import ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
-from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import ToolEffect
+from voidcode.sdk.tools import TOOL_OUTPUT_BYTES, ToolEffect
 
 from .user_shell import (
     USER_SHELL_TIMEOUT_SECONDS,

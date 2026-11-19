@@ -15,15 +15,7 @@ from __future__ import annotations
 import random
 import threading
 import time
-from collections.abc import Callable, Iterator
-
-from tenacity import (
-    AttemptManager,
-    RetryCallState,
-    Retrying,
-    retry_if_exception,
-    stop_after_attempt,
-)
+from collections.abc import Callable
 
 from voidcode.sdk.provider import ProviderAbortSignal, ProviderExecutionError
 
@@ -34,8 +26,6 @@ _BACKOFF_BASE_SECONDS: float = 1.0
 _BACKOFF_CAP_SECONDS: float = 30.0
 #: A structured ``retry_after`` above this refuses the retry instead of stalling the run.
 MAX_RETRY_AFTER_SECONDS: float = 300.0
-#: How often a backoff re-checks the abort signal.
-_ABORT_POLL_SECONDS: float = 0.05
 
 
 def should_retry(exc: BaseException) -> bool:
@@ -55,44 +45,53 @@ def should_retry(exc: BaseException) -> bool:
     return hint is None or hint <= MAX_RETRY_AFTER_SECONDS
 
 
-def retry_wait_seconds(state: RetryCallState) -> float:
+def _retry_delay_seconds(exc: ProviderExecutionError, attempt: int) -> float:
     """Seconds before the next attempt: structured hint first, jittered backoff otherwise."""
-    exc = state.outcome.exception() if state.outcome is not None else None
-    hint = exc.retry_after if isinstance(exc, ProviderExecutionError) else None
-    if hint is not None:
-        return max(0.0, hint)
-    return random.uniform(0.0, min(_BACKOFF_CAP_SECONDS, _BACKOFF_BASE_SECONDS * (2.0 ** (state.attempt_number - 1))))
+    if exc.retry_after is not None:
+        return max(0.0, exc.retry_after)
+    return random.uniform(0.0, min(_BACKOFF_CAP_SECONDS, _BACKOFF_BASE_SECONDS * (2.0 ** (attempt - 1))))
 
 
-def retry_sleep(abort_signal: ProviderAbortSignal | None, *, provider: str, model: str) -> Callable[[float], None]:
-    """Tenacity ``sleep`` that polls the run's abort signal instead of blocking blind."""
-
-    def _sleep(seconds: float) -> None:
-        if abort_signal is None:
-            threading.Event().wait(seconds)
-            return
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            if abort_signal.cancelled:
-                raise ProviderExecutionError(
-                    kind="cancelled",
-                    provider_name=provider,
-                    model_name=model,
-                    message="provider turn cancelled while waiting to retry",
-                    retryable=False,
-                    fallback_allowed=False,
-                )
-            time.sleep(min(_ABORT_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
-
-    return _sleep
-
-
-def retrying_turn(abort_signal: ProviderAbortSignal | None, *, provider: str, model: str) -> Iterator[AttemptManager]:
-    """Tenacity attempts for one provider turn; the caller fills ``request.attempt``."""
-    yield from Retrying(
-        retry=retry_if_exception(should_retry),
-        stop=stop_after_attempt(MAX_ATTEMPTS),
-        wait=retry_wait_seconds,
-        sleep=retry_sleep(abort_signal, provider=provider, model=model),
-        reraise=True,
+def _cancelled_error(provider: str, model: str) -> ProviderExecutionError:
+    return ProviderExecutionError(
+        kind="cancelled",
+        provider_name=provider,
+        model_name=model,
+        message="provider turn cancelled while waiting to retry",
+        retryable=False,
+        fallback_allowed=False,
     )
+
+
+def _backoff_or_raise(abort_signal: ProviderAbortSignal | None, delay: float, *, provider: str, model: str) -> None:
+    """One abort-aware backoff: a single blocking wait, never a poll."""
+    if abort_signal is None:
+        time.sleep(delay)
+        return
+    on_cancel = getattr(abort_signal, "on_cancel", None)
+    if on_cancel is None:
+        if abort_signal.cancelled:
+            raise _cancelled_error(provider, model)
+        time.sleep(delay)
+        if abort_signal.cancelled:
+            raise _cancelled_error(provider, model)
+        return
+    done = threading.Event()
+    unregister = on_cancel(done.set)
+    try:
+        if done.wait(delay):
+            raise _cancelled_error(provider, model)
+    finally:
+        unregister()
+
+
+def run_with_retry[T](call: Callable[[int], T], abort_signal: ProviderAbortSignal | None, *, provider: str, model: str) -> T:
+    """Run one provider turn, retrying adapter-approved failures with abort-aware backoff."""
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return call(attempt)
+        except ProviderExecutionError as exc:
+            if not should_retry(exc) or attempt >= MAX_ATTEMPTS:
+                raise
+            _backoff_or_raise(abort_signal, _retry_delay_seconds(exc, attempt), provider=provider, model=model)
+    raise AssertionError("unreachable: retry loop always returns or raises")

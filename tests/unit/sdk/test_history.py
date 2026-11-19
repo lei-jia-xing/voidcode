@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import is_dataclass
 
-from voidcode.sdk.history import PAGE_BYTES, HistoryEvent, HistoryPage
+from voidcode.core.history_renderer import PAGE_BYTES, HistoryEvent, HistoryPage
 
 
 class _FakeEvent:

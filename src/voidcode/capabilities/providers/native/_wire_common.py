@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
-from typing import cast
+from typing import Protocol, cast
 
-from voidcode.sdk.provider import ProviderExecutionError
+from voidcode.sdk.provider import ProviderDoneReason, ProviderExecutionError, ProviderStreamEvent, ProviderTokenUsage
 
 # A declared request header may name the conversation with ``{session_id}``. The
 # transport -- and therefore its SDK client -- is cached across turns, so a value
@@ -233,3 +233,107 @@ class OwnedResource[TransportT]:
         closer = getattr(value, "close", None)
         if callable(closer):
             closer()
+
+
+# --- Shared SSE transport: one protocol, one error, usage/done/base mechanics ---
+
+
+@dataclass(frozen=True, slots=True)
+class TransportError(Exception):
+    """One failed vendor request: the typed payload the provider maps to execution errors."""
+
+    payload: dict[str, object]
+    message: str = "provider request failed"
+
+
+class Transport(Protocol):
+    """One vendor HTTP transport behind the native providers."""
+
+    def request(self, payload: dict[str, object], *, timeout_seconds: float) -> object: ...
+
+
+def build_usage(
+    *,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cache_read_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
+    uncached_input_tokens: int | None = None,
+) -> ProviderTokenUsage | None:
+    """One usage record, or None when every bucket is unknown."""
+    if all(value is None for value in (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, uncached_input_tokens)):
+        return None
+    return ProviderTokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        uncached_input_tokens=uncached_input_tokens,
+    )
+
+
+def merge_usage(previous: ProviderTokenUsage | None, current: ProviderTokenUsage | None) -> ProviderTokenUsage | None:
+    """Field-wise latest-wins merge for stream chunks carrying partial buckets."""
+    if previous is None:
+        return current
+    if current is None:
+        return previous
+    uncached = current.uncached_input_tokens if current.uncached_input_tokens is not None else previous.uncached_input_tokens
+    cache_read = current.cache_read_tokens if current.cache_read_tokens is not None else previous.cache_read_tokens
+    input_tokens = uncached + cache_read if uncached is not None and cache_read is not None else None
+    output_tokens = current.output_tokens if current.output_tokens is not None else previous.output_tokens
+    cache_write = current.cache_write_tokens if current.cache_write_tokens is not None else previous.cache_write_tokens
+    return ProviderTokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
+        uncached_input_tokens=uncached,
+    )
+
+
+def map_done_reason(value: object, table: Mapping[str, ProviderDoneReason]) -> ProviderDoneReason:
+    """Map one reported finish token through a vendor table; anything unmapped is unknown."""
+    if not isinstance(value, str):
+        return "unknown"
+    return table.get(value.strip().lower(), "unknown")
+
+
+def strip_base_url(base_url: str | None, default: str) -> str:
+    """Configured host without surrounding whitespace or trailing slashes, or the default."""
+    return (base_url or default).strip().rstrip("/") or default
+
+
+def cancelled_events() -> Generator[ProviderStreamEvent]:
+    """The abort-error prelude a cancelled stream yields instead of opening."""
+    yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
+    yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+
+
+def open_event_stream(transport: Transport, payload: dict[str, object], *, timeout_seconds: float) -> Iterator[object]:
+    """Request one event stream and guard its shape: reraise transported errors, require an iterator."""
+    stream = transport.request(payload, timeout_seconds=timeout_seconds)
+    if isinstance(stream, BaseException):
+        raise stream
+    if not isinstance(stream, Iterator):
+        raise ValueError("provider stream transport did not return an iterator")
+    return stream
+
+
+def fallback_execution_error(exc: Exception, *, provider_name: str, model_name: str, source: str, network_error: bool) -> ProviderExecutionError:
+    """Shared _map_exception tail: passthrough plus the generic provider_error."""
+    if isinstance(exc, ProviderExecutionError):
+        return exc
+    return ProviderExecutionError(
+        kind="provider_error",
+        provider_name=provider_name,
+        model_name=model_name,
+        message="provider request failed",
+        retryable=network_error,
+        fallback_allowed=True,
+        details={
+            "source": source,
+            "exception_type": type(exc).__name__,
+            **({"network_failure": True} if network_error else {}),
+        },
+    )

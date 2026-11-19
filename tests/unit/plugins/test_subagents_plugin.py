@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.plugins.subagents import subagents_plugin
 from voidcode.plugins.subagents.agent_reader import read_agent_resource
 from voidcode.plugins.subagents.profiles.registry import load_agent_registry
 from voidcode.plugins.subagents.subagents_plugin import (
@@ -63,9 +64,15 @@ def _payload(result: ToolResult) -> dict[str, object]:
     return dict(result.body.as_payload())
 
 
+def _loaded(payload: Mapping[str, object] | None) -> DelegationState:
+    services = FakeServices()
+    if payload is not None:
+        services.seed_state(payload)
+    return subagents_plugin._store(services).load()[0]
+
+
 def _stored(services: FakeServices) -> DelegationState:
-    raw, _version = services.get_state("session")
-    return DelegationState.from_payload(raw)
+    return subagents_plugin._store(services).load()[0]
 
 
 def _builtin_body(workspace: Path, profile_id: str) -> str:
@@ -99,30 +106,31 @@ def test_state_round_trip_keeps_children_and_groups() -> None:
     assert payload == {
         "schema_version": SCHEMA_VERSION,
         "children": {
-            "child-1": {"label": "explore", "group_id": "g1", "subagent_type": "explore"},
-            "child-2": {"label": "", "group_id": None, "subagent_type": None},
+            "child-1": {"label": "explore", "group_id": "g1", "subagent_type": "explore", "result_schema": None},
+            "child-2": {"label": "", "group_id": None, "subagent_type": None, "result_schema": None},
         },
         "groups": {"g1": ["child-1"]},
     }
     assert DelegationState.from_payload(payload) == state
-    assert DelegationState.from_payload(None) == DelegationState()
+    assert _loaded(None) == DelegationState()
 
 
-def test_state_parses_rows_written_before_profile_selection() -> None:
-    """A child row from before ``subagent_type`` existed still restores, as an unset profile."""
+def test_state_rejects_rows_written_before_profile_selection() -> None:
+    """A child row without the current shape fails loudly instead of restoring with guesses."""
     payload = {
         "schema_version": SCHEMA_VERSION,
         "children": {"child-1": {"label": "a", "group_id": None}},
         "groups": {},
     }
-    assert DelegationState.from_payload(payload).children == {"child-1": ChildRecord(label="a")}
+    with pytest.raises(ValueError, match="missing field"):
+        DelegationState.from_payload(payload)
 
 
 def test_state_round_trip_accepts_handler_snapshots() -> None:
     """Plugin state reaches a handler as an immutable JSON snapshot: arrays are tuples."""
     payload = {
         "schema_version": SCHEMA_VERSION,
-        "children": {"child-1": {"label": "a", "group_id": "g1"}},
+        "children": {"child-1": {"label": "a", "group_id": "g1", "subagent_type": None, "result_schema": None}},
         "groups": {"g1": ("child-1",)},
     }
     assert DelegationState.from_payload(payload).groups == {"g1": ("child-1",)}
@@ -131,7 +139,6 @@ def test_state_round_trip_accepts_handler_snapshots() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"schema_version": SCHEMA_VERSION, "children": {}, "groups": {}, "unknown": 1},
         {"schema_version": 2, "children": {}, "groups": {}},
         {"schema_version": SCHEMA_VERSION, "children": [], "groups": {}},
         {"schema_version": SCHEMA_VERSION, "children": {}, "groups": []},
@@ -151,6 +158,13 @@ def test_state_round_trip_accepts_handler_snapshots() -> None:
 def test_state_rejects_malformed_documents(payload: Mapping[str, object]) -> None:
     with pytest.raises(ValueError):
         DelegationState.from_payload(payload)
+
+
+def test_store_rejects_unknown_and_missing_top_level_keys() -> None:
+    with pytest.raises(ValueError, match="not supported"):
+        _loaded({"schema_version": SCHEMA_VERSION, "children": {}, "groups": {}, "unknown": 1})
+    with pytest.raises(ValueError, match="missing field"):
+        _loaded({"schema_version": SCHEMA_VERSION})
 
 
 # --- task: spawning ---

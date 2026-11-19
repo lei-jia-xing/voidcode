@@ -39,10 +39,9 @@ _HEADER = """\
 
 
 def _core_openapi_document() -> dict[str, object]:
-    from voidcode.transport.http import create_core_app_with_factory
+    from voidcode.transport.http import rpc_schema_document
 
-    app = create_core_app_with_factory(core_factory=lambda: None)
-    return app.openapi()
+    return rpc_schema_document()
 
 
 def _run_openapi_typescript(document: dict[str, object]) -> str:

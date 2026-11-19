@@ -247,3 +247,34 @@ def test_missing_artifact_bytes_fail_visibly(tmp_path: Path) -> None:
             assert [e for e in events if e.event_type == "core.user_message"] == []
         finally:
             core.close()
+
+
+def test_legacy_inline_entry_fails_visibly(tmp_path: Path) -> None:
+    """Inline `data` entries are no longer decoded: the missing reference fails the claim."""
+    with _server([]) as server:
+        core, _workspace = _setup_core(tmp_path, server)
+        try:
+            session_id = core.create_session("sess-inline").session_id
+            payload: dict[str, object] = {
+                "prompt": "follow-up with legacy inline image",
+                "root_action_budget": None,
+                "images": [{"media_type": "image/png", "data": base64.b64encode(b"raw-bytes").decode("ascii")}],
+            }
+            cid = core.store.enqueue_continuation(
+                "cid-inline",
+                "kernel",
+                session_id,
+                "user_message",
+                "",
+                core.revision_id,
+                payload,
+                root_id="root-test",
+                role="user",
+            )
+            with pytest.raises(StoreConflict, match="invalid artifact reference"):
+                core._drive_pending(session_id)
+            assert core.store.continuation_status(cid) == "failed"
+            events = core.store.events(session_id)
+            assert [e for e in events if e.event_type == "core.user_message"] == []
+        finally:
+            core.close()

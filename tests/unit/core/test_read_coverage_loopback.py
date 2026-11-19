@@ -12,7 +12,7 @@ from tests.unit.core.test_nested_tools import _call, _configure, _open, _server,
 from voidcode.core.coverage import read_artifact_content
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.hooks import InvocationFinishedFact
-from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
+from voidcode.sdk.tools import TOOL_OUTPUT_BYTES
 
 
 @pytest.mark.parametrize("flags", [{"partial": True}, {"truncated": True}, {"clipped": True}, {"output_bytes": 52 * 1024}])

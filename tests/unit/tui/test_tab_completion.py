@@ -374,10 +374,11 @@ def test_live_command_presentation_mounts_under_its_revision_only() -> None:
         view_type="choices",
         data={"options": [{"id": "explore", "label": "Explore"}], "action": "test.show", "argument_name": "name"},
     )
-    app.event_queue.put({"kind": "command_presentation", "view": view, "revision_id": "rev-old", "serial": app._interaction_serial})
+    token = app._follower.begin_interaction()
+    app.event_queue.put({"kind": "command_presentation", "view": view, "revision_id": "rev-old", "token": token})
     app._drain_events()
     assert app.active_overlay is None
-    app.event_queue.put({"kind": "command_presentation", "view": view, "revision_id": "rev-1", "serial": app._interaction_serial})
+    app.event_queue.put({"kind": "command_presentation", "view": view, "revision_id": "rev-1", "token": token})
     app._drain_events()
     assert isinstance(app.active_overlay, InteractiveChoices)
     assert app.active_overlay.revision_id == "rev-1"

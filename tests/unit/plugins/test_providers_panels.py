@@ -20,7 +20,7 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderTurnResult
 from voidcode.sdk.services import PluginServices, ToolInvocationReceipt
-from voidcode.sdk.transcript import TranscriptDispatch, TranscriptEntry, TranscriptPage
+from voidcode.sdk.transcript import TranscriptDispatch, TranscriptEntry
 
 DEEPSEEK_KEY = "deepseek-secret-credential-value"
 GOOGLE_KEY = "google-secret-credential-value"
@@ -44,13 +44,17 @@ class StubServices(PluginServices):
 
     def __init__(self, events: Sequence[TranscriptEntry] = ()) -> None:
         self.events = tuple(events)
-        self.reads: list[tuple[int, int]] = []
+        self.latest: list[tuple[str, str | None]] = []
 
-    def read_transcript(self, *, after_sequence=0, limit=100):
-        self.reads.append((after_sequence, limit))
-        remaining = tuple(entry for entry in self.events if entry.sequence > after_sequence)
-        page = remaining[:limit]
-        return TranscriptPage(page, page[-1].sequence if page else after_sequence, len(remaining) > limit, len(page))
+    def latest_event(self, event_type: str, run_id: str | None = None):
+        self.latest.append((event_type, run_id))
+        assert event_type == "core.provider_intent"
+        candidates = [entry for entry in self.events if isinstance(entry.content, TranscriptDispatch)]
+        if run_id is not None:
+            candidates = [entry for entry in candidates if entry.run_id == run_id]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda entry: entry.sequence)
 
     def replace_state(self, state: Mapping[str, object], expected_version: int, scope: Literal["session", "workspace"] = "session") -> int:
         raise AssertionError("provider panels write no state")
@@ -165,7 +169,7 @@ def test_model_reports_no_dispatch_in_an_empty_history() -> None:
     assert result.output is not None and "No provider dispatch recorded in this session yet." in result.output
     assert result.data is not None and result.data["last_dispatch"] is None
     assert _configured_names(result) == ["deepseek", "endpoint", "google"]
-    assert services.reads == [(0, 200)]
+    assert services.latest == [("core.provider_intent", None)]
 
 
 def test_model_reports_the_most_recent_dispatch_this_session_made() -> None:
@@ -177,7 +181,7 @@ def test_model_reports_the_most_recent_dispatch_this_session_made() -> None:
     assert result.data is not None
     assert result.data["last_dispatch"] == {"sequence": 9, "provider": "google", "model": "gemini-3-pro"}
     assert result.output is not None and "`google/gemini-3-pro`" in result.output
-    assert services.reads == [(0, 200)]
+    assert services.latest == [("core.provider_intent", None)]
 
 
 def test_model_reports_a_turn_without_its_intent_as_no_dispatch() -> None:
@@ -279,15 +283,9 @@ def test_view_render_reports_the_session_dispatch() -> None:
     assert "`deepseek/deepseek-chat`" in str(descriptor.data["content"])
 
 
-def test_pending_dispatch_remains_visible_after_empty_transcript_pages():
-    class Sparse(StubServices):
-        def read_transcript(self, *, after_sequence=0, limit=100):
-            self.reads.append((after_sequence, limit))
-            if after_sequence == 0:
-                return TranscriptPage((), 200, True, 200)
-            return TranscriptPage((_dispatch(201, "endpoint", "pending-model")[0],), 201, False, 1)
-
-    services = Sparse()
+def test_pending_dispatch_returns_newest_by_sequence_regardless_of_feed_order():
+    events = (*_dispatch(201, "endpoint", "pending-model"), *_dispatch(3, "deepseek", "deepseek-chat"))
+    services = _services(events)
     result = _invoke(_plugin(), "model", services)
     assert result.data["last_dispatch"] == {"sequence": 201, "provider": "endpoint", "model": "pending-model"}
-    assert services.reads == [(0, 200), (200, 200)]
+    assert services.latest == [("core.provider_intent", None)]

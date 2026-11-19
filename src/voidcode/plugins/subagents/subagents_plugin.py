@@ -16,14 +16,26 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 from uuid import uuid4
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
+
 from voidcode.capabilities.agent_queries import AgentDefinition, AgentDefinitionRequest, apply_agent_profile
+from voidcode.capabilities.plugin_state import PluginStateStore
 from voidcode.capabilities.resource_pages import render_stored_artifact_page
 from voidcode.sdk.child_schema import canonical_result_schema, validate_child_text
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import PluginQueryCaller
 from voidcode.sdk.resources import ResourceReadCaller
-from voidcode.sdk.services import ChildOutcome, DescendantNode, PluginServices, StructuredQueryParseError
+from voidcode.sdk.services import (
+    ArtifactServices,
+    ChildOutcome,
+    ChildServices,
+    DescendantNode,
+    HistoryServices,
+    PluginServices,
+    StateServices,
+    StructuredQueryParseError,
+)
 from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
@@ -50,11 +62,7 @@ MAX_HISTORY_EVENTS = 200
 
 _TASK_OPERATIONS: tuple[str, ...] = ("output", "cancel", "send", "history")
 _BATCH_OPERATIONS: tuple[str, ...] = ("output",)
-_STATE_KEYS: frozenset[str] = frozenset({"schema_version", "children", "groups"})
-_CHILD_KEYS: frozenset[str] = frozenset({"label", "group_id"})
-#: Optional child fields: absent in rows written before preset selection existed,
-#: and before structured delivery existed.
-_CHILD_OPTIONAL_KEYS: frozenset[str] = frozenset({"subagent_type", "result_schema"})
+_CHILD_KEYS: frozenset[str] = frozenset({"label", "group_id", "subagent_type", "result_schema"})
 _ITEM_KEYS: frozenset[str] = frozenset({"prompt", "label", "tool_allowlist", "max_steps", "subagent_type", "result_schema"})
 _BATCH_KEYS: frozenset[str] = frozenset({"tasks", "operation", "parallel_group_id", "context"})
 
@@ -76,8 +84,7 @@ class ChildRecord:
     def parse(cls, child_id: str, raw: object) -> ChildRecord:
         if not isinstance(raw, Mapping):
             raise ValueError(f"delegation child {child_id!r} must be an object")
-        allowed = _CHILD_KEYS | _CHILD_OPTIONAL_KEYS
-        unknown = sorted(str(key) for key in raw if key not in allowed)
+        unknown = sorted(str(key) for key in raw if key not in _CHILD_KEYS)
         if unknown:
             raise ValueError(f"delegation child {child_id!r} field '{unknown[0]}' is not supported")
         missing = sorted(_CHILD_KEYS - raw.keys())
@@ -104,10 +111,12 @@ class ChildRecord:
         return cls(label=label, group_id=group_id, subagent_type=subagent_type, result_schema=result_schema)
 
     def as_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {"label": self.label, "group_id": self.group_id, "subagent_type": self.subagent_type}
-        if self.result_schema is not None:
-            payload["result_schema"] = self.result_schema
-        return payload
+        return {
+            "label": self.label,
+            "group_id": self.group_id,
+            "subagent_type": self.subagent_type,
+            "result_schema": self.result_schema,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,15 +127,7 @@ class DelegationState:
     groups: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
-    def from_payload(cls, raw: Mapping[str, object] | None) -> DelegationState:
-        if raw is None:
-            return cls()
-        unknown = sorted(str(key) for key in raw if key not in _STATE_KEYS)
-        if unknown:
-            raise ValueError(f"delegation state field '{unknown[0]}' is not supported")
-        missing = sorted(_STATE_KEYS - raw.keys())
-        if missing:
-            raise ValueError("delegation state is missing field(s): " + ", ".join(missing))
+    def from_payload(cls, raw: Mapping[str, object]) -> DelegationState:
         if raw["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"delegation state schema_version must be {SCHEMA_VERSION}, got {raw['schema_version']!r}")
         raw_children = raw["children"]
@@ -171,9 +172,17 @@ class DelegationState:
         }
 
 
-def _load_state(services: PluginServices) -> tuple[DelegationState, int]:
-    state_data, version = services.get_state("session")
-    return DelegationState.from_payload(state_data), version
+def _store(services: StateServices) -> PluginStateStore[DelegationState]:
+    """This plugin's session-state store: strict keys, typed parse, CAS save."""
+    return PluginStateStore(
+        services,
+        keys=frozenset({"schema_version", "children", "groups"}),
+        parse=DelegationState.from_payload,
+        serialize=DelegationState.to_payload,
+        empty=DelegationState,
+        unknown=lambda extra: f"delegation state field '{extra[0]}' is not supported",
+        missing=lambda absent: "delegation state is missing field(s): " + ", ".join(absent),
+    )
 
 
 def _load_registry(context: ToolContext) -> AgentRegistry:
@@ -203,23 +212,52 @@ def _with_children(state: DelegationState, created: Sequence[tuple[str, ChildRec
 # --- Argument parsing ---
 
 
-@dataclass(frozen=True, slots=True)
-class _TaskArgs:
-    prompt: str | None = None
-    label: str = ""
-    tool_allowlist: tuple[str, ...] | None = None
-    max_steps: int | None = None
-    run_in_background: bool = True
-    operation: str | None = None
-    task_id: str | None = None
-    timeout_seconds: float = DEFAULT_JOIN_TIMEOUT_SECONDS
-    subagent_type: str | None = None
-    result_schema: Mapping[str, object] | None = None
-    output_offset: int = 0
-    output_limit: int = OUTPUT_PAGE_BYTES
-    after_sequence: int = 0
-    history_offset: int = 0
-    history_limit: int = DEFAULT_HISTORY_EVENTS
+def _validate_label(value: object, *, where: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{where} label must be a string")
+    return value
+
+
+def _validate_allowlist(value: object, *, where: str) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError(f"{where} tool_allowlist must be a non-empty array of tool names")
+    names: list[str] = []
+    for name in value:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{where} tool_allowlist entries must be non-empty tool names")
+        names.append(name)
+    return tuple(names)
+
+
+def _validate_subagent_type(value: object, *, where: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{where} subagent_type must be a non-empty profile id")
+    return value
+
+
+def _validate_max_steps(value: object, *, where: str) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{where} max_steps must be a positive integer")
+    return value
+
+
+def _validate_result_schema(value: object, *, where: str) -> Mapping[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} result_schema must be an object")
+    try:
+        return canonical_result_schema(value)
+    except ValueError as exc:
+        raise ValueError(f"{where} {exc}") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,43 +270,6 @@ class _BatchItem:
     result_schema: Mapping[str, object] | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _BatchArgs:
-    tasks: tuple[_BatchItem, ...] = ()
-    operation: str | None = None
-    parallel_group_id: str | None = None
-    context: str | None = None
-
-
-def _parse_label(raw: object, *, where: str) -> str:
-    if raw is None:
-        return ""
-    if not isinstance(raw, str):
-        raise ValueError(f"{where} label must be a string")
-    return raw
-
-
-def _parse_allowlist(raw: object, *, where: str) -> tuple[str, ...] | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, (list, tuple)) or not raw:
-        raise ValueError(f"{where} tool_allowlist must be a non-empty array of tool names")
-    names: list[str] = []
-    for name in raw:
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError(f"{where} tool_allowlist entries must be non-empty tool names")
-        names.append(name)
-    return tuple(names)
-
-
-def _parse_subagent_type(raw: object, *, where: str) -> str | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError(f"{where} subagent_type must be a non-empty profile id")
-    return raw
-
-
 def _resolve_subagent(registry: AgentRegistry, subagent_type: str, *, where: str) -> AgentDefinition:
     """The executable child profile behind a parsed id, or a clear ingress refusal."""
     manifest = registry.get(subagent_type)
@@ -277,128 +278,146 @@ def _resolve_subagent(registry: AgentRegistry, subagent_type: str, *, where: str
     return manifest
 
 
-def _parse_max_steps(raw: object, *, where: str) -> int | None:
-    if raw is None:
-        return None
-    if type(raw) is not int or raw < 1:
-        raise ValueError(f"{where} max_steps must be a positive integer")
-    return raw
+class TaskArgsModel(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True, frozen=True)
+
+    prompt: str | None = None
+    label: str = ""
+    tool_allowlist: tuple[str, ...] | None = None
+    max_steps: int | None = None
+    run_in_background: bool = True
+    operation: str | None = None
+    task_id: str | None = None
+    timeout_seconds: float = Field(default=DEFAULT_JOIN_TIMEOUT_SECONDS, alias="timeout")
+    subagent_type: str | None = None
+    result_schema: dict[str, object] | None = None
+    output_offset: int = 0
+    output_limit: int = OUTPUT_PAGE_BYTES
+    after_sequence: int = 0
+    history_offset: int = 0
+    history_limit: int = Field(default=DEFAULT_HISTORY_EVENTS, alias="limit")
+
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def _prompt(cls, value: object) -> object:
+        if value is not None and not isinstance(value, str):
+            raise ValueError("task prompt must be a string")
+        if value is not None and not value.strip():
+            raise ValueError("task prompt must be non-empty")
+        return value
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def _operation(cls, value: object) -> object:
+        if value is not None and (not isinstance(value, str) or value not in _TASK_OPERATIONS):
+            raise ValueError(f"task operation must be one of {', '.join(_TASK_OPERATIONS)}")
+        return value
+
+    @field_validator("task_id", mode="before")
+    @classmethod
+    def _task_id(cls, value: object) -> object:
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError("task task_id must be a non-empty string")
+        return value
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _label(cls, value: object) -> object:
+        return _validate_label(value, where="task")
+
+    @field_validator("tool_allowlist", mode="before")
+    @classmethod
+    def _allowlist(cls, value: object) -> object:
+        return _validate_allowlist(value, where="task")
+
+    @field_validator("max_steps", mode="before")
+    @classmethod
+    def _steps(cls, value: object) -> object:
+        return _validate_max_steps(value, where="task")
+
+    @field_validator("subagent_type", mode="before")
+    @classmethod
+    def _profile(cls, value: object) -> object:
+        return _validate_subagent_type(value, where="task")
+
+    @field_validator("result_schema", mode="before")
+    @classmethod
+    def _schema(cls, value: object) -> object:
+        return _validate_result_schema(value, where="task")
+
+    @field_validator("run_in_background", mode="before")
+    @classmethod
+    def _background(cls, value: object) -> object:
+        if value is None:
+            return True
+        if type(value) is not bool:
+            raise ValueError("task run_in_background must be a boolean")
+        return value
+
+    @field_validator("timeout_seconds", mode="before")
+    @classmethod
+    def _timeout(cls, value: object) -> object:
+        if value is None:
+            return DEFAULT_JOIN_TIMEOUT_SECONDS
+        if type(value) is not int or value < 0:
+            raise ValueError("task timeout must be a non-negative integer of milliseconds")
+        return value / 1000.0
+
+    @field_validator("output_offset", "after_sequence", "history_offset", mode="before")
+    @classmethod
+    def _non_negative(cls, value: object, info: ValidationInfo) -> object:
+        if value is None:
+            return 0
+        if type(value) is not int or value < 0:
+            raise ValueError(f"task {info.field_name} must be a non-negative integer")
+        return value
+
+    @field_validator("output_limit", mode="before")
+    @classmethod
+    def _output_limit(cls, value: object) -> object:
+        if value is None:
+            return OUTPUT_PAGE_BYTES
+        if type(value) is not int or value < 1 or value > MAX_OUTPUT_PAGE_BYTES:
+            raise ValueError(f"task output_limit must be an integer within 1..{MAX_OUTPUT_PAGE_BYTES}")
+        return value
+
+    @field_validator("history_limit", mode="before")
+    @classmethod
+    def _history_limit(cls, value: object) -> object:
+        if value is None:
+            return DEFAULT_HISTORY_EVENTS
+        if type(value) is not int or value < 1 or value > MAX_HISTORY_EVENTS:
+            raise ValueError(f"task limit must be an integer within 1..{MAX_HISTORY_EVENTS}")
+        return value
+
+    @model_validator(mode="after")
+    def _modes(self) -> TaskArgsModel:
+        if self.operation is None:
+            if self.task_id is not None:
+                raise ValueError("task accepts one mode per call: a prompt to spawn a child, or an operation with a task_id")
+            if self.prompt is None:
+                raise ValueError("task requires a prompt to spawn a child, or an operation with a task_id")
+        elif self.operation == "send":
+            if self.task_id is None:
+                raise ValueError("task operation=send requires a task_id")
+            if self.prompt is None:
+                raise ValueError("task operation=send requires a prompt")
+        else:
+            if self.prompt is not None:
+                raise ValueError("task accepts one mode per call: spawn, or one operation with a task_id")
+            if self.task_id is None:
+                raise ValueError(f"task operation={self.operation} requires a task_id")
+        if self.operation is not None:
+            if self.subagent_type is not None:
+                raise ValueError("task subagent_type selects a child profile and applies to a spawn only")
+            if self.tool_allowlist is not None:
+                raise ValueError("task tool_allowlist applies to a spawn only")
+            if self.result_schema is not None:
+                raise ValueError("task result_schema declares the delivery shape and applies to a spawn only")
+        return self
 
 
-def _parse_result_schema(raw: object, *, where: str) -> Mapping[str, object] | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, Mapping):
-        raise ValueError(f"{where} result_schema must be an object")
-    try:
-        return canonical_result_schema(raw)
-    except ValueError as exc:
-        raise ValueError(f"{where} {exc}") from exc
-
-
-def _parse_timeout_seconds(raw: object, *, where: str) -> float:
-    if raw is None:
-        return DEFAULT_JOIN_TIMEOUT_SECONDS
-    if type(raw) is not int or raw < 0:
-        raise ValueError(f"{where} timeout must be a non-negative integer of milliseconds")
-    return raw / 1000.0
-
-
-def _parse_non_negative(raw: object, *, where: str, field: str) -> int:
-    if raw is None:
-        return 0
-    if type(raw) is not int or raw < 0:
-        raise ValueError(f"{where} {field} must be a non-negative integer")
-    return raw
-
-
-def _parse_bounded_int(raw: object, *, where: str, field: str, default: int, maximum: int) -> int:
-    if raw is None:
-        return default
-    if type(raw) is not int or raw < 1 or raw > maximum:
-        raise ValueError(f"{where} {field} must be an integer within 1..{maximum}")
-    return raw
-
-
-def _parse_task_args(arguments: Mapping[str, object]) -> _TaskArgs:
-    # Arguments arrive as an immutable JSON snapshot: arrays are tuples here.
-    prompt = arguments.get("prompt")
-    if prompt is not None and not isinstance(prompt, str):
-        raise ValueError("task prompt must be a string")
-    if prompt is not None and not prompt.strip():
-        raise ValueError("task prompt must be non-empty")
-    operation = arguments.get("operation")
-    if operation is not None and (not isinstance(operation, str) or operation not in _TASK_OPERATIONS):
-        raise ValueError(f"task operation must be one of {', '.join(_TASK_OPERATIONS)}")
-    task_id = arguments.get("task_id")
-    if task_id is not None and (not isinstance(task_id, str) or not task_id):
-        raise ValueError("task task_id must be a non-empty string")
-    if operation is None:
-        if task_id is not None:
-            raise ValueError("task accepts one mode per call: a prompt to spawn a child, or an operation with a task_id")
-        if prompt is None:
-            raise ValueError("task requires a prompt to spawn a child, or an operation with a task_id")
-    elif operation == "send":
-        if task_id is None:
-            raise ValueError("task operation=send requires a task_id")
-        if prompt is None:
-            raise ValueError("task operation=send requires a prompt")
-    else:
-        if prompt is not None:
-            raise ValueError("task accepts one mode per call: spawn, or one operation with a task_id")
-        if task_id is None:
-            raise ValueError(f"task operation={operation} requires a task_id")
-    run_in_background = arguments.get("run_in_background")
-    if run_in_background is None:
-        run_in_background = True
-    elif type(run_in_background) is not bool:
-        raise ValueError("task run_in_background must be a boolean")
-    if operation is not None:
-        subagent_type = None
-        tool_allowlist = None
-        result_schema = None
-        if arguments.get("subagent_type") is not None:
-            raise ValueError("task subagent_type selects a child profile and applies to a spawn only")
-        if arguments.get("tool_allowlist") is not None:
-            raise ValueError("task tool_allowlist applies to a spawn only")
-        if arguments.get("result_schema") is not None:
-            raise ValueError("task result_schema declares the delivery shape and applies to a spawn only")
-    else:
-        subagent_type = _parse_subagent_type(arguments.get("subagent_type"), where="task")
-        tool_allowlist = _parse_allowlist(arguments.get("tool_allowlist"), where="task")
-        result_schema = _parse_result_schema(arguments.get("result_schema"), where="task")
-    return _TaskArgs(
-        prompt=prompt,
-        label=_parse_label(arguments.get("label"), where="task"),
-        tool_allowlist=tool_allowlist,
-        max_steps=_parse_max_steps(arguments.get("max_steps"), where="task"),
-        run_in_background=run_in_background,
-        operation=operation,
-        task_id=task_id,
-        timeout_seconds=_parse_timeout_seconds(arguments.get("timeout"), where="task"),
-        subagent_type=subagent_type,
-        result_schema=result_schema,
-        output_offset=_parse_non_negative(arguments.get("output_offset"), where="task", field="output_offset"),
-        output_limit=_parse_bounded_int(
-            arguments.get("output_limit"),
-            where="task",
-            field="output_limit",
-            default=OUTPUT_PAGE_BYTES,
-            maximum=MAX_OUTPUT_PAGE_BYTES,
-        ),
-        after_sequence=_parse_non_negative(arguments.get("after_sequence"), where="task", field="after_sequence"),
-        history_offset=_parse_non_negative(arguments.get("history_offset"), where="task", field="history_offset"),
-        history_limit=_parse_bounded_int(
-            arguments.get("limit"),
-            where="task",
-            field="limit",
-            default=DEFAULT_HISTORY_EVENTS,
-            maximum=MAX_HISTORY_EVENTS,
-        ),
-    )
-
-
-def _parse_batch_item(index: int, raw: object) -> _BatchItem:
+def _validate_batch_item(index: int, raw: object) -> _BatchItem:
     where = f"task_batch item {index}"
     if not isinstance(raw, Mapping):
         raise ValueError(f"{where} must be an object")
@@ -408,24 +427,16 @@ def _parse_batch_item(index: int, raw: object) -> _BatchItem:
     prompt = raw.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError(f"{where} requires a non-empty prompt")
-    subagent_type = _parse_subagent_type(raw.get("subagent_type"), where=where)
-    tool_allowlist = _parse_allowlist(raw.get("tool_allowlist"), where=where)
+    subagent_type = _validate_subagent_type(raw.get("subagent_type"), where=where)
+    tool_allowlist = _validate_allowlist(raw.get("tool_allowlist"), where=where)
     return _BatchItem(
         prompt=prompt,
-        label=_parse_label(raw.get("label"), where=where),
+        label=_validate_label(raw.get("label"), where=where),
         tool_allowlist=tool_allowlist,
-        max_steps=_parse_max_steps(raw.get("max_steps"), where=where),
+        max_steps=_validate_max_steps(raw.get("max_steps"), where=where),
         subagent_type=subagent_type,
-        result_schema=_parse_result_schema(raw.get("result_schema"), where=where),
+        result_schema=_validate_result_schema(raw.get("result_schema"), where=where),
     )
-
-
-def _parse_batch_context(raw: object) -> str | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, str):
-        raise ValueError("task_batch context must be a string")
-    return raw
 
 
 def _merge_batch_prompt(shared_context: str | None, prompt: str) -> str:
@@ -440,40 +451,95 @@ def _merge_batch_prompt(shared_context: str | None, prompt: str) -> str:
     return f"Shared context:\n{shared_context}\n\nTask:\n{prompt}"
 
 
-def _parse_batch_args(arguments: Mapping[str, object]) -> _BatchArgs:
-    unknown = sorted(str(key) for key in arguments if key not in _BATCH_KEYS)
-    if unknown:
-        raise ValueError(f"task_batch field '{unknown[0]}' is not supported")
-    operation = arguments.get("operation")
-    if operation is not None and (not isinstance(operation, str) or operation not in _BATCH_OPERATIONS):
-        raise ValueError(f"task_batch operation must be one of {', '.join(_BATCH_OPERATIONS)}")
-    raw_tasks = arguments.get("tasks")
-    group_id = arguments.get("parallel_group_id")
-    if group_id is not None and (not isinstance(group_id, str) or not group_id):
-        raise ValueError("task_batch parallel_group_id must be a non-empty string")
-    if operation is None:
-        if raw_tasks is None:
-            raise ValueError("task_batch requires tasks to spawn a group, or operation=output with a parallel_group_id")
-        if group_id is not None:
-            raise ValueError("task_batch accepts one mode per call: tasks to spawn a group, or operation=output with a parallel_group_id")
-    else:
-        if raw_tasks is not None:
-            raise ValueError("task_batch accepts one mode per call: tasks to spawn a group, or operation=output with a parallel_group_id")
-        if group_id is None:
-            raise ValueError(f"task_batch operation={operation} requires a parallel_group_id")
-        if arguments.get("context") is not None:
-            raise ValueError("task_batch context declares shared background and applies to a spawn only")
-        return _BatchArgs(operation=operation, parallel_group_id=group_id)
-    if not isinstance(raw_tasks, (list, tuple)):
-        raise ValueError("task_batch tasks must be an array")
-    if len(raw_tasks) > MAX_BATCH_SIZE:
-        raise ValueError(f"task_batch accepts at most {MAX_BATCH_SIZE} tasks, got {len(raw_tasks)}")
-    if not raw_tasks:
-        raise ValueError("task_batch requires at least one task")
-    return _BatchArgs(
-        tasks=tuple(_parse_batch_item(index, item) for index, item in enumerate(raw_tasks)),
-        context=_parse_batch_context(arguments.get("context")),
-    )
+class BatchArgsModel(BaseModel):
+    """Validated task_batch arguments; unknown keys fail closed with the legacy message."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    tasks: tuple[_BatchItem, ...] = ()
+    operation: str | None = None
+    parallel_group_id: str | None = None
+    context: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unknown(cls, data: object) -> object:
+        if isinstance(data, Mapping):
+            unknown = sorted(str(key) for key in data if key not in _BATCH_KEYS)
+            if unknown:
+                raise ValueError(f"task_batch field '{unknown[0]}' is not supported")
+        return data
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def _operation(cls, value: object) -> object:
+        if value is not None and (not isinstance(value, str) or value not in _BATCH_OPERATIONS):
+            raise ValueError(f"task_batch operation must be one of {', '.join(_BATCH_OPERATIONS)}")
+        return value
+
+    @field_validator("parallel_group_id", mode="before")
+    @classmethod
+    def _group_id(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value:
+            raise ValueError("task_batch parallel_group_id must be a non-empty string")
+        return value
+
+    @field_validator("context", mode="before")
+    @classmethod
+    def _context(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("task_batch context must be a string")
+        return value
+
+    @field_validator("tasks", mode="before")
+    @classmethod
+    def _tasks(cls, value: object) -> object:
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("task_batch tasks must be an array")
+        if len(value) > MAX_BATCH_SIZE:
+            raise ValueError(f"task_batch accepts at most {MAX_BATCH_SIZE} tasks, got {len(value)}")
+        if not value:
+            raise ValueError("task_batch requires at least one task")
+        return tuple(_validate_batch_item(index, item) for index, item in enumerate(value))
+
+    @model_validator(mode="after")
+    def _modes(self) -> BatchArgsModel:
+        if self.operation is None:
+            if not self.tasks:
+                raise ValueError("task_batch requires tasks to spawn a group, or operation=output with a parallel_group_id")
+            if self.parallel_group_id is not None:
+                raise ValueError("task_batch accepts one mode per call: tasks to spawn a group, or operation=output with a parallel_group_id")
+        else:
+            if self.tasks:
+                raise ValueError("task_batch accepts one mode per call: tasks to spawn a group, or operation=output with a parallel_group_id")
+            if self.parallel_group_id is None:
+                raise ValueError(f"task_batch operation={self.operation} requires a parallel_group_id")
+            if self.context is not None:
+                raise ValueError("task_batch context declares shared background and applies to a spawn only")
+        return self
+
+
+class WaitArgsModel(BaseModel):
+    """task_wait takes no arguments; any supplied key fails closed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+def _model_args[T: BaseModel](model: type[T], arguments: Mapping[str, object]) -> T:
+    """Validate tool arguments; surface the first failure with its legacy message."""
+    try:
+        return model.model_validate(dict(arguments))
+    except ValidationError as exc:
+        [first] = exc.errors(include_url=False)[:1]
+        ctx = first.get("ctx")
+        error = ctx.get("error") if isinstance(ctx, dict) else None
+        raise ValueError(str(error) if isinstance(error, ValueError) else first["msg"]) from None
 
 
 # --- Result bodies ---
@@ -630,7 +696,7 @@ def _header(task_id: str, label: str, subagent_type: str | None = None) -> str:
 
 
 def _spawn_child(
-    services: PluginServices,
+    services: ChildServices,
     *,
     prompt: str,
     label: str,
@@ -707,7 +773,7 @@ def _resource_caller(context: ToolContext) -> ResourceReadCaller:
 
 def _artifact_output_facts(
     outcome: ChildOutcome,
-    services: PluginServices,
+    services: ArtifactServices,
     caller: ResourceReadCaller,
     digest: str,
     offset: int,
@@ -752,7 +818,7 @@ def _artifact_output_facts(
 
 def _output_facts(
     outcome: ChildOutcome,
-    services: PluginServices,
+    services: ArtifactServices,
     caller: ResourceReadCaller,
     offset: int,
     limit: int,
@@ -803,7 +869,7 @@ class _StructuredFacts:
     unavailable: str | None = None
 
 
-def _full_output_text(services: PluginServices, outcome: ChildOutcome) -> str | None:
+def _full_output_text(services: ArtifactServices, outcome: ChildOutcome) -> str | None:
     """Full terminal text for structured validation; ``None`` when uncaptured.
 
     Artifact-backed output is joined as bytes and decoded once as strict
@@ -825,7 +891,7 @@ def _full_output_text(services: PluginServices, outcome: ChildOutcome) -> str | 
 def _structured_facts(
     result_schema: Mapping[str, object] | None,
     outcome: ChildOutcome,
-    services: PluginServices,
+    services: ArtifactServices,
 ) -> _StructuredFacts:
     """Validate one completed run's full text; every degraded path stays explicit."""
     if result_schema is None:
@@ -912,7 +978,7 @@ def _outcome_entry(
     task_id: str,
     record: ChildRecord,
     outcome: ChildOutcome,
-    services: PluginServices,
+    services: ArtifactServices,
     caller: ResourceReadCaller,
 ) -> tuple[dict[str, object], str]:
     budget_exhaustion = _budget_exhaustion_payload(outcome)
@@ -957,7 +1023,7 @@ def _outcome_entry(
 def _render_outcomes(
     outcomes: Sequence[ChildOutcome],
     state: DelegationState,
-    services: PluginServices,
+    services: ArtifactServices,
     caller: ResourceReadCaller,
 ) -> tuple[tuple[dict[str, object], ...], tuple[str, ...]]:
     children: list[dict[str, object]] = []
@@ -1060,7 +1126,7 @@ def _group_text(group_id: str, entries: Sequence[Mapping[str, object]], pending:
     return "\n".join(lines)
 
 
-def _acknowledge(outcome: ChildOutcome, services: PluginServices) -> None:
+def _acknowledge(outcome: ChildOutcome, services: ChildServices) -> None:
     """Consume this run's completion notice atomically with the tool result that carries it."""
     if outcome.run_id is None or outcome.status in ("running", "waiting") or outcome.budget_exhaustion is not None:
         return
@@ -1085,7 +1151,7 @@ TASK_DESCRIPTION = (
     "- max_steps is an optional explicit provider-turn cap for the child.\n"
     "- run_in_background=true (default) starts the child and returns its task_id immediately. Its "
     "completion is then delivered to this session automatically as an untrusted notice; use the "
-    "no-argument wait tool to receive the first undelivered owned child results, and do not poll.\n"
+    "no-argument wait tool to receive the first undelivered owned child results.\n"
     "- run_in_background=false waits in this same call.\n"
     "- Depth, the chain's spawn budget, and your own tool scope always bound the child.\n"
     "\n"
@@ -1107,7 +1173,7 @@ TASK_DESCRIPTION = (
     "including its queued follow-ups.\n"
     "\n"
     "There is no roster listing, keep-alive, retry, structured-output validation, or child-to-parent "
-    "chat. Do not sleep, poll in a loop, or relaunch equivalent work. Example follow-up: "
+    "chat. Do not relaunch equivalent work. Example follow-up: "
     'task(operation="send", task_id="<id>", prompt="Now check the north entrance only").'
 )
 
@@ -1238,15 +1304,15 @@ class TaskTool:
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         context.require_session_id()
         try:
-            args = _parse_task_args(call.arguments)
-            state, version = _load_state(services)
+            args = _model_args(TaskArgsModel, call.arguments)
+            state, version = _store(services).load()
         except ValueError as exc:
             return _failure(self.definition.name, str(exc))
         if args.operation is not None:
             return self._control(args, state, context, services)
         return self._spawn(args, state, version, context, services)
 
-    def _spawn(self, args: _TaskArgs, state: DelegationState, version: int, context: ToolContext, services: PluginServices) -> ToolResult:
+    def _spawn(self, args: TaskArgsModel, state: DelegationState, version: int, context: ToolContext, services: PluginServices) -> ToolResult:
         prompt = args.prompt or ""
         try:
             profile = _load_profile(context, args.subagent_type, where="task")
@@ -1262,20 +1328,19 @@ class TaskTool:
             )
         except (ValueError, PermissionError, RuntimeError) as exc:
             return _failure(self.definition.name, str(exc))
-        services.replace_state(
+        _store(services).save(
             _with_children(
                 state,
                 ((child_id, ChildRecord(label=args.label, subagent_type=args.subagent_type, result_schema=args.result_schema)),),
                 group_id=None,
-            ).to_payload(),
-            expected_version=version,
+            ),
+            version,
         )
         services.stage_event("task_spawned", {"task_id": child_id, "label": args.label, "group_id": None})
         if args.run_in_background:
             text = (
                 f"{_header(child_id, args.label, args.subagent_type)} started in the background.\n"
-                "Its completion will be delivered to this session automatically as an untrusted notice; "
-                "do not poll.\n"
+                "Its completion will be delivered to this session automatically as an untrusted notice.\n"
                 f"Current status/latest published output: {_agent_uri(child_id)} (distinct from the transcript).\n"
                 f'You can also await the current run with task(operation="output", task_id="{child_id}") '
                 f'or page its transcript with task(operation="history", task_id="{child_id}").'
@@ -1339,7 +1404,7 @@ class TaskTool:
             ),
         )
 
-    def _control(self, args: _TaskArgs, state: DelegationState, context: ToolContext, services: PluginServices) -> ToolResult:
+    def _control(self, args: TaskArgsModel, state: DelegationState, context: ToolContext, services: PluginServices) -> ToolResult:
         task_id = args.task_id or ""
         if task_id not in state.children:
             return _failure(self.definition.name, f"unknown task: {task_id}")
@@ -1356,7 +1421,7 @@ class TaskTool:
         except (ValueError, PermissionError, RuntimeError) as exc:
             return _failure(self.definition.name, str(exc))
 
-    def _cancel(self, task_id: str, label: str, subagent_type: str | None, services: PluginServices) -> ToolResult:
+    def _cancel(self, task_id: str, label: str, subagent_type: str | None, services: ChildServices) -> ToolResult:
         cancelled = services.cancel_child(task_id, reason=CANCEL_REASON)
         if cancelled:
             text = f"{_header(task_id, label, subagent_type)} cancellation accepted."
@@ -1384,8 +1449,8 @@ class TaskTool:
         task_id: str,
         label: str,
         subagent_type: str | None,
-        args: _TaskArgs,
-        services: PluginServices,
+        args: TaskArgsModel,
+        services: ChildServices,
     ) -> ToolResult:
         receipt = services.send_child(
             task_id,
@@ -1433,8 +1498,8 @@ class TaskTool:
         task_id: str,
         label: str,
         subagent_type: str | None,
-        args: _TaskArgs,
-        services: PluginServices,
+        args: TaskArgsModel,
+        services: HistoryServices,
     ) -> ToolResult:
         page = services.read_child_history(
             task_id,
@@ -1481,7 +1546,7 @@ class TaskTool:
         label: str,
         subagent_type: str | None,
         result_schema: Mapping[str, object] | None,
-        args: _TaskArgs,
+        args: TaskArgsModel,
         context: ToolContext,
         services: PluginServices,
     ) -> ToolResult:
@@ -1607,8 +1672,8 @@ class TaskBatchTool:
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         context.require_session_id()
         try:
-            args = _parse_batch_args(call.arguments)
-            state, version = _load_state(services)
+            args = _model_args(BatchArgsModel, call.arguments)
+            state, version = _store(services).load()
         except ValueError as exc:
             return _failure(self.definition.name, str(exc))
         if args.operation is not None:
@@ -1655,7 +1720,7 @@ class TaskBatchTool:
             created.append(_BatchChild(index=index, task_id=child_id, subagent_type=item.subagent_type))
         if not created:
             return _failure(self.definition.name, f"task_batch created no child session: {failed[0][1]}")
-        services.replace_state(
+        _store(services).save(
             _with_children(
                 state,
                 tuple(
@@ -1671,8 +1736,8 @@ class TaskBatchTool:
                     for entry in created
                 ),
                 group_id=group_id,
-            ).to_payload(),
-            expected_version=version,
+            ),
+            version,
         )
         services.stage_event("task_batch_spawned", {"parallel_group_id": group_id, "task_ids": [entry.task_id for entry in created]})
         return ToolSuccess(
@@ -1750,10 +1815,11 @@ class WaitTool:
 
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         context.require_session_id()
-        if call.arguments:
-            return _failure(self.definition.name, "wait takes no arguments")
         try:
-            state, _version = _load_state(services)
+            WaitArgsModel.model_validate(dict(call.arguments))
+            state, _version = _store(services).load()
+        except ValidationError:
+            return _failure(self.definition.name, "wait takes no arguments")
         except ValueError as exc:
             return _failure(self.definition.name, str(exc))
         outcomes = services.wait_children(tuple(state.children))

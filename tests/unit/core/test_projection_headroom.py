@@ -32,8 +32,8 @@ from voidcode.core.engine import Core, _Cursor, _Execution
 from voidcode.core.storage.store import StoredEvent
 from voidcode.sdk.codec import decode_tool_result, encode_provider_result
 from voidcode.sdk.hooks import RequestWindow, WindowSegment
-from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.provider import ModelContextLimits, ProviderTokenUsage, ProviderTurnResult
+from voidcode.sdk.tools import TOOL_OUTPUT_BYTES
 from voidcode.sdk.transcript import TranscriptDispatch, decode_transcript_content, encode_transcript_content
 
 PLUGIN_ID = "headroom-fixture"

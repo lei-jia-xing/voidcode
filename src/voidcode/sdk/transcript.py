@@ -6,7 +6,7 @@ entries, and a provider dispatch can be visible before its result exists.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -109,14 +109,8 @@ class TranscriptWireModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class ToolCallWire(TranscriptWireModel):
-    tool_name: str = Field(min_length=1)
-    arguments: dict[str, Any]
-    tool_call_id: str | None = None
-
-
 class TranscriptToolWire(TranscriptWireModel):
-    call: ToolCallWire
+    call: ToolCall
     result: ToolResultWire
     interrupted: bool
     batch_sequence: int = Field(ge=1)
@@ -284,10 +278,12 @@ def encode_transcript_content(content: TranscriptContent) -> dict[str, object]:
 
 
 def _tool_wire_to_domain(tool: TranscriptToolWire) -> TranscriptTool:
-    from .codec import decode_tool_call, decode_tool_result
+    from .codec import decode_tool_result
 
+    if not tool.call.tool_name:
+        raise ValueError("tool_name must be nonempty")
     return TranscriptTool(
-        decode_tool_call(tool.call.model_dump()),
+        tool.call,
         decode_tool_result(tool.result.model_dump()),
         interrupted=tool.interrupted,
         batch_sequence=tool.batch_sequence,

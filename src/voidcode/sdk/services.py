@@ -9,15 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NoReturn, Protocol, cast, runtime_checkable
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
-from .history import PAGE_BYTES
 from .json_values import json_wire_object, own_json_object
 
 if TYPE_CHECKING:
     from .ask import AskRequestDraft
     from .foreground import CompositionDraft
-    from .history import HistoryPage
     from .hooks import FactPage, StopCause
     from .invocation import ToolContext
     from .observed_effects import ObservedEffects
@@ -32,7 +30,7 @@ if TYPE_CHECKING:
         ResourceSearchRequest,
     )
     from .tools import ExecutionObservation, ToolDefinition, ToolResult
-    from .transcript import ContextHistory, TranscriptPage
+    from .transcript import ContextHistory, TranscriptEntry, TranscriptPage
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,32 +174,28 @@ class BudgetExhaustion:
 
     @classmethod
     def from_payload(cls, value: object) -> BudgetExhaustion | None:
-        """Parse a committed typed cap fact; absent legacy data remains unknown."""
+        """Parse a committed typed cap fact; absent stays absent."""
         if value is None:
             return None
         if not isinstance(value, Mapping):
             raise ValueError("budget exhaustion must be an object or null")
-        if set(value) != {"dimension", "source", "limit", "consumed", "remaining", "continue_with"}:
-            raise ValueError("budget exhaustion has missing or unknown fields")
-        dimension = value["dimension"]
-        source = value["source"]
-        continue_with = value["continue_with"]
-        counters = (value["limit"], value["consumed"], value["remaining"])
-        if any(type(counter) is not int or counter < 0 for counter in counters):
+        try:
+            parsed = _BUDGET_EXHAUSTION_ADAPTER.validate_json(
+                json.dumps(json_wire_object(cast(Mapping[str, object], value)), allow_nan=False), strict=True, extra="forbid"
+            )
+        except ValidationError as exc:
+            raise ValueError(f"budget exhaustion is invalid: {exc}") from exc
+        if parsed.limit < 0 or parsed.consumed < 0 or parsed.remaining < 0:
             raise ValueError("budget exhaustion counters must be non-negative integers")
-        if (dimension, source, continue_with) not in (
+        if (parsed.dimension, parsed.source, parsed.continue_with) not in (
             ("provider_turns", "max_steps", "resume_with_max_steps"),
             ("root_actions", "root_action_budget", "extend_root_actions"),
         ):
             raise ValueError("budget exhaustion has an unknown dimension, source, or continuation")
-        return cls(
-            dimension=cast(Literal["provider_turns", "root_actions"], dimension),
-            source=cast(Literal["max_steps", "root_action_budget"], source),
-            limit=counters[0],
-            consumed=counters[1],
-            remaining=counters[2],
-            continue_with=cast(Literal["resume_with_max_steps", "extend_root_actions"], continue_with),
-        )
+        return parsed
+
+
+_BUDGET_EXHAUSTION_ADAPTER: TypeAdapter[BudgetExhaustion] = TypeAdapter(BudgetExhaustion)
 
 
 @dataclass(frozen=True, slots=True)
@@ -927,8 +921,8 @@ class BackgroundContext(Protocol):
 
 
 @runtime_checkable
-class PluginServices(Protocol):
-    """Scoped services available to a plugin handler during lease callback."""
+class StateServices(Protocol):
+    """Session and plugin state: lease identity, state CAS, event staging, window projections and overlays."""
 
     @property
     def owner(self) -> str:
@@ -951,6 +945,43 @@ class PluginServices(Protocol):
     def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
         """Stage a plugin-namespaced event to be committed atomically with this turn."""
         ...
+
+    def project_window(
+        self,
+        *,
+        covered_from_sequence: int,
+        covered_to_sequence: int,
+        replacement: str,
+    ) -> None:
+        """Declare the projection that replaces a committed prefix of this session's window.
+
+        The core verifies the boundary (it must end a completed native batch) and measures the
+        accounting itself: the covered bytes are the encoded size of the replaced events, and the
+        dropped bytes are what the replacement does not carry. A projection that would grow the
+        window is refused. Events are never rewritten; only assembly substitutes the replacement.
+        """
+        ...
+
+    def window_projection(self) -> Mapping[str, object] | None:
+        """The session's current verified projection (coverage, replacement, measured accounting)."""
+        ...
+
+    def set_overlay(self, tier: Literal["read-only"] = "read-only") -> None:
+        """Tighten the bound session with an owner-owned restrictive overlay.
+
+        Overlays can only restrict; an owner revokes exactly its own row, and the core's
+        frozen policy is never affected.
+        """
+        ...
+
+    def clear_overlay(self) -> bool:
+        """Revoke this owner's own overlay; returns whether one was active."""
+        ...
+
+
+@runtime_checkable
+class ChildServices(Protocol):
+    """Child sessions and deferred work: spawn, send, join, wait, acknowledge, cancel, lookup, and the continuation queue."""
 
     def enqueue_continuation(
         self,
@@ -1055,37 +1086,47 @@ class PluginServices(Protocol):
         """
         ...
 
-    def project_window(
+    def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
+        """Cancel a child this session spawned, whether it is running or parked for approval."""
+        ...
+
+    def list_descendants(self) -> tuple[DescendantNode, ...]:
+        """Every transitive descendant of the bound session, in stable creation order."""
+        ...
+
+    def cancel_descendant_subtree(
         self,
+        target_session_id: str,
         *,
-        covered_from_sequence: int,
-        covered_to_sequence: int,
-        replacement: str,
-    ) -> None:
-        """Declare the projection that replaces a committed prefix of this session's window.
+        expected_run_id: str | None,
+        reason: str = "owner cancellation",
+    ) -> CancelSubtreeReceipt:
+        """Request cancellation of a descendant and its whole subtree under a fenced run binding.
 
-        The core verifies the boundary (it must end a completed native batch) and measures the
-        accounting itself: the covered bytes are the encoded size of the replaced events, and the
-        dropped bytes are what the replacement does not carry. A projection that would grow the
-        window is refused. Events are never rewritten; only assembly substitutes the replacement.
+        Refused from read-only preparation leases. The target must still carry
+        ``expected_run_id`` (None only when it never started); a newer run is a
+        stale-target error with zero side effects. The receipt reports which
+        sessions accepted the request and which were already terminal; signals
+        are not proof the work stopped.
         """
         ...
 
-    def window_projection(self) -> Mapping[str, object] | None:
-        """The session's current verified projection (coverage, replacement, measured accounting)."""
-        ...
+    def find_child(self, *, idempotency_key: str) -> str | None:
+        """The child this parent spawned under `idempotency_key`, if any; never spawns.
 
-    def set_overlay(self, tier: Literal["read-only"] = "read-only") -> None:
-        """Tighten the bound session with an owner-owned restrictive overlay.
-
-        Overlays can only restrict; an owner revokes exactly its own row, and the core's
-        frozen policy is never affected.
+        Owner- and parent-bound: a key another owner used is not visible here. This is the
+        read-only recovery path for a crash between spawn and the caller's own bookkeeping.
         """
         ...
 
-    def clear_overlay(self) -> bool:
-        """Revoke this owner's own overlay; returns whether one was active."""
+    def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
+        """Stage cancellation of pending or claimed continuations owned by this plugin."""
         ...
+
+
+@runtime_checkable
+class ScheduledWorkServices(Protocol):
+    """Durable future work: wakeups and owner background actions."""
 
     def schedule_wakeup(
         self,
@@ -1105,6 +1146,64 @@ class PluginServices(Protocol):
     def cancel_wakeup(self, wakeup_id: str) -> bool:
         """Cancel a pending wakeup owned by this plugin (claimed wakeups are untouched)."""
         ...
+
+    def enqueue_background_action(
+        self,
+        payload: Mapping[str, object],
+        *,
+        idempotency_key: str | None = None,
+    ) -> str:
+        """Stage one owner background action, run by this plugin's driver outside any model turn.
+
+        The row commits atomically with the caller's result. With `idempotency_key` a retry
+        returns the existing action id instead of staging a second action. The driver receives
+        a `BackgroundContext` (never this lease) and commits per invoke, so progress is durable
+        action by action, not at the end of the run.
+        """
+        ...
+
+    def cancel_background_action(self, action_id: str, reason: str = "owner cancellation") -> bool:
+        """Cancel one owner background action: pending rows are marked cancelled, a live driver is signalled.
+
+        Returns False when the id is unknown or already terminal. A claimed-but-unattended
+        (stale) row is marked cancelled without touching any live driver.
+        """
+        ...
+
+    def background_action_status(self, action_id: str) -> BackgroundActionStatus | None:
+        """The durable status of one owner background action, or None when unknown.
+
+        Foreign owners' actions are never visible here. `interrupted` means the claim was lost
+        (shutdown or reload); resume is an explicit new action, never an automatic replay.
+        """
+        ...
+
+
+class HistoryPageView(Protocol):
+    """Structural view of the core history page for SDK signatures.
+
+    The SDK cannot import core (see test_sdk_direction); ``core.history_renderer``
+    owns the HistoryPage dataclass and satisfies this shape. Sync is checker-
+    enforced: FakeServices subclasses PluginServices, so ty verifies the
+    dataclass against this protocol on every override.
+    """
+
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def next_after_sequence(self) -> int: ...
+
+    @property
+    def next_offset(self) -> int: ...
+
+    @property
+    def truncated(self) -> bool: ...
+
+
+@runtime_checkable
+class HistoryServices(Protocol):
+    """Committed-history reads: facts, events, transcripts, sessions and descendants."""
 
     def read_facts(self, *, after_sequence: int = 0, limit: int = 100) -> FactPage:
         """Read typed committed facts using the same decoder as live observers.
@@ -1134,6 +1233,15 @@ class PluginServices(Protocol):
         """
         ...
 
+    def latest_event(self, event_type: str, run_id: str | None = None) -> TranscriptEntry | None:
+        """Newest decoded conversation record of one event type in the calling session.
+
+        A reverse lookup for callers that need the latest record of a kind without
+        paging the whole transcript. Returns None when the session has no such
+        event; a stored payload that no longer decodes fails loudly like any read.
+        """
+        ...
+
     def read_events(
         self,
         *,
@@ -1159,7 +1267,7 @@ class PluginServices(Protocol):
         after_sequence: int = 0,
         offset: int = 0,
         limit: int = 100,
-    ) -> HistoryPage:
+    ) -> HistoryPageView:
         """Render one bounded Markdown transcript page for an owned child session."""
         ...
 
@@ -1170,8 +1278,8 @@ class PluginServices(Protocol):
         after_sequence: int = 0,
         offset: int = 0,
         limit: int = 100,
-        page_bytes: int = PAGE_BYTES,
-    ) -> HistoryPage:
+        page_bytes: int = 40 * 1024,  # == history_renderer.PAGE_BYTES; inlined (sdk must not import core)
+    ) -> HistoryPageView:
         """Render one bounded Markdown transcript page for the bound session or an owned descendant.
 
         ``page_bytes`` bounds the rendered text (1..40960); callers needing a
@@ -1179,6 +1287,11 @@ class PluginServices(Protocol):
         cursor. The default preserves the existing 40 KiB page.
         """
         ...
+
+
+@runtime_checkable
+class ToolServices(Protocol):
+    """Capability invocation and discovery: tools, plugin queries and model turns."""
 
     def tool_definition(self, name: str) -> ToolDefinition | None:
         """The definition of ``name`` from the active revision's dispatch snapshot, with this
@@ -1203,6 +1316,55 @@ class PluginServices(Protocol):
         with "unavailable".
         """
         ...
+
+    def invoke_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, object] | None = None,
+        *,
+        expected_revision: str,
+    ) -> ToolInvocationReceipt:
+        """Invoke another tool through this session's ordinary admission path.
+
+        The core resolves the target in the active revision the caller displayed
+        (`expected_revision`), applies the session's tool scope, read-only stance, pre-tool gates,
+        and declared-effect approval policy exactly as it does for a model-requested call.
+        Requests are staged atomically with the caller's result and execute
+        only after its callback returns; this receipt never waits on execution or human consent.
+        Approvable targets go through the ordinary approval boundary, never a rejection for
+        needing approval. Recursion consumes the chain's action budget and carries core-counted
+        depth. Hook leases cannot invoke.
+        """
+        ...
+
+    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
+        """One tool-free provider turn; optionally read the current context without extending it."""
+        ...
+
+    def model_query_structured(
+        self,
+        prompt: str,
+        *,
+        result_schema: Mapping[str, object],
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+        include_context: bool = False,
+    ) -> StructuredModelResult:
+        """One tool-free provider turn parsed and validated against ``result_schema``.
+
+        Same governance, budget, usage, and cancellation as ``model_query``: the call
+        enters the same dispatch path and usage accounting. ``result_schema`` is a
+        JSON Schema (Draft 2020-12) describing one JSON object; the returned
+        ``StructuredModelResult`` carries either validated ``data`` or a callable
+        ``parse_error`` — never silent success. Cancellation, budget exhaustion,
+        and provider errors propagate as exceptions, exactly as ``model_query``.
+        """
+        ...
+
+
+@runtime_checkable
+class ArtifactServices(Protocol):
+    """Artifacts and resources: blobs, schemes, enumeration and search."""
 
     def read_resource(self, request: ResourceReadRequest) -> ResourcePage | None:
         """Dispatch one ``scheme://`` URI to its registering provider's reader.
@@ -1243,25 +1405,44 @@ class PluginServices(Protocol):
         """
         ...
 
-    def invoke_tool(
-        self,
-        name: str,
-        arguments: Mapping[str, object] | None = None,
-        *,
-        expected_revision: str,
-    ) -> ToolInvocationReceipt:
-        """Invoke another tool through this session's ordinary admission path.
+    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> ArtifactReference:
+        """Store bytes under their own content address and return the reference to them.
 
-        The core resolves the target in the active revision the caller displayed
-        (`expected_revision`), applies the session's tool scope, read-only stance, pre-tool gates,
-        and declared-effect approval policy exactly as it does for a model-requested call.
-        Requests are staged atomically with the caller's result and execute
-        only after its callback returns; this receipt never waits on execution or human consent.
-        Approvable targets go through the ordinary approval boundary, never a rejection for
-        needing approval. Recursion consumes the chain's action budget and carries core-counted
-        depth. Hook leases cannot invoke.
+        The artifact exists (immutably) before any fact that references it commits, so a result
+        carrying a reference can never point at missing bytes. Spilling touches only the core's
+        own store: a read-only lease may spill output it could not otherwise carry, a hook lease
+        (an observer) may not.
         """
         ...
+
+    def spill_artifact_stream(self, chunks: Iterable[bytes], *, media_type: str = "application/octet-stream") -> ArtifactReference:
+        """Store a byte stream atomically under its digest.
+
+        The host validates each chunk, enforces its artifact-store bound while writing, and
+        discards an incomplete spill on cancellation, revocation, or producer failure. No
+        reference is returned until all chunks have been durably published.
+        """
+        ...
+
+    def read_artifact(
+        self,
+        sha256: str,
+        *,
+        offset: int = 0,
+        limit: int = 65536,
+    ) -> ArtifactPage:
+        """Read one byte page by SHA-256 digest; URI parsing belongs to the caller.
+
+        Raises ``FileNotFoundError`` when the digest is well-formed but not
+        stored; malformed digests, bad bounds, and storage failures raise
+        ``ValueError``/``OSError`` and must never be treated as absence.
+        """
+        ...
+
+
+@runtime_checkable
+class SuspendServices(Protocol):
+    """Suspension intents: foreground composition and ask waits."""
 
     def suspend_foreground_composition(self, draft: CompositionDraft, *, idempotency_key: str | None = None) -> NoReturn:
         """Stage this composition's wait-intent on the lease and raise SuspendComposition (never returns).
@@ -1283,6 +1464,11 @@ class PluginServices(Protocol):
         (FileNotFoundError = visible stage error, no park).
         """
         ...
+
+
+@runtime_checkable
+class ProcessServices(Protocol):
+    """Child process lifecycle: run, query, spawn, I/O, cancel and list."""
 
     def run_process(
         self,
@@ -1334,40 +1520,6 @@ class PluginServices(Protocol):
         byte-identical to its own artifact (`raw_media_type` names both); `raw`
         then carries exactly the stdout/stderr pair and the text fields are ""
         and VOID.
-        """
-        ...
-
-    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> ArtifactReference:
-        """Store bytes under their own content address and return the reference to them.
-
-        The artifact exists (immutably) before any fact that references it commits, so a result
-        carrying a reference can never point at missing bytes. Spilling touches only the core's
-        own store: a read-only lease may spill output it could not otherwise carry, a hook lease
-        (an observer) may not.
-        """
-        ...
-
-    def spill_artifact_stream(self, chunks: Iterable[bytes], *, media_type: str = "application/octet-stream") -> ArtifactReference:
-        """Store a byte stream atomically under its digest.
-
-        The host validates each chunk, enforces its artifact-store bound while writing, and
-        discards an incomplete spill on cancellation, revocation, or producer failure. No
-        reference is returned until all chunks have been durably published.
-        """
-        ...
-
-    def read_artifact(
-        self,
-        sha256: str,
-        *,
-        offset: int = 0,
-        limit: int = 65536,
-    ) -> ArtifactPage:
-        """Read one byte page by SHA-256 digest; URI parsing belongs to the caller.
-
-        Raises ``FileNotFoundError`` when the digest is well-formed but not
-        stored; malformed digests, bad bounds, and storage failures raise
-        ``ValueError``/``OSError`` and must never be treated as absence.
         """
         ...
 
@@ -1443,97 +1595,10 @@ class PluginServices(Protocol):
         """Every process this runtime supervises for this session, running or already exited."""
         ...
 
-    def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
-        """One tool-free provider turn; optionally read the current context without extending it."""
-        ...
 
-    def model_query_structured(
-        self,
-        prompt: str,
-        *,
-        result_schema: Mapping[str, object],
-        model: str | None = None,
-        max_output_tokens: int | None = None,
-        include_context: bool = False,
-    ) -> StructuredModelResult:
-        """One tool-free provider turn parsed and validated against ``result_schema``.
-
-        Same governance, budget, usage, and cancellation as ``model_query``: the call
-        enters the same dispatch path and usage accounting. ``result_schema`` is a
-        JSON Schema (Draft 2020-12) describing one JSON object; the returned
-        ``StructuredModelResult`` carries either validated ``data`` or a callable
-        ``parse_error`` — never silent success. Cancellation, budget exhaustion,
-        and provider errors propagate as exceptions, exactly as ``model_query``.
-        """
-        ...
-
-    def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
-        """Cancel a child this session spawned, whether it is running or parked for approval."""
-        ...
-
-    def list_descendants(self) -> tuple[DescendantNode, ...]:
-        """Every transitive descendant of the bound session, in stable creation order."""
-        ...
-
-    def cancel_descendant_subtree(
-        self,
-        target_session_id: str,
-        *,
-        expected_run_id: str | None,
-        reason: str = "owner cancellation",
-    ) -> CancelSubtreeReceipt:
-        """Request cancellation of a descendant and its whole subtree under a fenced run binding.
-
-        Refused from read-only preparation leases. The target must still carry
-        ``expected_run_id`` (None only when it never started); a newer run is a
-        stale-target error with zero side effects. The receipt reports which
-        sessions accepted the request and which were already terminal; signals
-        are not proof the work stopped.
-        """
-        ...
-
-    def enqueue_background_action(
-        self,
-        payload: Mapping[str, object],
-        *,
-        idempotency_key: str | None = None,
-    ) -> str:
-        """Stage one owner background action, run by this plugin's driver outside any model turn.
-
-        The row commits atomically with the caller's result. With `idempotency_key` a retry
-        returns the existing action id instead of staging a second action. The driver receives
-        a `BackgroundContext` (never this lease) and commits per invoke, so progress is durable
-        action by action, not at the end of the run.
-        """
-        ...
-
-    def cancel_background_action(self, action_id: str, reason: str = "owner cancellation") -> bool:
-        """Cancel one owner background action: pending rows are marked cancelled, a live driver is signalled.
-
-        Returns False when the id is unknown or already terminal. A claimed-but-unattended
-        (stale) row is marked cancelled without touching any live driver.
-        """
-        ...
-
-    def background_action_status(self, action_id: str) -> BackgroundActionStatus | None:
-        """The durable status of one owner background action, or None when unknown.
-
-        Foreign owners' actions are never visible here. `interrupted` means the claim was lost
-        (shutdown or reload); resume is an explicit new action, never an automatic replay.
-        """
-        ...
-
-    def find_child(self, *, idempotency_key: str) -> str | None:
-        """The child this parent spawned under `idempotency_key`, if any; never spawns.
-
-        Owner- and parent-bound: a key another owner used is not visible here. This is the
-        read-only recovery path for a crash between spawn and the caller's own bookkeeping.
-        """
-        ...
-
-    def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
-        """Stage cancellation of pending or claimed continuations owned by this plugin."""
-        ...
+@runtime_checkable
+class BudgetServices(Protocol):
+    """Metering and owner budgets: usage reports and budget constraints."""
 
     def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
         """Fetch truthful aggregate token usage and elapsed time, windowed by dispatch sequence."""
@@ -1559,3 +1624,24 @@ class PluginServices(Protocol):
     def clear_budget(self) -> None:
         """Stage removal of the bound owner's budget constraint."""
         ...
+
+
+@runtime_checkable
+class PluginServices(
+    StateServices,
+    ChildServices,
+    HistoryServices,
+    BudgetServices,
+    ProcessServices,
+    ArtifactServices,
+    ToolServices,
+    ScheduledWorkServices,
+    SuspendServices,
+    Protocol,
+):
+    """The full scoped-services union available to a plugin handler during lease callback.
+
+    Plugins depend on facets; only the runtime implements this composition.
+    """
+
+    ...

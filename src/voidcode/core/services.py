@@ -12,10 +12,10 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import CancelledError
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NoReturn
 from uuid import uuid4
 
-from voidcode.sdk.history import PAGE_BYTES, HistoryPage
+from voidcode.sdk.ask import AskAlreadyParked, AskRequestDraft, SuspendAsk
 from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import own_json_object
 from voidcode.sdk.observed_effects import ObservedEffects
@@ -40,16 +40,23 @@ from voidcode.sdk.services import (
     StructuredModelResult,
     ToolInvocationReceipt,
 )
-from voidcode.sdk.transcript import ContextHistory, TranscriptPage
+from voidcode.sdk.transcript import ContextHistory, TranscriptEntry, TranscriptPage
 
+from .artifacts import SHA256_PATTERN
 from .events import CHILD_MESSAGE_OWNER, CHILD_OUTCOME_RECEIPT_OWNER, EventType
-from .history_renderer import render_history_page
+from .history_renderer import PAGE_BYTES, HistoryPage, render_history_page
+from .transcript import transcript_entry
 
 if TYPE_CHECKING:
+    from voidcode.sdk.foreground import CompositionDraft
     from voidcode.sdk.resources import ResourcePage, ResourceReadRequest
     from voidcode.sdk.tools import ToolDefinition
 
     from .plugins import LeaseContext, PluginRuntime
+
+
+class SuspendOutsideTool(PermissionError):
+    """A non-tool lease attempted suspension; only tool callbacks have a run cursor to park."""
 
 
 class RuntimeServices:
@@ -1186,6 +1193,17 @@ class RuntimeServices:
             raise ValueError("after_sequence must be >= 0 and limit within 1..200")
         return self._runtime.transcript_page(lease.session_id, after_sequence, limit)
 
+    def latest_event(self, event_type: str, run_id: str | None = None) -> TranscriptEntry | None:
+        lease = self._active_lease()
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("event_type must be a non-empty string")
+        if run_id is not None and (not isinstance(run_id, str) or not run_id):
+            raise ValueError("run_id must be a non-empty string or None")
+        stored = self._runtime.require_store().latest_event(lease.session_id, event_type, run_id)
+        if stored is None:
+            return None
+        return transcript_entry(stored)
+
     def read_events(
         self,
         *,
@@ -1349,6 +1367,84 @@ class RuntimeServices:
                 raise PermissionError("Service lease was revoked")
             lease.staged_events.append(EventDraft(EventType.TOOL_DEFERRED, "core", "plugin", payload))
         return ToolInvocationReceipt(request_id=request_id, tool_name=name, depth=depth)
+
+    def _check_suspend_lease(self, lease: LeaseContext, method: str) -> None:
+        """Refuse suspension from any lease that is not a tool callback's own."""
+        if lease.tool_callback and not lease.hook and lease.background_action_id is None:
+            return
+        if lease.hook:
+            kind = "hook"
+        elif lease.background_action_id is not None:
+            kind = "background"
+        elif lease.actor == "user":
+            kind = "command"
+        else:
+            kind = "non-tool"
+        raise SuspendOutsideTool(f"{method} requires a tool-callback lease; {kind} leases cannot suspend because they have no run cursor to park")
+
+    def _live_parked_ask(self, session_id: str) -> str | None:
+        """The live parked ask request id for this session, if the store shows one.
+
+        Advisory (no session lock): the engine park-commit re-checks the live
+        binding authoritatively before committing anything.
+        """
+        store = self._runtime.require_store()
+        try:
+            session = store.session(session_id)
+        except KeyError:
+            return None
+        if session.status != "waiting":
+            return None
+        checkpoint = store.checkpoint(session_id)
+        if checkpoint is None or checkpoint.kind == "terminal" or checkpoint.run_id != session.run_id:
+            return None
+        payload = checkpoint.payload
+        if not isinstance(payload, Mapping):
+            return None
+        candidate = payload.get("ask_request_id")
+        return candidate if isinstance(candidate, str) and candidate else None
+
+    def suspend_foreground_composition(self, draft: CompositionDraft, *, idempotency_key: str | None = None) -> NoReturn:  # noqa: ARG002
+        """Stage this composition's wait-intent on the lease and raise SuspendComposition (never returns)."""
+        self._active_lease()
+        raise NotImplementedError(
+            "suspend_foreground_composition is not implemented: the foreground composition slice "
+            "(composition driver, composition rows, composition terminals) has not landed"
+        )
+
+    def suspend_for_ask(self, draft: AskRequestDraft, *, idempotency_key: str | None = None) -> NoReturn:
+        """Validate refs/shape on the lease, stage the ask intent, raise SuspendAsk (never returns).
+
+        Tool-callback leases only. Media digests are shape-checked here; existence
+        is resolved by the plugin via read_artifact BEFORE suspending. A second
+        suspend while the session holds a live park is refused with AskAlreadyParked.
+        """
+        lease = self._active_lease()
+        self._check_suspend_lease(lease, "suspend_for_ask")
+        park = SuspendAsk(draft, idempotency_key=idempotency_key)
+        for reference in draft.media:
+            if (
+                not isinstance(reference, ArtifactReference)
+                or not isinstance(reference.sha256, str)
+                or SHA256_PATTERN.fullmatch(reference.sha256) is None
+                or type(reference.bytes) is not int
+                or reference.bytes < 0
+                or not isinstance(reference.media_type, str)
+                or not reference.media_type
+            ):
+                raise ValueError("ask media requires ArtifactReference entries with a lowercase sha256 digest, byte count, and media type")
+        if lease.staged_suspend is not None:
+            raise AskAlreadyParked("AskAlreadyParked: a suspension is already staged on this lease; refusing a second suspend")
+        live_request = self._live_parked_ask(lease.session_id)
+        if live_request is not None:
+            raise AskAlreadyParked(
+                f"AskAlreadyParked: session {lease.session_id!r} already holds live ask {live_request!r}; refusing a second suspend"
+            )
+        with self._runtime.lease_lock:
+            if lease.revoked:
+                raise PermissionError("Service lease was revoked")
+            lease.staged_suspend = park
+        raise park
 
     def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
         lease = self._active_lease()

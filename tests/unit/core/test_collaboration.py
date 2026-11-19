@@ -1336,11 +1336,11 @@ def test_restart_republishes_an_uncommitted_child_fact_once_without_rerunning(
         _wait_for(lambda: reopened.store.continuation_status(notice_id) == "completed", what="the recovered notice consumption")
 
 
-def test_legacy_child_without_captured_root_publishes_fact_without_notice(
+def test_child_without_captured_root_fails_publication_visibly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A rootless birth suppresses only the wake-up: the fact still publishes, join reads it."""
+    """A missing birth/root fails publication loudly: no fact-without-notice fallback."""
     replies = [_turn(output="legacy output")]
     with _server(replies) as server:
         core = _open(tmp_path, server)
@@ -1355,27 +1355,17 @@ def test_legacy_child_without_captured_root_publishes_fact_without_notice(
         assert _child_facts(core, parent) == []
         monkeypatch.undo()
 
-        # The store refuses to persist a rootless birth, so the legacy signal is
-        # staged at the exact seam the branch handles: root resolution raises.
-        def _legacy_root(child_id: str) -> str:
+        # The store refuses to persist a rootless birth, so the missing-root signal
+        # is staged at the exact seam the old fallback handled: root resolution raises.
+        def _missing_root(child_id: str) -> str:
             raise StoreConflict(f"child {child_id!r} has no captured root action identity")
 
-        monkeypatch.setattr(core._delegation, "_captured_child_root_id", _legacy_root)
-        core._delegation._recover_child_publications()
-
-        facts = _child_facts(core, parent)
-        assert len(facts) == 1
-        fact = facts[0]
-        assert fact["run_id"] == run_id
-        assert fact["status"] == "completed"
-        assert fact["output"] == "legacy output"
-        assert fact["notify_on_completion"] is False
-        assert "notice_id" not in fact
+        monkeypatch.setattr(core._delegation, "_captured_child_root_id", _missing_root)
+        with pytest.raises(StoreConflict, match="no captured root action identity"):
+            core._delegation._recover_child_publications()
+        assert _child_facts(core, parent) == []
         assert core.store.continuation_status(child_completion_notice_id(parent, child, run_id)) is None
         assert len(server.requests) == 1, "no notice turn ran and the child never reran"
-
-        joined = core.join_child(parent, child, timeout_seconds=15)
-        assert (joined.status, joined.output, joined.run_id) == ("completed", "legacy output", run_id)
 
 
 def test_send_authorization_follows_the_current_stance(tmp_path: Path) -> None:

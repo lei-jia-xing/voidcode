@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.tools import ConfirmedStop, OutputBounds, ResourceChange, TextOutput, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import Change, ConfirmedStop, OutputBounds, TextOutput, ToolFailure, ToolResult, ToolSuccess
 
 from ._replace import replace_file
 from .errors import raise_tool_diagnostic
@@ -81,7 +81,7 @@ def _patch_result(
 ) -> ToolResult:
     summary = "\n".join(f"M {change.old_path} -> {change.path}" if change.status == "R" else f"{change.status} {change.path}" for change in changes)
     body = ApplyPatchResultBody(changes=tuple(changes), count=len(changes))
-    resources = tuple(ResourceChange(change.path, _CHANGE_OPERATIONS[change.status], change.old_path) for change in changes)
+    resources = tuple(Change(change.path, _CHANGE_OPERATIONS[change.status], change.old_path) for change in changes)
     if error is not None:
         return ToolFailure(
             tool_name=tool_name,

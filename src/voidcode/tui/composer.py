@@ -24,7 +24,7 @@ from typing import Final, Literal
 
 from .keys import Key
 from .styles import Styles, symbol
-from .term import clamp_row, escape_terminal_controls, grapheme_spans, visible_width
+from .term import cell_len, clamp_row, escape_terminal_controls, grapheme_spans, visible_width
 
 __all__ = ["Composer", "ComposerAction", "ComposerOutcome"]
 
@@ -234,7 +234,9 @@ def _display_tokens(text: str) -> list[tuple[int, int, str, int]]:
             display = " " * (4 - column % 4)
         else:
             display = escape_terminal_controls(grapheme)
-        width = visible_width(display)
+        # ``display`` is ANSI-free (tabs became spaces, controls became literal
+        # text), so this is exactly ``visible_width``'s fast path.
+        width = cell_len(display)
         tokens.append((start, end, display, width))
         column += width
     return tokens
@@ -263,7 +265,7 @@ def _wrap_display_line(text: str, width: int) -> tuple[list[str], list[int]]:
     column = 0
     for _start, _end, display, token_width in _display_tokens(text):
         pieces = (
-            [(display[part_start:part_end], visible_width(display[part_start:part_end])) for part_start, part_end in grapheme_spans(display)]
+            [(display[part_start:part_end], cell_len(display[part_start:part_end])) for part_start, part_end in grapheme_spans(display)]
             if token_width > width
             else [(display, token_width)]
         )
@@ -748,13 +750,6 @@ class Composer:
             return
         self.accept_completion_with(self._completion[self._completion_index])
 
-    def _complete(self) -> ComposerOutcome:
-        """Tab: accept the highlighted candidate (arrows move first)."""
-        if not self._completion:
-            return ComposerOutcome()
-        self._accept_completion()
-        return ComposerOutcome()
-
     # -- key handling ------------------------------------------------------
 
     def handle_key(self, key: Key) -> ComposerOutcome:
@@ -762,202 +757,244 @@ class Composer:
         if not self._enabled:
             return ComposerOutcome()
         name = key.name
-
         if name == "escape" and self._text == "!":
             # Upstream bash mode: Esc exits the empty `!` mode instead of
             # cancelling a turn.
             self.clear()
             return ComposerOutcome()
-
-        if name == "escape":
-            if self._completion:
-                # The 50 ms lone-Esc disambiguation already ran in the app loop:
-                # by the time this key arrives it is a real Esc, so cancel the
-                # popup without cancelling the turn.
-                self.set_completion(())
-                return ComposerOutcome()
-            return ComposerOutcome(ComposerAction.CANCEL_TURN)
-        if name == "ctrl+c":
-            return self._handle_ctrl_c()
-        if name == "tab":
-            return self._complete()
-        if name in _NEWLINE_KEYS:
-            self._insert("\n")
-            return ComposerOutcome()
-        if name == "enter":
-            if self._completion:
-                self._accept_completion()
-                return ComposerOutcome()
-            return self._submit()
-        if name == "paste":
-            self._insert_paste(key.text)
-            return ComposerOutcome()
-        if name in _EXPAND_KEYS:
-            self._toggle_block_at_cursor()
-            return ComposerOutcome()
-        if name in _COPY_KEYS:
-            copied = self._copy_block_at_cursor()
-            if copied is None:
-                return ComposerOutcome()
-            return ComposerOutcome(ComposerAction.COPY, copied)
-        if name in _DELETE_BLOCK_KEYS:
-            self._delete_block_at_cursor()
-            return ComposerOutcome()
-
-        collapsed = self._collapsed_blocks()
-        if name == "left":
-            for block in collapsed:
-                if self._cursor == block.end:
-                    self._cursor = block.start
-                    return ComposerOutcome()
-            target = _previous_boundary(self._text, self._cursor)
-            for block in collapsed:
-                if block.start < target < block.end:
-                    target = block.start
-                    break
-            self._cursor = target
-            return ComposerOutcome()
-        if name == "right":
-            for block in collapsed:
-                if self._cursor == block.start:
-                    self._cursor = block.end
-                    return ComposerOutcome()
-            target = _next_boundary(self._text, self._cursor)
-            for block in collapsed:
-                if block.start < target < block.end:
-                    target = block.end
-                    break
-            self._cursor = target
-            return ComposerOutcome()
-        if name == "up":
-            if self._completion:
-                self._completion_index = (self._completion_index - 1) % len(self._completion)
-                return ComposerOutcome()
-            if collapsed:
-                display_text, display_cursor = self._display_text_and_cursor()
-                display_start, _ = _bounds_in(display_text, display_cursor)
-                if self._history_index is not None or display_start == 0:
-                    self._history_up()
-                else:
-                    old_true = self._cursor
-                    new_display = _cursor_up_in(display_text, display_cursor)
-                    self._cursor = self._display_to_true(new_display, old_true)
-                return ComposerOutcome()
-            if self._history_index is not None or self._bounds()[0] == 0:
-                self._history_up()
-            else:
-                self._cursor_up()
-            return ComposerOutcome()
-        if name == "down":
-            if self._completion:
-                self._completion_index = (self._completion_index + 1) % len(self._completion)
-                return ComposerOutcome()
-            if collapsed:
-                display_text, display_cursor = self._display_text_and_cursor()
-                _, display_end = _bounds_in(display_text, display_cursor)
-                if self._history_index is not None or display_end == len(display_text):
-                    self._history_down()
-                else:
-                    old_true = self._cursor
-                    new_display = _cursor_down_in(display_text, display_cursor)
-                    self._cursor = self._display_to_true(new_display, old_true)
-                return ComposerOutcome()
-            if self._history_index is not None or self._bounds()[1] == len(self._text):
-                self._history_down()
-            else:
-                self._cursor_down()
-            return ComposerOutcome()
-
-        start, end = self._bounds()
-        if name in ("home", "ctrl+a"):
-            if collapsed:
-                display_text, display_cursor = self._display_text_and_cursor()
-                display_start, _ = _bounds_in(display_text, display_cursor)
-                self._cursor = self._display_to_true(display_start, self._cursor)
-            else:
-                self._cursor = start
-            return ComposerOutcome()
-        if name in ("end", "ctrl+e"):
-            if collapsed:
-                display_text, display_cursor = self._display_text_and_cursor()
-                _, display_end = _bounds_in(display_text, display_cursor)
-                self._cursor = self._display_to_true(display_end, self._cursor)
-            else:
-                self._cursor = end
-            return ComposerOutcome()
-        if name in _WORD_LEFT_KEYS:
-            target = _snap_left(self._text, _word_left(self._text, self._cursor))
-            for block in collapsed:
-                if block.start < target < block.end:
-                    target = block.start
-                    break
-            self._cursor = target
-            return ComposerOutcome()
-        if name in _WORD_RIGHT_KEYS:
-            target = _snap_right(self._text, _word_right(self._text, self._cursor))
-            for block in collapsed:
-                if block.start < target < block.end:
-                    target = block.end
-                    break
-            self._cursor = target
-            return ComposerOutcome()
-
-        if name == "backspace":
-            if self._cursor > 0:
-                target = _previous_boundary(self._text, self._cursor)
-                self._delete_true_range(target, self._cursor)
-            return ComposerOutcome()
-        if name in ("delete", "ctrl+d"):
-            if self._cursor < len(self._text):
-                target = _next_boundary(self._text, self._cursor)
-                self._delete_true_range(self._cursor, target)
-            return ComposerOutcome()
-        if name in _DELETE_WORD_BACK_KEYS:
-            target = _snap_left(self._text, _word_left(self._text, self._cursor))
-            if target != self._cursor:
-                self._delete_true_range(target, self._cursor)
-            return ComposerOutcome()
-        if name in _DELETE_WORD_FORWARD_KEYS:
-            target = _snap_right(self._text, _word_right(self._text, self._cursor))
-            if target != self._cursor:
-                self._delete_true_range(self._cursor, target)
-            return ComposerOutcome()
-        if name == "ctrl+u":
-            if collapsed:
-                display_text, display_cursor = self._display_text_and_cursor()
-                display_start, _ = _bounds_in(display_text, display_cursor)
-                if display_cursor > display_start:
-                    old_true = self._cursor
-                    true_start = self._display_to_true(display_start, old_true)
-                    true_end = self._display_to_true(display_cursor, old_true)
-                    if true_end > true_start:
-                        self._delete_true_range(true_start, true_end)
-                    else:
-                        self._cursor = true_start
-                return ComposerOutcome()
-            if self._cursor > start:
-                self._text = self._text[:start] + self._text[self._cursor :]
-                self._cursor = start
-                self._edited()
-            return ComposerOutcome()
-        if name == "ctrl+k":
-            if collapsed:
-                display_text, display_cursor = self._display_text_and_cursor()
-                _, display_end = _bounds_in(display_text, display_cursor)
-                if display_cursor < display_end:
-                    old_true = self._cursor
-                    true_start = self._display_to_true(display_cursor, old_true)
-                    true_end = self._display_to_true(display_end, old_true)
-                    if true_end > true_start:
-                        self._delete_true_range(true_start, true_end)
-                return ComposerOutcome()
-            if self._cursor < end:
-                self._text = self._text[: self._cursor] + self._text[end:]
-                self._edited()
-            return ComposerOutcome()
-
+        handler = _KEYMAP.get(name)
+        if handler is not None:
+            return handler(self, key)
         if key.text and name not in _NON_TEXT_KEYS:
             self._insert(key.text)
+        return ComposerOutcome()
+
+    def _key_escape(self, _key: Key) -> ComposerOutcome:
+        if self._completion:
+            # The 50 ms lone-Esc disambiguation already ran in the app loop:
+            # by the time this key arrives it is a real Esc, so cancel the
+            # popup without cancelling the turn.
+            self.set_completion(())
+            return ComposerOutcome()
+        return ComposerOutcome(ComposerAction.CANCEL_TURN)
+
+    def _key_ctrl_c(self, _key: Key) -> ComposerOutcome:
+        now = self._clock()
+        if now - self._last_interrupt < _DOUBLE_INTERRUPT_SECONDS:
+            self._last_interrupt = now
+            return ComposerOutcome(ComposerAction.INTERRUPT)
+        self.clear()
+        self._last_interrupt = now
+        return ComposerOutcome()
+
+    def _key_tab(self, _key: Key) -> ComposerOutcome:
+        """Tab: accept the highlighted candidate (arrows move first)."""
+        if not self._completion:
+            return ComposerOutcome()
+        self._accept_completion()
+        return ComposerOutcome()
+
+    def _key_newline(self, _key: Key) -> ComposerOutcome:
+        self._insert("\n")
+        return ComposerOutcome()
+
+    def _key_enter(self, _key: Key) -> ComposerOutcome:
+        if self._completion:
+            self._accept_completion()
+            return ComposerOutcome()
+        return self._submit()
+
+    def _key_paste(self, key: Key) -> ComposerOutcome:
+        self._insert_paste(key.text)
+        return ComposerOutcome()
+
+    def _key_expand(self, _key: Key) -> ComposerOutcome:
+        self._toggle_block_at_cursor()
+        return ComposerOutcome()
+
+    def _key_copy(self, _key: Key) -> ComposerOutcome:
+        copied = self._copy_block_at_cursor()
+        if copied is None:
+            return ComposerOutcome()
+        return ComposerOutcome(ComposerAction.COPY, copied)
+
+    def _key_delete_block(self, _key: Key) -> ComposerOutcome:
+        self._delete_block_at_cursor()
+        return ComposerOutcome()
+
+    def _key_left(self, _key: Key) -> ComposerOutcome:
+        collapsed = self._collapsed_blocks()
+        for block in collapsed:
+            if self._cursor == block.end:
+                self._cursor = block.start
+                return ComposerOutcome()
+        target = _previous_boundary(self._text, self._cursor)
+        for block in collapsed:
+            if block.start < target < block.end:
+                target = block.start
+                break
+        self._cursor = target
+        return ComposerOutcome()
+
+    def _key_right(self, _key: Key) -> ComposerOutcome:
+        collapsed = self._collapsed_blocks()
+        for block in collapsed:
+            if self._cursor == block.start:
+                self._cursor = block.end
+                return ComposerOutcome()
+        target = _next_boundary(self._text, self._cursor)
+        for block in collapsed:
+            if block.start < target < block.end:
+                target = block.end
+                break
+        self._cursor = target
+        return ComposerOutcome()
+
+    def _key_up(self, _key: Key) -> ComposerOutcome:
+        if self._completion:
+            self._completion_index = (self._completion_index - 1) % len(self._completion)
+            return ComposerOutcome()
+        collapsed = self._collapsed_blocks()
+        if collapsed:
+            display_text, display_cursor = self._display_text_and_cursor()
+            display_start, _ = _bounds_in(display_text, display_cursor)
+            if self._history_index is not None or display_start == 0:
+                self._history_up()
+            else:
+                old_true = self._cursor
+                new_display = _cursor_up_in(display_text, display_cursor)
+                self._cursor = self._display_to_true(new_display, old_true)
+            return ComposerOutcome()
+        if self._history_index is not None or self._bounds()[0] == 0:
+            self._history_up()
+        else:
+            self._cursor_up()
+        return ComposerOutcome()
+
+    def _key_down(self, _key: Key) -> ComposerOutcome:
+        if self._completion:
+            self._completion_index = (self._completion_index + 1) % len(self._completion)
+            return ComposerOutcome()
+        collapsed = self._collapsed_blocks()
+        if collapsed:
+            display_text, display_cursor = self._display_text_and_cursor()
+            _, display_end = _bounds_in(display_text, display_cursor)
+            if self._history_index is not None or display_end == len(display_text):
+                self._history_down()
+            else:
+                old_true = self._cursor
+                new_display = _cursor_down_in(display_text, display_cursor)
+                self._cursor = self._display_to_true(new_display, old_true)
+            return ComposerOutcome()
+        if self._history_index is not None or self._bounds()[1] == len(self._text):
+            self._history_down()
+        else:
+            self._cursor_down()
+        return ComposerOutcome()
+
+    def _key_home(self, _key: Key) -> ComposerOutcome:
+        collapsed = self._collapsed_blocks()
+        if collapsed:
+            display_text, display_cursor = self._display_text_and_cursor()
+            display_start, _ = _bounds_in(display_text, display_cursor)
+            self._cursor = self._display_to_true(display_start, self._cursor)
+        else:
+            start, _ = self._bounds()
+            self._cursor = start
+        return ComposerOutcome()
+
+    def _key_end(self, _key: Key) -> ComposerOutcome:
+        collapsed = self._collapsed_blocks()
+        if collapsed:
+            display_text, display_cursor = self._display_text_and_cursor()
+            _, display_end = _bounds_in(display_text, display_cursor)
+            self._cursor = self._display_to_true(display_end, self._cursor)
+        else:
+            _, end = self._bounds()
+            self._cursor = end
+        return ComposerOutcome()
+
+    def _key_word_left(self, _key: Key) -> ComposerOutcome:
+        collapsed = self._collapsed_blocks()
+        target = _snap_left(self._text, _word_left(self._text, self._cursor))
+        for block in collapsed:
+            if block.start < target < block.end:
+                target = block.start
+                break
+        self._cursor = target
+        return ComposerOutcome()
+
+    def _key_word_right(self, _key: Key) -> ComposerOutcome:
+        collapsed = self._collapsed_blocks()
+        target = _snap_right(self._text, _word_right(self._text, self._cursor))
+        for block in collapsed:
+            if block.start < target < block.end:
+                target = block.end
+                break
+        self._cursor = target
+        return ComposerOutcome()
+
+    def _key_backspace(self, _key: Key) -> ComposerOutcome:
+        if self._cursor > 0:
+            target = _previous_boundary(self._text, self._cursor)
+            self._delete_true_range(target, self._cursor)
+        return ComposerOutcome()
+
+    def _key_delete(self, _key: Key) -> ComposerOutcome:
+        if self._cursor < len(self._text):
+            target = _next_boundary(self._text, self._cursor)
+            self._delete_true_range(self._cursor, target)
+        return ComposerOutcome()
+
+    def _key_delete_word_back(self, _key: Key) -> ComposerOutcome:
+        target = _snap_left(self._text, _word_left(self._text, self._cursor))
+        if target != self._cursor:
+            self._delete_true_range(target, self._cursor)
+        return ComposerOutcome()
+
+    def _key_delete_word_forward(self, _key: Key) -> ComposerOutcome:
+        target = _snap_right(self._text, _word_right(self._text, self._cursor))
+        if target != self._cursor:
+            self._delete_true_range(self._cursor, target)
+        return ComposerOutcome()
+
+    def _key_ctrl_u(self, _key: Key) -> ComposerOutcome:
+        collapsed = self._collapsed_blocks()
+        if collapsed:
+            display_text, display_cursor = self._display_text_and_cursor()
+            display_start, _ = _bounds_in(display_text, display_cursor)
+            if display_cursor > display_start:
+                old_true = self._cursor
+                true_start = self._display_to_true(display_start, old_true)
+                true_end = self._display_to_true(display_cursor, old_true)
+                if true_end > true_start:
+                    self._delete_true_range(true_start, true_end)
+                else:
+                    self._cursor = true_start
+            return ComposerOutcome()
+        start, _ = self._bounds()
+        if self._cursor > start:
+            self._text = self._text[:start] + self._text[self._cursor :]
+            self._cursor = start
+            self._edited()
+        return ComposerOutcome()
+
+    def _key_ctrl_k(self, _key: Key) -> ComposerOutcome:
+        collapsed = self._collapsed_blocks()
+        if collapsed:
+            display_text, display_cursor = self._display_text_and_cursor()
+            _, display_end = _bounds_in(display_text, display_cursor)
+            if display_cursor < display_end:
+                old_true = self._cursor
+                true_start = self._display_to_true(display_cursor, old_true)
+                true_end = self._display_to_true(display_end, old_true)
+                if true_end > true_start:
+                    self._delete_true_range(true_start, true_end)
+            return ComposerOutcome()
+        _, end = self._bounds()
+        if self._cursor < end:
+            self._text = self._text[: self._cursor] + self._text[end:]
+            self._edited()
         return ComposerOutcome()
 
     def _submit(self) -> ComposerOutcome:
@@ -967,15 +1004,6 @@ class Composer:
         self._push_history(text)
         self.clear()
         return ComposerOutcome(ComposerAction.SUBMIT, text)
-
-    def _handle_ctrl_c(self) -> ComposerOutcome:
-        now = self._clock()
-        if now - self._last_interrupt < _DOUBLE_INTERRUPT_SECONDS:
-            self._last_interrupt = now
-            return ComposerOutcome(ComposerAction.INTERRUPT)
-        self.clear()
-        self._last_interrupt = now
-        return ComposerOutcome()
 
     # -- rendering ---------------------------------------------------------
 
@@ -1150,3 +1178,36 @@ class Composer:
             else:
                 rows.append(self._styles.fg("text", f"  {label}"))
         return [clamp_row(row, self._width) for row in rows]
+
+
+#: Key name → handler: the whole composer dispatch as data. Names are disjoint
+#: across singles and key sets, so every key resolves to exactly one handler;
+#: the escape-with-"!" pre-check and the text fallback stay in handle_key.
+_KEYMAP: Final[dict[str, Callable[[Composer, Key], ComposerOutcome]]] = {
+    "escape": Composer._key_escape,
+    "ctrl+c": Composer._key_ctrl_c,
+    "tab": Composer._key_tab,
+    "enter": Composer._key_enter,
+    "paste": Composer._key_paste,
+    "left": Composer._key_left,
+    "right": Composer._key_right,
+    "up": Composer._key_up,
+    "down": Composer._key_down,
+    "home": Composer._key_home,
+    "ctrl+a": Composer._key_home,
+    "end": Composer._key_end,
+    "ctrl+e": Composer._key_end,
+    "backspace": Composer._key_backspace,
+    "delete": Composer._key_delete,
+    "ctrl+d": Composer._key_delete,
+    "ctrl+u": Composer._key_ctrl_u,
+    "ctrl+k": Composer._key_ctrl_k,
+    **{name: Composer._key_newline for name in _NEWLINE_KEYS},
+    **{name: Composer._key_expand for name in _EXPAND_KEYS},
+    **{name: Composer._key_copy for name in _COPY_KEYS},
+    **{name: Composer._key_delete_block for name in _DELETE_BLOCK_KEYS},
+    **{name: Composer._key_word_left for name in _WORD_LEFT_KEYS},
+    **{name: Composer._key_word_right for name in _WORD_RIGHT_KEYS},
+    **{name: Composer._key_delete_word_back for name in _DELETE_WORD_BACK_KEYS},
+    **{name: Composer._key_delete_word_forward for name in _DELETE_WORD_FORWARD_KEYS},
+}

@@ -110,7 +110,12 @@ def _icon(value: object) -> Icon | None:
     return Icon(glyph=glyph)
 
 
-def context_records(events: Sequence[StoredEvent]) -> tuple[ContextRecord, ...]:
+def _measured_payload_bytes(payload: Mapping[str, object]) -> int:
+    """Canonical payload bytes for events without a stored size (synthetic rows)."""
+    return len(json.dumps(json_wire_object(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+
+
+def context_records(events: Sequence[StoredEvent], *, sizes: Mapping[int, int] | None = None) -> tuple[ContextRecord, ...]:
     """The shared prefix validator for context readers and projection admission."""
     from voidcode.sdk.provider import ProviderTurnResult
 
@@ -130,8 +135,9 @@ def context_records(events: Sequence[StoredEvent]) -> tuple[ContextRecord, ...]:
             key = (content.batch_sequence, content.call.tool_call_id)
             if pending.pop(key, None) != content.call.tool_name:
                 valid = False
-        size = len(
-            json.dumps(json_wire_object(event.payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        )
+        if sizes is None:
+            size = _measured_payload_bytes(event.payload)
+        else:
+            size = sizes[event.sequence]
         records.append(ContextRecord(event.sequence, size, valid and not pending, entry))
     return tuple(records)

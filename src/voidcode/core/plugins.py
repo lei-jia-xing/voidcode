@@ -35,7 +35,7 @@ from uuid import uuid4
 import jsonschema
 from pydantic import TypeAdapter
 
-from voidcode.core.retry import retrying_turn
+from voidcode.core.retry import run_with_retry
 from voidcode.sdk.commands import CommandDescriptor, CommandInput, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import (
     ApprovalRequestedFact,
@@ -57,7 +57,6 @@ from voidcode.sdk.hooks import (
 )
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
-from voidcode.sdk.observed_effects import ObservedChange
 from voidcode.sdk.plugin import Plugin, PluginQueryCaller, StateSchema
 from voidcode.sdk.provider import (
     ModelContextLimits,
@@ -81,7 +80,9 @@ from voidcode.sdk.services import (
     SessionUsageReport,
     StructuredModelResult,
 )
+from voidcode.sdk.suspend import SuspendPark
 from voidcode.sdk.tools import (
+    Change,
     ConfirmedStop,
     TextOutput,
     ToolCall,
@@ -109,6 +110,7 @@ from .storage.store import (
     StagedCancellation,
     StagedContinuationDraft,
     StagedStateUpdate,
+    UnknownWorkspace,
 )
 from .transcript import context_records, transcript_entry
 
@@ -118,8 +120,6 @@ RESERVED_COMMAND_PREFIXES: tuple[str, ...] = ("core.", "voidcode.")
 RESERVED_TOOL_NAMES: frozenset[str] = frozenset({"core_reload"})
 #: One plugin query answer stays a small JSON object: it is a read convenience, never a transport.
 MAX_QUERY_RESULT_BYTES: Final[int] = 256 * 1024
-#: The invocation-cancel watcher polls the caller's abort signal at this cadence.
-_POLL_SECONDS: Final[float] = 0.05
 _ACTIVE_LEASE_THREADS_LOCK = threading.Lock()
 _ACTIVE_LEASE_THREADS: dict[int, int] = {}
 
@@ -161,16 +161,25 @@ class LeaseContext:
     #: The lease may stage internal session work (state, events, budget, continuations).
     internal_work: bool = False
     invocation_depth: int = 0
+    #: True only for tool-callback leases opened by PluginRuntime.invoke; suspension
+    #: services refuse every other lease (hooks, commands, views, background drivers).
+    tool_callback: bool = False
     staged_state: dict[tuple[str, str], tuple[Mapping[str, object], int, int]] = field(default_factory=dict)
     staged_events: list[EventDraft] = field(default_factory=list)
     staged_continuations: list[StagedContinuationDraft] = field(default_factory=list)
     staged_cancellations: list[StagedCancellation] = field(default_factory=list)
     staged_observer_receipts: list[ObserverReceiptRecord] = field(default_factory=list)
     staged_budget: PluginBudget | None | Literal["clear"] = None
-    staged_observations: list[ObservedChange] = field(default_factory=list)
+    staged_observations: list[Change] = field(default_factory=list)
+    #: Dedicated suspend-intent slot, never an EventDraft, so it is uncommittable by
+    #: construction. Set by the suspend services immediately before raising SuspendPark;
+    #: a normal return with this set is a swallowed suspension and fails visibly.
+    staged_suspend: SuspendPark | None = None
     revoked: bool = False
     op_counter: int = 0
     abort_signal: ProviderAbortSignal | None = None
+    #: Unregister handle for the abort-signal cancel mirror, cleared at revoke.
+    cancel_subscription: Callable[[], None] | None = None
     opened_thread_id: int = field(default_factory=threading.get_ident, init=False, repr=False)
 
     @property
@@ -188,7 +197,34 @@ class ToolInvocationOutcome:
     staged_cancellations: tuple[StagedCancellation, ...] = ()
     staged_observer_receipts: tuple[ObserverReceiptRecord, ...] = ()
     staged_budget: PluginBudget | None | Literal["clear"] = None
-    staged_observations: tuple[ObservedChange, ...] = ()
+    staged_observations: tuple[Change, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenStaged:
+    """One suspended callback's frozen staged work: no ToolResult was ever produced."""
+
+    staged_state: tuple[StagedStateUpdate, ...] = ()
+    staged_events: tuple[EventDraft, ...] = ()
+    staged_continuations: tuple[StagedContinuationDraft, ...] = ()
+    staged_cancellations: tuple[StagedCancellation, ...] = ()
+    staged_observer_receipts: tuple[ObserverReceiptRecord, ...] = ()
+    staged_budget: PluginBudget | None | Literal["clear"] = None
+    staged_observations: tuple[Change, ...] = ()
+
+
+class ToolSuspension(BaseException):
+    """A tool callback suspended with frozen staged work for the engine to park.
+
+    Raised only by PluginRuntime.invoke's SuspendPark clause, caught only by the
+    engine's park-commit site. Carries the suspend intent plus the frozen staged
+    outcome; the invoke boundary never writes the store.
+    """
+
+    def __init__(self, park: SuspendPark, staged: FrozenStaged) -> None:
+        super().__init__(park.park_kind)
+        self.park = park
+        self.staged = staged
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +236,7 @@ class CommandInvocationOutcome:
     staged_cancellations: tuple[StagedCancellation, ...] = ()
     staged_observer_receipts: tuple[ObserverReceiptRecord, ...] = ()
     staged_budget: PluginBudget | None | Literal["clear"] = None
-    staged_observations: tuple[ObservedChange, ...] = ()
+    staged_observations: tuple[Change, ...] = ()
     cancelled: bool = False
 
 
@@ -286,7 +322,7 @@ class PluginRuntime:
     ) -> None:
         self.workspace = Path(workspace).resolve()
         if not self.workspace.is_dir():
-            raise ValueError(f"Workspace directory does not exist: {self.workspace}")
+            raise UnknownWorkspace(f"Workspace directory does not exist: {self.workspace}", self.workspace)
         if not revision_id:
             raise ValueError("revision_id must be a non-empty string")
         self.revision_id = revision_id
@@ -708,6 +744,7 @@ class PluginRuntime:
         hook: bool = False,
         internal_work: bool = False,
         invocation_depth: int = 0,
+        tool_callback: bool = False,
         root_action_id: str | None = None,
         initial_root_budget: int | None = None,
         origin_visible_tools: tuple[str, ...] | None = None,
@@ -734,11 +771,22 @@ class PluginRuntime:
             hook=hook,
             internal_work=internal_work,
             invocation_depth=invocation_depth,
+            tool_callback=tool_callback,
         )
         with self._lease_lock:
             self._active_leases[lease.token] = lease
         with _ACTIVE_LEASE_THREADS_LOCK:
             _ACTIVE_LEASE_THREADS[lease.opened_thread_id] = _ACTIVE_LEASE_THREADS.get(lease.opened_thread_id, 0) + 1
+        signal = abort_signal
+        if signal is not None:
+            on_cancel = getattr(signal, "on_cancel", None)
+            if on_cancel is not None:
+                cancel_event = self.cancel_event_for(lease)
+
+                def _mirror() -> None:
+                    self._mirror_lease_cancel(lease, cancel_event)
+
+                lease.cancel_subscription = on_cancel(_mirror)
         return lease
 
     def _revoke_lease(self, lease: LeaseContext) -> None:
@@ -747,6 +795,10 @@ class PluginRuntime:
             lease.revoked = True
             self._cancel_events.pop(lease.token, None)
             self._claimed_services.pop(lease.token, None)
+            unsubscribe = lease.cancel_subscription
+            lease.cancel_subscription = None
+        if unsubscribe is not None:
+            unsubscribe()
         if active:
             with _ACTIVE_LEASE_THREADS_LOCK:
                 count = _ACTIVE_LEASE_THREADS.get(lease.opened_thread_id, 0)
@@ -811,20 +863,6 @@ class PluginRuntime:
         with self._lease_lock:
             self._claimed_services.setdefault(lease.token, set()).add((process_id, lease.session_id))
 
-    def _watch_invocation_cancel(self, lease: LeaseContext, abort_signal: Any, cancel_event: threading.Event, stop: threading.Event) -> None:
-        """Mirror the caller's abort signal into this invocation's cancel event, then stop its trees.
-
-        The abort signal may flip at any point during the direct call: polling at 20 Hz keeps
-        the cancel path alive without touching plugin code. Claimed service trees are stopped
-        at the moment of cancellation (not after the tool returns), and `run_process` sees the
-        event through `cancel_event_for`. The watcher exits when the invocation ends.
-        """
-        while not stop.wait(_POLL_SECONDS):
-            if abort_signal is not None and getattr(abort_signal, "cancelled", False):
-                cancel_event.set()
-                self._cancel_claimed_services(lease)
-                return
-
     def _cancel_claimed_services(self, lease: LeaseContext) -> None:
         with self._lease_lock:
             claims = tuple(self._claimed_services.pop(lease.token, ()))
@@ -836,6 +874,11 @@ class PluginRuntime:
                 self.processes.cancel(process_id, owner=lease.owner, session_id=session_id)
             except ValueError:
                 pass
+
+    def _mirror_lease_cancel(self, lease: LeaseContext, cancel_event: threading.Event) -> None:
+        """Mirror an abort-signal cancel into the lease event and stop its claimed trees."""
+        cancel_event.set()
+        self._cancel_claimed_services(lease)
 
     def store_window_projection(self, lease: LeaseContext, covered_from_sequence: int, covered_to_sequence: int, replacement: str) -> None:
         store = self.require_store()
@@ -852,7 +895,8 @@ class PluginRuntime:
         covered = [event for event in events if event.sequence <= covered_to_sequence]
         # Integrity: the replaced prefix must be batch-complete, so every assistant tool call it
         # covers is answered inside it and the surviving tail still starts at a message boundary.
-        records = context_records(covered)
+        sizes = store.event_payload_bytes(lease.session_id, limit=covered_to_sequence)
+        records = context_records(covered, sizes=sizes)
         if not records[-1].safe_boundary:
             raise ValueError("a window projection must cover whole native tool batches")
         covered_bytes = sum(record.payload_bytes for record in records)
@@ -893,7 +937,8 @@ class PluginRuntime:
 
     def context_history(self, session_id: str, limit: int) -> ContextHistory:
         source = self.require_store().events(session_id, after_sequence=0, limit=limit + 1)
-        return ContextHistory(context_records(source[:limit]), len(source) <= limit)
+        sizes = self.require_store().event_payload_bytes(session_id, limit=limit)
+        return ContextHistory(context_records(source[:limit], sizes=sizes), len(source) <= limit)
 
     def transcript_page(self, session_id: str, after: int, limit: int) -> TranscriptPage:
         source = self.require_store().events(session_id, after_sequence=after, limit=limit + 1)
@@ -901,8 +946,9 @@ class PluginRuntime:
         budget = 64 * 1024
         consumed = 0
         cursor = after
+        sizes = self.require_store().event_payload_bytes(session_id, after_sequence=after, limit=limit + 1)
         for event in source[:limit]:
-            size = len(json.dumps(json_wire_object(event.payload), ensure_ascii=False, allow_nan=False).encode("utf-8"))
+            size = sizes[event.sequence]
             if consumed and size > budget:
                 break
             entry = transcript_entry(event)
@@ -920,16 +966,17 @@ class PluginRuntime:
         store = self.require_store()
         views: list[EventView] = []
         budget = 64 * 1024
+        sizes = store.event_payload_bytes(session_id, after_sequence=after, limit=limit)
         for event in store.events(session_id, after_sequence=after, limit=limit):
             payload_wire: dict[str, object] | None = None
             truncated = False
             if include_payload:
-                serialized = json.dumps(json_wire_object(event.payload), ensure_ascii=False, allow_nan=False)
-                if len(serialized.encode("utf-8")) > budget:
+                original_bytes = sizes[event.sequence]
+                if original_bytes > budget:
                     truncated = True
-                    payload_wire = {"truncated": True, "original_bytes": len(serialized.encode("utf-8"))}
+                    payload_wire = {"truncated": True, "original_bytes": original_bytes}
                 else:
-                    budget -= len(serialized.encode("utf-8"))
+                    budget -= original_bytes
                     payload_wire = json_wire_object(event.payload)
             views.append(
                 View(
@@ -1111,6 +1158,7 @@ class PluginRuntime:
             actor=context.actor,
             internal_work=(not readonly) or ToolEffect.SESSION in tool_definition.effects,
             invocation_depth=context.invocation_depth,
+            tool_callback=True,
             root_action_id=context.root_action_id,
             initial_root_budget=context.initial_root_budget,
             origin_visible_tools=context.origin_visible_tools,
@@ -1120,14 +1168,6 @@ class PluginRuntime:
         )
         services = RuntimeServices(self, lease)
         cancel_event = self.cancel_event_for(lease)
-        stop_watcher = threading.Event()
-        watcher = threading.Thread(
-            target=self._watch_invocation_cancel,
-            args=(lease, context.abort_signal, cancel_event, stop_watcher),
-            name=f"runtime-cancel-{lease.token[:8]}",
-            daemon=True,
-        )
-        watcher.start()
         progress = self.progress_callback
         if context.emit_tool_progress is None and progress is not None:
             context = replace(context, emit_tool_progress=lambda payload: progress(lease, own_json_object(payload)))
@@ -1136,6 +1176,46 @@ class PluginRuntime:
             result = tool_instance.invoke(call, context=context, services=services)
             if not isinstance(result, (ToolSuccess, ToolFailure)):
                 raise TypeError(f"Tool {call.tool_name} returned an invalid ToolResult")
+            if lease.staged_suspend is not None:
+                raise TypeError(
+                    f"Tool {call.tool_name} staged a suspension but returned normally (SuspendPark was swallowed); staged intent discarded"
+                )
+        except SuspendPark as park:
+            # Suspend-by-unwind: the callback raised to park itself. This clause is
+            # kind-agnostic (ask now; composition reuses it later): it freezes staged
+            # work exactly like the return path, revokes the lease in every sub-case,
+            # and re-raises a Core-internal wrapper — the boundary never writes the
+            # store; the engine's park-catch performs the atomic park commit. Clause
+            # order vs except Exception is moot: SuspendPark is a BaseException.
+            suspended = cancel_event.is_set() or bool(context.abort_signal and context.abort_signal.cancelled)
+            if suspended:
+                # Cancelled: mirror the return path — discard everything including the
+                # intent, stop claimed services, revoke, and return the cancelled shape
+                # so the engine settles the run with no new handling. This read is
+                # best-effort; the engine park-commit re-checks the abort.
+                self._cancel_claimed_services(lease)
+                self._revoke_lease(lease)
+                cancelled_result = ToolFailure(
+                    tool_name=call.tool_name,
+                    error=f"Tool {call.tool_name} of {tool_owner} was cancelled",
+                    output=TextOutput(text=f"Tool {call.tool_name} was cancelled"),
+                    execution=ConfirmedStop(cancellation_signalled=True),
+                )
+                if return_outcome:
+                    return ToolInvocationOutcome(result=cancelled_result)
+                return cancelled_result
+            staged_state, staged_events, staged_conts, staged_cancels, staged_receipts, staged_budget = self._staged_changes(lease)
+            frozen = FrozenStaged(
+                staged_state=staged_state,
+                staged_events=staged_events,
+                staged_continuations=staged_conts,
+                staged_cancellations=staged_cancels,
+                staged_observer_receipts=staged_receipts,
+                staged_budget=staged_budget,
+                staged_observations=tuple(lease.staged_observations),
+            )
+            self._revoke_lease(lease)
+            raise ToolSuspension(park, frozen) from park
         except Exception as exc:
             tool_threw = True
             result = ToolFailure(
@@ -1144,13 +1224,10 @@ class PluginRuntime:
                 output=TextOutput(text=f"Tool {call.tool_name} failed: {exc}"),
                 execution=ConfirmedStop(cancellation_signalled=False),
             )
-        finally:
-            stop_watcher.set()
-            watcher.join(timeout=5)
         cancelled = cancel_event.is_set() or bool(context.abort_signal and context.abort_signal.cancelled)
         if cancelled:
             # Cooperative cancellation discards everything this invocation staged; claimed
-            # service trees were already stopped by the watcher.
+            # service trees were already stopped by the cancel mirror.
             self._cancel_claimed_services(lease)
             staged = ToolInvocationOutcome(result=result)
         elif tool_threw:
@@ -1178,21 +1255,22 @@ class PluginRuntime:
         """Request a model turn, retrying adapter-approved transient failures in this runtime."""
         provider_instance = self._provider_instance(request, provider=provider)
         model_name = request.model_name or "unknown"
-        for attempt in retrying_turn(request.abort_signal, provider=provider, model=model_name):
-            with attempt:
-                numbered = replace(request, attempt=attempt.retry_state.attempt_number)
-                try:
-                    return provider_instance.propose_turn(numbered)
-                except ProviderExecutionError:
-                    raise
-                except Exception as exc:
-                    raise ProviderExecutionError(
-                        kind="provider_error",
-                        provider_name=provider,
-                        model_name=model_name,
-                        message=f"Provider {provider} turn failed: {exc}",
-                    ) from exc
-        raise AssertionError("unreachable: tenacity reraise either returns or raises")
+
+        def _call(attempt_number: int) -> ProviderTurnResult:
+            numbered = replace(request, attempt=attempt_number)
+            try:
+                return provider_instance.propose_turn(numbered)
+            except ProviderExecutionError:
+                raise
+            except Exception as exc:
+                raise ProviderExecutionError(
+                    kind="provider_error",
+                    provider_name=provider,
+                    model_name=model_name,
+                    message=f"Provider {provider} turn failed: {exc}",
+                ) from exc
+
+        return run_with_retry(_call, request.abort_signal, provider=provider, model=model_name)
 
     def stream_turn(self, request: ProviderTurnRequest, *, provider: str) -> Iterator[ProviderStreamEvent]:
         """Stream one model turn as adapter events, without runtime retry.
@@ -1276,23 +1354,23 @@ class PluginRuntime:
         services = RuntimeServices(self, lease)
         invocation = CommandInvocation(context=context, name=name, arguments=args)
         cancel_event = self.cancel_event_for(lease)
-        stop_watcher = threading.Event()
-        watcher = threading.Thread(
-            target=self._watch_invocation_cancel,
-            args=(lease, context.abort_signal, cancel_event, stop_watcher),
-            name=f"runtime-cancel-{lease.token[:8]}",
-            daemon=True,
-        )
-        watcher.start()
         cmd_threw = False
         try:
             result = cmd_instance.invoke(invocation, services)
+        except SuspendPark as park:
+            # Commands have no run cursor to park: a suspension here (only reachable
+            # by raising SuspendPark directly, since the suspend services refuse
+            # non-tool leases first) is refused visibly with nothing staged. The
+            # revoke is load-bearing: without it the lease — including its abort-signal
+            # subscription — would leak past the invocation it was opened for.
+            cmd_threw = True
+            result = CommandResult(
+                status="error",
+                error=f"Command {name} of {cmd_owner} cannot suspend for {park.park_kind}: commands have no run cursor to park",
+            )
         except Exception as exc:
             cmd_threw = True
             result = CommandResult(status="error", error=f"Command {name} of {cmd_owner} failed: {exc}")
-        finally:
-            stop_watcher.set()
-            watcher.join(timeout=5)
         cancelled = cancel_event.is_set() or bool(context.abort_signal and context.abort_signal.cancelled)
         if cancelled:
             self._cancel_claimed_services(lease)

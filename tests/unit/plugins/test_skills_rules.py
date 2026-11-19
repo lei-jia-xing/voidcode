@@ -11,15 +11,12 @@ import pytest
 
 from voidcode.plugins.skills import create_plugin
 from voidcode.plugins.skills.rules import (
+    DEFAULT_RULE_LIMITS,
     LOCAL_RULE_FILE_NAME,
-    MAX_RULE_FILE_CHARS,
-    MAX_RULE_FILES,
-    MAX_RULEBOOK_CONTENT_CHARS,
-    MAX_RULEBOOK_METADATA_CHARS,
-    MAX_RULEBOOK_PROMPT_CHARS,
     RULE_FILE_NAME,
     RuleCatalog,
     RuleCatalogEntry,
+    RuleLimits,
     build_rule_catalog,
     render_file_rule_context,
     render_file_rules,
@@ -140,7 +137,7 @@ def test_dynamic_rules_keep_the_most_recent_and_respect_the_file_cap(tmp_path: P
         _write(tmp_path / name / RULE_FILE_NAME, f"{name} rules")
     touched = ("alpha/file.txt", "beta/file.txt", "gamma/file.txt")
 
-    contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=touched, max_rule_files=3)
+    contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=touched, limits=RuleLimits(max_rule_files=3))
     assert [context.path for context in contexts] == ["AGENTS.md", "beta/AGENTS.md", "gamma/AGENTS.md"]
 
     assert len(runtime_file_rule_contexts(workspace=tmp_path, touched_paths=touched)) == 4
@@ -148,13 +145,14 @@ def test_dynamic_rules_keep_the_most_recent_and_respect_the_file_cap(tmp_path: P
 
 def test_default_file_cap_keeps_the_baseline_plus_the_last_seven_dynamic_rules(tmp_path: Path) -> None:
     _write(tmp_path / RULE_FILE_NAME, "root rules")
-    names = [f"dir-{index}" for index in range(MAX_RULE_FILES + 2)]
+    names = [f"dir-{index}" for index in range(DEFAULT_RULE_LIMITS.max_rule_files + 2)]
     for name in names:
         _write(tmp_path / name / RULE_FILE_NAME, f"{name} rules")
 
     contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=tuple(f"{name}/file.txt" for name in names))
-    assert len(contexts) == MAX_RULE_FILES == 8
-    assert [context.path for context in contexts] == ["AGENTS.md"] + [f"{name}/AGENTS.md" for name in names[-(MAX_RULE_FILES - 1) :]]
+    assert len(contexts) == DEFAULT_RULE_LIMITS.max_rule_files == 8
+    expected = ["AGENTS.md"] + [f"{name}/AGENTS.md" for name in names[-(DEFAULT_RULE_LIMITS.max_rule_files - 1) :]]
+    assert [context.path for context in contexts] == expected
 
 
 def test_default_total_budget_stops_at_thirty_six_kilobytes(tmp_path: Path) -> None:
@@ -173,7 +171,7 @@ def test_baseline_alone_saturates_the_file_cap(tmp_path: Path) -> None:
     for name in ("one", "two", "three"):
         _write(tmp_path / name / RULE_FILE_NAME, name)
 
-    contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=("one/file.txt",), max_rule_files=1)
+    contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=("one/file.txt",), limits=RuleLimits(max_rule_files=1))
     assert [context.path for context in contexts] == ["AGENTS.md"]
 
 
@@ -194,20 +192,20 @@ def test_touched_path_outside_the_workspace_is_ignored(tmp_path: Path) -> None:
 
 
 def test_per_file_truncation_appends_the_exact_marker(tmp_path: Path) -> None:
-    _write(tmp_path / RULE_FILE_NAME, "a" * (MAX_RULE_FILE_CHARS + 50))
+    _write(tmp_path / RULE_FILE_NAME, "a" * (DEFAULT_RULE_LIMITS.max_rule_file_chars + 50))
 
     contexts = runtime_file_rule_contexts(workspace=tmp_path)
     assert len(contexts) == 1
     context = contexts[0]
     assert context.path == RULE_FILE_NAME
-    assert context.content == "a" * MAX_RULE_FILE_CHARS + TRUNCATION_MARKER
+    assert context.content == "a" * DEFAULT_RULE_LIMITS.max_rule_file_chars + TRUNCATION_MARKER
 
 
 def test_total_budget_truncates_the_file_that_overruns_it(tmp_path: Path) -> None:
     _write(tmp_path / RULE_FILE_NAME, "a" * 120)
     _write(tmp_path / "sub" / RULE_FILE_NAME, "b" * 120)
 
-    contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=("sub/file.txt",), max_total_rule_bytes=200)
+    contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=("sub/file.txt",), limits=RuleLimits(max_total_rule_bytes=200))
     assert [context.path for context in contexts] == ["AGENTS.md", "sub/AGENTS.md"]
     assert contexts[0].content == "a" * 120
     assert contexts[1].content == "b" * (200 - 120 - len(TRUNCATION_MARKER)) + TRUNCATION_MARKER
@@ -218,7 +216,7 @@ def test_budget_exhausted_by_an_exact_file_stops_there(tmp_path: Path) -> None:
     _write(tmp_path / RULE_FILE_NAME, "a" * 100)
     _write(tmp_path / "sub" / RULE_FILE_NAME, "b" * 100)
 
-    contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=("sub/file.txt",), max_total_rule_bytes=100)
+    contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=("sub/file.txt",), limits=RuleLimits(max_total_rule_bytes=100))
     assert [context.path for context in contexts] == ["AGENTS.md"]
     assert contexts[0].content == "a" * 100
 
@@ -226,14 +224,14 @@ def test_budget_exhausted_by_an_exact_file_stops_there(tmp_path: Path) -> None:
 def test_zero_budget_reports_the_first_rule_path_with_empty_content(tmp_path: Path) -> None:
     _write(tmp_path / RULE_FILE_NAME, "root rules")
 
-    contexts = runtime_file_rule_contexts(workspace=tmp_path, max_total_rule_bytes=0)
+    contexts = runtime_file_rule_contexts(workspace=tmp_path, limits=RuleLimits(max_total_rule_bytes=0))
     assert [context.path for context in contexts] == ["AGENTS.md"]
     assert contexts[0].content == ""
 
-    assert runtime_file_rule_contexts(workspace=tmp_path, max_total_rule_bytes=0, include_workspace_root=False) == ()
+    assert runtime_file_rule_contexts(workspace=tmp_path, limits=RuleLimits(max_total_rule_bytes=0), include_workspace_root=False) == ()
     assert runtime_file_rule_contexts(workspace=None) == ()
-    assert runtime_file_rule_contexts(workspace=tmp_path, max_rule_files=0) == ()
-    assert runtime_file_rule_contexts(workspace=tmp_path, max_total_rule_bytes=-1) == ()
+    assert runtime_file_rule_contexts(workspace=tmp_path, limits=RuleLimits(max_rule_files=0)) == ()
+    assert runtime_file_rule_contexts(workspace=tmp_path, limits=RuleLimits(max_total_rule_bytes=-1)) == ()
 
 
 def test_unreadable_rule_file_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -313,11 +311,11 @@ def test_rulebook_caps_files_content_and_metadata(tmp_path: Path) -> None:
     other = tmp_path / "single"
     _write(
         other / ".voidcode" / "rules" / "long.md",
-        _rule_document(name="long", body="x" * (MAX_RULEBOOK_CONTENT_CHARS + 100), description="d" * 400),
+        _rule_document(name="long", body="x" * (DEFAULT_RULE_LIMITS.max_rulebook_content_chars + 100), description="d" * 400),
     )
     entry = build_rule_catalog(other).entries[0]
-    assert entry.content == "x" * MAX_RULEBOOK_CONTENT_CHARS
-    assert len(entry.metadata.description) == MAX_RULEBOOK_METADATA_CHARS
+    assert entry.content == "x" * DEFAULT_RULE_LIMITS.max_rulebook_content_chars
+    assert len(entry.metadata.description) == DEFAULT_RULE_LIMITS.max_rulebook_metadata_chars
 
 
 def test_rulebook_prompt_context_is_verbatim_and_capped(tmp_path: Path) -> None:
@@ -346,8 +344,8 @@ def test_rulebook_prompt_context_is_verbatim_and_capped(tmp_path: Path) -> None:
         "path": (root / "style.md").as_posix(),
     }
 
-    huge = RuleCatalog((RuleCatalogEntry(metadata=style, content="z" * (MAX_RULEBOOK_PROMPT_CHARS * 2)),))
-    assert len(rulebook_prompt_context(huge)) == MAX_RULEBOOK_PROMPT_CHARS
+    huge = RuleCatalog((RuleCatalogEntry(metadata=style, content="z" * (DEFAULT_RULE_LIMITS.max_rulebook_prompt_chars * 2)),))
+    assert len(rulebook_prompt_context(huge)) == DEFAULT_RULE_LIMITS.max_rulebook_prompt_chars
     assert rulebook_prompt_context(RuleCatalog(())) == ""
 
 

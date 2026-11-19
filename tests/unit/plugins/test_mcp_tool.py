@@ -224,3 +224,30 @@ def test_mcp_failure_diagnosis_renders_ordered_and_partial(tmp_path: Path):
     ordered = composite_ordered_text(result.output)
     assert "explanation" in ordered and "MCP image item 1" in ordered
     assert "reported an error" in result.error
+
+
+def test_oversize_structured_content_fails_loudly_with_sizes(tmp_path: Path):
+    from voidcode.sdk.json_values import json_wire_object
+    from voidcode.sdk.views import MAX_VIEW_DATA_BYTES
+
+    # Multibyte content sized to straddle the byte budget: silent truncation would
+    # drop a split character instead of failing.
+    big = {"blob": "é" * 40_000}
+    actual = len(json.dumps(json_wire_object(big), ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    assert actual > MAX_VIEW_DATA_BYTES
+    services = Services()
+    tool = McpTool(manager=Manager(McpToolCallResult(content=[{"type": "text", "text": "note"}], structured_content=big, is_error=False)))
+    result = tool.invoke(
+        ToolCall("mcp", {"server": "demo", "tool": "example"}),
+        context=ToolContext(workspace=tmp_path, session_id="s", run_id="r", invocation_id="i", revision_id="v", actor="model"),
+        services=services,  # type: ignore[arg-type]
+    )
+    assert result.status == "error"
+    assert isinstance(result.output, CompositeOutput)
+    assert result.output.bounds.partial is True
+    assert result.error == (
+        f"MCP content projection failed: MCP structured content preview exceeds {MAX_VIEW_DATA_BYTES} bytes (actual size {actual} bytes)"
+    )
+    assert result.body.as_payload()["projection_error"].startswith("MCP structured content preview exceeds")
+    artifact = result.body.as_payload()["result_artifact"]
+    assert json.loads(services.artifacts[artifact["sha256"]])["structured_content"] == big

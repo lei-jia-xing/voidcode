@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any, Protocol, cast
+from typing import Any, ClassVar, cast
 
 import httpx2
 from anthropic import Anthropic
@@ -30,12 +30,21 @@ from voidcode.sdk.tools import ToolCall
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     OwnedResource,
+    Transport,
+    TransportError,
     abort_signal_cancelled,
+    build_usage,
+    cancelled_events,
+    fallback_execution_error,
     iter_stream_with_timeout,
+    map_done_reason,
+    merge_usage,
     normalize_tool_call_id,
+    open_event_stream,
     parse_tool_arguments,
     resolve_extra_request_headers,
     safe_tool_name,
+    strip_base_url,
     usage_int,
 )
 from .config import AnthropicProviderConfig
@@ -61,16 +70,6 @@ _OUTPUT_CAP_WHEN_UNKNOWN = 64000
 _PLACEHOLDER_API_KEY = "voidcode-no-api-key"
 
 
-class AnthropicTransport(Protocol):
-    def request(self, payload: dict[str, object], *, timeout_seconds: float) -> object: ...
-
-
-@dataclass(frozen=True, slots=True)
-class AnthropicTransportError(Exception):
-    payload: dict[str, object]
-    message: str = "provider request failed"
-
-
 class AnthropicMessagesTransport:
     """HTTP transport for the Anthropic Messages API."""
 
@@ -85,7 +84,7 @@ class AnthropicMessagesTransport:
         bearer_token: str | None = None,
         http_client: httpx2.Client | None = None,
     ) -> None:
-        self.base_url = _normalize_base_url(base_url)
+        self.base_url = AnthropicWireCodec.normalize_base_url(base_url)
         self.api_key = api_key
         self.version = version.strip() or _DEFAULT_ANTHROPIC_VERSION
         self.beta_headers = tuple(dict.fromkeys(value.strip() for value in beta_headers if value.strip()))
@@ -163,75 +162,57 @@ class AnthropicMessagesTransport:
         try:
             result = self._sdk().messages.create(**cast(Any, payload), timeout=timeout_seconds)
         except AnthropicAPIError as exc:
-            raise AnthropicTransportError(self._api_error_payload(exc)) from exc
+            raise TransportError(self._api_error_payload(exc)) from exc
         return result
 
 
-def _normalize_base_url(base_url: str | None) -> str:
-    value = (base_url or _DEFAULT_ANTHROPIC_BASE_URL).strip().rstrip("/") or _DEFAULT_ANTHROPIC_BASE_URL
-    # The official SDK appends its own ``/v1`` path segment, so a configured
-    # host must not carry one or the request path doubles the version.
-    return re.sub(r"/v1$", "", value, flags=re.IGNORECASE) or _DEFAULT_ANTHROPIC_BASE_URL
+class AnthropicWireCodec:
+    """Anthropic wire knowledge: usage fields, done tokens, base-URL rules."""
 
+    DONE_REASONS: ClassVar[dict[str, ProviderDoneReason]] = {
+        "end_turn": "stop",
+        "stop_sequence": "stop",
+        "stop": "stop",
+        "tool_use": "tool_calls",
+        "max_tokens": "length",
+        "length": "length",
+        "refusal": "content_filter",
+        "error": "error",
+        "model_context_window_exceeded": "error",
+    }
 
-def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
-    raw = payload.get("usage")
-    if not isinstance(raw, Mapping):
-        return None
-    uncached_input = usage_int(raw.get("input_tokens"))
-    output_tokens = usage_int(raw.get("output_tokens"))
-    cache_read = usage_int(raw.get("cache_read_input_tokens"))
-    cache_write = usage_int(raw.get("cache_creation_input_tokens"))
-    if uncached_input is None and output_tokens is None and cache_read is None and cache_write is None:
-        return None
-    # Anthropic's own ``input_tokens`` is uncached-only, so it is normalized here to
-    # the inclusive prompt total every other wire already reports
-    # (``ProviderTokenUsage.input_tokens``); ``cache_creation_input_tokens`` stays a
-    # separate additive bucket.
-    input_tokens = uncached_input + cache_read if uncached_input is not None and cache_read is not None else None
-    return ProviderTokenUsage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read,
-        cache_write_tokens=cache_write,
-        uncached_input_tokens=uncached_input,
-    )
+    @staticmethod
+    def normalize_base_url(base_url: str | None) -> str:
+        value = strip_base_url(base_url, _DEFAULT_ANTHROPIC_BASE_URL)
+        # The official SDK appends its own ``/v1`` path segment, so a configured
+        # host must not carry one or the request path doubles the version.
+        return re.sub(r"/v1$", "", value, flags=re.IGNORECASE) or _DEFAULT_ANTHROPIC_BASE_URL
 
+    @staticmethod
+    def usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
+        raw = payload.get("usage")
+        if not isinstance(raw, Mapping):
+            return None
+        uncached_input = usage_int(raw.get("input_tokens"))
+        output_tokens = usage_int(raw.get("output_tokens"))
+        cache_read = usage_int(raw.get("cache_read_input_tokens"))
+        cache_write = usage_int(raw.get("cache_creation_input_tokens"))
+        # Anthropic's own ``input_tokens`` is uncached-only, so it is normalized here to
+        # the inclusive prompt total every other wire already reports
+        # (``ProviderTokenUsage.input_tokens``); ``cache_creation_input_tokens`` stays a
+        # separate additive bucket.
+        input_tokens = uncached_input + cache_read if uncached_input is not None and cache_read is not None else None
+        return build_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            uncached_input_tokens=uncached_input,
+        )
 
-def _done_reason(value: object) -> ProviderDoneReason:
-    if not isinstance(value, str):
-        return "unknown"
-    value = value.strip().lower()
-    if value in {"end_turn", "stop_sequence", "stop"}:
-        return "stop"
-    if value == "tool_use":
-        return "tool_calls"
-    if value in {"max_tokens", "length"}:
-        return "length"
-    if value in {"refusal"}:
-        return "content_filter"
-    if value in {"error", "model_context_window_exceeded"}:
-        return "error"
-    return "unknown"
-
-
-def _merge_usage(previous: ProviderTokenUsage | None, current: ProviderTokenUsage | None) -> ProviderTokenUsage | None:
-    if previous is None:
-        return current
-    if current is None:
-        return previous
-    uncached = current.uncached_input_tokens if current.uncached_input_tokens is not None else previous.uncached_input_tokens
-    cache_read = current.cache_read_tokens if current.cache_read_tokens is not None else previous.cache_read_tokens
-    input_tokens = uncached + cache_read if uncached is not None and cache_read is not None else None
-    output_tokens = current.output_tokens if current.output_tokens is not None else previous.output_tokens
-    cache_write = current.cache_write_tokens if current.cache_write_tokens is not None else previous.cache_write_tokens
-    return ProviderTokenUsage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read,
-        cache_write_tokens=cache_write,
-        uncached_input_tokens=uncached,
-    )
+    @staticmethod
+    def done_reason(value: object) -> ProviderDoneReason:
+        return map_done_reason(value, AnthropicWireCodec.DONE_REASONS)
 
 
 def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
@@ -264,7 +245,7 @@ class _ToolAccumulator:
 class AnthropicMessagesProvider:
     name: str = "anthropic"
     config: AnthropicProviderConfig | None = None
-    transport: AnthropicTransport | None = None
+    transport: Transport | None = None
     auth_header: str | None = None
     # Headers this gateway requires on every request it serves. They reach the wire
     # through the SDK's ``extra_headers`` argument, which the transport passes to
@@ -273,7 +254,7 @@ class AnthropicMessagesProvider:
     # One transport -- and therefore one SDK client and HTTP connection pool --
     # per provider, reused across every turn. Building it per request leaked a
     # pool per turn. First-use initialization is serialized.
-    _owned_transport: OwnedResource[AnthropicTransport] = field(default_factory=OwnedResource, compare=False, repr=False)
+    _owned_transport: OwnedResource[Transport] = field(default_factory=OwnedResource, compare=False, repr=False)
 
     def provider_config(self) -> AnthropicProviderConfig | None:
         return self.config
@@ -287,7 +268,7 @@ class AnthropicMessagesProvider:
     def close(self) -> None:
         self._owned_transport.close()
 
-    def _transport(self) -> AnthropicTransport:
+    def _transport(self) -> Transport:
         if self.transport is not None:
             return self.transport
         owned = self._owned_transport
@@ -504,8 +485,6 @@ class AnthropicMessagesProvider:
 
     @staticmethod
     def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: str) -> ProviderExecutionError:
-        if isinstance(exc, ProviderExecutionError):
-            return exc
         if isinstance(exc, AnthropicAPIError):
             return provider_execution_error_from_payload(
                 provider_name=provider_name,
@@ -513,21 +492,14 @@ class AnthropicMessagesProvider:
                 payload=AnthropicMessagesTransport._api_error_payload(exc),
                 source=source,
             )
-        if isinstance(exc, AnthropicTransportError):
+        if isinstance(exc, TransportError):
             return provider_execution_error_from_payload(provider_name=provider_name, model_name=model_name, payload=exc.payload, source=source)
-        known_network_failure = isinstance(exc, (httpx2.TransportError, AnthropicAPITimeoutError, AnthropicAPIConnectionError))
-        return ProviderExecutionError(
-            kind="provider_error",
+        return fallback_execution_error(
+            exc,
             provider_name=provider_name,
             model_name=model_name,
-            message="provider request failed",
-            retryable=known_network_failure,
-            fallback_allowed=True,
-            details={
-                "source": source,
-                "exception_type": type(exc).__name__,
-                **({"network_failure": True} if known_network_failure else {}),
-            },
+            source=source,
+            network_error=isinstance(exc, (httpx2.TransportError, AnthropicAPITimeoutError, AnthropicAPIConnectionError)),
         )
 
     @staticmethod
@@ -568,7 +540,7 @@ class AnthropicMessagesProvider:
             payload = self._payload(request, stream=False)
             response = self._response_payload(self._transport().request(payload, timeout_seconds=self._timeout()))
             if response.get("type") == "error" or response.get("error") is not None:
-                raise AnthropicTransportError(response)
+                raise TransportError(response)
             stop_reason = response.get("stop_reason")
             # Missing/empty reasons close the model turn as unknown; only this
             # turn is known to have ended, not the user turn or session.
@@ -584,7 +556,7 @@ class AnthropicMessagesProvider:
                 for call in calls
             )
             metadata = _response_metadata(response)
-            done_reason = _done_reason(stop_reason)
+            done_reason = AnthropicWireCodec.done_reason(stop_reason)
             if done_reason == "unknown" and finish_reason_reported:
                 # The token is reported but unmapped; preserve it for core diagnostics.
                 metadata["finish_reason_raw"] = stop_reason
@@ -604,7 +576,7 @@ class AnthropicMessagesProvider:
                 tool_calls=calls,
                 output=text,
                 reasoning=reasoning,
-                usage=_usage(response),
+                usage=AnthropicWireCodec.usage(response),
                 done_reason=done_reason,
                 finish_reason_reported=finish_reason_reported,
                 metadata=metadata,
@@ -618,17 +590,12 @@ class AnthropicMessagesProvider:
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         provider_name = request.provider_name or self.name
         model_name = request.model_name or "unknown"
-        if request.abort_signal is not None and request.abort_signal.cancelled:
-            yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
-            yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+        if abort_signal_cancelled(request):
+            yield from cancelled_events()
             return
         try:
             payload = self._payload(request, stream=True)
-            raw_stream = self._transport().request(payload, timeout_seconds=self._timeout())
-            if isinstance(raw_stream, BaseException):
-                raise raw_stream
-            if not isinstance(raw_stream, Iterator):
-                raise ValueError("provider stream transport did not return an iterator")
+            raw_stream = open_event_stream(self._transport(), payload, timeout_seconds=self._timeout())
             latest_usage: ProviderTokenUsage | None = None
             metadata: dict[str, object] = {}
             accumulators: dict[int, _ToolAccumulator] = {}
@@ -645,13 +612,12 @@ class AnthropicMessagesProvider:
                 first_event_timeout_seconds=DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
                 aborted=lambda: abort_signal_cancelled(request),
             ):
-                if request.abort_signal is not None and request.abort_signal.cancelled:
-                    yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
-                    yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+                if abort_signal_cancelled(request):
+                    yield from cancelled_events()
                     return
                 chunk = self._response_payload(raw_chunk)
                 if chunk.get("type") == "error" or chunk.get("error") is not None:
-                    raise AnthropicTransportError(chunk)
+                    raise TransportError(chunk)
                 event_type = chunk.get("type")
                 if event_type in {"content_block_start", "content_block_delta"}:
                     index = chunk.get("index")
@@ -661,7 +627,7 @@ class AnthropicMessagesProvider:
                     message = chunk.get("message")
                     if isinstance(message, Mapping):
                         metadata.update(_response_metadata(message))
-                        latest_usage = _merge_usage(latest_usage, _usage(message))
+                        latest_usage = merge_usage(latest_usage, AnthropicWireCodec.usage(message))
                 elif event_type == "content_block_start":
                     if index in accumulators or index in thinking_blocks:
                         raise ValueError("provider stream repeated a tool or thinking block index")
@@ -716,7 +682,7 @@ class AnthropicMessagesProvider:
                     delta = chunk.get("delta")
                     if isinstance(delta, Mapping) and isinstance(delta.get("stop_reason"), str):
                         stop_reason = delta["stop_reason"]
-                    latest_usage = _merge_usage(latest_usage, _usage(chunk))
+                    latest_usage = merge_usage(latest_usage, AnthropicWireCodec.usage(chunk))
                 elif event_type == "message_stop":
                     message_stopped = True
                     break
@@ -760,7 +726,7 @@ class AnthropicMessagesProvider:
                 for index, fragments in thinking_fragments.items():
                     thinking_blocks[index]["thinking"] = "".join(fragments)
                 metadata["thinking_blocks"] = [block for _, block in sorted(thinking_blocks.items())]
-            done_reason = _done_reason(stop_reason)
+            done_reason = AnthropicWireCodec.done_reason(stop_reason)
             if done_reason == "unknown" and isinstance(stop_reason, str) and stop_reason.strip():
                 # Preserve reported but unmapped values for core diagnostics.
                 metadata["finish_reason_raw"] = stop_reason
@@ -784,7 +750,7 @@ class AnthropicMessagesProvider:
             raise mapped from exc
 
 
-__all__ = ["AnthropicMessagesProvider", "AnthropicMessagesTransport", "AnthropicTransport", "AnthropicTransportError"]
+__all__ = ["AnthropicMessagesProvider", "AnthropicMessagesTransport"]
 
 
 def _thinking_payload(payload: dict[str, object], *, request: ProviderTurnRequest, rule: ThinkingRule) -> None:

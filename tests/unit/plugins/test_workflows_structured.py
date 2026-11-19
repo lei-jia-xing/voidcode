@@ -10,11 +10,11 @@ import pytest
 
 from tests.fixtures.fake_services import FakeServices
 from voidcode.capabilities.agent_queries import AgentDefinition
+from voidcode.plugins.workflows import workflows_plugin
 from voidcode.plugins.workflows.workflows_plugin import (
     WorkflowContext,
     WorkflowNode,
     WorkflowRun,
-    WorkflowState,
     _digest,
     _FinishNode,
     _ParkNode,
@@ -44,13 +44,14 @@ def _seed(services: FakeServices, **overrides: Any) -> str:
         "workflow": "review",
         "source_path": "flows/review.py",
         "source_sha256": "a" * 64,
-        "source_artifact": "b" * 64,
         "task": "review this",
         "input_sha256": "c" * 64,
     }
     base.update(overrides)
     run = WorkflowRun(**base)  # type: ignore[arg-type]
-    services.seed_state(WorkflowState.from_payload(None).with_run(run).to_payload(), version=1)
+    _store = workflows_plugin._store(services)
+    _state, _version = _store.load()
+    _store.save(_state.with_run(run), _version)
     return run.run_id
 
 
@@ -84,7 +85,7 @@ def _driver(services: FakeServices, run_id: str) -> tuple[WorkflowContext, ToolC
 
 
 def _node_of(services: FakeServices, run_id: str, key: str) -> WorkflowNode:
-    state = WorkflowState.from_payload(services.get_state("session")[0])
+    state = workflows_plugin._store(services).load()[0]
     node = state.runs[run_id].node(key)
     assert node is not None
     return node
@@ -103,7 +104,7 @@ def test_structured_node_returns_validated_data() -> None:
     assert services.spawn_calls[0]["result_schema"] is not None
     node = _node_of(services, run_id, "a")
     assert node.result_schema is not None and dict(node.result_schema) == _SCHEMA
-    assert node.data is not None and dict(node.data) == {"files": ["a"], "ok": True}
+    assert node.data is not None and node.to_payload()["data"] == {"files": ["a"], "ok": True}
     assert node.parse_error is None
 
 
@@ -263,7 +264,6 @@ def test_legacy_node_payload_parses_with_unknown_structured() -> None:
             "child_session_id": "child-1",
             "run_id": "run-1",
             "effective_input_sha256": "d" * 64,
-            "prompt_sha256": "e" * 64,
             "output": "plain",
             "output_sha256": None,
             "output_bytes": None,

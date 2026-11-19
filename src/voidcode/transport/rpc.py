@@ -16,7 +16,12 @@ from voidcode.core.engine import Core
 from voidcode.sdk.client import ArtifactPageWire, CancelReceipt, RunResult, SessionRow
 from voidcode.sdk.commands import CommandCatalog, CommandInputSnapshot, CommandResult
 from voidcode.sdk.provider import ImageAttachment
-from voidcode.sdk.rpc import (
+from voidcode.sdk.services import SessionUsageReport
+from voidcode.sdk.transcript import ContextHistoryWire, TranscriptPageWire, encode_context_history, encode_transcript_page
+from voidcode.sdk.views import ViewsSnapshot
+
+from . import models as m
+from .models import (
     RPC_EVENT_WINDOW,
     RPC_MAX_MESSAGE_BYTES,
     RPC_MAX_PENDING,
@@ -26,14 +31,13 @@ from voidcode.sdk.rpc import (
     RpcModel,
     RpcRequest,
 )
-from voidcode.sdk.services import SessionUsageReport
-from voidcode.sdk.transcript import ContextHistoryWire, TranscriptPageWire, encode_context_history, encode_transcript_page
-from voidcode.sdk.views import ViewsSnapshot
-
-from . import models as m
-from .projection import FOLLOW_POLL_SECONDS, FOLLOW_TAIL_LIMIT, core_error_status, event_payload, safe_projection_error, session_payload
+from .projection import FOLLOW_TAIL_LIMIT, core_error_status, event_payload, safe_projection_error, session_payload
 
 logger = logging.getLogger(__name__)
+
+#: Idle wake cadence for follow subscriptions: closed/cancel recheck only. Commits
+#: notify immediately; this timer never drives data (and backstops missed wakes).
+_FOLLOW_WAIT_TIMEOUT = 5.0
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,7 @@ METHODS: dict[str, RpcMethod] = {
             max_steps=p.max_steps,
             root_action_budget=p.root_action_budget,
             images=tuple(ImageAttachment.from_payload(image.model_dump(exclude_none=True)) for image in p.images),
+            interaction=p.interaction,
         ).as_payload(),
     ),
     "session.resume": RpcMethod(
@@ -77,6 +82,7 @@ METHODS: dict[str, RpcMethod] = {
             max_steps=p.max_steps,
             extend_root_actions=p.extend_root_actions,
             root_action_grant_id=p.root_action_grant_id,
+            interaction=p.interaction,
         ).as_payload(),
     ),
     "command.input": RpcMethod(
@@ -93,6 +99,16 @@ METHODS: dict[str, RpcMethod] = {
         m.ConfirmRequest,
         CommandResult,
         lambda c, p: c.confirm_action(p.session_id, p.request_id, p.decision, expected_revision=p.expected_revision).as_payload(),
+    ),
+    "ask.answer": RpcMethod(
+        m.AskAnswerRequest,
+        RunResult,
+        lambda c, p: c.answer_ask(p.session_id, p.request_id, p.values, expected_revision=p.expected_revision).as_payload(),
+    ),
+    "ask.cancel": RpcMethod(
+        m.AskCancelRequest,
+        RunResult,
+        lambda c, p: c.cancel_ask(p.session_id, p.request_id, expected_revision=p.expected_revision).as_payload(),
     ),
     "session.views": RpcMethod(m.SessionParams, ViewsSnapshot, lambda c, p: c.plugin_views(p.session_id).as_payload()),
     "session.drain": RpcMethod(
@@ -341,6 +357,7 @@ class RpcConnection:
         assert isinstance(tip, int)
         first = True
         window = self.windows[params.subscription_id]
+        generation = self.core.commit_generation
         try:
             await ready.wait()
             while not self.closed:
@@ -394,7 +411,7 @@ class RpcConnection:
                 if len(selected) == len(chunk) and len(chunk) < limit:
                     if not params.follow:
                         return
-                    await asyncio.sleep(FOLLOW_POLL_SECONDS)
+                    generation = await asyncio.to_thread(self.core.wait_for_commit, generation, _FOLLOW_WAIT_TIMEOUT)
                 else:
                     # Yield so the sender can flush bounded replay pages.
                     await asyncio.sleep(0)

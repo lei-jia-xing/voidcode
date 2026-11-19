@@ -9,30 +9,27 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
-from voidcode.plugins.todo import create_plugin
+from voidcode.plugins.todo import create_plugin, todo_plugin
 from voidcode.plugins.todo.todo_plugin import (
     DEFAULT_TODO_REMINDER_MAX_PER_CYCLE,
     SCHEMA_VERSION,
     TODO_MID_RUN_KIND,
+    TODO_MID_RUN_MAX_PER_CYCLE,
     TODO_MID_RUN_MUTATION_THRESHOLD,
     TODO_REMINDER_KIND,
+    ReminderPolicy,
     TodoClearCommand,
-    TodoMidRunState,
     TodoRemindersConfig,
-    TodoReminderState,
     TodoState,
     TodoStatusCommand,
     TodoTool,
-    decide_todo_mid_run_nudge,
-    decide_todo_reminder,
+    decide_reminder,
     incomplete_todo_phases,
     parse_todo_config,
-    render_provider_state,
+    reminder_text,
+    render_phases,
     todo_context,
-    todo_mid_run_nudge_text,
     todo_observer,
-    todo_reminder_text,
-    todo_summary,
 )
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.hooks import FactPage, InvocationFinishedFact, RunFinishedFact, RunRequestedFact
@@ -71,6 +68,19 @@ def _invoke(services: FakeServices, tmp_path: Path, arguments: Mapping[str, obje
     return TodoTool().invoke(_call(arguments), context=_context(tmp_path), services=services)
 
 
+def _policy(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "attempts": 0,
+        "awaiting_progress": False,
+        "progress_watermark": 0,
+        "mutations": 0,
+        "mutation_baseline": 0,
+        "cycle_run_id": None,
+    }
+    base.update(overrides)
+    return base
+
+
 def _raw_state(phases: object, *, revision: int) -> dict[str, object]:
     """Build one stored v2 state document exactly as the plugin writes it."""
     parsed = tuple(
@@ -81,10 +91,9 @@ def _raw_state(phases: object, *, revision: int) -> dict[str, object]:
         "schema_version": 2,
         "revision": revision,
         "phases": [{"name": phase["name"], "tasks": [dict(task) for task in phase["tasks"]]} for phase in parsed],
-        "summary": todo_summary(parsed),
         "reminders": {
-            "todo": {"attempts": 0, "awaiting_progress": False, "progress_watermark": 0, "cycle_run_id": None},
-            "todo_mid_run": {"attempts": 0, "mutations": 0, "mutation_baseline": 0, "cycle_run_id": None},
+            "todo": _policy(),
+            "todo_mid_run": _policy(),
             "invocations": 0,
             "cursor_sequence": 0,
             "cycle_run_id": None,
@@ -92,9 +101,15 @@ def _raw_state(phases: object, *, revision: int) -> dict[str, object]:
     }
 
 
+def _loaded(payload: Mapping[str, object] | None) -> TodoState:
+    services = FakeServices()
+    if payload is not None:
+        services.seed_state(payload)
+    return todo_plugin._store(services).load()[0]
+
+
 def _stored(services: FakeServices) -> TodoState:
-    raw, _version = services.get_state("session")
-    return TodoState.from_payload(raw)
+    return todo_plugin._store(services).load()[0]
 
 
 def _phases(services: FakeServices) -> list[dict[str, object]]:
@@ -108,7 +123,8 @@ def test_state_round_trip_and_summary_projection() -> None:
     state = TodoState(revision=3, phases=({"name": "Build", "tasks": [{"content": "compile", "status": "in_progress"}]},))
     payload = state.to_payload()
     assert payload["schema_version"] == SCHEMA_VERSION
-    assert payload["summary"] == {
+    assert "summary" not in payload
+    assert state.summary == {
         "total": 1,
         "pending": 0,
         "in_progress": 1,
@@ -118,7 +134,20 @@ def test_state_round_trip_and_summary_projection() -> None:
         "active": 1,
     }
     assert TodoState.from_payload(payload) == state
-    assert TodoState.from_payload(None) == TodoState()
+    assert _loaded(None) == TodoState()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {**_raw_state((), revision=0), "schema_version": 1},
+        {**_raw_state((), revision=0), "revision": -1},
+        {**_raw_state((), revision=0), "revision": False},
+    ],
+)
+def test_state_parse_rejects_invalid_documents(payload: Mapping[str, object]) -> None:
+    with pytest.raises(ValueError):
+        TodoState.from_payload(payload)
 
 
 @pytest.mark.parametrize(
@@ -126,15 +155,11 @@ def test_state_round_trip_and_summary_projection() -> None:
     [
         {**_raw_state((), revision=0), "unknown": 1},
         {key: value for key, value in _raw_state((), revision=0).items() if key != "phases"},
-        {**_raw_state((), revision=0), "schema_version": 1},
-        {**_raw_state((), revision=0), "revision": -1},
-        {**_raw_state((), revision=0), "revision": False},
-        {**_raw_state((), revision=0), "summary": {"total": 5}},
     ],
 )
-def test_state_parse_rejects_invalid_documents(payload: Mapping[str, object]) -> None:
+def test_store_rejects_unknown_and_missing_top_level_keys(payload: Mapping[str, object]) -> None:
     with pytest.raises(ValueError):
-        TodoState.from_payload(payload)
+        _loaded(payload)
 
 
 @pytest.mark.parametrize(
@@ -383,7 +408,7 @@ def test_context_hides_completed_and_abandoned_tasks(tmp_path: Path) -> None:
     services = FakeServices()
     _invoke(services, tmp_path, {"op": "init", "items": ["one", "two"]})
     _invoke(services, tmp_path, {"op": "done", "task": "one"})
-    text = render_provider_state(_stored(services).phases)
+    text = render_phases(_stored(services).phases, format="provider")
     assert text is not None
     assert "- [completed] one" not in text
     assert "- [in_progress] two" in text
@@ -393,22 +418,26 @@ def test_context_hides_completed_and_abandoned_tasks(tmp_path: Path) -> None:
 
 
 def test_mid_run_nudge_threshold_budget_and_reset() -> None:
-    silent = decide_todo_mid_run_nudge(
-        state=TodoMidRunState(cycle_run_id="run-1"),
+    silent = decide_reminder(
+        policy=ReminderPolicy(kind="todo_mid_run", cycle_run_id="run-1"),
+        max_per_cycle=TODO_MID_RUN_MAX_PER_CYCLE,
         run_id="run-1",
         mutations=TODO_MID_RUN_MUTATION_THRESHOLD - 1,
         incomplete_count=3,
     )
     assert silent.injects is False
 
-    first = decide_todo_mid_run_nudge(
-        state=TodoMidRunState(cycle_run_id="run-1"),
+    first = decide_reminder(
+        policy=ReminderPolicy(kind="todo_mid_run", cycle_run_id="run-1"),
+        max_per_cycle=TODO_MID_RUN_MAX_PER_CYCLE,
         run_id="run-1",
         mutations=TODO_MID_RUN_MUTATION_THRESHOLD,
         incomplete_count=3,
     )
     assert first.injects is True
-    assert first.state == TodoMidRunState(attempts=1, mutations=0, mutation_baseline=TODO_MID_RUN_MUTATION_THRESHOLD, cycle_run_id="run-1")
+    assert first.state == ReminderPolicy(
+        kind="todo_mid_run", attempts=1, mutations=0, mutation_baseline=TODO_MID_RUN_MUTATION_THRESHOLD, cycle_run_id="run-1"
+    )
     assert first.text == (
         '<system-reminder reason="todo_stale">\n'
         "12 mutating tool call(s) have run since the last todo update, and 3 todo item(s) are still open.\n"
@@ -417,24 +446,27 @@ def test_mid_run_nudge_threshold_budget_and_reset() -> None:
         "</system-reminder>"
     )
 
-    second = decide_todo_mid_run_nudge(
-        state=first.state,
+    second = decide_reminder(
+        policy=first.state,
+        max_per_cycle=TODO_MID_RUN_MAX_PER_CYCLE,
         run_id="run-1",
         mutations=TODO_MID_RUN_MUTATION_THRESHOLD * 2,
         incomplete_count=3,
     )
     assert second.injects is True
     assert second.state.attempts == 2
-    capped = decide_todo_mid_run_nudge(
-        state=second.state,
+    capped = decide_reminder(
+        policy=second.state,
+        max_per_cycle=TODO_MID_RUN_MAX_PER_CYCLE,
         run_id="run-1",
         mutations=TODO_MID_RUN_MUTATION_THRESHOLD * 3,
         incomplete_count=3,
     )
     assert capped.injects is False
     assert capped.state.attempts == 2
-    fresh_cycle = decide_todo_mid_run_nudge(
-        state=second.state,
+    fresh_cycle = decide_reminder(
+        policy=second.state,
+        max_per_cycle=TODO_MID_RUN_MAX_PER_CYCLE,
         run_id="run-2",
         mutations=TODO_MID_RUN_MUTATION_THRESHOLD,
         incomplete_count=3,
@@ -444,22 +476,22 @@ def test_mid_run_nudge_threshold_budget_and_reset() -> None:
 
 
 def test_mid_run_nudge_text_matches_legacy_shape() -> None:
-    assert todo_mid_run_nudge_text(mutation_count=12, incomplete_count=1, attempt=2, max_attempts=2).startswith(
+    assert reminder_text("todo_mid_run", mutation_count=12, incomplete_count=1, attempt=2, max_attempts=2).startswith(
         '<system-reminder reason="todo_stale">'
     )
 
 
 def test_completion_reminder_budget_watermark_and_cycle() -> None:
     phases = (("Tasks", ("one", "two")),)
-    first = decide_todo_reminder(
+    first = decide_reminder(
         max_per_cycle=DEFAULT_TODO_REMINDER_MAX_PER_CYCLE,
-        state=TodoReminderState(cycle_run_id="run-1"),
+        policy=ReminderPolicy(kind="todo", cycle_run_id="run-1"),
         run_id="run-1",
         incomplete_phases=phases,
         tool_result_count=5,
     )
     assert first.injects is True
-    assert first.state == TodoReminderState(attempts=1, awaiting_progress=True, progress_watermark=5, cycle_run_id="run-1")
+    assert first.state == ReminderPolicy(kind="todo", attempts=1, awaiting_progress=True, progress_watermark=5, cycle_run_id="run-1")
     assert first.text == (
         "<system-reminder>\n"
         "You stopped with 2 incomplete todo item(s):\n"
@@ -472,18 +504,18 @@ def test_completion_reminder_budget_watermark_and_cycle() -> None:
         "</system-reminder>"
     )
 
-    stalled = decide_todo_reminder(
+    stalled = decide_reminder(
         max_per_cycle=DEFAULT_TODO_REMINDER_MAX_PER_CYCLE,
-        state=first.state,
+        policy=first.state,
         run_id="run-1",
         incomplete_phases=phases,
         tool_result_count=5,
     )
     assert stalled.injects is False
 
-    progressed = decide_todo_reminder(
+    progressed = decide_reminder(
         max_per_cycle=DEFAULT_TODO_REMINDER_MAX_PER_CYCLE,
-        state=first.state,
+        policy=first.state,
         run_id="run-1",
         incomplete_phases=phases,
         tool_result_count=9,
@@ -492,20 +524,20 @@ def test_completion_reminder_budget_watermark_and_cycle() -> None:
     assert progressed.state.attempts == 2
     assert progressed.state.progress_watermark == 9
 
-    finished = decide_todo_reminder(
+    finished = decide_reminder(
         max_per_cycle=DEFAULT_TODO_REMINDER_MAX_PER_CYCLE,
-        state=progressed.state,
+        policy=progressed.state,
         run_id="run-1",
         incomplete_phases=(),
         tool_result_count=12,
     )
     assert finished.injects is False
-    assert finished.state == TodoReminderState(cycle_run_id="run-1")
+    assert finished.state == ReminderPolicy(kind="todo", cycle_run_id="run-1")
 
-    exhausted_state = TodoReminderState(attempts=DEFAULT_TODO_REMINDER_MAX_PER_CYCLE, cycle_run_id="run-1")
-    exhausted = decide_todo_reminder(
+    exhausted_state = ReminderPolicy(kind="todo", attempts=DEFAULT_TODO_REMINDER_MAX_PER_CYCLE, cycle_run_id="run-1")
+    exhausted = decide_reminder(
         max_per_cycle=DEFAULT_TODO_REMINDER_MAX_PER_CYCLE,
-        state=exhausted_state,
+        policy=exhausted_state,
         run_id="run-1",
         incomplete_phases=phases,
         tool_result_count=20,
@@ -524,7 +556,7 @@ def test_completion_reminder_incomplete_projection() -> None:
         == phases
     )
 
-    assert todo_reminder_text((("A", ("x",)),), attempt=1, max_attempts=3).startswith(
+    assert reminder_text("todo", incomplete_phases=(("A", ("x",)),), attempt=1, max_attempts=3).startswith(
         "<system-reminder>\nYou stopped with 1 incomplete todo item(s):"
     )
 
@@ -624,7 +656,9 @@ def test_observer_mid_run_nudge_fires_once_at_the_threshold(tmp_path: Path) -> N
     assert payload["attempt"] == 1
     assert payload["mutation_count"] == TODO_MID_RUN_MUTATION_THRESHOLD
     assert payload["incomplete_count"] == 2
-    assert payload["text"] == todo_mid_run_nudge_text(mutation_count=TODO_MID_RUN_MUTATION_THRESHOLD, incomplete_count=2, attempt=1, max_attempts=2)
+    assert payload["text"] == reminder_text(
+        "todo_mid_run", mutation_count=TODO_MID_RUN_MUTATION_THRESHOLD, incomplete_count=2, attempt=1, max_attempts=2
+    )
     assert key == "todo:todo_mid_run:run-1:1"
     assert services.staged_events[-1][0] == "reminder_injected"
     assert services.staged_events[-1][1]["reminder_type"] == TODO_MID_RUN_KIND
@@ -673,7 +707,7 @@ def test_observer_completion_reminder_is_a_user_role_continuation(tmp_path: Path
     assert payload["attempt"] == 1
     # Only pending/in_progress count as incomplete; the blocked task is listed by neither.
     assert payload["incomplete_count"] == 1
-    assert payload["text"] == todo_reminder_text((("Tasks", ("one",)),), attempt=1, max_attempts=3)
+    assert payload["text"] == reminder_text("todo", incomplete_phases=(("Tasks", ("one",)),), attempt=1, max_attempts=3)
     assert key == "todo:todo:run-1:1"
 
     # Same watermark + awaiting progress: a second finish without new work stays silent.
@@ -806,14 +840,6 @@ def test_unsent_reminder_does_not_consume_cycle_allowance(tmp_path: Path, status
     assert not services.staged_continuations
     todo_observer(_run_fact(), _context(tmp_path), services)
     assert services.staged_continuations[-1][0]["attempt"] == 1
-
-
-@pytest.mark.parametrize("value", [True, 1.0])
-def test_summary_counts_reject_coercible_values(value: object) -> None:
-    payload = _raw_state(({"name": "Tasks", "tasks": [{"content": "one", "status": "pending"}]},), revision=0)
-    payload["summary"]["total"] = value
-    with pytest.raises(ValueError, match="summary does not match"):
-        TodoState.from_payload(payload)
 
 
 def test_todo_schema_version_requires_integer() -> None:

@@ -10,7 +10,7 @@ from voidcode.core.plugins import LeaseContext, PluginRuntime
 from voidcode.core.storage.store import EventDraft, SqliteStore
 from voidcode.sdk.codec import decode_tool_result, encode_tool_result
 from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, UsageFact
-from voidcode.sdk.tools import ReadObservation, ResourceChange, TextOutput, ToolSuccess
+from voidcode.sdk.tools import Change, ReadObservation, TextOutput, ToolSuccess
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def test_pages_advance_over_private_events_and_keep_batch_observations_together(
                 "has_retry_guidance": False,
                 "reads": [],
                 "resource_paths": [],
-                "changes": [asdict(ResourceChange("a")), asdict(ResourceChange("b"))],
+                "changes": [asdict(Change("a")), asdict(Change("b"))],
             },
         ),
         event("private.last"),
@@ -96,14 +96,14 @@ def test_unknown_usage_is_visible_after_cursor_passes_inflight_intent(runtime):
 
 
 def test_resource_changes_roundtrip_and_failures_cannot_claim_successful_changes():
-    result = ToolSuccess("substitute", TextOutput("done"), coverage=(ReadObservation("a", "a" * 64),), changes=(ResourceChange("b", "move", "a"),))
+    result = ToolSuccess("substitute", TextOutput("done"), coverage=(ReadObservation("a", "a" * 64),), changes=(Change("b", "move", "a"),))
     assert decode_tool_result(encode_tool_result(result)) == result
     payload = encode_tool_result(result)
     payload.update(status="error", error="failed")
     with pytest.raises(ValueError):
         decode_tool_result(payload)
     with pytest.raises(ValueError):
-        ResourceChange("b", "move")
+        Change("b", "move")
 
 
 def test_projection_and_fact_commit_or_rollback_together(runtime):

@@ -9,9 +9,13 @@ round-trip. Errors arrive as ``CoreClientError`` with the transport's
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from voidcode import __version__
+from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.client import (
     ArtifactPage,
     CancelReceipt,
@@ -19,37 +23,50 @@ from voidcode.sdk.client import (
     CommandResult,
     ContinuationResult,
     CoreClientError,
+    ErrorFrame,
+    EventFrame,
+    HeadFrame,
+    HealthModel,
     HealthStatus,
     ResumeSpec,
     RunResult,
     RunSpec,
+    SessionClient,
     SessionFrame,
     SessionRow,
     SessionUsageReport,
     StreamCancellation,
+    StreamEvent,
     ViewsSnapshot,
 )
 from voidcode.sdk.commands import CommandInputSnapshot
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage
 from voidcode.transport.projection import (
-    FOLLOW_POLL_SECONDS,
     FOLLOW_TAIL_LIMIT,
+    LAUNCH_PROTOCOL_VERSION,
     core_error_status,
-    event_payload,
-    health_payload,
     model_payload,
     safe_projection_error,
-    session_payload,
     validated_session_id,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from voidcode.core.engine import Core
+    from voidcode.core.engine import Core, CoreResult
+    from voidcode.core.storage.store import SessionRecord, StoredEvent
+
+#: Idle wake cadence for follow streams: cancel/close recheck only. Commits
+#: notify immediately; this timer never drives data (and backstops missed wakes).
+_FOLLOW_WAIT_TIMEOUT = 5.0
+
+#: Private pool for commit waits only: asyncio.run shuts down the default
+#: executor on stream teardown, so waits must not park there (a cancelled
+#: wait lingers invisibly here instead of stalling thread join).
+_COMMIT_WAIT_POOL = ThreadPoolExecutor(thread_name_prefix="voidcode-commit-wait")
 
 
-class CoreLocalClient:
+class CoreLocalClient(SessionClient):
     """Direct client for a core owned by this process."""
 
     def __init__(self, core: Core, *, workspace: Path) -> None:
@@ -77,17 +94,68 @@ class CoreLocalClient:
         except ValueError as exc:
             raise CoreClientError(str(exc), status_code=400, code="invalid_params") from None
 
+    @staticmethod
+    def _session_row(record: SessionRecord) -> SessionRow:
+        return SessionRow(
+            session_id=record.session_id,
+            workspace=record.workspace,
+            status=record.status,
+            active_revision_id=record.active_revision_id,
+            run_id=record.run_id,
+            turn=record.turn,
+            last_event_sequence=record.last_event_sequence,
+        )
+
+    @staticmethod
+    def _run_result(result: CoreResult) -> RunResult:
+        return RunResult(
+            session_id=result.session_id,
+            run_id=result.run_id,
+            revision_id=result.revision_id,
+            status=cast(Literal["completed", "waiting", "failed", "interrupted", "queued"], result.status),
+            output=result.output,
+            error=result.error,
+            pending_approval=result.pending_approval,
+            pending_ask=result.pending_ask,
+            stop_cause=result.stop_cause,
+            budget_exhaustion=result.budget_exhaustion,
+        )
+
+    @staticmethod
+    def _stream_event(session_id: str, event: StoredEvent) -> StreamEvent:
+        return StreamEvent(
+            session_id=session_id,
+            sequence=event.sequence,
+            type=event.event_type,
+            run_id=event.run_id,
+            revision_id=event.revision_id,
+            source=event.source,
+            actor=event.actor,
+            payload=event.payload,
+            transcript=transcript_entry(event),
+        )
+
     def health(self) -> HealthStatus:
         config = self._core.config
-        return HealthStatus.from_payload(
-            health_payload(
-                revision_id=self._core.revision_id,
-                stage="serving",
-                workspace=self._workspace,
-                generation=1,
-                upgrade_id=None,
-                model=model_payload(raw=config.model, configured_effort=config.reasoning_effort),
-            )
+        model = model_payload(raw=config.model, configured_effort=config.reasoning_effort)
+        return HealthStatus(
+            status="ok",
+            stage="serving",
+            pid=os.getpid(),
+            workspace=self._workspace,
+            revision_id=self._core.revision_id,
+            launch_protocol=LAUNCH_PROTOCOL_VERSION,
+            core_version=__version__,
+            web_bundle=None,
+            generation=1,
+            active_upgrade=None,
+            model=HealthModel(
+                raw=cast(str | None, model["raw"]),
+                provider=cast(str | None, model["provider"]),
+                model=cast(str | None, model["model"]),
+                reasoning_effort=cast(str | None, model["reasoning_effort"]),
+                reasoning_levels=tuple(cast(list[str], model["reasoning_levels"])),
+            ),
         )
 
     def command_catalog(self) -> CommandCatalog:
@@ -101,7 +169,7 @@ class CoreLocalClient:
             records = self._core.sessions(limit=limit)
         except Exception as exc:
             raise self._refusal(exc) from None
-        return [SessionRow.from_payload(session_payload(record)) for record in records]
+        return [self._session_row(record) for record in records]
 
     def create_session(self, session_id: str | None = None) -> SessionRow:
         if session_id is not None:
@@ -112,7 +180,7 @@ class CoreLocalClient:
             record = self._core.create_session(session_id)
         except Exception as exc:
             raise self._refusal(exc) from None
-        return SessionRow.from_payload(session_payload(record))
+        return self._session_row(record)
 
     def get_session(self, session_id: str) -> SessionRow:
         self._validated(session_id)
@@ -120,7 +188,7 @@ class CoreLocalClient:
             record = self._core.session(session_id)
         except Exception as exc:
             raise self._refusal(exc) from None
-        return SessionRow.from_payload(session_payload(record))
+        return self._session_row(record)
 
     def show(self, session_id: str, events: bool = False) -> Mapping[str, Any]:
         self._validated(session_id)
@@ -141,7 +209,7 @@ class CoreLocalClient:
             )
         except Exception as exc:
             raise self._refusal(exc) from None
-        return RunResult.from_payload(result.as_payload())
+        return self._run_result(result)
 
     def resume(
         self,
@@ -161,7 +229,7 @@ class CoreLocalClient:
             )
         except Exception as exc:
             raise self._refusal(exc) from None
-        return RunResult.from_payload(result.as_payload())
+        return self._run_result(result)
 
     def _validate_command_request(self, session_id: str, name: str, expected_revision: str) -> None:
         self._validated(session_id)
@@ -264,8 +332,6 @@ class CoreLocalClient:
         follow: bool = True,
         cancel: StreamCancellation | None = None,
     ) -> AsyncGenerator[SessionFrame]:
-        from voidcode.sdk.client import ErrorFrame, EventFrame, HeadFrame, StreamEvent
-
         self._validated(session_id)
         if cancel is not None:
             task = asyncio.current_task()
@@ -278,26 +344,28 @@ class CoreLocalClient:
                 raise self._refusal(exc) from None
             initial: list[StreamEvent] = []
             cursor = after_sequence
+            generation = self._core.commit_generation
             while True:
                 chunk = await asyncio.to_thread(self._core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
                 if not chunk:
                     break
                 for event in chunk:
                     try:
-                        initial.append(StreamEvent.from_payload(event_payload(session_id, event)))
+                        initial.append(self._stream_event(session_id, event))
                     except Exception as exc:
                         yield ErrorFrame(session_id=session_id, error=safe_projection_error(event, exc))
                         return
                 cursor = chunk[-1].sequence
                 if len(chunk) < FOLLOW_TAIL_LIMIT:
                     break
-            yield HeadFrame(session=SessionRow.from_payload(session_payload(record)), events=tuple(initial))
+            yield HeadFrame(session=self._session_row(record), events=tuple(initial))
             if not follow:
                 return
+            loop = asyncio.get_running_loop()
             while True:
                 if cancel is not None and cancel.is_closed:
                     return
-                await asyncio.sleep(FOLLOW_POLL_SECONDS)
+                generation = await loop.run_in_executor(_COMMIT_WAIT_POOL, self._core.wait_for_commit, generation, _FOLLOW_WAIT_TIMEOUT)
                 while True:
                     try:
                         pending = await asyncio.to_thread(self._core.events_after, session_id, after_sequence=cursor, limit=FOLLOW_TAIL_LIMIT)
@@ -308,7 +376,7 @@ class CoreLocalClient:
                         break
                     for event in pending:
                         try:
-                            frame = EventFrame(session_id=session_id, event=StreamEvent.from_payload(event_payload(session_id, event)))
+                            frame = EventFrame(session_id=session_id, event=self._stream_event(session_id, event))
                         except Exception as exc:
                             yield ErrorFrame(session_id=session_id, error=safe_projection_error(event, exc))
                             return

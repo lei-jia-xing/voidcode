@@ -15,7 +15,7 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import MAX_CHILD_LABEL_BYTES
-from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
+from voidcode.sdk.child_schema import CHILD_PROMPT_MAX_BYTES
 
 PLUGIN_ID = "reload-fixture"
 

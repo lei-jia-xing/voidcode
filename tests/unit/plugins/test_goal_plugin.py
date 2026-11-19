@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -10,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
-from voidcode.plugins.goal import create_plugin
+from voidcode.plugins.goal import create_plugin, goal_plugin
 from voidcode.plugins.goal.goal_plugin import (
     ActiveWindow,
     CreateGoalTool,
@@ -34,6 +33,13 @@ from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact, UsageFac
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.provider import ProviderTokenUsage
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
+
+
+def _loaded(payload: dict[str, object] | None) -> GoalState | None:
+    services = FakeServices()
+    if payload is not None:
+        services.seed_state(payload)
+    return goal_plugin._store(services).load()[0]
 
 
 def _make_context(workspace: Path, *, actor: str = "client", logical_turn: str = "turn-1") -> ToolContext:
@@ -81,8 +87,6 @@ def test_models_state_transitions() -> None:
         updated_at=now,
         token_budget=5000,
         tokens_used=1200,
-        input_tokens=800,
-        output_tokens=400,
         time_used_seconds=42.5,
         cost_usd=0.05,
         active_windows=(ActiveWindow(start_sequence=0, end_sequence=5), ActiveWindow(start_sequence=10)),
@@ -107,7 +111,7 @@ def test_models_state_transitions() -> None:
     bad_dict = dict(serialized)
     bad_dict["unknown_hack"] = 123
     with pytest.raises(ValueError, match="unknown extra fields"):
-        GoalState.from_dict(bad_dict)
+        _loaded(bad_dict)
 
     # Unreported metrics remain None without fake 0 defaults
     unreported_state = GoalState(
@@ -118,8 +122,6 @@ def test_models_state_transitions() -> None:
         updated_at=now,
         token_budget=None,
         tokens_used=None,
-        input_tokens=None,
-        output_tokens=None,
         time_used_seconds=None,
         cost_usd=None,
     )
@@ -167,27 +169,10 @@ def test_spill_and_read_long_objective(tmp_path: Path) -> None:
     )
 
     # Read back complete via services.read_artifact
-    read_back = read_full_objective(tmp_path, state, services=services)
+    read_back = read_full_objective(state, services=services)
     assert read_back == long_text
 
-    # Historical workspace attachment fallback (reading persisted older states)
-    legacy_ref = ".voidcode/attachments/old-uuid/goal-objective.md"
-    legacy_file = tmp_path / legacy_ref
-    legacy_file.parent.mkdir(parents=True, exist_ok=True)
-    legacy_file.write_text(long_text, encoding="utf-8")
-    legacy_digest = hashlib.sha256(long_text.encode("utf-8")).hexdigest()
-    legacy_state = GoalState(
-        goal_id="g_legacy",
-        status="active",
-        objective="Read old file",
-        created_at=now,
-        updated_at=now,
-        objective_file_ref=legacy_ref,
-        objective_file_sha256=legacy_digest,
-    )
-    assert read_full_objective(tmp_path, legacy_state, services=services) == long_text
-
-    # Containment check: path escaping workspace raises ValueError
+    # Non-artifact references are rejected: artifact:// only, no workspace files.
     bad_state = GoalState(
         goal_id="g1",
         status="active",
@@ -196,18 +181,28 @@ def test_spill_and_read_long_objective(tmp_path: Path) -> None:
         updated_at=now,
         objective_file_ref="../escaped.txt",
     )
-    with pytest.raises(ValueError, match="escapes workspace"):
-        read_full_objective(tmp_path, bad_state, services=services)
+    with pytest.raises(ValueError, match="must be an artifact URI"):
+        read_full_objective(bad_state, services=services)
 
-    # Tampered legacy file detection
-    legacy_file.write_text(long_text + " Tampered addition!", encoding="utf-8")
+    # Reference/hash mismatch is rejected.
+    assert digest is not None
+    mismatched = GoalState(
+        goal_id="g1",
+        status="active",
+        objective=prompt,
+        created_at=now,
+        updated_at=now,
+        objective_file_ref=ref,
+        objective_file_sha256="0" * 64,
+    )
+    with pytest.raises(ValueError, match="reference/hash mismatch"):
+        read_full_objective(mismatched, services=services)
+
+    # Tampered artifact detection.
+    assert ref is not None
+    services.artifacts[ref[len("artifact://") :]] += b" Tampered addition!"
     with pytest.raises(ValueError, match="tampered or corrupted"):
-        read_full_objective(tmp_path, legacy_state, services=services)
-
-    # Missing legacy file detection
-    legacy_file.unlink()
-    with pytest.raises(FileNotFoundError, match="missing"):
-        read_full_objective(tmp_path, legacy_state, services=services)
+        read_full_objective(state, services=services)
 
 
 # --- 3. Tools (Get, Create, Update) ---
@@ -636,8 +631,6 @@ def test_observer_usage_accounting_and_windows(tmp_path: Path) -> None:
     goal_observer(fact_active, ctx, services)
     st, _ = services.get_state("session")
     assert st["tokens_used"] == 300
-    assert st["input_tokens"] == 200
-    assert st["output_tokens"] == 100
 
     # Pause goal at dispatch sequence 20
     services.through_sequence = 20
@@ -721,10 +714,6 @@ def test_observer_unreported_metrics_never_become_zero(tmp_path: Path) -> None:
     goal_observer(fact_unknown, ctx, services)
     st, _ = services.get_state("session")
     assert st["tokens_used"] is None
-    assert st["input_tokens"] is None
-    assert st["output_tokens"] is None
-    assert st["cache_read_tokens"] is None
-    assert st["uncached_input_tokens"] is None
     assert st["has_unknown_usage"] is True
     assert st["time_used_seconds"] == 1.5  # real measured time, not 0
     assert st["cost_usd"] is None  # unknown cost stays unknown
@@ -746,8 +735,6 @@ def test_observer_unreported_metrics_never_become_zero(tmp_path: Path) -> None:
     goal_observer(fact_known, ctx, services)
     st2, _ = services.get_state("session")
     assert st2["tokens_used"] is None
-    assert st2["input_tokens"] is None
-    assert st2["output_tokens"] is None
     assert st2["time_used_seconds"] == 3.5  # 1.5 + 2.0
     assert st2["cost_usd"] is None  # unknown cost never becomes a partial total
 
@@ -787,8 +774,6 @@ def test_observer_unknown_cost_does_not_poison_tokens(tmp_path: Path) -> None:
     goal_observer(fact, ctx, services)
     st, _ = services.get_state("session")
     assert st["tokens_used"] == 15
-    assert st["input_tokens"] == 10
-    assert st["output_tokens"] == 5
     assert st["cost_usd"] is None
     assert st["has_unknown_usage"] is False
 
@@ -877,6 +862,17 @@ def test_state_parse_rejects_coercion_and_missing_keys() -> None:
     del missing_window["window_allowance"]
     with pytest.raises(ValueError, match="window_allowance"):
         GoalState.from_dict(missing_window)
+
+    non_artifact = dict(base)
+    non_artifact["objective_file_ref"] = ".voidcode/attachments/old/goal-objective.md"
+    non_artifact["objective_file_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="artifact:// URI"):
+        GoalState.from_dict(non_artifact)
+
+    uncorrelated = dict(base)
+    uncorrelated["objective_file_ref"] = "artifact://" + "0" * 64
+    with pytest.raises(ValueError, match="both be set or both be null"):
+        GoalState.from_dict(uncorrelated)
 
     null_is_kept = dict(base)
     null_is_kept["tokens_used"] = None
@@ -1019,14 +1015,12 @@ def test_consumer_edit_flow_preserves_identity_and_usage(tmp_path: Path) -> None
     created_at = set_res.data["goal"]["created_at"]
 
     # Seed the counters an already-charged goal would carry after its first turn.
-    state = GoalState.from_dict(services.get_state("session")[0])
+    state, _ = goal_plugin._store(services).load()
     assert state is not None
     charged = replace(
         state,
         tokens_used=1500,
         window_tokens_used=1500,
-        input_tokens=1200,
-        output_tokens=300,
         time_used_seconds=12.5,
         cost_usd=0.02,
     )
@@ -1097,10 +1091,6 @@ def test_prepare_deactivation_pauses_live_goal_at_the_authentic_tip() -> None:
         tokens_used=1234,
         window_tokens_used=234,
         window_allowance=3766,
-        input_tokens=1000,
-        output_tokens=234,
-        cache_read_tokens=10,
-        uncached_input_tokens=990,
         has_unknown_usage=True,
         time_used_seconds=42.5,
         cost_usd=0.75,
@@ -1285,8 +1275,6 @@ def test_usage_window_updates_share_truthful_lifetime_metrics(
     assert state is not None
     known_total = usage is not None and usage.output_tokens is not None
     assert state["tokens_used"] == (25 if known_total else None)
-    assert state["input_tokens"] == (20 if usage is not None else None)
-    assert state["output_tokens"] == (5 if known_total else None)
     assert state["has_unknown_usage"] is (not known_total)
     assert state["time_used_seconds"] == 1.5
     assert state["cost_usd"] == 0.1

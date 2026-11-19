@@ -12,14 +12,13 @@ import base64
 import json
 from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Protocol, runtime_checkable
+from typing import Annotated, Any, Final, Literal, Protocol, runtime_checkable
 
 from pydantic import Base64Bytes, BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from .commands import CommandCatalog, CommandInputSnapshot, CommandResult
 from .hooks import StopCause
 from .json_values import json_wire_object, own_json_object
-from .limits import CLIENT_PROMPT_MAX_BYTES
 from .provider import ImageAttachment
 from .services import ArtifactPage, ArtifactReference, BudgetExhaustion, ContinuationResult, SessionUsageReport
 from .transcript import ContextHistory, TranscriptEntry, TranscriptEntryWire, TranscriptPage
@@ -195,8 +194,9 @@ class CoreClientError(ValueError):
         return CoreClientError(envelope.error, status_code=status_code, code=envelope.code)
 
 
-# Shared client ingress bounds: exactly the HTTP transport's. The byte bound
-# is the neutral sdk/limits value the core ingress guard also enforces.
+# Shared client ingress bounds: exactly the HTTP transport's. The core ingress
+# guard enforces the same byte bound.
+CLIENT_PROMPT_MAX_BYTES: Final[int] = 64 * 1024
 MAX_PROMPT_CHARS = 65536
 MAX_PROMPT_BYTES = CLIENT_PROMPT_MAX_BYTES
 

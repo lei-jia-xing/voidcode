@@ -47,14 +47,14 @@ def test_foreign_file_rejection_and_byte_preservation(tmp_path: Path) -> None:
     assert not (tmp_path / "empty.sqlite3-wal").exists()
     assert not (tmp_path / "empty.sqlite3-shm").exists()
 
-    # 2. Foreign SQLite database without kernel_identity table
+    # 2. Foreign SQLite database without voidcode PRAGMA identity
     foreign_db = tmp_path / "foreign.sqlite3"
     with sqlite3.connect(foreign_db) as conn:
         conn.execute("CREATE TABLE other_table (id INTEGER PRIMARY KEY, note TEXT)")
         conn.execute("INSERT INTO other_table VALUES (1, 'user data')")
         conn.commit()
     foreign_sha_before = _file_sha256(foreign_db)
-    with pytest.raises(ForeignDatabaseError, match="missing identity"):
+    with pytest.raises(ForeignDatabaseError, match="unsupported identity"):
         SqliteStore(foreign_db)
     assert _file_sha256(foreign_db) == foreign_sha_before
 
@@ -66,11 +66,12 @@ def test_foreign_file_rejection_and_byte_preservation(tmp_path: Path) -> None:
         SqliteStore(corrupt_file)
     assert _file_sha256(corrupt_file) == corrupt_sha_before
 
-    # 4. SQLite database with invalid kernel_identity magic or schema version
+    # 4. SQLite database with wrong PRAGMA identity
     bad_identity_db = tmp_path / "bad_identity.sqlite3"
     with sqlite3.connect(bad_identity_db) as conn:
-        conn.execute("CREATE TABLE kernel_identity (id INTEGER PRIMARY KEY, magic TEXT, schema_version INTEGER)")
-        conn.execute("INSERT INTO kernel_identity VALUES (1, 'wrong-magic', 1)")
+        conn.execute("CREATE TABLE other_table (id INTEGER PRIMARY KEY, note TEXT)")
+        conn.execute("PRAGMA application_id = 1234")
+        conn.execute("PRAGMA user_version = 1")
         conn.commit()
     bad_id_sha_before = _file_sha256(bad_identity_db)
     with pytest.raises(ForeignDatabaseError, match="unsupported identity"):
@@ -82,42 +83,6 @@ def test_foreign_file_rejection_and_byte_preservation(tmp_path: Path) -> None:
     directory_path.mkdir()
     with pytest.raises(ForeignDatabaseError, match="not a regular file"):
         SqliteStore(directory_path)
-
-
-def test_supported_identity_missing_root_columns_is_rejected_unchanged(tmp_path: Path) -> None:
-    """A same-version database that lacks the root action-chain columns is refused byte-unchanged.
-
-    Root action-chain truth (continuations.root_id, root_budgets) is part of the
-    schema version's contract: a file claiming this identity but missing those
-    columns must be rejected by the read-only preflight, never migrated.
-    """
-    # 1. root_budgets without its reservation counter.
-    budget_db = tmp_path / "root_budgets_missing.sqlite3"
-    store = SqliteStore(budget_db)
-    store.close()
-    with sqlite3.connect(budget_db) as conn:
-        conn.execute("ALTER TABLE root_budgets RENAME TO root_budgets_full")
-        conn.execute(
-            "CREATE TABLE root_budgets (root_id TEXT PRIMARY KEY, budget INTEGER NOT NULL, "
-            "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL) STRICT"
-        )
-        conn.commit()
-    budget_sha_before = _file_sha256(budget_db)
-    with pytest.raises(ForeignDatabaseError, match="root_budgets schema"):
-        SqliteStore(budget_db)
-    assert _file_sha256(budget_db) == budget_sha_before
-
-    # 2. continuations without its root chain reference.
-    chain_db = tmp_path / "continuations_missing.sqlite3"
-    store = SqliteStore(chain_db)
-    store.close()
-    with sqlite3.connect(chain_db) as conn:
-        conn.execute("ALTER TABLE continuations DROP COLUMN root_id")
-        conn.commit()
-    chain_sha_before = _file_sha256(chain_db)
-    with pytest.raises(ForeignDatabaseError, match="continuations schema"):
-        SqliteStore(chain_db)
-    assert _file_sha256(chain_db) == chain_sha_before
 
 
 def test_revision_opaque_ids_and_immutability(tmp_path: Path) -> None:

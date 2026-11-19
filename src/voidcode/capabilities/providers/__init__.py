@@ -9,11 +9,13 @@ from contextlib import ExitStack
 
 from voidcode.sdk.plugin import Plugin
 
-from .dispatch import build_registered_providers
-from .panels import ModelCommand, ModelView, ProviderFacts, ProvidersCommand, ProvidersView
-
 
 def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
+    # Deferred: importing dispatch pulls every native wire + vendor SDK (~2.6s);
+    # config-only callers (resolve_providers, catalog reads) must not pay it.
+    from .dispatch import build_registered_providers
+    from .panels import ModelCommand, ModelView, ProviderFacts, ProvidersCommand, ProvidersView
+
     providers = build_registered_providers(dict(config or {}))
     facts = ProviderFacts.from_config(config)
 

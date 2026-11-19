@@ -21,9 +21,8 @@ from .json_values import own_json_object
 from .tools import AttachmentOutput, CompositeOutput, TextOutput
 
 if TYPE_CHECKING:
-    from .history import HistoryPage
     from .provider import ProviderAbortSignal
-    from .services import ArtifactPage, ChildSessionSnapshot, ProcessOutput
+    from .services import ArtifactPage, ChildSessionSnapshot, HistoryPageView, ProcessOutput
     from .tools import ToolDefinition
 
 
@@ -330,7 +329,7 @@ class ResourceReaderServices(Protocol):
         """The definition of ``name`` with this session's visibility applied."""
         ...
 
-    def read_session_history(self, session_id: str, *, after_sequence: int = 0, offset: int = 0, limit: int = 100) -> HistoryPage:
+    def read_session_history(self, session_id: str, *, after_sequence: int = 0, offset: int = 0, limit: int = 100) -> HistoryPageView:
         """Render one bounded Markdown transcript page for the bound session or an owned child."""
         ...
 

@@ -1,13 +1,8 @@
--- Core schema v6. The store verifies an existing database's identity BEFORE
--- setting pragmas or executing this DDL; foreign/legacy files are never changed.
--- This build reads exactly version 6; any other version is refused read-only. This file
--- is the whole schema: tables are added here together with the owner that uses them.
-
-CREATE TABLE kernel_identity (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    magic TEXT NOT NULL CHECK (magic = 'voidcode-kernel-v1'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 6)
-) STRICT;
+-- Core schema v6. Identity lives in the SQLite file header itself
+-- (PRAGMA application_id + user_version), checked on the single connection
+-- before any write pragma; foreign files are never changed.
+-- This build opens exactly version 6; anything else is refused.
+-- This file is the whole schema: tables are added here together with the owner that uses them.
 
 CREATE TABLE revisions (
     revision_id TEXT PRIMARY KEY,
@@ -51,7 +46,27 @@ CREATE TABLE session_events (
     actor TEXT NOT NULL,
     revision_id TEXT NOT NULL REFERENCES revisions (revision_id),
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    payload_bytes INTEGER NOT NULL,
     PRIMARY KEY (session_id, sequence)
+) STRICT;
+CREATE INDEX session_events_lookup_idx ON session_events (session_id, event_type, sequence);
+
+-- Indexable answer keys: one row per answered ask, written atomically with the
+-- ASK_ANSWERED event. The exactly-once answer guard reads here, never scans events.
+CREATE TABLE ask_answers (
+    session_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, request_id)
+) STRICT;
+
+-- Indexable continuation starts: one row per started continuation, written atomically
+-- with the CONTINUATION_STARTED event. Unstarted checks read here, never scan events.
+CREATE TABLE continuation_starts (
+    session_id TEXT NOT NULL,
+    continuation_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, continuation_id)
 ) STRICT;
 
 -- Checkpoints contain event references, not replacement transcript bodies.
@@ -63,8 +78,13 @@ CREATE TABLE checkpoints (
     run_id TEXT NOT NULL,
     last_event_sequence INTEGER NOT NULL CHECK (last_event_sequence >= 0),
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    root_id TEXT,
+    approval_sequence INTEGER,
+    ask_sequence INTEGER,
+    ask_request_id TEXT,
     updated_at INTEGER NOT NULL
 ) STRICT;
+CREATE INDEX checkpoints_session_info_idx ON checkpoints (session_id, run_id, approval_sequence, root_id);
 
 CREATE TABLE plugin_state (
     scope TEXT NOT NULL CHECK (scope IN ('session', 'workspace')),
@@ -98,6 +118,7 @@ CREATE TABLE continuations (
     owner TEXT NOT NULL,
     session_id TEXT NOT NULL REFERENCES sessions (session_id),
     source TEXT NOT NULL,
+    kind TEXT,
     run_id TEXT NOT NULL,
     revision_id TEXT NOT NULL REFERENCES revisions (revision_id),
     idempotency_key TEXT,
@@ -109,6 +130,27 @@ CREATE TABLE continuations (
     updated_at INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX continuations_claim_idx ON continuations (session_id, status, created_at);
+
+-- Plugin-owned background actions: their own table, never mixed into continuations.
+-- payload_json is the verbatim user action (write-once, never rewritten); the claim
+-- identity, captured tool-wait authority, and settle error each have their own column.
+CREATE TABLE background_actions (
+    action_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions (session_id),
+    revision_id TEXT NOT NULL REFERENCES revisions (revision_id),
+    idempotency_key TEXT,
+    root_id TEXT NOT NULL,
+    root_action_budget INTEGER,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'completed', 'failed', 'cancelled')),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    authority_json TEXT CHECK (authority_json IS NULL OR json_valid(authority_json)),
+    claim_json TEXT CHECK (claim_json IS NULL OR json_valid(claim_json)),
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX background_actions_claim_idx ON background_actions (status, created_at);
 
 -- One finite action budget per root action chain (a user run, or the first
 -- continuation of a chain). Reservations happen atomically with the dispatch
@@ -122,6 +164,16 @@ CREATE TABLE root_budgets (
     updated_at INTEGER NOT NULL
 ) STRICT;
 
+-- Consumed root-action budget grants: one row per grant id, written atomically with
+-- the budget extension it authorizes. Retries with the same id dedupe here instead
+-- of scanning session_events for the RUN_RESUMED record.
+CREATE TABLE root_grants (
+    grant_id TEXT PRIMARY KEY,
+    root_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+) STRICT;
+
 -- Durable, owner-scoped wakeups: a plugin schedules a future turn and the core claims it
 -- atomically with the authentic run it creates. There is no TTL/reaper: a claimed row is
 -- completed by the run's terminal path, and a crashed claim stays visible instead of replaying.
@@ -131,6 +183,8 @@ CREATE TABLE wakeups (
     workspace TEXT NOT NULL,
     session_id TEXT NOT NULL REFERENCES sessions (session_id),
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    root_id TEXT NOT NULL,
+    root_action_budget INTEGER,
     role TEXT NOT NULL DEFAULT 'system' CHECK (role IN ('system', 'user')),
     due_at INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'completed', 'failed', 'cancelled')),

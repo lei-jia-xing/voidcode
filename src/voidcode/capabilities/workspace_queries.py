@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.sdk.plugin import PluginQuery, PluginQueryCaller
-from voidcode.sdk.services import PluginServices, QueryContractError
+from voidcode.sdk.services import QueryContractError, ToolServices
 
 DOCUMENT_VERSION_QUERY = "workspace.document_version"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -55,7 +55,7 @@ class DocumentStateRequest(BaseModel):
 class _DocumentStateQuery:
     name: str = DOCUMENT_VERSION_QUERY
 
-    def ask(self, services: PluginServices, request: DocumentStateRequest) -> DocumentState | None:
+    def ask(self, services: ToolServices, request: DocumentStateRequest) -> DocumentState | None:
         value = services.query(self.name, request.model_dump())
         if value is None:
             return None

@@ -4,13 +4,61 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from voidcode.core.artifacts import MAX_PAGE_BYTES
 from voidcode.sdk.client import SessionFrameWire, SessionRow
-from voidcode.sdk.rpc import RpcModel
 from voidcode.sdk.services import ContinuationResult
 from voidcode.sdk.transcript import TranscriptEntryWire
+
+RPC_SUBPROTOCOL = "voidcode.rpc.v1"
+RPC_MAX_MESSAGE_BYTES = 4 * 1024 * 1024
+RPC_MAX_PENDING = 32
+RPC_MAX_SUBSCRIPTIONS = 16
+RPC_EVENT_WINDOW = 64
+RPC_QUEUE_MESSAGES = 64
+RPC_QUEUE_BYTES = 8 * 1024 * 1024
+
+
+class RpcModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class RpcRequest(RpcModel):
+    jsonrpc: Literal["2.0"]
+    method: str = Field(min_length=1, max_length=128)
+    params: dict[str, Any] | list[Any] = Field(default_factory=dict)
+    id: str | int | None = None
+
+
+class RpcError(RpcModel):
+    code: int
+    message: str
+    data: dict[str, Any] | None = None
+
+
+class RpcSuccess(RpcModel):
+    jsonrpc: Literal["2.0"]
+    id: str | int | None
+    result: Any
+
+
+class RpcFailure(RpcModel):
+    jsonrpc: Literal["2.0"]
+    id: str | int | None
+    error: RpcError
+
+
+class RpcNotification(RpcModel):
+    jsonrpc: Literal["2.0"]
+    method: str
+    params: dict[str, Any]
+
+
+#: The one session-id rule every ingress path shares: a non-empty token without
+#: ``/`` or NUL, bounded so it stays a map key and a log field, never a blob.
+SESSION_ID_PATTERN = r"^[^/\x00]+$"
+SESSION_ID_MAX_LENGTH = 128
 
 
 class EmptyParams(RpcModel):
@@ -22,7 +70,7 @@ class AuthenticateParams(RpcModel):
 
 
 class SessionParams(RpcModel):
-    session_id: str = Field(min_length=1, max_length=128, pattern=r"^[^/\x00]+$")
+    session_id: str = Field(min_length=1, max_length=SESSION_ID_MAX_LENGTH, pattern=SESSION_ID_PATTERN)
 
 
 class ArtifactReadParams(RpcModel):
@@ -36,7 +84,7 @@ class ListSessionsParams(RpcModel):
 
 
 class CreateSessionRequest(RpcModel):
-    session_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[^/\x00]+$")
+    session_id: str | None = Field(default=None, min_length=1, max_length=SESSION_ID_MAX_LENGTH, pattern=SESSION_ID_PATTERN)
 
 
 class ShowParams(SessionParams):
@@ -54,6 +102,7 @@ class RunRequest(SessionParams):
     max_steps: int | None = Field(default=None, ge=1)
     root_action_budget: int | None = Field(default=None, ge=0, le=9_223_372_036_854_775_807)
     images: list[ImageAttachmentPayload] = Field(default_factory=list)
+    interaction: Literal["interactive", "unattended"] | None = None
 
 
 class ResumeRequest(SessionParams):
@@ -62,6 +111,7 @@ class ResumeRequest(SessionParams):
     max_steps: int | None = Field(default=None, ge=1)
     extend_root_actions: int | None = Field(default=None, gt=0, le=9_223_372_036_854_775_807)
     root_action_grant_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[^\x00]+$")
+    interaction: Literal["interactive", "unattended"] | None = None
 
     @model_validator(mode="after")
     def paired_decision_and_grant(self) -> ResumeRequest:
@@ -88,6 +138,17 @@ class ConfirmRequest(SessionParams):
     request_id: str = Field(min_length=1, max_length=128)
     expected_revision: str = Field(min_length=1, max_length=128)
     decision: Literal["allow", "deny"]
+
+
+class AskAnswerRequest(SessionParams):
+    request_id: str = Field(min_length=1, max_length=128)
+    expected_revision: str = Field(min_length=1, max_length=128)
+    values: dict[str, Any]
+
+
+class AskCancelRequest(SessionParams):
+    request_id: str = Field(min_length=1, max_length=128)
+    expected_revision: str = Field(min_length=1, max_length=128)
 
 
 class DrainRequest(SessionParams):

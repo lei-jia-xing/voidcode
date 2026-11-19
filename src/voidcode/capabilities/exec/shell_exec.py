@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import ArtifactReference, PluginServices
+from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices
 from voidcode.sdk.tools import (
     EmptyOutput,
     OutputBounds,
@@ -125,7 +125,7 @@ def _shell_argv(command: str) -> list[str]:
     return ["/bin/sh", "-c", command]
 
 
-def _spill_stream(services: PluginServices, text: str) -> ArtifactReference:
+def _spill_stream(services: ArtifactServices, text: str) -> ArtifactReference:
     """Store all captured UTF-8 text, including an honestly empty stream."""
     return services.spill_artifact(text, media_type=_ARTIFACT_MIME)
 

@@ -9,10 +9,21 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import ConfirmedStop, OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import (
+    TOOL_OUTPUT_BYTES,
+    ConfirmedStop,
+    OutputBounds,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolFailure,
+    ToolResult,
+    ToolSuccess,
+)
 
+from ._common import MAX_RESULT_LIMIT
 from .gitignore import GitIgnoreMatcher
 
 DEFAULT_IGNORE_PATTERNS = frozenset(
@@ -38,9 +49,6 @@ DEFAULT_IGNORE_PATTERNS = frozenset(
 )
 
 LIMIT = 100
-#: Upper bound for an explicit ``limit`` so one call cannot materialize an
-#: unbounded match list.
-MAX_RESULT_LIMIT = 5000
 
 
 class GlobArgs(BaseModel):

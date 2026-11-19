@@ -42,6 +42,9 @@ class _Terminal:
     def drain_kitty_replies(self) -> tuple[()]:
         return ()
 
+    def resize_pending(self) -> bool:
+        return False
+
     def commit_rows(self, rows: list[str]) -> None:
         self.committed.extend(rows)
 
@@ -162,6 +165,7 @@ def test_session_switch_survives_a_late_old_stream_attach(remote) -> None:
             checkpoint_kind=None,
             checkpoint_payload=None,
         )
+        core.notify_commit()  # direct harness write: notify like the engine paths do
         deadline = time.monotonic() + 5
         while not any("after-switch" in row for row in terminal.committed) and time.monotonic() < deadline:
             time.sleep(0.01)

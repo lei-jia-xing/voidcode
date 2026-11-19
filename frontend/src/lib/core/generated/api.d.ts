@@ -13,25 +13,7 @@
  * Do not make direct changes to the file.
  */
 
-export interface paths {
-    "/api/health": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Handle Health */
-        get: operations["_handle_health_api_health_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-}
+export type paths = Record<string, never>;
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
@@ -92,6 +74,28 @@ export interface components {
             media_type?: string;
             /** Sha256 */
             sha256: string;
+        };
+        /** AskAnswerRequest */
+        AskAnswerRequest: {
+            /** Expected Revision */
+            expected_revision: string;
+            /** Request Id */
+            request_id: string;
+            /** Session Id */
+            session_id: string;
+            /** Values */
+            values: {
+                [key: string]: unknown;
+            };
+        };
+        /** AskCancelRequest */
+        AskCancelRequest: {
+            /** Expected Revision */
+            expected_revision: string;
+            /** Request Id */
+            request_id: string;
+            /** Session Id */
+            session_id: string;
         };
         /** AttachmentOutputWire */
         AttachmentOutputWire: {
@@ -723,6 +727,7 @@ export interface components {
             generation: number;
             /** Launch Protocol */
             launch_protocol: number;
+            /** @default null */
             model?: components["schemas"]["HealthModel"] | null;
             /** Pid */
             pid: number;
@@ -1121,6 +1126,11 @@ export interface components {
              */
             extend_root_actions?: number | null;
             /**
+             * Interaction
+             * @default null
+             */
+            interaction?: ("interactive" | "unattended") | null;
+            /**
              * Max Steps
              * @default null
              */
@@ -1133,80 +1143,15 @@ export interface components {
             /** Session Id */
             session_id: string;
         };
-        /** RpcError */
-        RpcError: {
-            /** Code */
-            code: number;
-            /**
-             * Data
-             * @default null
-             */
-            data?: {
-                [key: string]: unknown;
-            } | null;
-            /** Message */
-            message: string;
-        };
-        /** RpcFailure */
-        RpcFailure: {
-            error: components["schemas"]["RpcError"];
-            /** Id */
-            id: string | number | null;
-            /**
-             * Jsonrpc
-             * @constant
-             */
-            jsonrpc: "2.0";
-        };
-        /** RpcNotification */
-        RpcNotification: {
-            /**
-             * Jsonrpc
-             * @constant
-             */
-            jsonrpc: "2.0";
-            /** Method */
-            method: string;
-            /** Params */
-            params: {
-                [key: string]: unknown;
-            };
-        };
-        /** RpcRequest */
-        RpcRequest: {
-            /**
-             * Id
-             * @default null
-             */
-            id?: string | number | null;
-            /**
-             * Jsonrpc
-             * @constant
-             */
-            jsonrpc: "2.0";
-            /** Method */
-            method: string;
-            /** Params */
-            params?: {
-                [key: string]: unknown;
-            } | unknown[];
-        };
-        /** RpcSuccess */
-        RpcSuccess: {
-            /** Id */
-            id: string | number | null;
-            /**
-             * Jsonrpc
-             * @constant
-             */
-            jsonrpc: "2.0";
-            /** Result */
-            result: unknown;
-        };
         /** RunRequest */
         RunRequest: {
             /** Images */
             images?: components["schemas"]["ImageAttachmentPayload"][];
+            /**
+             * Interaction
+             * @default null
+             */
+            interaction?: ("interactive" | "unattended") | null;
             /**
              * Max Steps
              * @default null
@@ -1564,20 +1509,6 @@ export interface components {
             /** Tool Name */
             tool_name: string;
         };
-        /** ToolCallWire */
-        ToolCallWire: {
-            /** Arguments */
-            arguments: {
-                [key: string]: unknown;
-            };
-            /**
-             * Tool Call Id
-             * @default null
-             */
-            tool_call_id?: string | null;
-            /** Tool Name */
-            tool_name: string;
-        };
         /**
          * ToolDiagnostics
          * @description Runtime-wide diagnostic slot shared by every tool result.
@@ -1783,7 +1714,7 @@ export interface components {
         TranscriptToolWire: {
             /** Batch Sequence */
             batch_sequence: number;
-            call: components["schemas"]["ToolCallWire"];
+            call: components["schemas"]["ToolCall"];
             /** Deferred */
             deferred: boolean;
             /** @default null */
@@ -1891,33 +1822,14 @@ export interface components {
     pathItems: never;
 }
 export type $defs = Record<string, never>;
-export interface operations {
-    _handle_health_api_health_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HealthStatus"];
-                };
-            };
-        };
-    };
-}
+export type operations = Record<string, never>;
 
 /** Typed JSON-RPC methods from the same backend registry. */
 export interface RpcMethods {
   "action.confirm": { params: components["schemas"]["ConfirmRequest"]; result: components["schemas"]["CommandResult"] };
   "artifact.read": { params: components["schemas"]["ArtifactReadParams"]; result: components["schemas"]["ArtifactPageWire"] };
+  "ask.answer": { params: components["schemas"]["AskAnswerRequest"]; result: components["schemas"]["RunResult"] };
+  "ask.cancel": { params: components["schemas"]["AskCancelRequest"]; result: components["schemas"]["RunResult"] };
   "command.catalog": { params: components["schemas"]["EmptyParams"]; result: components["schemas"]["CommandCatalog"] };
   "command.input": { params: components["schemas"]["CommandInputRequest"]; result: components["schemas"]["CommandInputSnapshot"] };
   "command.invoke": { params: components["schemas"]["InvokeRequest"]; result: components["schemas"]["CommandResult"] };

@@ -15,9 +15,9 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import PluginServices, QueryContractError, QueryUnavailable
 from voidcode.sdk.tools import (
+    Change,
     ConfirmedStop,
     OutputBounds,
-    ResourceChange,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -306,7 +306,7 @@ class ApplyWorkspaceEditTool:
                 error=message,
                 output=TextOutput(message, bounds=OutputBounds(partial=True)),
                 body=ApplyWorkspaceEditResultBody(paths=tuple(applied_paths), files=tuple(file_results[: len(applied_paths)])),
-                changes=tuple(ResourceChange(path) for path in applied_paths),
+                changes=tuple(Change(path) for path in applied_paths),
                 execution=ConfirmedStop(cancellation_signalled=cancelled),
             )
 
@@ -314,7 +314,7 @@ class ApplyWorkspaceEditTool:
         return ToolSuccess(
             tool_name=self.definition.name,
             output=TextOutput(f"Applied {len(args.edits)} workspace edit(s)."),
-            changes=tuple(ResourceChange(path) for path in display_paths),
+            changes=tuple(Change(path) for path in display_paths),
             body=ApplyWorkspaceEditResultBody(
                 paths=display_paths,
                 files=tuple(file_results),

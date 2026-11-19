@@ -5,22 +5,25 @@ Self-contained: the only internal imports are sibling SDK modules.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
+from types import MappingProxyType
+from typing import Any, ClassVar, Final, Literal, Protocol, runtime_checkable
 
 from .icons import Icon
 from .invocation import ToolContext
-from .json_values import json_wire_object, own_json_object, own_json_value
-from .limits import (
-    DIAGNOSTIC_DEPTH as _MAX_DIAGNOSTIC_DEPTH,
-)
-from .limits import (
-    DIAGNOSTIC_ITEMS as _MAX_DIAGNOSTIC_ITEMS,
-)
+from .json_values import json_wire_object, own_json_object
 from .services import ArtifactReference, PluginServices
+
+DIAGNOSTIC_TEXT_CHARS: Final[int] = 4000
+DIAGNOSTIC_DEPTH: Final[int] = 8
+DIAGNOSTIC_ITEMS: Final[int] = 256
+TOOL_OUTPUT_BYTES: Final[int] = 50 * 1024
+_MAX_DIAGNOSTIC_DEPTH = DIAGNOSTIC_DEPTH
+_MAX_DIAGNOSTIC_ITEMS = DIAGNOSTIC_ITEMS
 
 type ToolDiagnosticsDetails = Mapping[str, object]
 type ToolReplayPolicy = Literal["safe", "never"]
@@ -67,7 +70,7 @@ UNCONFIRMED_STOP_CLAUSE = (
 )
 
 
-def _sanitize_diagnostic_value(value: object, *, depth: int = 0) -> object:
+def _freeze_diagnostic_value(value: object, *, depth: int = 0) -> object:
     if depth > _MAX_DIAGNOSTIC_DEPTH:
         raise ValueError("diagnostics details exceed maximum nesting depth")
     if isinstance(value, str):
@@ -75,19 +78,17 @@ def _sanitize_diagnostic_value(value: object, *, depth: int = 0) -> object:
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
-        import math
-
         if not math.isfinite(value):
             raise ValueError("diagnostics details must contain finite JSON numbers")
         return value
     if isinstance(value, Mapping):
         if len(value) > _MAX_DIAGNOSTIC_ITEMS:
             raise ValueError("diagnostics details contain too many entries")
-        return {str(item_key): _sanitize_diagnostic_value(item_value, depth=depth + 1) for item_key, item_value in value.items()}
+        return MappingProxyType({str(item_key): _freeze_diagnostic_value(item_value, depth=depth + 1) for item_key, item_value in value.items()})
     if isinstance(value, (list, tuple)):
         if len(value) > _MAX_DIAGNOSTIC_ITEMS:
             raise ValueError("diagnostics details contain too many items")
-        return [_sanitize_diagnostic_value(item, depth=depth + 1) for item in value]
+        return tuple(_freeze_diagnostic_value(item, depth=depth + 1) for item in value)
     raise ValueError(f"diagnostics details contain non-JSON value: {type(value).__name__}")
 
 
@@ -106,8 +107,8 @@ class ToolDiagnostics:
                 raise ValueError(f"diagnostics {name} must be a string or null")
         if not isinstance(self.details, Mapping):
             raise ValueError("diagnostics details must be an object")
-        sanitized = _sanitize_diagnostic_value(self.details)
-        object.__setattr__(self, "details", own_json_value(sanitized))
+        sanitized = _freeze_diagnostic_value(self.details)
+        object.__setattr__(self, "details", sanitized)
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {}
@@ -136,23 +137,70 @@ class ToolDiagnostics:
         return cls(details=details, **values)
 
 
+def required_str(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"field {field!r} must be a non-empty string")
+    return value
+
+
+def optional_str(value: object, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"field {field!r} must be a non-empty string or null")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
-class ResourceChange:
-    """A successful tool's actual resource change, attributed by the core at commit."""
+class Change:
+    """One filesystem change: observed by a helper or attributed to a tool result."""
 
     path: str
     operation: Literal["create", "update", "delete", "move"] = "update"
     old_path: str | None = None
+    content_hash: str | None = None
+    #: The write landed in sandbox scratch (tmpfs), not on host paths: surface in
+    #: output text/body only, never as a committed result change.
+    scratch: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.path, str) or not self.path:
-            raise ValueError("resource change requires a non-empty path")
+            raise ValueError("change requires a non-empty path")
         if self.operation not in {"create", "update", "delete", "move"}:
-            raise ValueError("invalid resource change operation")
+            raise ValueError("invalid change operation")
         if self.old_path is not None and (not isinstance(self.old_path, str) or not self.old_path):
             raise ValueError("old_path must be a non-empty string or None")
         if self.operation == "move" and not self.old_path:
-            raise ValueError("resource move requires old_path")
+            raise ValueError("change move requires old_path")
+        if self.content_hash is not None and (not isinstance(self.content_hash, str) or not self.content_hash):
+            raise ValueError("content_hash must be a non-empty string or None")
+        if type(self.scratch) is not bool:
+            raise ValueError("scratch must be a boolean")
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"path": self.path, "operation": self.operation}
+        if self.old_path is not None:
+            payload["old_path"] = self.old_path
+        if self.content_hash is not None:
+            payload["content_hash"] = self.content_hash
+        if self.scratch:
+            payload["scratch"] = True
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: object) -> Change:
+        if not isinstance(payload, dict):
+            raise ValueError("change must be an object")
+        unknown = sorted(set(payload) - {"path", "operation", "old_path", "content_hash", "scratch"})
+        if unknown:
+            raise ValueError("change contains unknown field(s): " + ", ".join(unknown))
+        return cls(
+            path=required_str(payload.get("path"), "path"),
+            operation=payload.get("operation", "update"),  # type: ignore[arg-type]
+            old_path=optional_str(payload.get("old_path"), "old_path"),
+            content_hash=optional_str(payload.get("content_hash"), "content_hash"),
+            scratch=bool(payload.get("scratch", False)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -508,7 +556,7 @@ class ToolSuccess[Body: ToolBody]:
     body: Body | None = None
     #: File versions this success made visible; empty for a result that observed no file.
     coverage: tuple[ReadObservation, ...] = ()
-    changes: tuple[ResourceChange, ...] = ()
+    changes: tuple[Change, ...] = ()
     steering_context: str | None = None
     result_reference: ArtifactReference | None = None
     status: ClassVar[Literal["ok"]] = "ok"
@@ -528,7 +576,7 @@ class ToolFailure[Body: ToolBody]:
     execution: ExecutionObservation | None = None
     timeout_seconds: int | None = None
     #: Files committed before this invocation failed or was cancelled.
-    changes: tuple[ResourceChange, ...] = ()
+    changes: tuple[Change, ...] = ()
     steering_context: str | None = None
     result_reference: ArtifactReference | None = None
     status: ClassVar[Literal["error"]] = "error"

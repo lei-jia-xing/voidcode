@@ -31,10 +31,10 @@ from voidcode.sdk.codec import decode_tool_result, encode_tool_result
 from voidcode.sdk.hooks import InvocationFinishedFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.provider import ImageAttachment, ProviderMessage
 from voidcode.sdk.services import ArtifactPage, ArtifactReference, PluginServices
 from voidcode.sdk.tools import (
+    TOOL_OUTPUT_BYTES,
     AttachmentOutput,
     EmptyOutput,
     OpaqueToolBody,

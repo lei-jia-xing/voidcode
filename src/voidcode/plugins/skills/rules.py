@@ -12,19 +12,27 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 RULE_FILE_NAME = "AGENTS.md"
 LOCAL_RULE_FILE_NAME = "AGENTS.override.md"
-MAX_RULE_FILES = 8
-MAX_RULE_FILE_CHARS = 12_000
-MAX_TOTAL_RULE_BYTES = 36_000
-
 RULEBOOK_DIRECTORY = ".voidcode/rules"
-MAX_RULEBOOK_FILES = 64
-MAX_RULEBOOK_CONTENT_CHARS = 12_000
-MAX_RULEBOOK_METADATA_CHARS = 240
-MAX_RULEBOOK_PROMPT_CHARS = 12_000
+
+
+@dataclass(frozen=True, slots=True)
+class RuleLimits:
+    """One bound per rule-ingestion dimension; shared defaults, never caller guesses."""
+
+    max_rule_files: int = 8
+    max_rule_file_chars: int = 12_000
+    max_total_rule_bytes: int = 36_000
+    max_rulebook_files: int = 64
+    max_rulebook_content_chars: int = 12_000
+    max_rulebook_metadata_chars: int = 240
+    max_rulebook_prompt_chars: int = 12_000
+
+
+DEFAULT_RULE_LIMITS: Final = RuleLimits()
 
 _RULE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
@@ -87,21 +95,19 @@ def runtime_file_rule_contexts(
     *,
     workspace: Path | None,
     touched_paths: tuple[str, ...] = (),
-    max_rule_files: int = MAX_RULE_FILES,
-    max_rule_file_chars: int = MAX_RULE_FILE_CHARS,
-    max_total_rule_bytes: int = MAX_TOTAL_RULE_BYTES,
+    limits: RuleLimits = DEFAULT_RULE_LIMITS,
     include_workspace_root: bool = True,
 ) -> tuple[RuntimeFileRuleContext, ...]:
-    if workspace is None or max_rule_files < 1 or max_total_rule_bytes < 0:
+    if workspace is None or limits.max_rule_files < 1 or limits.max_total_rule_bytes < 0:
         return ()
     workspace_root = workspace.resolve(strict=False)
     rule_paths = _applicable_rule_paths(
         workspace_root=workspace_root,
         touched_paths=touched_paths,
-        max_rule_files=max_rule_files,
+        max_rule_files=limits.max_rule_files,
         include_workspace_root=include_workspace_root,
     )
-    if max_total_rule_bytes == 0 and rule_paths:
+    if limits.max_total_rule_bytes == 0 and rule_paths:
         first_path = rule_paths[0]
         try:
             rel_path = first_path.relative_to(workspace_root).as_posix()
@@ -109,7 +115,7 @@ def runtime_file_rule_contexts(
             rel_path = Path(os.path.relpath(first_path, workspace_root)).as_posix()
         return (RuntimeFileRuleContext(path=rel_path, content=""),)
     contexts: list[RuntimeFileRuleContext] = []
-    remaining_bytes = max_total_rule_bytes
+    remaining_bytes = limits.max_total_rule_bytes
     for index, rule_path in enumerate(rule_paths):
         if remaining_bytes == 0:
             break
@@ -117,8 +123,8 @@ def runtime_file_rule_contexts(
             content = rule_path.read_text(encoding="utf-8")
         except OSError, UnicodeDecodeError:
             continue
-        file_truncated = len(content) > max_rule_file_chars
-        content = content[:max_rule_file_chars]
+        file_truncated = len(content) > limits.max_rule_file_chars
+        content = content[: limits.max_rule_file_chars]
         encoded = content.encode("utf-8")
         marker = b"\n[Rule file truncated by runtime context policy]"
         budget_truncated = len(encoded) > remaining_bytes
@@ -300,12 +306,12 @@ def _parse_rule_document(path: Path, text: str) -> RuleCatalogEntry | None:
     if not 0 <= precedence <= 1_000:
         return None
     content = body.strip()
-    if not content or len(content) > MAX_RULEBOOK_CONTENT_CHARS:
-        content = content[:MAX_RULEBOOK_CONTENT_CHARS].rstrip()
+    if not content or len(content) > DEFAULT_RULE_LIMITS.max_rulebook_content_chars:
+        content = content[: DEFAULT_RULE_LIMITS.max_rulebook_content_chars].rstrip()
     if not content:
         return None
     description = fields.get("description") or next((line.strip().lstrip("#").strip() for line in content.splitlines() if line.strip()), name)
-    description = description[:MAX_RULEBOOK_METADATA_CHARS].strip()
+    description = description[: DEFAULT_RULE_LIMITS.max_rulebook_metadata_chars].strip()
     metadata = RuleMetadata(name, description, application, scope, precedence, path.as_posix())
     return RuleCatalogEntry(metadata=metadata, content=content)
 
@@ -329,7 +335,7 @@ def _rule_files(*, workspace_root: Path, rule_roots: tuple[str, ...]) -> tuple[P
             except ValueError:
                 continue
             candidates.add(resolved)
-    return tuple(sorted(candidates, key=lambda path: path.relative_to(workspace_root).as_posix())[:MAX_RULEBOOK_FILES])
+    return tuple(sorted(candidates, key=lambda path: path.relative_to(workspace_root).as_posix())[: DEFAULT_RULE_LIMITS.max_rulebook_files])
 
 
 def build_rule_catalog(workspace: Path | None, *, rule_roots: tuple[str, ...] = (RULEBOOK_DIRECTORY,)) -> RuleCatalog:
@@ -365,4 +371,4 @@ def rulebook_prompt_context(catalog: RuleCatalog) -> str:
             parts.append(
                 f"- {metadata.name}: {metadata.description} (scope={metadata.scope}, precedence={metadata.precedence}, path={metadata.path})"
             )
-    return "\n".join(parts)[:MAX_RULEBOOK_PROMPT_CHARS]
+    return "\n".join(parts)[: DEFAULT_RULE_LIMITS.max_rulebook_prompt_chars]

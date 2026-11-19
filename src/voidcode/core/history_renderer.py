@@ -11,11 +11,48 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
+from typing import Final, Protocol
 
 from ..sdk.codec import decode_provider_result, decode_tool_result, encode_tool_call
-from ..sdk.history import PAGE_BYTES, HistoryEvent, HistoryPage
 from ..sdk.json_values import json_wire_object
 from ..sdk.tools import CompositeOutput, TextOutput, composite_ordered_text
+
+#: One live history page stays well below the core's 50 KiB model projection, leaving room
+#: for the result body and markers.
+PAGE_BYTES: Final[int] = 40 * 1024
+
+
+class HistoryEvent(Protocol):
+    """The attributes a stored event and a service event view both carry."""
+
+    @property
+    def sequence(self) -> int: ...
+
+    @property
+    def event_type(self) -> str: ...
+
+    @property
+    def source(self) -> str: ...
+
+    @property
+    def payload(self) -> Mapping[str, object] | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryPage:
+    """One bounded page plus the cursor that reaches the next byte.
+
+    ``next_after_sequence`` is the last event whose block was fully included (or the incoming
+    cursor value when the first block is split). ``next_offset`` is the UTF-8 byte offset into
+    the next block; zero means the next event after ``next_after_sequence`` starts at its head.
+    ``truncated`` means more content remains.
+    """
+
+    text: str
+    next_after_sequence: int
+    next_offset: int
+    truncated: bool
 
 
 def _json(value: object) -> str:
@@ -138,7 +175,7 @@ def render_history_page(
 ) -> HistoryPage:
     """Render one page from a byte cursor; a single large block is split, never clipped."""
     limit_bytes = page_bytes if max_bytes is None else max_bytes
-    chunks: list[str] = []
+    raw_chunks: list[bytes] = []
     used_bytes = 0
     cursor_sequence = after_sequence
     for event in events:
@@ -146,26 +183,25 @@ def render_history_page(
         if block is None:
             cursor_sequence = event.sequence
             continue
-        raw = block.encode("utf-8")
-        if offset > 0:
-            raw = raw[offset:]
-            offset = 0
-        while raw:
+        raw_full = block.encode("utf-8")
+        total = len(raw_full)
+        pos = offset
+        offset = 0
+        while pos < total:
             remaining = limit_bytes - used_bytes
-            overhead = 2 if chunks else 0
+            overhead = 2 if raw_chunks else 0
             budget = remaining - overhead
             if budget <= 0:
-                return HistoryPage("\n\n".join(chunks), cursor_sequence, len(block.encode("utf-8")) - len(raw), True)
-            if len(raw) <= budget:
-                chunks.append(raw.decode("utf-8"))
-                used_bytes += len(raw) + overhead
-                raw = b""
+                return HistoryPage(b"\n\n".join(raw_chunks).decode("utf-8"), cursor_sequence, pos, True)
+            window = raw_full[pos:]
+            window_length = len(window)
+            if window_length <= budget:
+                raw_chunks.append(window)
+                used_bytes += window_length + overhead
+                pos = total
                 cursor_sequence = event.sequence
                 break
-            cut = utf8_cut(raw, budget)
-            chunk = raw[:cut].decode("utf-8")
-            chunks.append(chunk)
-            remaining_bytes = len(raw) - cut
-            next_offset = len(block.encode("utf-8")) - remaining_bytes
-            return HistoryPage("\n\n".join(chunks), cursor_sequence, next_offset, True)
-    return HistoryPage("\n\n".join(chunks), cursor_sequence, 0, False)
+            cut = utf8_cut(window, budget)
+            raw_chunks.append(window[:cut])
+            return HistoryPage(b"\n\n".join(raw_chunks).decode("utf-8"), cursor_sequence, pos + cut, True)
+    return HistoryPage(b"\n\n".join(raw_chunks).decode("utf-8"), cursor_sequence, 0, False)

@@ -8,11 +8,11 @@ import pytest
 
 from tests.fixtures.fake_services import FakeServices
 from voidcode.capabilities.agent_queries import AgentDefinition
+from voidcode.plugins.workflows import workflows_plugin
 from voidcode.plugins.workflows.workflows_plugin import (
     WorkflowContext,
     WorkflowNode,
     WorkflowRun,
-    WorkflowState,
     _CancelledNode,
     _FinishedNode,
     _FinishNode,
@@ -35,13 +35,14 @@ def _seed(services: FakeServices, **overrides: Any) -> str:
         "workflow": "review",
         "source_path": "flows/review.py",
         "source_sha256": "a" * 64,
-        "source_artifact": "b" * 64,
         "task": "review this",
         "input_sha256": "c" * 64,
     }
     base.update(overrides)
     run = WorkflowRun(**base)  # type: ignore[arg-type]
-    services.seed_state(WorkflowState.from_payload(None).with_run(run).to_payload(), version=1)
+    _store = workflows_plugin._store(services)
+    _state, _version = _store.load()
+    _store.save(_state.with_run(run), _version)
     return run.run_id
 
 
@@ -113,7 +114,7 @@ def test_parallel_nodes_both_commit_without_losing_a_node() -> None:
         return first.result(), second.result()
 
     asyncio.run(both())
-    state = WorkflowState.from_payload(services.get_state("session")[0])
+    state = workflows_plugin._store(services).load()[0]
     assert sorted(node.key for node in state.runs[run_id].nodes) == ["a", "b"]
     assert all(node.status == "completed" for node in state.runs[run_id].nodes)
 
@@ -126,7 +127,7 @@ def test_waiting_child_parks_and_cancelled_child_raises() -> None:
     driver = WorkflowContext(invoke=lambda callback: callback(context, services), run_id=run_id, task="t")
     with pytest.raises(_ParkedNode):
         asyncio.run(driver.agent("review", "look", key="a"))
-    state = WorkflowState.from_payload(services.get_state("session")[0])
+    state = workflows_plugin._store(services).load()[0]
     # Node-level park leaves the run row alone; drive_workflow_action marks it parked.
     assert state.runs[run_id].status == "running"
     assert state.runs[run_id].nodes[0].status == "waiting"
@@ -136,7 +137,7 @@ def test_waiting_child_parks_and_cancelled_child_raises() -> None:
     driver = WorkflowContext(invoke=lambda callback: callback(context, services), run_id=run_id, task="t")
     with pytest.raises(_CancelledNode):
         asyncio.run(driver.agent("review", "look", key="a"))
-    state = WorkflowState.from_payload(services.get_state("session")[0])
+    state = workflows_plugin._store(services).load()[0]
     assert state.runs[run_id].nodes[0].status == "cancelled"
 
 
@@ -169,7 +170,7 @@ def test_budget_interruption_parks_with_typed_stop_without_acknowledging() -> No
     with pytest.raises(_ParkedNode, match="interrupted"):
         asyncio.run(driver.agent("review", "look", key="a"))
 
-    state = WorkflowState.from_payload(services.get_state("session")[0])
+    state = workflows_plugin._store(services).load()[0]
     run = state.runs[run_id]
     node = run.node("a")
     assert node is not None and node.status == "interrupted"
@@ -186,7 +187,7 @@ def test_budget_interruption_parks_with_typed_stop_without_acknowledging() -> No
     finished = driver.invoke(_FinishNode(run_id, "a", cancelled))
     assert isinstance(finished, _FinishedNode)
     assert finished.cancelled and finished.error is None and finished.text is None
-    state = WorkflowState.from_payload(services.get_state("session")[0])
+    state = workflows_plugin._store(services).load()[0]
     cancelled_node = state.runs[run_id].node("a")
     assert cancelled_node is not None and cancelled_node.status == "cancelled"
     assert cancelled_node.budget_exhaustion is None
@@ -200,7 +201,7 @@ def test_large_outcome_spills_to_artifact_and_rereads() -> None:
     context = _context(services)
     driver = WorkflowContext(invoke=lambda callback: callback(context, services), run_id=run_id, task="t")
     assert asyncio.run(driver.agent("review", "look", key="a")) == "x" * (9 * 1024)
-    state = WorkflowState.from_payload(services.get_state("session")[0])
+    state = workflows_plugin._store(services).load()[0]
     node = state.runs[run_id].nodes[0]
     assert node.output is None and node.output_sha256 is not None
     assert asyncio.run(driver.agent("review", "look", key="a")) == "x" * (9 * 1024)
@@ -251,7 +252,7 @@ def test_large_multibyte_output_reads_whole_and_matches_cache() -> None:
     assert len(first.encode("utf-8")) == expected_size
     assert hashlib.sha256(first.encode("utf-8")).hexdigest() == expected_hash
     assert "preview" not in first
-    state = WorkflowState.from_payload(services.get_state("session")[0])
+    state = workflows_plugin._store(services).load()[0]
     node = state.runs[run_id].nodes[0]
     assert node.output is None and node.output_sha256 == expected_hash
     # A fresh driver rereading the cached row must get the identical whole text.
@@ -328,7 +329,7 @@ def test_preview_only_completed_fails_consumption_but_persists_capture_cause() -
     )
     with pytest.raises(ValueError, match="full output is unavailable.*run-cap-1.*RuntimeError: boom"):
         asyncio.run(driver.agent("review", "look", key="a"))
-    state = WorkflowState.from_payload(services.get_state("session")[0])
+    state = workflows_plugin._store(services).load()[0]
     node = state.runs[run_id].node("a")
     assert node is not None and node.status == "completed"
     assert node.output is None and node.output_sha256 is None and node.output_bytes is None
@@ -369,7 +370,7 @@ def test_failed_child_returns_result_for_outside_lease_raise() -> None:
     driver = WorkflowContext(invoke=lambda callback: callback(context, services), run_id=run_id, task="t")
     with pytest.raises(ValueError, match="node 'a' failed: child blew up"):
         asyncio.run(driver.agent("review", "look", key="a"))
-    state = WorkflowState.from_payload(services.get_state("session")[0])
+    state = workflows_plugin._store(services).load()[0]
     node = state.runs[run_id].node("a")
     assert node is not None and node.status == "failed" and node.error == "child blew up"
     assert node.output == "" and node.output_error is None and node.history_error is None
@@ -384,13 +385,13 @@ def test_finish_callback_never_raises_after_staging_terminal_truth() -> None:
     driver = WorkflowContext(invoke=lambda callback: callback(context, services), run_id=run_id, task="t")
     with pytest.raises(Exception, match="parked"):
         asyncio.run(driver.agent("review", "look", key="a"))
-    node = WorkflowState.from_payload(services.get_state("session")[0]).runs[run_id].node("a")
+    node = workflows_plugin._store(services).load()[0].runs[run_id].node("a")
     assert node is not None and node.child_session_id is not None and node.run_id is not None
     failed = ChildOutcome(child_session_id=node.child_session_id, status="failed", error="boom", run_id=node.run_id)
     finished = driver.invoke(_FinishNode(run_id, "a", failed))
     assert isinstance(finished, _FinishedNode)
     assert finished.error == "node 'a' failed: boom" and finished.text is None and not finished.cancelled
-    persisted = WorkflowState.from_payload(services.get_state("session")[0]).runs[run_id].node("a")
+    persisted = workflows_plugin._store(services).load()[0].runs[run_id].node("a")
     assert persisted is not None and persisted.status == "failed" and persisted.error == "boom"
 
 
@@ -401,7 +402,7 @@ def test_completed_without_any_output_persists_explicit_empty_string() -> None:
     driver = WorkflowContext(invoke=lambda callback: callback(context, services), run_id=run_id, task="t")
     _stage_roster(services, ChildOutcome(child_session_id="child-x", status="completed", run_id="run-empty-1"))
     assert asyncio.run(driver.agent("review", "look", key="a")) == ""
-    node = WorkflowState.from_payload(services.get_state("session")[0]).runs[run_id].node("a")
+    node = workflows_plugin._store(services).load()[0].runs[run_id].node("a")
     assert node is not None and node.status == "completed" and node.output == ""
     assert node.output_error is None and node.history_error is None
 
@@ -422,7 +423,7 @@ def test_history_capture_error_does_not_fail_output_consumption() -> None:
         ),
     )
     assert asyncio.run(driver.agent("review", "look", key="a")) == "findings"
-    node = WorkflowState.from_payload(services.get_state("session")[0]).runs[run_id].node("a")
+    node = workflows_plugin._store(services).load()[0].runs[run_id].node("a")
     assert node is not None and node.output == "findings"
     assert node.history_error == "RuntimeError: history boom" and node.output_error is None
 
@@ -462,17 +463,18 @@ def test_park_drops_prior_run_output_and_capture_data() -> None:
         workflow="review",
         source_path="flows/review.py",
         source_sha256="a" * 64,
-        source_artifact="b" * 64,
         task="t",
         input_sha256="c" * 64,
         nodes=(stale,),
     )
-    services.seed_state(WorkflowState.from_payload(None).with_run(run).to_payload(), version=1)
+    _store = workflows_plugin._store(services)
+    _state, _version = _store.load()
+    _store.save(_state.with_run(run), _version)
     context = _context(services)
     driver = WorkflowContext(invoke=lambda callback: callback(context, services), run_id="run-1", task="t")
     outcome = ChildOutcome(child_session_id="child-1", status="waiting", error="waiting on approval", run_id="run-new")
     driver.invoke(_ParkNode("run-1", "a", outcome))
-    node = WorkflowState.from_payload(services.get_state("session")[0]).runs["run-1"].node("a")
+    node = workflows_plugin._store(services).load()[0].runs["run-1"].node("a")
     assert node is not None and node.status == "waiting" and node.run_id == "run-new"
     assert node.output is None and node.output_sha256 is None and node.output_bytes is None
     assert node.output_preview is None and node.output_error is None and node.history_error is None

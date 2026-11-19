@@ -8,9 +8,9 @@ Contracts only: no I/O, no subprocess, no backend knowledge.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final
 
-from .json_values import json_wire_object
+from .tools import Change, optional_str, required_str
 
 #: Per-execution bound on reported changes; excess sets ``truncated=True``.
 MAX_OBSERVED_CHANGES: Final[int] = 256
@@ -26,60 +26,6 @@ WRITE_MAX_BYTES: Final[int] = 64 * 1024
 LIST_MAX_ENTRIES: Final[int] = 10_000
 #: Symlink chain elements the helper canonicalizes before refusing.
 MAX_SYMLINK_FOLLOW: Final[int] = 8
-
-ObservedOperation = Literal["create", "update", "delete", "move"]
-
-
-@dataclass(frozen=True, slots=True)
-class ObservedChange:
-    """One filesystem change the helper observed, mapped 1:1 to ``ResourceChange``."""
-
-    path: str
-    operation: ObservedOperation = "update"
-    old_path: str | None = None
-    content_hash: str | None = None
-    #: The write landed in sandbox scratch (tmpfs), not on host paths: surface in
-    #: output text/body only, never as a ``ResourceChange``.
-    scratch: bool = False
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.path, str) or not self.path:
-            raise ValueError("observed change requires a non-empty path")
-        if self.operation not in {"create", "update", "delete", "move"}:
-            raise ValueError("invalid observed change operation")
-        if self.old_path is not None and (not isinstance(self.old_path, str) or not self.old_path):
-            raise ValueError("old_path must be a non-empty string or None")
-        if self.operation == "move" and not self.old_path:
-            raise ValueError("observed move requires old_path")
-        if self.content_hash is not None and (not isinstance(self.content_hash, str) or not self.content_hash):
-            raise ValueError("content_hash must be a non-empty string or None")
-        if type(self.scratch) is not bool:
-            raise ValueError("scratch must be a boolean")
-
-    def as_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {"path": self.path, "operation": self.operation}
-        if self.old_path is not None:
-            payload["old_path"] = self.old_path
-        if self.content_hash is not None:
-            payload["content_hash"] = self.content_hash
-        if self.scratch:
-            payload["scratch"] = True
-        return payload
-
-    @classmethod
-    def from_payload(cls, payload: object) -> ObservedChange:
-        if not isinstance(payload, dict):
-            raise ValueError("observed change must be an object")
-        unknown = sorted(set(payload) - {"path", "operation", "old_path", "content_hash", "scratch"})
-        if unknown:
-            raise ValueError("observed change contains unknown field(s): " + ", ".join(unknown))
-        return cls(
-            path=_required_str(payload.get("path"), "path"),
-            operation=payload.get("operation", "update"),  # type: ignore[arg-type]
-            old_path=_optional_str(payload.get("old_path"), "old_path"),
-            content_hash=_optional_str(payload.get("content_hash"), "content_hash"),
-            scratch=bool(payload.get("scratch", False)),
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,9 +59,9 @@ class ObservedDenial:
         if unknown:
             raise ValueError("observed denial contains unknown field(s): " + ", ".join(unknown))
         return cls(
-            operation=_required_str(payload.get("operation"), "operation"),
-            path=_optional_str(payload.get("path"), "path"),
-            reason=_required_str(payload.get("reason"), "reason"),
+            operation=required_str(payload.get("operation"), "operation"),
+            path=optional_str(payload.get("path"), "path"),
+            reason=required_str(payload.get("reason"), "reason"),
         )
 
 
@@ -150,14 +96,14 @@ class NetworkObservation:
         attempts = payload.get("attempts", ())
         if not isinstance(attempts, (list, tuple)) or not all(isinstance(a, str) for a in attempts):
             raise ValueError("network observation attempts must be a list of strings")
-        return cls(allowed=allowed, detail=_required_str(payload.get("detail"), "detail"), attempts=tuple(attempts))
+        return cls(allowed=allowed, detail=required_str(payload.get("detail"), "detail"), attempts=tuple(attempts))
 
 
 @dataclass(frozen=True, slots=True)
 class ObservedEffects:
     """Bounded observed-effects report for one sandboxed exec or fs-op."""
 
-    changes: tuple[ObservedChange, ...] = ()
+    changes: tuple[Change, ...] = ()
     denials: tuple[ObservedDenial, ...] = ()
     network: NetworkObservation | None = None
     backend: str = "unconfined"
@@ -205,27 +151,11 @@ class ObservedEffects:
         truncated = payload.get("truncated", False)
         if type(truncated) is not bool:
             raise ValueError("observed effects truncated must be a boolean")
-        owned = json_wire_object(payload)
-        _ = owned
         return cls(
-            changes=tuple(ObservedChange.from_payload(item) for item in changes),
+            changes=tuple(Change.from_payload(item) for item in changes),
             denials=tuple(ObservedDenial.from_payload(item) for item in denials),
             network=None if network is None else NetworkObservation.from_payload(network),
-            backend=_required_str(payload.get("backend"), "backend"),
+            backend=required_str(payload.get("backend"), "backend"),
             helper=payload.get("helper", "") if isinstance(payload.get("helper", ""), str) else "",
             truncated=truncated,
         )
-
-
-def _required_str(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"observed effects field {field!r} must be a non-empty string")
-    return value
-
-
-def _optional_str(value: object, field: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"observed effects field {field!r} must be a non-empty string or null")
-    return value

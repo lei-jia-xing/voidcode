@@ -6,21 +6,28 @@ plugin owns configuration, server state, and tool governance while the
 official Python MCP SDK owns protocol framing, initialize negotiation,
 request/response correlation, and stdio process teardown.
 
+One manager owns one thread running one asyncio loop; every SDK session and
+every piece of manager state lives on that loop. The synchronous public API
+submits one coroutine per call and blocks on its future, so concurrent tool
+calls interleave on the loop while shared state is never touched from two
+threads and no locks are needed anywhere. Each server additionally serializes
+its own SDK calls on an asyncio lock, preserving the old per-server ordering.
 IMPORTANT: Static types and contracts live in this plugin's ``types.py``
 (ported from ``voidcode.mcp``); this module adds the implementation.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager, suppress
+from collections.abc import Callable, Coroutine, Mapping
+from contextlib import AbstractAsyncContextManager, suppress
+from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Literal, cast
+from typing import IO, Any, Literal, TypeVar, cast
 
 import httpx2
-from anyio.from_thread import BlockingPortal, start_blocking_portal
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -40,6 +47,7 @@ from .types import (
     McpConfigState,
     McpManager,
     McpManagerState,
+    McpServerConfig,
     McpServerRuntimeState,
     McpToolCallResult,
     McpToolDescriptor,
@@ -59,6 +67,8 @@ _RECOVERABLE_MCP_CALL_ERROR_CODES = frozenset(
 #: when the underlying connection dies (e.g. the connect POST failed), which is
 #: how an unreachable endpoint surfaces through ``ClientSession.initialize``.
 _MCP_CONNECTION_CLOSED_CODE = -32000
+
+_T = TypeVar("_T")
 
 
 def _validate_input_schema(raw_schema: object) -> dict[str, object]:
@@ -93,7 +103,7 @@ def _is_connection_error(exc: BaseException) -> bool:
     """True for errors indicating the remote endpoint could not be reached.
 
     A dead remote-http endpoint surfaces either as an ``httpx2.ConnectError``
-    (or ``httpx2.ConnectTimeout``) wrapped in an anyio exception group, or -
+    (or ``httpx2.ConnectTimeout``) wrapped in an exception group, or -
     when the transport teardown resolves the in-flight initialize request - as
     an ``MCPError`` carrying the SDK's CONNECTION_CLOSED code.
     """
@@ -193,15 +203,78 @@ class DisabledMcpManager:
 # =============================================================================
 
 
+class _OwnedAsyncContext:
+    """One SDK context whose enter and exit both run in a single dedicated loop task.
+
+    The SDK transports require same-task exit (anyio cancel scopes), and the
+    parked task absorbs scope cancellations from a collapsing transport, so
+    SDK calls made from other tasks observe the real transport error instead
+    of a cancellation.
+    """
+
+    def __init__(self, context: AbstractAsyncContextManager[Any]) -> None:
+        self._context = context
+        self._entered_event = asyncio.Event()
+        self._exit_requested = asyncio.Event()
+        self._exited_event = asyncio.Event()
+        self._entered_ok = False
+        self._value: Any = None
+        self._enter_error: BaseException | None = None
+        self._exit_error: BaseException | None = None
+        self._exit_result: Any = None
+
+    @property
+    def entered(self) -> bool:
+        return self._entered_ok
+
+    async def enter(self) -> Any:
+        asyncio.ensure_future(self._run())
+        await self._entered_event.wait()
+        if self._enter_error is not None:
+            raise self._enter_error
+        return self._value
+
+    async def _run(self) -> None:
+        try:
+            value = await self._context.__aenter__()
+        except BaseException as exc:
+            self._enter_error = exc
+            self._entered_event.set()
+            return
+        self._value = value
+        self._entered_ok = True
+        self._entered_event.set()
+        try:
+            # Parked mid-context until teardown. A collapsing transport may
+            # cancel this wait; the exit below still runs in this same task.
+            await self._exit_requested.wait()
+        finally:
+            try:
+                self._exit_result = await self._context.__aexit__(None, None, None)
+            except BaseException as exc:
+                self._exit_error = exc
+            finally:
+                self._exited_event.set()
+
+    async def exit(self) -> Any:
+        if not self._entered_ok:
+            return None
+        self._exit_requested.set()
+        await self._exited_event.wait()
+        if self._exit_error is not None:
+            raise self._exit_error
+        return self._exit_result
+
+
 class _RunningMcpServer:
-    """Runtime-specific SDK session and context-manager handles."""
+    """One SDK session and its context-manager handles, owned by the manager's loop."""
 
     def __init__(
         self,
         *,
         server_name: str,
-        transport_context: AbstractContextManager[tuple[object, ...]],
-        session_context: AbstractContextManager[ClientSession],
+        transport_context: _OwnedAsyncContext,
+        session_context: _OwnedAsyncContext,
         session: ClientSession,
         stderr_log: IO[str] | None,
     ) -> None:
@@ -211,9 +284,18 @@ class _RunningMcpServer:
         self.session = session
         self.stderr_log = stderr_log
         # The Python SDK ClientSession is shared per configured server process.
-        # Serialize list/call operations per server so concurrent runtime and
-        # subagent calls do not interleave mutable SDK session state.
-        self.call_lock = threading.RLock()
+        # Serialize list/call operations per server so concurrent loop tasks do
+        # not interleave mutable SDK session state.
+        self.io_lock = asyncio.Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class _ShutdownSnapshot:
+    """The passive surfaces frozen at shutdown; reads keep working afterwards."""
+
+    state: McpManagerState
+    surface: McpCachedToolSurface
+    descriptors: dict[str, dict[str, McpToolDescriptor]]
 
 
 # =============================================================================
@@ -222,7 +304,7 @@ class _RunningMcpServer:
 
 
 class ManagedMcpManager:
-    """Runtime-owned MCP lifecycle management backed by the official SDK."""
+    """Plugin-owned MCP lifecycle management backed by the official SDK."""
 
     def __init__(
         self,
@@ -230,25 +312,51 @@ class ManagedMcpManager:
     ) -> None:
         self._configuration = McpConfigState.from_config(config)
         self._running_servers: dict[str, _RunningMcpServer] = {}
-        self._state_lock = threading.RLock()
         self._server_states = {name: McpServerRuntimeState() for name in self._configuration.servers}
         self._request_timeout_seconds = config.request_timeout_seconds or DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS
-        self._portal_context: AbstractContextManager[BlockingPortal] | None = None
-        self._portal: BlockingPortal | None = None
         self._tool_descriptors_by_server: dict[str, dict[str, McpToolDescriptor]] = {}
         self._discovered_tools: dict[str, tuple[McpToolDescriptor, ...]] = {}
+        self._startup_lock = asyncio.Lock()
+        self._shutdown_called = False
+        self._shutdown_snapshot: _ShutdownSnapshot | None = None
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(target=self._serve_loop, name="mcp-loop", daemon=True)
+        self._loop_thread.start()
+
+    def _serve_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def _submit(self, coro: Coroutine[Any, Any, _T]) -> _T:
+        """Run one coroutine on the owned loop and return its result (sync callers only)."""
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+
+    def _passive(self, make_coro: Callable[[], Coroutine[Any, Any, _T]], project: Callable[[_ShutdownSnapshot], _T]) -> _T:
+        """Serve a passive state read from the loop, or from the shutdown snapshot afterwards."""
+        snapshot = self._shutdown_snapshot
+        if snapshot is not None:
+            return project(snapshot)
+        try:
+            return self._submit(make_coro())
+        except RuntimeError:
+            snapshot = self._shutdown_snapshot
+            if snapshot is None:
+                raise
+            return project(snapshot)
 
     @property
     def configuration(self) -> McpConfigState:
         return self._configuration
 
     def current_state(self) -> McpManagerState:
-        with self._state_lock:
-            return McpManagerState(
-                mode="managed",
-                configuration=self._configuration,
-                servers=dict(self._server_states),
-            )
+        return self._passive(self._current_state_owned, lambda snapshot: snapshot.state)
+
+    async def _current_state_owned(self) -> McpManagerState:
+        return McpManagerState(
+            mode="managed",
+            configuration=self._configuration,
+            servers=dict(self._server_states),
+        )
 
     def list_tools(
         self,
@@ -261,10 +369,18 @@ class ManagedMcpManager:
         ``server_name`` narrows discovery to one server so an on-demand MCP
         tool call only pays for the server it actually needs.
         """
+        return self._submit(self._list_tools_owned(workspace=workspace, server_name=server_name))
+
+    async def _list_tools_owned(
+        self,
+        *,
+        workspace: Path,
+        server_name: str | None,
+    ) -> tuple[McpToolDescriptor, ...]:
         server_names = (server_name,) if server_name is not None else tuple(self._configuration.servers)
         tools: list[McpToolDescriptor] = []
         for name in server_names:
-            tools.extend(self._list_tools_for_server(server_name=name, workspace=workspace))
+            tools.extend(await self._list_tools_for_server_owned(server_name=name, workspace=workspace))
         return tuple(tools)
 
     def cached_surface(
@@ -273,9 +389,11 @@ class ManagedMcpManager:
         workspace: Path,
     ) -> McpCachedToolSurface:
         """Read discovered tools without connecting; absent servers remain unknown."""
+        return self._passive(lambda: self._cached_surface_owned(workspace=workspace), lambda snapshot: snapshot.surface)
+
+    async def _cached_surface_owned(self, *, workspace: Path) -> McpCachedToolSurface:
         _ = workspace
-        with self._state_lock:
-            return McpCachedToolSurface(servers=dict(self._discovered_tools))
+        return McpCachedToolSurface(servers=dict(self._discovered_tools))
 
     def descriptor_for(
         self,
@@ -288,9 +406,13 @@ class ManagedMcpManager:
         Passive: it answers only for a surface this manager already discovered
         (``call_tool`` discovers before it calls), never connecting on its own.
         """
-        key = server_name
-        with self._state_lock:
-            return self._tool_descriptors_by_server.get(key, {}).get(tool_name)
+        return self._passive(
+            lambda: self._descriptor_for_owned(server_name=server_name, tool_name=tool_name),
+            lambda snapshot: snapshot.descriptors.get(server_name, {}).get(tool_name),
+        )
+
+    async def _descriptor_for_owned(self, *, server_name: str, tool_name: str) -> McpToolDescriptor | None:
+        return self._tool_descriptors_by_server.get(server_name, {}).get(tool_name)
 
     def call_tool(
         self,
@@ -302,12 +424,21 @@ class ManagedMcpManager:
     ) -> McpToolCallResult:
         if self._configuration.servers.get(server_name) is None:
             raise ValueError(f"MCP[{server_name}]: server not found in configuration")
-        key = server_name
-        running = self._ensure_running(server_name=server_name, workspace=workspace)
-        descriptor = self._tool_descriptors_by_server.get(key, {}).get(tool_name)
+        return self._submit(self._call_tool_owned(server_name=server_name, tool_name=tool_name, arguments=arguments, workspace=workspace))
+
+    async def _call_tool_owned(
+        self,
+        *,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        workspace: Path,
+    ) -> McpToolCallResult:
+        running = await self._ensure_running_owned(server_name=server_name, workspace=workspace)
+        descriptor = self._tool_descriptors_by_server.get(server_name, {}).get(tool_name)
         if descriptor is None:
-            _ = self._list_tools_for_server(server_name=server_name, workspace=workspace)
-            descriptor = self._tool_descriptors_by_server.get(key, {}).get(tool_name)
+            _ = await self._list_tools_for_server_owned(server_name=server_name, workspace=workspace)
+            descriptor = self._tool_descriptors_by_server.get(server_name, {}).get(tool_name)
 
         if descriptor is not None and not descriptor.enabled:
             disabled_reason = descriptor.disabled_reason
@@ -323,11 +454,11 @@ class ManagedMcpManager:
                 input_schema=descriptor.input_schema,
             )
 
-        result = self._call_sdk(
+        result = await self._call_sdk_owned(
             running,
             stage="call",
             method="tools/call",
-            operation=lambda session=running.session: session.call_tool(
+            operation=lambda: running.session.call_tool(
                 tool_name,
                 dict(arguments),
                 read_timeout_seconds=self._request_timeout_seconds,
@@ -348,15 +479,27 @@ class ManagedMcpManager:
         )
 
     def shutdown(self) -> None:
-        with self._state_lock:
-            for key in tuple(self._running_servers):
-                self._stop_running_server(key)
-            if self._portal_context is not None:
-                self._portal_context.__exit__(None, None, None)
-                self._portal_context = None
-                self._portal = None
+        if self._shutdown_called:
+            return
+        self._shutdown_called = True
+        with suppress(Exception):
+            self._shutdown_snapshot = asyncio.run_coroutine_threadsafe(self._shutdown_owned(), self._loop).result(timeout=30.0)
+        with suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        self._loop_thread.join(timeout=30.0)
+        if not self._loop_thread.is_alive() and not self._loop.is_closed():
+            self._loop.close()
 
-    def _ensure_running(
+    async def _shutdown_owned(self) -> _ShutdownSnapshot:
+        for key in tuple(self._running_servers):
+            await self._stop_running_server_owned(key)
+        return _ShutdownSnapshot(
+            state=McpManagerState(mode="managed", configuration=self._configuration, servers=dict(self._server_states)),
+            surface=McpCachedToolSurface(servers=dict(self._discovered_tools)),
+            descriptors={server: dict(descriptors) for server, descriptors in self._tool_descriptors_by_server.items()},
+        )
+
+    async def _ensure_running_owned(
         self,
         *,
         server_name: str,
@@ -366,73 +509,44 @@ class ManagedMcpManager:
         server_config = self._configuration.servers.get(server_name)
         if server_config is None:
             message = f"MCP[{server_name}]: server not found in configuration. Available servers: {list(self._configuration.servers.keys())}"
-            self._set_server_state(key=server_name, status="failed", error=message)
+            self._set_server_state_owned(key=server_name, status="failed", error=message)
             raise ValueError(message)
 
-        transport = server_config.transport
-        key = server_name
-        with self._state_lock:
-            running = self._running_servers.get(key)
+        running = self._running_servers.get(server_name)
+        if running is not None:
+            return running
+
+        async with self._startup_lock:
+            running = self._running_servers.get(server_name)
             if running is not None:
                 return running
 
-        workspace_root = workspace.resolve()
-        stderr_log: IO[str] | None = None
-        transport_context: AbstractContextManager[tuple[object, ...]] | None = None
-        session_context: AbstractContextManager[ClientSession] | None = None
-
-        with self._state_lock:
-            running = self._running_servers.get(key)
-            if running is not None:
-                return running
+            transport = server_config.transport
+            key = server_name
+            workspace_root = workspace.resolve()
+            stderr_log: IO[str] | None = None
+            transport_context: _OwnedAsyncContext | None = None
+            session_context: _OwnedAsyncContext | None = None
 
             try:
-                portal = self._ensure_portal()
-                if transport == "remote-http":
-                    pending_transport_context = portal.wrap_async_context_manager(cast(Any, streamable_http_client(cast(str, server_config.url))))
-                    read_stream, write_stream = _read_write_streams(pending_transport_context.__enter__())
-                    transport_context = pending_transport_context
-                else:
-                    stderr_log = open(
-                        os.devnull,
-                        "w",
-                        encoding="utf-8",
-                    )  # noqa: SIM115 - closed in shutdown
-                    params = StdioServerParameters(
-                        command=server_config.command[0],
-                        args=list(server_config.command[1:]),
-                        env={**os.environ, **server_config.env},
-                        cwd=workspace_root,
-                    )
-                    pending_transport_context = portal.wrap_async_context_manager(cast(Any, stdio_client(params, errlog=stderr_log)))
-                    read_stream, write_stream = _read_write_streams(pending_transport_context.__enter__())
-                    transport_context = pending_transport_context
-                pending_session_context = portal.wrap_async_context_manager(
-                    ClientSession(
-                        cast(Any, read_stream),
-                        cast(Any, write_stream),
-                        read_timeout_seconds=self._request_timeout_seconds,
-                        client_info=Implementation(
-                            name=MCP_CLIENT_NAME,
-                            version=MCP_CLIENT_VERSION,
-                        ),
-                    )
+                transport_context, session_context, session, stderr_log = await self._open_session_owned(
+                    server_name=server_name,
+                    server_config=server_config,
+                    workspace_root=workspace_root,
                 )
-                session = pending_session_context.__enter__()
-                session_context = pending_session_context
-                self._set_server_state(key=key, status="running")
-                portal.call(session.initialize)
+                self._set_server_state_owned(key=key, status="running")
+                await session.initialize()
             except FileNotFoundError as exc:
-                self._close_partial_server(
+                await self._close_partial_server_owned(
                     session_context=session_context,
                     transport_context=transport_context,
                     stderr_log=stderr_log,
                 )
                 if transport == "stdio":
                     message = f"MCP[{server_name}]: failed to start server - cmd not found (command not found): {server_config.command[0]}"
-                    self._set_server_state(key=key, status="failed", error=message)
+                    self._set_server_state_owned(key=key, status="failed", error=message)
                 else:
-                    message = self._report_remote_connect_failure(
+                    message = self._report_remote_connect_failure_owned(
                         key=key,
                         server_name=server_name,
                     )
@@ -440,7 +554,7 @@ class ManagedMcpManager:
             except BaseExceptionGroup as exc:
                 # SDK transport failures may be grouped. Control exceptions must
                 # retain their identity instead of becoming connection errors.
-                self._close_partial_server(
+                await self._close_partial_server_owned(
                     session_context=session_context,
                     transport_context=transport_context,
                     stderr_log=stderr_log,
@@ -449,7 +563,7 @@ class ManagedMcpManager:
                     raise
                 leaf = _flatten_exception_group(exc)
                 if transport == "remote-http" and _is_connection_error(leaf):
-                    message = self._report_remote_connect_failure(
+                    message = self._report_remote_connect_failure_owned(
                         key=key,
                         server_name=server_name,
                     )
@@ -458,16 +572,16 @@ class ManagedMcpManager:
                         leaf,
                         fallback=f"MCP[{server_name}]: failed to initialize server",
                     )
-                    self._set_server_state(key=key, status="failed", error=message)
+                    self._set_server_state_owned(key=key, status="failed", error=message)
                 raise ValueError(message) from exc
             except Exception as exc:
-                self._close_partial_server(
+                await self._close_partial_server_owned(
                     session_context=session_context,
                     transport_context=transport_context,
                     stderr_log=stderr_log,
                 )
                 if transport == "remote-http" and _is_connection_error(exc):
-                    message = self._report_remote_connect_failure(
+                    message = self._report_remote_connect_failure_owned(
                         key=key,
                         server_name=server_name,
                     )
@@ -476,7 +590,7 @@ class ManagedMcpManager:
                         exc,
                         fallback=f"MCP[{server_name}]: failed to initialize server",
                     )
-                    self._set_server_state(key=key, status="failed", error=message)
+                    self._set_server_state_owned(key=key, status="failed", error=message)
                 raise ValueError(message) from exc
 
             running = _RunningMcpServer(
@@ -489,41 +603,84 @@ class ManagedMcpManager:
             self._running_servers[key] = running
             return running
 
-    def _ensure_portal(self) -> BlockingPortal:
-        if self._portal is not None:
-            return self._portal
-        portal_context = start_blocking_portal()
-        portal = portal_context.__enter__()
-        self._portal_context = portal_context
-        self._portal = portal
-        return portal
+    async def _open_session_owned(
+        self,
+        *,
+        server_name: str,
+        server_config: McpServerConfig,
+        workspace_root: Path,
+    ) -> tuple[_OwnedAsyncContext, _OwnedAsyncContext, ClientSession, IO[str] | None]:
+        """Enter the transport and session contexts for one server start."""
+        _ = server_name
+        stderr_log: IO[str] | None = None
+        transport_context: _OwnedAsyncContext | None = None
+        session_context: _OwnedAsyncContext | None = None
+        try:
+            if server_config.transport == "remote-http":
+                transport_context = _OwnedAsyncContext(streamable_http_client(cast(str, server_config.url)))
+                read_stream, write_stream = _read_write_streams(await transport_context.enter())
+            else:
+                stderr_log = open(
+                    os.devnull,
+                    "w",
+                    encoding="utf-8",
+                )
+                params = StdioServerParameters(
+                    command=server_config.command[0],
+                    args=list(server_config.command[1:]),
+                    env={**os.environ, **server_config.env},
+                    cwd=workspace_root,
+                )
+                transport_context = _OwnedAsyncContext(stdio_client(params, errlog=stderr_log))
+                read_stream, write_stream = _read_write_streams(await transport_context.enter())
+            session_context = _OwnedAsyncContext(
+                ClientSession(
+                    cast(Any, read_stream),
+                    cast(Any, write_stream),
+                    read_timeout_seconds=self._request_timeout_seconds,
+                    client_info=Implementation(
+                        name=MCP_CLIENT_NAME,
+                        version=MCP_CLIENT_VERSION,
+                    ),
+                )
+            )
+            session = await session_context.enter()
+        except BaseException:
+            if session_context is not None:
+                with suppress(BaseException):
+                    await session_context.exit()
+            if transport_context is not None:
+                with suppress(BaseException):
+                    await transport_context.exit()
+            if stderr_log is not None:
+                stderr_log.close()
+            raise
+        return transport_context, session_context, session, stderr_log
 
-    def _call_sdk(
+    async def _call_sdk_owned(
         self,
         running: _RunningMcpServer,
         *,
         stage: str,
         method: str,
-        operation: Any,
+        operation: Callable[[], Coroutine[Any, Any, Any]],
         suppress_failure_event_when: Callable[[Exception], bool] | None = None,
-    ) -> object:
-        with running.call_lock:
-            with self._state_lock:
-                if self._running_servers.get(running.server_name) is not running:
-                    raise ValueError(f"MCP[{running.server_name}]: connection was replaced before {method}; the request was not sent")
+    ) -> Any:
+        async with running.io_lock:
+            if self._running_servers.get(running.server_name) is not running:
+                raise ValueError(f"MCP[{running.server_name}]: connection was replaced before {method}; the request was not sent")
             try:
-                return self._ensure_portal().call(operation)
+                return await operation()
             except Exception as exc:
                 message = self._message_for_exception(
                     exc,
                     fallback=f"MCP[{running.server_name}]: {method} failed",
                 )
                 if not self._is_recoverable_call_error(exc, stage=stage):
-                    self._stop_running_server(running.server_name, expected=running)
+                    await self._stop_running_server_owned(running.server_name, expected=running)
                     if suppress_failure_event_when is None or not suppress_failure_event_when(exc):
-                        with self._state_lock:
-                            if running.server_name not in self._running_servers:
-                                self._set_server_state(key=running.server_name, status="failed", error=message)
+                        if running.server_name not in self._running_servers:
+                            self._set_server_state_owned(key=running.server_name, status="failed", error=message)
                 raise ValueError(message) from exc
 
     def _is_recoverable_call_error(self, exc: Exception, *, stage: str) -> bool:
@@ -564,7 +721,7 @@ class ManagedMcpManager:
                 disabled_reason=str(exc),
             )
 
-    def _list_tools_for_server(
+    async def _list_tools_for_server_owned(
         self,
         *,
         server_name: str,
@@ -573,14 +730,13 @@ class ManagedMcpManager:
         server_config = self._configuration.servers.get(server_name)
         if server_config is None:
             return ()
-        key = server_name
-        running = self._ensure_running(server_name=server_name, workspace=workspace)
+        running = await self._ensure_running_owned(server_name=server_name, workspace=workspace)
         try:
-            result = self._call_sdk(
+            result = await self._call_sdk_owned(
                 running,
                 stage="discovery",
                 method="tools/list",
-                operation=lambda session=running.session: session.list_tools(),
+                operation=lambda: running.session.list_tools(),
                 suppress_failure_event_when=_is_discovery_connection_closed,
             )
         except ValueError as exc:
@@ -593,13 +749,13 @@ class ManagedMcpManager:
             # endpoint). That is transient, so retry once with a fresh
             # connection before failing. The failure event was suppressed on
             # the probe attempt and is only recorded if the retry also fails.
-            self._stop_running_server(server_name, expected=running)
-            running = self._ensure_running(server_name=server_name, workspace=workspace)
-            result = self._call_sdk(
+            await self._stop_running_server_owned(server_name, expected=running)
+            running = await self._ensure_running_owned(server_name=server_name, workspace=workspace)
+            result = await self._call_sdk_owned(
                 running,
                 stage="discovery",
                 method="tools/list",
-                operation=lambda session=running.session: session.list_tools(),
+                operation=lambda: running.session.list_tools(),
             )
         list_result = cast(ListToolsResult, result)
         server_descriptors: dict[str, McpToolDescriptor] = {}
@@ -609,29 +765,25 @@ class ManagedMcpManager:
             server_descriptors[descriptor.tool_name] = descriptor
             descriptors.append(descriptor)
         discovered = tuple(descriptors)
-        with self._state_lock:
-            if self._running_servers.get(key) is running:
-                self._tool_descriptors_by_server[key] = server_descriptors
-                self._discovered_tools[server_name] = discovered
+        if self._running_servers.get(server_name) is running:
+            self._tool_descriptors_by_server[server_name] = server_descriptors
+            self._discovered_tools[server_name] = discovered
         return discovered
 
-    def _stop_running_server(self, key: str, *, expected: _RunningMcpServer | None = None) -> None:
-        with self._state_lock:
-            running = self._running_servers.get(key)
-            if running is None or (expected is not None and running is not expected):
-                return
-            self._tool_descriptors_by_server.pop(key, None)
-            self._running_servers.pop(key)
-        self._terminate_running_server(running)
-        with self._state_lock:
-            if key not in self._running_servers:
-                self._set_server_state(key=key, status="stopped")
+    async def _stop_running_server_owned(self, key: str, *, expected: _RunningMcpServer | None = None) -> None:
+        running = self._running_servers.get(key)
+        if running is None or (expected is not None and running is not expected):
+            return
+        self._tool_descriptors_by_server.pop(key, None)
+        self._running_servers.pop(key)
+        await self._terminate_running_server_owned(running)
+        if key not in self._running_servers:
+            self._set_server_state_owned(key=key, status="stopped")
 
-    def _set_server_state(self, *, key: str, status: Literal["running", "stopped", "failed"], error: str | None = None) -> None:
-        with self._state_lock:
-            self._server_states[key] = McpServerRuntimeState(status=status, error=error)
+    def _set_server_state_owned(self, *, key: str, status: Literal["running", "stopped", "failed"], error: str | None = None) -> None:
+        self._server_states[key] = McpServerRuntimeState(status=status, error=error)
 
-    def _report_remote_connect_failure(
+    def _report_remote_connect_failure_owned(
         self,
         *,
         key: str,
@@ -642,7 +794,7 @@ class ManagedMcpManager:
         Returns the clean user-facing message raised as a ``ValueError``.
         """
         message = f"MCP[{server_name}]: failed to connect to remote server"
-        self._set_server_state(key=key, status="failed", error=message)
+        self._set_server_state_owned(key=key, status="failed", error=message)
         return message
 
     def _message_for_exception(self, exc: BaseException, *, fallback: str) -> str:
@@ -661,27 +813,27 @@ class ManagedMcpManager:
         return False
 
     @staticmethod
-    def _close_partial_server(
+    async def _close_partial_server_owned(
         *,
-        session_context: AbstractContextManager[ClientSession] | None,
-        transport_context: AbstractContextManager[tuple[object, object]] | None,
+        session_context: _OwnedAsyncContext | None,
+        transport_context: _OwnedAsyncContext | None,
         stderr_log: IO[str] | None,
     ) -> None:
         if session_context is not None:
             with suppress(BaseException):
-                session_context.__exit__(None, None, None)
+                await session_context.exit()
         if transport_context is not None:
             with suppress(BaseException):
-                transport_context.__exit__(None, None, None)
+                await transport_context.exit()
         if stderr_log is not None:
             stderr_log.close()
 
     @staticmethod
-    def _terminate_running_server(running: _RunningMcpServer) -> None:
+    async def _terminate_running_server_owned(running: _RunningMcpServer) -> None:
         with suppress(BaseException):
-            running.session_context.__exit__(None, None, None)
+            await running.session_context.exit()
         with suppress(BaseException):
-            running.transport_context.__exit__(None, None, None)
+            await running.transport_context.exit()
         if running.stderr_log is not None:
             running.stderr_log.close()
 

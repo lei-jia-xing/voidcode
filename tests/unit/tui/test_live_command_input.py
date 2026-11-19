@@ -7,7 +7,7 @@ from typing import Any
 
 from voidcode.sdk.client import CommandCatalog
 from voidcode.sdk.commands import CommandDescriptor, CommandInputSnapshot, CommandPresentation
-from voidcode.sdk.gates import ConfirmationGate, ConfirmationRequested
+from voidcode.tui.gates import ConfirmationGate, ConfirmationRequested
 from voidcode.tui.keys import Key
 from voidcode.tui.terminal_app import CoreTuiApp
 from voidcode.tui.views import InteractiveChoices, InteractiveConfirmation
@@ -169,11 +169,12 @@ def test_close_stops_polling_and_stale_replies_never_remount() -> None:
     app._handle_overlay_key(Key("esc"))
     assert app.active_overlay is None
     assert app._live_input is None
-    stale_serial = app._live_serial
+    stale_token = app._follower.begin_live()
+    app._follower.begin_live()  # supersede the crafted token: the reply is now stale
     app.event_queue.put(
         {
             "kind": "live_input_ready",
-            "serial": stale_serial,
+            "token": stale_token,
             "revision_id": "rev-1",
             "session_id": "s1",
             "generation": app._generation,
@@ -210,11 +211,11 @@ def test_confirmation_suspends_live_and_direct_decision_restores() -> None:
     )
     app._apply_gate_change(ConfirmationRequested(gate))
     assert isinstance(app.active_overlay, InteractiveConfirmation)
-    live_serial = app._live_serial
+    live_token = app._follower.begin_live()
     app.event_queue.put(
         {
             "kind": "live_input_ready",
-            "serial": live_serial,
+            "token": live_token,
             "revision_id": "rev-1",
             "session_id": "s1",
             "generation": app._generation,
@@ -226,7 +227,7 @@ def test_confirmation_suspends_live_and_direct_decision_restores() -> None:
     )
     app._drain_events()
     assert isinstance(app.active_overlay, InteractiveConfirmation)
-    from voidcode.sdk.gates import GateDecided
+    from voidcode.tui.gates import GateDecided
 
     app._apply_gate_change(GateDecided("cancel-1"))
     assert app.active_overlay is live
@@ -242,10 +243,11 @@ def test_refresh_error_rearms_from_stored_cadence_and_stays_visible() -> None:
     _drain(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
     before = time.monotonic()
+    token = app._follower.begin_live()
     app.event_queue.put(
         {
             "kind": "live_input_ready",
-            "serial": app._live_serial,
+            "token": token,
             "revision_id": "rev-1",
             "session_id": "s1",
             "generation": app._generation,
@@ -267,13 +269,14 @@ def test_stale_reply_never_touches_replaced_overlay() -> None:
     app._handle_composer_key(Key("alt+a"))
     _drain(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
-    serial = app._live_serial
+    stale_token = app._follower.begin_live()
+    app._follower.begin_live()  # supersede the crafted token: the reply is now stale
     newer = InteractiveChoices(app.active_overlay.view, revision_id="rev-1")
     app.active_overlay = newer
     app.event_queue.put(
         {
             "kind": "live_input_ready",
-            "serial": serial,
+            "token": stale_token,
             "revision_id": "rev-1",
             "session_id": "s1",
             "generation": app._generation,
@@ -290,8 +293,8 @@ def test_stale_reply_never_touches_replaced_overlay() -> None:
 
 def test_queued_gates_present_before_suspended_monitor() -> None:
     from voidcode.sdk.commands import ConfirmationRequest
-    from voidcode.sdk.gates import GateDecided
     from voidcode.sdk.views import ConfirmationViewData
+    from voidcode.tui.gates import GateDecided
 
     client = _LiveClient([_choices(["a"])])
     app, _ = _app(client)

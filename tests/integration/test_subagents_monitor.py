@@ -16,7 +16,7 @@ from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.events import child_completion_notice_id
 from voidcode.core.history_renderer import iter_event_blocks
-from voidcode.sdk.limits import CHILD_PROMPT_MAX_BYTES
+from voidcode.sdk.child_schema import CHILD_PROMPT_MAX_BYTES
 from voidcode.sdk.views import ChoicesViewData, MarkdownViewData, choices_dispatch
 
 _SUBAGENTS_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"

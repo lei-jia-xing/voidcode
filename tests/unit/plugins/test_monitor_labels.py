@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from jsonschema import validate
 
+from voidcode.core.history_renderer import HistoryPage
 from voidcode.plugins.subagents.monitor import MONITOR_COMMAND, MonitorCommand
 from voidcode.sdk.commands import CommandInvocation, CommandPresentation
-from voidcode.sdk.history import HistoryPage
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import DescendantNode, PluginServices

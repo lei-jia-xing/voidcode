@@ -17,11 +17,11 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.types import Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 
+from voidcode import __version__
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import DATABASE_FILENAME, inspect_existing_workspace
 from voidcode.sdk.client import HealthStatus, SessionFrameWire
-from voidcode.sdk.rpc import RPC_MAX_MESSAGE_BYTES, RPC_SUBPROTOCOL, RpcFailure, RpcNotification, RpcRequest, RpcSuccess
 from voidcode.sdk.views import (
     ChoicesViewData,
     ConfirmationViewData,
@@ -36,7 +36,7 @@ from voidcode.sdk.views import (
     TableViewData,
 )
 
-from .models import AuthenticateParams, SessionFrameParams, SubscriptionClosedParams
+from .models import RPC_MAX_MESSAGE_BYTES, RPC_SUBPROTOCOL, AuthenticateParams, RpcRequest, SessionFrameParams, SubscriptionClosedParams
 from .projection import health_payload, model_payload
 from .rpc import CONNECTION_METHODS, METHODS, RpcConnection, failure, parse_json
 
@@ -45,7 +45,7 @@ class JsonResponse(JSONResponse):
     media_type = "application/json; charset=utf-8"
 
     def render(self, content: object) -> bytes:
-        return json.dumps(content, sort_keys=True, allow_nan=False).encode("utf-8")
+        return json.dumps(content, allow_nan=False).encode("utf-8")
 
 
 def _error(status: int, message: str, code: str | None = None) -> JsonResponse:
@@ -57,6 +57,63 @@ async def _http_exception_handler(_request: Request, exc: HTTPException) -> Resp
     return _error(exc.status_code, message)
 
 
+def rpc_schema_document() -> dict[str, Any]:
+    """The RPC method table served at ``GET /api/openapi.json``.
+
+    Built straight from the :data:`METHODS` registry: every method's params and
+    result schemas, the shared DTOs the frontend generates types from, and the
+    ``x-rpc-*`` registries. ``scripts/generate_frontend_api_types.py`` consumes
+    this same document.
+    """
+    schemas: dict[str, Any] = {}
+    view_classes = [
+        NoticeViewData,
+        MarkdownViewData,
+        FieldsViewData,
+        ChoicesViewData,
+        ConfirmationViewData,
+        FormViewData,
+        DiffViewData,
+        StatusViewData,
+        TableViewData,
+        JsonViewData,
+        MediaViewData,
+    ]
+    declarations: list[tuple[str, Any]] = [(HealthStatus.__name__, HealthStatus)]
+    declarations.extend((cls.__name__, cls) for cls in view_classes)
+    methods = {name: (method.params, method.result) for name, method in METHODS.items()} | CONNECTION_METHODS
+    for params, result in methods.values():
+        declarations.extend([(params.__name__, params), (result.__name__, result)])
+    declarations.append(("SessionFrameWire", SessionFrameWire))
+    notifications = {"session.frame": SessionFrameParams, "subscription.closed": SubscriptionClosedParams}
+    declarations.extend((cls.__name__, cls) for cls in notifications.values())
+    for name, cls in declarations:
+        schema = TypeAdapter(cls).json_schema(ref_template="#/components/schemas/{model}")
+        schemas.update(schema.pop("$defs", {}))
+        schemas[name] = schema
+    schemas["PluginViewData"] = {"oneOf": [{"$ref": f"#/components/schemas/{cls.__name__}"} for cls in view_classes]}
+    schemas["PluginViewDescriptor"]["properties"]["data"] = {"$ref": "#/components/schemas/PluginViewData"}
+    schemas["CommandPresentationData"] = {
+        "oneOf": [{"$ref": f"#/components/schemas/{cls.__name__}"} for cls in view_classes if cls is not ConfirmationViewData]
+    }
+    schemas["CommandPresentation"]["properties"]["data"] = {"$ref": "#/components/schemas/CommandPresentationData"}
+    return {
+        "openapi": "3.1.0",
+        "info": {"title": "VoidCode RPC contract", "version": __version__},
+        "paths": {},
+        "components": {"schemas": schemas},
+        "x-rpc-methods": {
+            name: {
+                "params": {"$ref": f"#/components/schemas/{params.__name__}"},
+                "result": {"$ref": f"#/components/schemas/{result.__name__}"},
+            }
+            for name, (params, result) in methods.items()
+        },
+        "x-rpc-notifications": {name: {"$ref": f"#/components/schemas/{cls.__name__}"} for name, cls in notifications.items()},
+        "x-rpc-transport": {"path": "/api/rpc", "subprotocol": RPC_SUBPROTOCOL},
+    }
+
+
 class CoreTransportApp(FastAPI):
     def __init__(
         self,
@@ -65,10 +122,6 @@ class CoreTransportApp(FastAPI):
         bearer_token: str | None = None,
         allow_origin: str | None = None,
         frontend_dist: Path | None = None,
-        fenced: bool = False,
-        control_token: str | None = None,
-        generation: int = 1,
-        upgrade_id: str | None = None,
         workspace: Path | None = None,
         state_dir: Path | None = None,
     ) -> None:
@@ -85,13 +138,8 @@ class CoreTransportApp(FastAPI):
         self._core: Core | None = None
         self._bearer_token = bearer_token
         self._allow_origin = allow_origin
-        self._fenced = fenced
-        self._control_token = control_token
-        self._generation = generation
-        self._upgrade_id = upgrade_id
         self._workspace = workspace
         self._state_dir = state_dir
-        self._stage = "serving" if not fenced else "validating"
         self._frontend_dist = frontend_dist.resolve() if frontend_dist is not None and frontend_dist.is_dir() else None
         self._rpc_calls: set[asyncio.Task[None]] = set()
         self.add_api_route("/api/health", self._handle_health, response_model=HealthStatus)
@@ -104,8 +152,6 @@ class CoreTransportApp(FastAPI):
     async def _lifespan(self, _app: FastAPI) -> AsyncGenerator[None]:
         core = await asyncio.to_thread(self._core_factory)
         self._core = core
-        if self._fenced:
-            self._stage = "validated"
         try:
             yield
         finally:
@@ -189,51 +235,7 @@ class CoreTransportApp(FastAPI):
             return
 
     async def _handle_schema(self) -> Response:
-        return JsonResponse(self.openapi())
-
-    def openapi(self) -> dict[str, Any]:  # type: ignore[override]
-        doc = super().openapi()
-        schemas = doc.setdefault("components", {}).setdefault("schemas", {})
-        view_classes = [
-            NoticeViewData,
-            MarkdownViewData,
-            FieldsViewData,
-            ChoicesViewData,
-            ConfirmationViewData,
-            FormViewData,
-            DiffViewData,
-            StatusViewData,
-            TableViewData,
-            JsonViewData,
-            MediaViewData,
-        ]
-        declarations: list[tuple[str, Any]] = [(cls.__name__, cls) for cls in [*view_classes, RpcRequest, RpcSuccess, RpcFailure, RpcNotification]]
-        methods = {name: (method.params, method.result) for name, method in METHODS.items()} | CONNECTION_METHODS
-        for params, result in methods.values():
-            declarations.extend([(params.__name__, params), (result.__name__, result)])
-        declarations.append(("SessionFrameWire", SessionFrameWire))
-        notifications = {"session.frame": SessionFrameParams, "subscription.closed": SubscriptionClosedParams}
-        declarations.extend((cls.__name__, cls) for cls in notifications.values())
-        for name, cls in declarations:
-            schema = TypeAdapter(cls).json_schema(ref_template="#/components/schemas/{model}")
-            schemas.update(schema.pop("$defs", {}))
-            schemas[name] = schema
-        schemas["PluginViewData"] = {"oneOf": [{"$ref": f"#/components/schemas/{cls.__name__}"} for cls in view_classes]}
-        schemas["PluginViewDescriptor"]["properties"]["data"] = {"$ref": "#/components/schemas/PluginViewData"}
-        schemas["CommandPresentationData"] = {
-            "oneOf": [{"$ref": f"#/components/schemas/{cls.__name__}"} for cls in view_classes if cls is not ConfirmationViewData]
-        }
-        schemas["CommandPresentation"]["properties"]["data"] = {"$ref": "#/components/schemas/CommandPresentationData"}
-        doc["x-rpc-methods"] = {
-            name: {
-                "params": {"$ref": f"#/components/schemas/{params.__name__}"},
-                "result": {"$ref": f"#/components/schemas/{result.__name__}"},
-            }
-            for name, (params, result) in methods.items()
-        }
-        doc["x-rpc-notifications"] = {name: {"$ref": f"#/components/schemas/{cls.__name__}"} for name, cls in notifications.items()}
-        doc["x-rpc-transport"] = {"path": "/api/rpc", "subprotocol": RPC_SUBPROTOCOL}
-        return doc
+        return JsonResponse(rpc_schema_document())
 
     async def _handle_health(self) -> Response:
         revision_id = self._core.revision_id if self._core is not None else ""
@@ -256,10 +258,8 @@ class CoreTransportApp(FastAPI):
         return JsonResponse(
             health_payload(
                 revision_id=revision_id,
-                stage=self._stage,
+                stage="serving",
                 workspace=str(self._workspace) if self._workspace else "",
-                generation=self._generation,
-                upgrade_id=self._upgrade_id,
                 model=model,
             )
         )
@@ -281,10 +281,6 @@ def create_core_app(
     bearer_token: str | None = None,
     allow_origin: str | None = None,
     frontend_dist: Path | None = None,
-    fenced: bool = False,
-    control_token: str | None = None,
-    generation: int = 1,
-    upgrade_id: str | None = None,
 ) -> CoreTransportApp:
     resolved_workspace = workspace.resolve(strict=True)
     resolved_state = None if state_dir is None else Path(state_dir)
@@ -297,10 +293,6 @@ def create_core_app(
         bearer_token=bearer_token,
         allow_origin=allow_origin,
         frontend_dist=frontend_dist,
-        fenced=fenced,
-        control_token=control_token,
-        generation=generation,
-        upgrade_id=upgrade_id,
         workspace=resolved_workspace,
         state_dir=resolved_state,
     )
@@ -312,23 +304,15 @@ def create_core_app_with_factory(
     bearer_token: str | None = None,
     allow_origin: str | None = None,
     frontend_dist: Path | None = None,
-    fenced: bool = False,
-    control_token: str | None = None,
-    generation: int = 1,
-    upgrade_id: str | None = None,
     workspace: Path | None = None,
     state_dir: Path | None = None,
 ) -> CoreTransportApp:
-    """Build the app against an explicit factory (tests and OpenAPI generation)."""
+    """Build the app against an explicit factory (tests)."""
     return CoreTransportApp(
         core_factory=core_factory,
         bearer_token=bearer_token,
         allow_origin=allow_origin,
         frontend_dist=frontend_dist,
-        fenced=fenced,
-        control_token=control_token,
-        generation=generation,
-        upgrade_id=upgrade_id,
         workspace=workspace,
         state_dir=state_dir,
     )

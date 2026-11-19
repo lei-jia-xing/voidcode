@@ -24,7 +24,6 @@ from voidcode.sdk.client import (
     StreamEvent,
 )
 from voidcode.sdk.commands import CommandDescriptor, ConfirmationRequest
-from voidcode.sdk.gates import ApprovalGate
 from voidcode.sdk.provider import ProviderMessage, ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.tools import OutputBounds, TextOutput, ToolCall, ToolEffect, ToolFailure, ToolSuccess
 from voidcode.sdk.transcript import TranscriptEntry, TranscriptPage, TranscriptRun, TranscriptTool
@@ -37,6 +36,7 @@ from voidcode.sdk.views import (
     PluginViewDescriptor,
     ViewsSnapshot,
 )
+from voidcode.tui.gates import ApprovalGate
 from voidcode.tui.keys import Key
 from voidcode.tui.views import (
     InteractiveApproval,
@@ -521,6 +521,9 @@ class _StubTerminal:
     def drain_kitty_replies(self) -> tuple[()]:
         return ()
 
+    def resize_pending(self) -> bool:
+        return False
+
     def commit_rows(self, rows: list[str]) -> None:
         self.committed.extend(rows)
 
@@ -671,15 +674,19 @@ def _refresh_connection(app: Any, *, timeout: float = 5.0) -> None:
     """Run one real automatic reconnect refresh and wait for it to apply."""
     import time
 
-    target = app._reconcile_serial + 1
+    before = app.upgrade
     app._reconcile_connection_async()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         app._drain_events()
-        if app._reconcile_applied >= target:
+        if app.upgrade is not None and app.upgrade is not before:
+            # Health applies first; the same round's reconciled envelope trails
+            # by microseconds (all fetches precede both puts). Pump until it lands.
+            for _ in range(5):
+                app._drain_events()
+                time.sleep(0.01)
             return
-        time.sleep(0.01)
-    raise AssertionError(f"reconcile never applied: serial={target!r} applied={app._reconcile_applied!r}")
+    raise AssertionError("reconcile never applied")
 
 
 def test_reconnect_replays_unseen_rows_despite_ahead_restart_watermark() -> None:
@@ -1386,7 +1393,7 @@ def test_reasoning_progress_does_not_pollute_the_text_buffer() -> None:
 
 def test_terminated_run_cannot_resurrect_then_newer_run_keeps_its_gate() -> None:
     """A late pending receipt for a dead run never reopens; an old run end keeps a newer gate."""
-    from voidcode.sdk.gates import ApprovalRequested, GateState, RunTerminated, reduce_gates
+    from voidcode.tui.gates import ApprovalRequested, GateState, RunTerminated, reduce_gates
 
     first = _approval_gate("appr-old", run_id="run-old")
     state = reduce_gates(GateState(), ApprovalRequested(first))
@@ -1406,8 +1413,8 @@ def test_terminated_run_cannot_resurrect_then_newer_run_keeps_its_gate() -> None
 
 def test_activation_tombstones_old_revision_confirmation() -> None:
     """A late old-revision confirmation after activation never reopens the queue."""
-    from voidcode.sdk.gates import ActivationCommitted, ConfirmationRequested, GateState, reduce_gates
-    from voidcode.sdk.gates import ConfirmationGate as Gate
+    from voidcode.tui.gates import ActivationCommitted, ConfirmationRequested, GateState, reduce_gates
+    from voidcode.tui.gates import ConfirmationGate as Gate
 
     request = ConfirmationRequest(
         request_id="conf-old",

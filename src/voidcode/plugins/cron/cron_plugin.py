@@ -41,11 +41,16 @@ from dataclasses import dataclass, field, replace
 from typing import ClassVar, Final, Literal, cast
 from uuid import uuid4
 
+from voidcode.capabilities.plugin_state import PluginStateStore
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import PluginFact, RunFinishedFact, WakeupFiredFact
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import (
+    PluginServices,
+    ScheduledWorkServices,
+    StateServices,
+)
 from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
@@ -73,7 +78,6 @@ _ONE_SHOT_KINDS: frozenset[str] = frozenset({"at", "once"})
 _RECURRING_KINDS: frozenset[str] = frozenset({"every", "cron"})
 _KINDS: frozenset[str] = _ONE_SHOT_KINDS | _RECURRING_KINDS
 
-_STATE_KEYS: frozenset[str] = frozenset({"schema_version", "schedules", "cursor_sequence"})
 _SCHEDULE_KEYS: frozenset[str] = frozenset({"schedule_text", "kind", "prompt", "enabled", "expires_at", "wakeup_id"})
 #: How many event pages one observation may consume while looking for unconsumed wakeup firings.
 _MAX_EVENT_PAGES: Final[int] = 3
@@ -148,15 +152,7 @@ class CronState:
     cursor_sequence: int = 0
 
     @classmethod
-    def from_payload(cls, raw: Mapping[str, object] | None) -> CronState:
-        if raw is None:
-            return cls()
-        unknown = sorted(str(key) for key in raw if key not in _STATE_KEYS)
-        if unknown:
-            raise ValueError(f"cron state field '{unknown[0]}' is not supported")
-        missing = sorted(_STATE_KEYS - raw.keys())
-        if missing:
-            raise ValueError("cron state is missing field(s): " + ", ".join(missing))
+    def from_payload(cls, raw: Mapping[str, object]) -> CronState:
         if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"cron state schema_version must be {SCHEMA_VERSION}, got {raw['schema_version']!r}")
         cursor = raw["cursor_sequence"]
@@ -209,7 +205,7 @@ def _optional_ms(value: object, *, field: str) -> int | None:
 # --- Wakeup arming (one armed wakeup per schedule, keyed by its fire instant) ---
 
 
-def _arm(services: PluginServices, *, schedule_id: str, prompt: str, due_at_ms: int) -> str:
+def _arm(services: ScheduledWorkServices, *, schedule_id: str, prompt: str, due_at_ms: int) -> str:
     """Schedule the next fire of one schedule as a user-role wakeup of the owning session.
 
     The idempotency key is the schedule plus the exact fire instant, so re-arming the same future
@@ -223,19 +219,23 @@ def _arm(services: PluginServices, *, schedule_id: str, prompt: str, due_at_ms: 
     )
 
 
-def _disarm(services: PluginServices, wakeup_id: str | None) -> None:
+def _disarm(services: ScheduledWorkServices, wakeup_id: str | None) -> None:
     """Cancel a pending wakeup; a claimed one is already spent and stays untouched."""
     if wakeup_id:
         services.cancel_wakeup(wakeup_id)
 
 
-def _load_state(services: PluginServices) -> tuple[CronState, int]:
-    state_data, version = services.get_state("session")
-    return CronState.from_payload(state_data), version
-
-
-def _write_state(services: PluginServices, state: CronState, *, expected_version: int) -> None:
-    services.replace_state(state.to_payload(), expected_version=expected_version)
+def _store(services: StateServices) -> PluginStateStore[CronState]:
+    """This plugin's session-state store: strict keys, typed parse, CAS save."""
+    return PluginStateStore(
+        services,
+        keys=frozenset({"schema_version", "schedules", "cursor_sequence"}),
+        parse=CronState.from_payload,
+        serialize=CronState.to_payload,
+        empty=CronState,
+        unknown=lambda extra: f"cron state field '{extra[0]}' is not supported",
+        missing=lambda absent: "cron state is missing field(s): " + ", ".join(absent),
+    )
 
 
 def _expiry_for(expr: ScheduleExpr, *, now_ms: int) -> int | None:
@@ -286,7 +286,7 @@ def _create(
     entry = replace(entry, wakeup_id=_arm(services, schedule_id=schedule_id, prompt=prompt, due_at_ms=due_at_ms))
     schedules = dict(state.schedules)
     schedules[schedule_id] = entry
-    _write_state(services, replace(state, schedules=schedules), expected_version=version)
+    _store(services).save(replace(state, schedules=schedules), version)
     services.stage_event("schedule_created", _created_event(schedule_id=schedule_id, entry=entry, expr=expr, next_fire_ms=due_at_ms))
     return schedule_id, entry
 
@@ -345,7 +345,7 @@ class CronCreateTool:
             return _failure(self.definition.name, "Prompt must be a non-empty string.")
         schedule_text = raw_schedule.strip()
         prompt = raw_prompt.strip()
-        state, version = _load_state(services)
+        state, version = _store(services).load()
         try:
             expr = parse_schedule(schedule_text)
         except ValueError as exc:
@@ -372,12 +372,12 @@ class CronCreateTool:
 
 
 def _delete_schedule(services: PluginServices, schedule_id: str) -> None:
-    state, version = _load_state(services)
+    state, version = _store(services).load()
     entry = state.schedules.get(schedule_id)
     if entry is None:
         raise ValueError(f"Schedule '{schedule_id}' not found.")
     schedules = {key: value for key, value in state.schedules.items() if key != schedule_id}
-    _write_state(services, replace(state, schedules=schedules), expected_version=version)
+    _store(services).save(replace(state, schedules=schedules), version)
     _disarm(services, entry.wakeup_id)
 
 
@@ -434,7 +434,7 @@ class CronListTool:
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         _ = call
         context.require_session_id()
-        state, _version = _load_state(services)
+        state, _version = _store(services).load()
         now_seconds = _clock_ms() // 1000
         jobs: list[dict[str, object]] = []
         for schedule_id, entry in state.schedules.items():
@@ -518,7 +518,7 @@ class CronLoopCommand:
             expr = parse_schedule(schedule_text)
         except ValueError as exc:
             return CommandResult(status="error", error=str(exc))
-        state, version = _load_state(services)
+        state, version = _store(services).load()
         now_ms = _clock_ms()
         try:
             schedule_id, _entry = _create(
@@ -570,7 +570,7 @@ class CronListCommand:
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
-        state, _ = _load_state(services)
+        state, _ = _store(services).load()
         entries = list(state.schedules.items())
         offset = invocation.arguments.get("offset", 0)
         if type(offset) is not int or not 0 <= offset <= len(entries):
@@ -651,7 +651,7 @@ def _consume_fired(state: CronState, services: PluginServices, run_id: str) -> t
 
 
 def _settle(
-    services: PluginServices,
+    services: ScheduledWorkServices,
     *,
     schedule_id: str,
     entry: ScheduleEntry,
@@ -681,8 +681,7 @@ def cron_observer(fact: PluginFact, context: ToolContext, services: PluginServic
     _ = context
     if not isinstance(fact, RunFinishedFact):
         return
-    stored, version = services.get_state("session")
-    state = CronState.from_payload(stored)
+    state, version = _store(services).load()
     consumed, fired = _consume_fired(state, services, fact.run_id)
     now_ms = _clock_ms()
     schedules = dict(consumed.schedules)
@@ -709,7 +708,7 @@ def cron_observer(fact: PluginFact, context: ToolContext, services: PluginServic
         events.append(event)
     updated = CronState(schedules=schedules, cursor_sequence=consumed.cursor_sequence)
     if updated != state:
-        _write_state(services, updated, expected_version=version)
+        _store(services).save(updated, version)
     for event in events:
         services.stage_event("schedule_fired", event)
 

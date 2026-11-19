@@ -12,9 +12,9 @@ from voidcode.core.coverage import project_tool_result, read_artifact_content
 from voidcode.core.history_renderer import render_event_block
 from voidcode.plugins.compaction.projection import _output_text
 from voidcode.sdk.codec import decode_tool_result, encode_tool_result
-from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.services import ArtifactPage, ArtifactReference
 from voidcode.sdk.tools import (
+    TOOL_OUTPUT_BYTES,
     CompositeOutput,
     JsonPart,
     MediaPart,

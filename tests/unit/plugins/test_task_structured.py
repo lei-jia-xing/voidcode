@@ -7,7 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from tests.fixtures.fake_services import FakeServices
-from voidcode.plugins.subagents.subagents_plugin import DelegationState, TaskBatchTool, TaskTool
+from voidcode.plugins.subagents import subagents_plugin
+from voidcode.plugins.subagents.subagents_plugin import TaskBatchTool, TaskTool
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import BudgetExhaustion, ChildOutcome
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
@@ -165,8 +166,7 @@ def test_spawn_records_schema_for_later_output_reads(tmp_path: Path) -> None:
     services = FakeServices()
     spawned = _task(services, tmp_path, {"prompt": "list", "result_schema": dict(_SCHEMA)})
     assert isinstance(spawned, ToolSuccess)
-    stored, _version = services.get_state("session")
-    record = DelegationState.from_payload(stored).children["child-1"]
+    record = subagents_plugin._store(services).load()[0].children["child-1"]
     assert record.result_schema is not None and dict(record.result_schema) == _SCHEMA
     assert services.spawn_calls[0]["result_schema"] is not None
     services.roster["child-1"] = replace(services.roster["child-1"], output='{"files": [], "ok": false}')

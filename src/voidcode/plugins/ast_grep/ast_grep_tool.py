@@ -11,11 +11,11 @@ from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 from voidcode.capabilities.files.errors import raise_tool_diagnostic
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessResult
+from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices, ProcessResult, ProcessServices
 from voidcode.sdk.tools import (
+    Change,
     OpaqueToolBody,
     OutputBounds,
-    ResourceChange,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -137,7 +137,7 @@ def _match_result_output(
     output: str,
     native_jsonl: str,
     *,
-    services: PluginServices,
+    services: ArtifactServices,
     truncated: bool,
     artifact: ArtifactReference | None = None,
 ) -> tuple[TextOutput, ArtifactReference]:
@@ -226,7 +226,7 @@ def _run_ast_grep(
     *,
     cmd: list[str],
     workspace: Path,
-    services: PluginServices,
+    services: ProcessServices,
     timeout_seconds: int = 30,
     query: bool = False,
 ) -> ProcessResult:
@@ -571,5 +571,5 @@ class AstGrepReplaceTool:
             tool_name=self.definition.name,
             output=output,
             body=OpaqueToolBody(result_body),
-            changes=tuple(ResourceChange(str(item["path"])) for item in file_results),
+            changes=tuple(Change(str(item["path"])) for item in file_results),
         )

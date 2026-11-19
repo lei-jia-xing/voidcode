@@ -17,7 +17,8 @@ from voidcode.core.engine import Core
 from voidcode.core.processes import ProcessRegistry
 from voidcode.sdk.commands import CommandResult
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.observed_effects import ObservedChange, ObservedEffects
+from voidcode.sdk.observed_effects import ObservedEffects
+from voidcode.sdk.tools import Change
 
 _SOURCE = """
 from uuid import uuid4
@@ -88,7 +89,7 @@ def test_cancel_stops_command_and_discards_staged_work(core: Core, monkeypatch: 
 
     def observed_run(self, *args, **kwargs):
         result = original(self, *args, **kwargs)
-        return replace(result, effects=ObservedEffects(changes=(ObservedChange(str(marker), "create"),)))
+        return replace(result, effects=ObservedEffects(changes=(Change(str(marker), "create"),)))
 
     monkeypatch.setattr(ProcessRegistry, "run", observed_run)
     script = f"from pathlib import Path; import time; Path({str(marker)!r}).touch(); time.sleep(30); Path({str(late)!r}).touch()"
@@ -163,8 +164,8 @@ def test_command_persists_supervisor_changes_even_after_throw(core: Core, monkey
     def observed_run(self, *args, **kwargs):
         result = original(self, *args, **kwargs)
         # Exercise the supervisor-report boundary without requiring a native sandbox.
-        change = ObservedChange(str(core.workspace / "changed.txt"), "create", content_hash="observed-hash")
-        return replace(result, effects=ObservedEffects(changes=(change, change, ObservedChange("/tmp/scratch", scratch=True))))
+        change = Change(str(core.workspace / "changed.txt"), "create", content_hash="observed-hash")
+        return replace(result, effects=ObservedEffects(changes=(change, change, Change("/tmp/scratch", scratch=True))))
 
     monkeypatch.setattr(ProcessRegistry, "run", observed_run)
     arguments = {

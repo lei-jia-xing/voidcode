@@ -7,13 +7,14 @@ import json
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import ClassVar, Literal, TypedDict
+from typing import ClassVar, Literal, TypedDict, overload
 
+from voidcode.capabilities.plugin_state import PluginStateStore
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact, RunFinishedFact, RunRequestedFact
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import HistoryServices, PluginServices, StateServices
 from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
@@ -37,7 +38,6 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "abandoned"})
 _INCOMPLETE_STATUSES: frozenset[str] = frozenset({"pending", "in_progress"})
 _ACTIVE_PROVIDER_STATUSES: frozenset[str] = frozenset({"pending", "in_progress", "blocked"})
 
-_STATE_KEYS: frozenset[str] = frozenset({"schema_version", "revision", "phases", "summary", "reminders"})
 _REMINDER_KEYS: frozenset[str] = frozenset({"todo", "todo_mid_run", "invocations", "cursor_sequence", "cycle_run_id"})
 #: How many event pages one observation may consume while looking for a new user prompt.
 _MAX_EVENT_PAGES = 3
@@ -88,21 +88,23 @@ def todo_summary(phases: Sequence[TodoPhase]) -> TodoSummary:
 # --- Reminder bookkeeping ---
 
 
-@dataclass(frozen=True, slots=True)
-class TodoReminderState:
-    """Per-cycle completion-reminder bookkeeping."""
+ReminderKind = Literal["todo", "todo_mid_run"]
 
+
+@dataclass(frozen=True, slots=True)
+class ReminderPolicy:
+    """Per-kind reminder policy plus its per-cycle bookkeeping, fused.
+
+    Completion reminders (``kind == "todo"``) use attempts/awaiting_progress/
+    progress_watermark; mid-run nudges use attempts/mutations/mutation_baseline.
+    Both stamp cycle_run_id. The two instances in TodoState keep independent
+    budgets; only the shape and the decision/text entries are shared.
+    """
+
+    kind: ReminderKind
     attempts: int = 0
     awaiting_progress: bool = False
     progress_watermark: int = 0
-    cycle_run_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TodoMidRunState:
-    """Per-cycle mid-run nudge bookkeeping."""
-
-    attempts: int = 0
     mutations: int = 0
     mutation_baseline: int = 0
     cycle_run_id: str | None = None
@@ -129,8 +131,8 @@ class TodoState:
 
     revision: int = 0
     phases: tuple[TodoPhase, ...] = ()
-    todo_reminder: TodoReminderState = TodoReminderState()
-    mid_run: TodoMidRunState = TodoMidRunState()
+    todo_reminder: ReminderPolicy = ReminderPolicy(kind="todo")
+    mid_run: ReminderPolicy = ReminderPolicy(kind="todo_mid_run")
     invocations: int = 0
     cursor_sequence: int = 0
     cycle_run_id: str | None = None
@@ -140,24 +142,13 @@ class TodoState:
         return todo_summary(self.phases)
 
     @classmethod
-    def from_payload(cls, raw: Mapping[str, object] | None) -> TodoState:
-        if raw is None:
-            return cls()
-        unknown = sorted(str(key) for key in raw if key not in _STATE_KEYS)
-        if unknown:
-            raise ValueError(f"todo state field '{unknown[0]}' is not supported")
-        missing = sorted(_STATE_KEYS - raw.keys())
-        if missing:
-            raise ValueError("todo state is missing field(s): " + ", ".join(missing))
+    def from_payload(cls, raw: Mapping[str, object]) -> TodoState:
         if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"todo state schema_version must be {SCHEMA_VERSION}, got {raw['schema_version']!r}")
         revision = raw["revision"]
         if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
             raise ValueError("todo state revision must be a non-negative integer")
         phases = parse_phases(raw["phases"])
-        summary = raw["summary"]
-        if not isinstance(summary, Mapping) or any(type(value) is not int for value in summary.values()) or dict(summary) != todo_summary(phases):
-            raise ValueError("todo state summary does not match phases")
         reminders = parse_reminders(raw["reminders"])
         return cls(
             revision=revision,
@@ -174,20 +165,9 @@ class TodoState:
             "schema_version": SCHEMA_VERSION,
             "revision": self.revision,
             "phases": phases_payload(self.phases),
-            "summary": dict(self.summary),
             "reminders": {
-                "todo": {
-                    "attempts": self.todo_reminder.attempts,
-                    "awaiting_progress": self.todo_reminder.awaiting_progress,
-                    "progress_watermark": self.todo_reminder.progress_watermark,
-                    "cycle_run_id": self.todo_reminder.cycle_run_id,
-                },
-                "todo_mid_run": {
-                    "attempts": self.mid_run.attempts,
-                    "mutations": self.mid_run.mutations,
-                    "mutation_baseline": self.mid_run.mutation_baseline,
-                    "cycle_run_id": self.mid_run.cycle_run_id,
-                },
+                "todo": _policy_payload(self.todo_reminder),
+                "todo_mid_run": _policy_payload(self.mid_run),
                 "invocations": self.invocations,
                 "cursor_sequence": self.cursor_sequence,
                 "cycle_run_id": self.cycle_run_id,
@@ -197,8 +177,8 @@ class TodoState:
 
 @dataclass(frozen=True, slots=True)
 class _Reminders:
-    todo_reminder: TodoReminderState
-    mid_run: TodoMidRunState
+    todo_reminder: ReminderPolicy
+    mid_run: ReminderPolicy
     invocations: int
     cursor_sequence: int
     cycle_run_id: str | None
@@ -218,6 +198,40 @@ def _cycle_run_id(value: object, *, field: str) -> str | None:
     return value
 
 
+_POLICY_KEYS: frozenset[str] = frozenset({"attempts", "awaiting_progress", "progress_watermark", "mutations", "mutation_baseline", "cycle_run_id"})
+
+
+def _parse_policy(raw: object, *, section: str, kind: ReminderKind) -> ReminderPolicy:
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"todo reminders.{section} must be an object")
+    unknown = sorted(str(key) for key in raw if key not in _POLICY_KEYS)
+    if unknown:
+        raise ValueError(f"todo reminders.{section} field '{unknown[0]}' is not supported")
+    awaiting = raw.get("awaiting_progress")
+    if not isinstance(awaiting, bool):
+        raise ValueError(f"todo reminders.{section} field 'awaiting_progress' must be a boolean")
+    return ReminderPolicy(
+        kind=kind,
+        attempts=_non_negative_int(raw.get("attempts"), field=f"{section}.attempts"),
+        awaiting_progress=awaiting,
+        progress_watermark=_non_negative_int(raw.get("progress_watermark"), field=f"{section}.progress_watermark"),
+        mutations=_non_negative_int(raw.get("mutations"), field=f"{section}.mutations"),
+        mutation_baseline=_non_negative_int(raw.get("mutation_baseline"), field=f"{section}.mutation_baseline"),
+        cycle_run_id=_cycle_run_id(raw.get("cycle_run_id"), field=f"{section}.cycle_run_id"),
+    )
+
+
+def _policy_payload(policy: ReminderPolicy) -> dict[str, object]:
+    return {
+        "attempts": policy.attempts,
+        "awaiting_progress": policy.awaiting_progress,
+        "progress_watermark": policy.progress_watermark,
+        "mutations": policy.mutations,
+        "mutation_baseline": policy.mutation_baseline,
+        "cycle_run_id": policy.cycle_run_id,
+    }
+
+
 def parse_reminders(raw: object) -> _Reminders:
     if not isinstance(raw, Mapping):
         raise ValueError("todo state requires a reminders object")
@@ -227,32 +241,9 @@ def parse_reminders(raw: object) -> _Reminders:
     missing = sorted(_REMINDER_KEYS - raw.keys())
     if missing:
         raise ValueError("todo reminders is missing field(s): " + ", ".join(missing))
-    todo_raw = raw["todo"]
-    mid_raw = raw["todo_mid_run"]
-    if not isinstance(todo_raw, Mapping) or not isinstance(mid_raw, Mapping):
-        raise ValueError("todo reminders sub-states must be objects")
-    todo_unknown = sorted(str(key) for key in todo_raw if key not in {"attempts", "awaiting_progress", "progress_watermark", "cycle_run_id"})
-    if todo_unknown:
-        raise ValueError(f"todo reminders.todo field '{todo_unknown[0]}' is not supported")
-    mid_unknown = sorted(str(key) for key in mid_raw if key not in {"attempts", "mutations", "mutation_baseline", "cycle_run_id"})
-    if mid_unknown:
-        raise ValueError(f"todo reminders.todo_mid_run field '{mid_unknown[0]}' is not supported")
-    awaiting = todo_raw.get("awaiting_progress")
-    if not isinstance(awaiting, bool):
-        raise ValueError("todo reminders.todo field 'awaiting_progress' must be a boolean")
     return _Reminders(
-        todo_reminder=TodoReminderState(
-            attempts=_non_negative_int(todo_raw.get("attempts"), field="todo.attempts"),
-            awaiting_progress=awaiting,
-            progress_watermark=_non_negative_int(todo_raw.get("progress_watermark"), field="todo.progress_watermark"),
-            cycle_run_id=_cycle_run_id(todo_raw.get("cycle_run_id"), field="todo.cycle_run_id"),
-        ),
-        mid_run=TodoMidRunState(
-            attempts=_non_negative_int(mid_raw.get("attempts"), field="todo_mid_run.attempts"),
-            mutations=_non_negative_int(mid_raw.get("mutations"), field="todo_mid_run.mutations"),
-            mutation_baseline=_non_negative_int(mid_raw.get("mutation_baseline"), field="todo_mid_run.mutation_baseline"),
-            cycle_run_id=_cycle_run_id(mid_raw.get("cycle_run_id"), field="todo_mid_run.cycle_run_id"),
-        ),
+        todo_reminder=_parse_policy(raw["todo"], section="todo", kind=TODO_REMINDER_KIND),
+        mid_run=_parse_policy(raw["todo_mid_run"], section="todo_mid_run", kind=TODO_MID_RUN_KIND),
         invocations=_non_negative_int(raw["invocations"], field="invocations"),
         cursor_sequence=_non_negative_int(raw["cursor_sequence"], field="cursor_sequence"),
         cycle_run_id=_cycle_run_id(raw["cycle_run_id"], field="cycle_run_id"),
@@ -582,72 +573,77 @@ def _apply(args: _TodoArgs, phases: list[TodoPhase]) -> None:
     _normalize_in_progress(phases)
 
 
-def _render(phases: list[TodoPhase], op: str, *, original: list[TodoPhase]) -> str:
-    if op in {"view", "init"}:
-        if not any(phase["tasks"] for phase in phases):
-            return "Todo list is empty."
-        return f"Todo {op} applied.\n{_render_table(phases)}"
-
-    lines = [f"Todo {op} applied."]
-    old_tasks = {(phase["name"], task["content"]): (phase["name"], task) for phase in original for task in phase["tasks"]}
-    new_tasks = {(phase["name"], task["content"]): (phase["name"], task) for phase in phases for task in phase["tasks"]}
-    for key in dict.fromkeys((*old_tasks, *new_tasks)):
-        old = old_tasks.get(key)
-        new = new_tasks.get(key)
-        if old == new:
-            continue
-        if new is None:
-            assert old is not None
-            lines.append(f"- [removed] {old[1]['content']} ({old[0]})")
-        else:
-            lines.append(f"- [{new[1]['status']}] {new[1]['content']} ({new[0]})")
-
-    active = next((task["content"] for phase in phases for task in phase["tasks"] if task["status"] == "in_progress"), None)
-    summary = todo_summary(phases)
-    lines.append(f"Next active: {active or 'none'}")
-    lines.append(
-        f"Summary: {summary['total']} total; {summary['pending']} pending; {summary['in_progress']} in progress; "
-        f"{summary['completed']} completed; {summary['abandoned']} abandoned; {summary['blocked']} blocked."
-    )
-    return "\n".join(lines)
+def _task_row(task: TodoTask, suffix: str = "") -> str:
+    return f"- [{task['status']}] {task['content']}{suffix}"
 
 
-def _render_table(phases: Sequence[TodoPhase]) -> str:
-    """User-facing table without the tool's "applied" header; identical rows otherwise."""
+@overload
+def render_phases(phases: Sequence[TodoPhase], op: str = ..., *, original: Sequence[TodoPhase] = ..., format: Literal["provider"]) -> str | None: ...
+
+
+@overload
+def render_phases(phases: Sequence[TodoPhase], op: str = ..., *, original: Sequence[TodoPhase] = ..., format: Literal["tool", "table"]) -> str: ...
+
+
+def render_phases(
+    phases: Sequence[TodoPhase],
+    op: str = "",
+    *,
+    original: Sequence[TodoPhase] = (),
+    format: Literal["tool", "table", "provider"],
+) -> str | None:
+    """Render phases as tool output, a plain table, or provider plan truth."""
+    if format == "provider":
+        active = [(phase["name"], [task for task in phase["tasks"] if task["status"] in _ACTIVE_PROVIDER_STATUSES]) for phase in phases]
+        active = [(name, tasks) for name, tasks in active if tasks]
+        if not active:
+            return None
+        lines = [
+            "Runtime-managed todo state is active for this session.",
+            "Use this as the current plan truth; do not recreate it from older tool results.",
+            "Use one todo operation at a time; view is read-only and mutations are persisted by the runtime.",
+            "Current active todos:",
+        ]
+        for name, tasks in active:
+            lines.append(f"{name}:")
+            for task in tasks:
+                suffix = f" (blocked: {task['blocker']})" if task.get("blocker") else ""
+                lines.append(_task_row(task, suffix))
+        return "\n".join(lines)
+    if format == "tool" and op not in {"view", "init"}:
+        lines = [f"Todo {op} applied."]
+        old_tasks = {(phase["name"], task["content"]): (phase["name"], task) for phase in original for task in phase["tasks"]}
+        new_tasks = {(phase["name"], task["content"]): (phase["name"], task) for phase in phases for task in phase["tasks"]}
+        for key in dict.fromkeys((*old_tasks, *new_tasks)):
+            old = old_tasks.get(key)
+            new = new_tasks.get(key)
+            if old == new:
+                continue
+            if new is None:
+                assert old is not None
+                lines.append(f"- [removed] {old[1]['content']} ({old[0]})")
+            else:
+                lines.append(f"- [{new[1]['status']}] {new[1]['content']} ({new[0]})")
+        active = next((task["content"] for phase in phases for task in phase["tasks"] if task["status"] == "in_progress"), None)
+        summary = todo_summary(phases)
+        lines.append(f"Next active: {active or 'none'}")
+        lines.append(
+            f"Summary: {summary['total']} total; {summary['pending']} pending; {summary['in_progress']} in progress; "
+            f"{summary['completed']} completed; {summary['abandoned']} abandoned; {summary['blocked']} blocked."
+        )
+        return "\n".join(lines)
     if not any(phase["tasks"] for phase in phases):
         return "Todo list is empty."
-    lines: list[str] = []
+    rows: list[str] = []
     for phase in phases:
-        lines.append(f"{phase['name']}:")
+        rows.append(f"{phase['name']}:")
         for task in phase["tasks"]:
-            blocker = f" — {task['blocker']}" if task.get("blocker") else ""
-            lines.append(f"- [{task['status']}] {task['content']}{blocker}")
-    return "\n".join(lines)
-
-
-# --- Provider plan truth ---
-
-
-def render_provider_state(phases: Sequence[TodoPhase]) -> str | None:
-    """Plan-truth prompt text, or None when no active task remains."""
-    active_phases: tuple[TodoPhase, ...] = tuple(
-        {"name": phase["name"], "tasks": [task for task in phase["tasks"] if task["status"] in _ACTIVE_PROVIDER_STATUSES]} for phase in phases
-    )
-    active_phases = tuple(phase for phase in active_phases if phase["tasks"])
-    if not active_phases:
-        return None
-    lines = [
-        "Runtime-managed todo state is active for this session.",
-        "Use this as the current plan truth; do not recreate it from older tool results.",
-        "Use one todo operation at a time; view is read-only and mutations are persisted by the runtime.",
-        "Current active todos:",
-    ]
-    for phase in active_phases:
-        lines.append(f"{phase['name']}:")
-        for task in phase["tasks"]:
-            blocker = f" (blocked: {task['blocker']})" if task.get("blocker") else ""
-            lines.append(f"- [{task['status']}] {task['content']}{blocker}")
-    return "\n".join(lines)
+            suffix = f" — {task['blocker']}" if task.get("blocker") else ""
+            rows.append(_task_row(task, suffix))
+    table = "\n".join(rows)
+    if format == "tool":
+        return f"Todo {op} applied.\n{table}"
+    return table
 
 
 # --- Reminder policy ---
@@ -658,56 +654,69 @@ TODO_MID_RUN_MAX_PER_CYCLE = 2
 DEFAULT_TODO_REMINDER_MAX_PER_CYCLE = 3
 #: Role the reminder must keep: a trailing user message, never a system segment.
 TODO_REMINDER_ROLE: Literal["user"] = "user"
-TODO_REMINDER_KIND = "todo"
-TODO_MID_RUN_KIND = "todo_mid_run"
+TODO_REMINDER_KIND: Literal["todo"] = "todo"
+TODO_MID_RUN_KIND: Literal["todo_mid_run"] = "todo_mid_run"
 
 
-def decide_todo_mid_run_nudge(
+def decide_reminder(
     *,
-    max_per_cycle: int = TODO_MID_RUN_MAX_PER_CYCLE,
-    state: TodoMidRunState,
+    policy: ReminderPolicy,
+    max_per_cycle: int,
     run_id: str | None,
-    mutations: int,
-    incomplete_count: int,
-) -> ReminderDecision[TodoMidRunState]:
-    """Whether the next provider call earns a mid-run todo nudge."""
-    fresh = TodoMidRunState(cycle_run_id=run_id)
-    cycle_state = state if state.cycle_run_id == run_id else fresh
-    baseline = min(cycle_state.mutation_baseline, mutations)
-    pending = mutations - baseline
-    counters = TodoMidRunState(
-        attempts=cycle_state.attempts,
-        mutations=pending,
-        mutation_baseline=baseline,
-        cycle_run_id=run_id,
-    )
-    silent: ReminderDecision[TodoMidRunState] = ReminderDecision(state=counters)
-    if incomplete_count == 0:
+    mutations: int = 0,
+    incomplete_count: int = 0,
+    incomplete_phases: tuple[tuple[str, tuple[str, ...]], ...] = (),
+    tool_result_count: int = 0,
+) -> ReminderDecision[ReminderPolicy]:
+    """Whether the next injection point earns a nudge for this policy's kind."""
+    if policy.kind == TODO_MID_RUN_KIND:
+        fresh = ReminderPolicy(kind=policy.kind, cycle_run_id=run_id)
+        cycle_state = policy if policy.cycle_run_id == run_id else fresh
+        baseline = min(cycle_state.mutation_baseline, mutations)
+        pending = mutations - baseline
+        counters = ReminderPolicy(
+            kind=policy.kind,
+            attempts=cycle_state.attempts,
+            mutations=pending,
+            mutation_baseline=baseline,
+            cycle_run_id=run_id,
+        )
+        silent: ReminderDecision[ReminderPolicy] = ReminderDecision(state=counters)
+        if incomplete_count == 0:
+            return silent
+        if pending < TODO_MID_RUN_MUTATION_THRESHOLD or counters.attempts >= max_per_cycle:
+            return silent
+        attempt = counters.attempts + 1
+        return ReminderDecision[ReminderPolicy](
+            state=ReminderPolicy(kind=policy.kind, attempts=attempt, mutations=0, mutation_baseline=mutations, cycle_run_id=run_id),
+            text=reminder_text(
+                policy.kind,
+                mutation_count=pending,
+                incomplete_count=incomplete_count,
+                attempt=attempt,
+                max_attempts=max_per_cycle,
+            ),
+        )
+    fresh = ReminderPolicy(kind=policy.kind, cycle_run_id=run_id)
+    cycle_state = policy if policy.cycle_run_id == run_id else fresh
+    silent = ReminderDecision(state=cycle_state)
+    if not incomplete_phases:
+        return replace(silent, state=fresh)
+    if cycle_state.awaiting_progress and tool_result_count <= cycle_state.progress_watermark:
         return silent
-    if pending < TODO_MID_RUN_MUTATION_THRESHOLD or counters.attempts >= max_per_cycle:
-        return silent
-    attempt = counters.attempts + 1
-    return ReminderDecision[TodoMidRunState](
-        state=TodoMidRunState(attempts=attempt, mutations=0, mutation_baseline=mutations, cycle_run_id=run_id),
-        text=todo_mid_run_nudge_text(
-            mutation_count=pending,
-            incomplete_count=incomplete_count,
-            attempt=attempt,
-            max_attempts=max_per_cycle,
+    progressed = replace(cycle_state, awaiting_progress=False)
+    if progressed.attempts >= max_per_cycle:
+        return replace(silent, state=progressed)
+    attempt = progressed.attempts + 1
+    return ReminderDecision[ReminderPolicy](
+        state=ReminderPolicy(
+            kind=policy.kind,
+            attempts=attempt,
+            awaiting_progress=True,
+            progress_watermark=tool_result_count,
+            cycle_run_id=run_id,
         ),
-    )
-
-
-def todo_mid_run_nudge_text(*, mutation_count: int, incomplete_count: int, attempt: int, max_attempts: int) -> str:
-    """Bounded mid-run nudge body."""
-    return "\n".join(
-        [
-            '<system-reminder reason="todo_stale">',
-            f"{mutation_count} mutating tool call(s) have run since the last todo update, and {incomplete_count} todo item(s) are still open.",
-            "Reconcile the list before continuing: mark finished work done and record what is left.",
-            f"(Mid-run nudge {attempt}/{max_attempts})",
-            "</system-reminder>",
-        ]
+        text=reminder_text(policy.kind, incomplete_phases=incomplete_phases, attempt=attempt, max_attempts=max_per_cycle),
     )
 
 
@@ -721,46 +730,28 @@ def incomplete_todo_phases(phases: Sequence[TodoPhase]) -> tuple[tuple[str, tupl
     return tuple(incomplete)
 
 
-def decide_todo_reminder(
-    *,
-    max_per_cycle: int,
-    state: TodoReminderState,
-    run_id: str | None,
-    incomplete_phases: tuple[tuple[str, tuple[str, ...]], ...],
-    tool_result_count: int,
-) -> ReminderDecision[TodoReminderState]:
-    """Whether a terminal turn earns a todo completion reminder."""
-    fresh = TodoReminderState(cycle_run_id=run_id)
-    cycle_state = state if state.cycle_run_id == run_id else fresh
-    silent: ReminderDecision[TodoReminderState] = ReminderDecision(state=cycle_state)
-    if not incomplete_phases:
-        return replace(silent, state=fresh)
-    if cycle_state.awaiting_progress and tool_result_count <= cycle_state.progress_watermark:
-        return silent
-    progressed = replace(cycle_state, awaiting_progress=False)
-    if progressed.attempts >= max_per_cycle:
-        return replace(silent, state=progressed)
-    attempt = progressed.attempts + 1
-    return ReminderDecision[TodoReminderState](
-        state=TodoReminderState(
-            attempts=attempt,
-            awaiting_progress=True,
-            progress_watermark=tool_result_count,
-            cycle_run_id=run_id,
-        ),
-        text=todo_reminder_text(incomplete_phases, attempt=attempt, max_attempts=max_per_cycle),
-    )
-
-
-def todo_reminder_text(
-    incomplete_phases: tuple[tuple[str, tuple[str, ...]], ...],
+def reminder_text(
+    kind: ReminderKind,
     *,
     attempt: int,
     max_attempts: int,
+    mutation_count: int = 0,
+    incomplete_count: int = 0,
+    incomplete_phases: tuple[tuple[str, tuple[str, ...]], ...] = (),
 ) -> str:
-    """Bounded reminder body sent to the provider."""
-    incomplete_count = sum(len(contents) for _name, contents in incomplete_phases)
-    lines = ["<system-reminder>", f"You stopped with {incomplete_count} incomplete todo item(s):"]
+    """Bounded nudge body for one reminder kind."""
+    if kind == TODO_MID_RUN_KIND:
+        return "\n".join(
+            [
+                '<system-reminder reason="todo_stale">',
+                f"{mutation_count} mutating tool call(s) have run since the last todo update, and {incomplete_count} todo item(s) are still open.",
+                "Reconcile the list before continuing: mark finished work done and record what is left.",
+                f"(Mid-run nudge {attempt}/{max_attempts})",
+                "</system-reminder>",
+            ]
+        )
+    incomplete_total = sum(len(contents) for _name, contents in incomplete_phases)
+    lines = ["<system-reminder>", f"You stopped with {incomplete_total} incomplete todo item(s):"]
     for name, contents in incomplete_phases:
         lines.append(f"- {name}")
         lines.extend(f"  - {content}" for content in contents)
@@ -814,7 +805,7 @@ def parse_todo_config(config: Mapping[str, object] | None) -> TodoRemindersConfi
     return TodoRemindersConfig(enabled=enabled, max_per_cycle=max_per_cycle)
 
 
-def _sync_cycle(state: TodoState, services: PluginServices, run_id: str) -> tuple[TodoState, str | None]:
+def _sync_cycle(state: TodoState, services: HistoryServices, run_id: str) -> tuple[TodoState, str | None]:
     """Only a fresh user request starts a reminder cycle; resumes retain its budget."""
     cursor = state.cursor_sequence
     user_run_id: str | None = None
@@ -831,8 +822,8 @@ def _sync_cycle(state: TodoState, services: PluginServices, run_id: str) -> tupl
             state,
             cursor_sequence=cursor,
             cycle_run_id=user_run_id,
-            todo_reminder=TodoReminderState(cycle_run_id=user_run_id),
-            mid_run=TodoMidRunState(cycle_run_id=user_run_id),
+            todo_reminder=ReminderPolicy(kind=TODO_REMINDER_KIND, cycle_run_id=user_run_id),
+            mid_run=ReminderPolicy(kind=TODO_MID_RUN_KIND, cycle_run_id=user_run_id),
             invocations=0,
         )
         return fresh, user_run_id
@@ -846,14 +837,15 @@ def _incomplete_count(phases: Sequence[TodoPhase]) -> int:
 
 
 def _account_invocation(state: TodoState, fact: InvocationFinishedFact, cycle: str) -> tuple[TodoState, str | None]:
-    mid = state.mid_run if state.mid_run.cycle_run_id == cycle else TodoMidRunState(cycle_run_id=cycle)
+    mid = state.mid_run if state.mid_run.cycle_run_id == cycle else ReminderPolicy(kind=TODO_MID_RUN_KIND, cycle_run_id=cycle)
     if fact.status == "ok" and fact.tool_name in OWN_TOOL_NAMES and fact.owner == OWNER:
         # A todo touch clears the mutation counter.
         mid = replace(mid, mutations=0, mutation_baseline=0)
     elif fact.status == "ok" and fact.tool_name not in OWN_TOOL_NAMES and not is_read_tier(frozenset(ToolEffect(effect) for effect in fact.effects)):
         mid = replace(mid, mutations=mid.mutations + 1)
-    decision = decide_todo_mid_run_nudge(
-        state=mid,
+    decision = decide_reminder(
+        policy=mid,
+        max_per_cycle=TODO_MID_RUN_MAX_PER_CYCLE,
         run_id=cycle,
         mutations=mid.mutation_baseline + mid.mutations,
         incomplete_count=_incomplete_count(state.phases),
@@ -865,10 +857,10 @@ def _account_invocation(state: TodoState, fact: InvocationFinishedFact, cycle: s
 def _account_run_finish(state: TodoState, fact: RunFinishedFact, cycle: str, max_per_cycle: int) -> tuple[TodoState, str | None]:
     if fact.status != "completed" or fact.stop_cause not in {"completed", None}:
         return state, None
-    reminder = state.todo_reminder if state.todo_reminder.cycle_run_id == cycle else TodoReminderState(cycle_run_id=cycle)
-    decision = decide_todo_reminder(
+    reminder = state.todo_reminder if state.todo_reminder.cycle_run_id == cycle else ReminderPolicy(kind=TODO_REMINDER_KIND, cycle_run_id=cycle)
+    decision = decide_reminder(
+        policy=reminder,
         max_per_cycle=max_per_cycle,
-        state=reminder,
         run_id=cycle,
         incomplete_phases=incomplete_todo_phases(state.phases),
         tool_result_count=state.invocations,
@@ -892,8 +884,8 @@ def todo_observer(
     _ = context
     if not config.enabled:
         return
-    state_data, version = services.get_state("session")
-    original = state = TodoState.from_payload(state_data)
+    state, version = _store(services).load()
+    original = state
     state, cycle = _sync_cycle(state, services, fact.run_id)
     cycle_id = cycle if cycle is not None else fact.run_id
     reminder_type: str | None = None
@@ -948,7 +940,7 @@ def todo_observer(
         services.stage_event("reminder_injected", event)
 
     if state != original:
-        services.replace_state(state.to_payload(), expected_version=version)
+        _store(services).save(state, version)
 
 
 # --- Tool ---
@@ -985,9 +977,17 @@ TODO_DESCRIPTION = (
 )
 
 
-def _load_state(services: PluginServices) -> tuple[TodoState, int]:
-    state_data, version = services.get_state("session")
-    return TodoState.from_payload(state_data), version
+def _store(services: StateServices) -> PluginStateStore[TodoState]:
+    """This plugin's session-state store: strict keys, typed parse, CAS save."""
+    return PluginStateStore(
+        services,
+        keys=frozenset({"schema_version", "revision", "phases", "reminders"}),
+        parse=TodoState.from_payload,
+        serialize=TodoState.to_payload,
+        empty=TodoState,
+        unknown=lambda extra: f"todo state field '{extra[0]}' is not supported",
+        missing=lambda absent: "todo state is missing field(s): " + ", ".join(absent),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -997,9 +997,9 @@ class _TodoChange:
     mutated: bool
 
 
-def _apply_and_store(args: _TodoArgs, services: PluginServices, *, expected_revision: int | None = None) -> _TodoChange:
+def _apply_and_store(args: _TodoArgs, services: StateServices, *, expected_revision: int | None = None) -> _TodoChange:
     """One mutation path for model tools and interactive user commands."""
-    state, version = _load_state(services)
+    state, version = _store(services).load()
     if expected_revision is not None and state.revision != expected_revision:
         raise ValueError("Todo list changed while this editor was open; reopen /todo before updating")
     phases = [deepcopy(phase) for phase in state.phases]
@@ -1008,7 +1008,7 @@ def _apply_and_store(args: _TodoArgs, services: PluginServices, *, expected_revi
     mutated = phases != original
     updated = replace(state, revision=state.revision + int(mutated), phases=tuple(phases))
     if mutated:
-        services.replace_state(updated.to_payload(), expected_version=version)
+        _store(services).save(updated, version)
         services.stage_event("todo_updated", todo_event_payload(phases=phases, revision=updated.revision))
     return _TodoChange(state=updated, original=original, mutated=mutated)
 
@@ -1065,7 +1065,7 @@ class TodoTool:
         phases = list(change.state.phases)
         return ToolSuccess(
             tool_name=self.definition.name,
-            output=TextOutput(_render(phases, args.op, original=change.original)),
+            output=TextOutput(render_phases(phases, args.op, original=change.original, format="tool")),
             body=TodoResultBody(
                 phases=tuple(phases),
                 summary=todo_summary(phases),
@@ -1095,12 +1095,12 @@ class TodoStatusCommand:
         offset, limit = invocation.arguments.get("offset", 0), invocation.arguments.get("limit", 10)
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 10:
             return CommandResult(status="error", error="offset must be non-negative and limit must be between 1 and 10")
-        state, _ = _load_state(services)
+        state, _ = _store(services).load()
         if offset > state.summary["total"]:
             return CommandResult(status="error", error="Todo offset is beyond the end of the list")
         return CommandResult(
             status="ok",
-            output=_render_table(state.phases),
+            output=render_phases(state.phases, format="table"),
             data={"phases": phases_payload(state.phases), "summary": dict(state.summary), "revision": state.revision},
             presentation=_todo_presentation(state, offset=offset, limit=limit),
         )
@@ -1176,7 +1176,7 @@ class TodoEditCommand:
 
     def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
         _ = invocation
-        state, _ = _load_state(services)
+        state, _ = _store(services).load()
         tasks = [task for phase in state.phases for task in phase["tasks"]]
         if not tasks:
             return _todo_presentation(state)
@@ -1197,7 +1197,7 @@ class TodoEditCommand:
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         try:
-            state, _ = _load_state(services)
+            state, _ = _store(services).load()
             if "task_id" in invocation.arguments:
                 task = _task_from_id(state, invocation.arguments["task_id"])
             else:
@@ -1251,7 +1251,7 @@ class TodoUpdateCommand:
         if invocation.arguments.get("op") not in ("start", "done", "drop", "block", "unblock", "rm"):
             return CommandResult(status="error", error="Choose a valid task operation")
         try:
-            state, _ = _load_state(services)
+            state, _ = _store(services).load()
             task = _task_from_id(state, invocation.arguments.get("task_id"))
             args = _parse_args({**invocation.arguments, "task": task["content"]})
             change = _apply_and_store(args, services, expected_revision=revision)
@@ -1259,7 +1259,7 @@ class TodoUpdateCommand:
             return CommandResult(status="error", error=str(exc))
         return CommandResult(
             status="ok",
-            output=_render(list(change.state.phases), args.op, original=change.original),
+            output=render_phases(list(change.state.phases), args.op, original=change.original, format="tool"),
             data={"revision": change.state.revision, "mutated": change.mutated},
             presentation=_todo_presentation(change.state),
         )
@@ -1284,7 +1284,7 @@ class TodoAddCommand:
 
     def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
         _ = invocation
-        state, _ = _load_state(services)
+        state, _ = _store(services).load()
         return CommandPresentation(
             title="Add todo tasks",
             view_type="form",
@@ -1317,7 +1317,7 @@ class TodoAddCommand:
             return CommandResult(status="error", error=str(exc))
         return CommandResult(
             status="ok",
-            output=_render(list(change.state.phases), "append", original=change.original),
+            output=render_phases(list(change.state.phases), "append", original=change.original, format="tool"),
             data={"revision": change.state.revision},
             presentation=_todo_presentation(change.state),
         )
@@ -1334,11 +1334,11 @@ class TodoClearCommand:
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         _ = invocation
-        state, version = _load_state(services)
+        state, version = _store(services).load()
         if not state.phases:
             return CommandResult(status="ok", output="No todo list to clear.", data={"cleared": False}, presentation=_todo_presentation(state))
         revision = state.revision + 1
-        services.replace_state(TodoState(revision=revision).to_payload(), expected_version=version)
+        _store(services).save(TodoState(revision=revision), version)
         services.stage_event("todo_cleared", todo_event_payload(phases=(), revision=revision))
         return CommandResult(
             status="ok", output="Todo list cleared.", data={"cleared": True}, presentation=_todo_presentation(TodoState(revision=revision))
@@ -1351,8 +1351,8 @@ class TodoClearCommand:
 def todo_context(context: ToolContext, services: PluginServices) -> ContextContribution | None:
     """Contribute the plan truth while active tasks remain."""
     _ = context
-    state, _ = _load_state(services)
-    text = render_provider_state(state.phases)
+    state, _ = _store(services).load()
+    text = render_phases(state.phases, format="provider")
     return None if text is None else ContextContribution(content=text)
 
 
@@ -1371,8 +1371,8 @@ def prepare_todo_deactivation(
     parsed = TodoState.from_payload(state)
     return replace(
         parsed,
-        todo_reminder=TodoReminderState(),
-        mid_run=TodoMidRunState(),
+        todo_reminder=ReminderPolicy(kind=TODO_REMINDER_KIND),
+        mid_run=ReminderPolicy(kind=TODO_MID_RUN_KIND),
         invocations=0,
         cycle_run_id=None,
     ).to_payload()

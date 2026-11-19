@@ -23,7 +23,6 @@ from voidcode.sdk.provider import (
     TurnProvider,
 )
 
-from .native.anthropic_native import AnthropicMessagesProvider
 from .native.config import (
     PROVIDER_CONFIG_PAYLOAD_KEYS,
     PROVIDER_WIRES,
@@ -38,12 +37,7 @@ from .native.config import (
     openai_compatible_endpoint_config,
     parse_provider_configs_payload,
 )
-from .native.google_native import GoogleGenAIProvider
 from .native.naming import UnknownProviderIdError, canonical_provider_id
-from .native.openai_native import OpenAIChatCompletionsProvider
-from .native.opencode import OpenCodeZenModelProvider
-from .native.opencode_go import OpenCodeGoModelProvider
-from .native.openrouter import OpenRouterModelProvider
 from .native.provider_config import copilot_provider_config, endpoint_provider_config
 from .native.provider_table import PROVIDER_TABLE
 from .pricing import price_event, price_result
@@ -129,29 +123,49 @@ def _materialize(provider_name: str, configuration: ProviderConfigEntry | None) 
     entry = configuration
     match provider_name:
         case "opencode-zen" if entry is None or isinstance(entry, ProviderEndpointConfig):
+            from .native.opencode import OpenCodeZenModelProvider
+
             return OpenCodeZenModelProvider(config=entry).turn_provider()
         case "openai" if entry is None or isinstance(entry, OpenAIProviderConfig):
+            from .native.openai_native import OpenAIChatCompletionsProvider
+
             return OpenAIChatCompletionsProvider(config=entry)
         case "google" if entry is None or isinstance(entry, GoogleProviderConfig):
+            from .native.google_native import GoogleGenAIProvider
+
             return GoogleGenAIProvider(config=entry)
         case "github-copilot" if entry is None or isinstance(entry, CopilotProviderConfig):
+            from .native.openai_native import OpenAIChatCompletionsProvider
+
             return OpenAIChatCompletionsProvider(name=provider_name, config=copilot_provider_config(entry))
         case "endpoint" if entry is None or isinstance(entry, ProviderEndpointConfig):
+            from .native.openai_native import OpenAIChatCompletionsProvider
+
             return OpenAIChatCompletionsProvider(name=provider_name, config=endpoint_provider_config(entry))
         case "openrouter" if entry is None or isinstance(entry, ProviderEndpointConfig):
+            from .native.openrouter import OpenRouterModelProvider
+
             return OpenRouterModelProvider(config=entry).turn_provider()
         case "opencode-go" if entry is None or isinstance(entry, OpenAICompatibleProviderConfig):
+            from .native.opencode_go import OpenCodeGoModelProvider
+
             return OpenCodeGoModelProvider(config=entry).turn_provider()
         case "opencode-zen" | "openai" | "google" | "github-copilot" | "endpoint" | "openrouter" | "opencode-go":
             raise ValueError(f"provider configuration has the wrong type for {provider_name!r}")
     wire = PROVIDER_WIRES.get(provider_name)
     if wire is not None:
         if wire.shape == "anthropic" and (entry is None or isinstance(entry, AnthropicProviderConfig)):
+            from .native.anthropic_native import AnthropicMessagesProvider
+
             return AnthropicMessagesProvider(name=provider_name, config=entry)
         if wire.shape == "openai_compatible" and (entry is None or isinstance(entry, OpenAICompatibleProviderConfig)):
+            from .native.openai_native import OpenAIChatCompletionsProvider
+
             return OpenAIChatCompletionsProvider(name=provider_name, config=openai_compatible_endpoint_config(provider_name, entry))
         raise ValueError(f"provider configuration has the wrong type for {provider_name!r}")
     if isinstance(entry, ProviderEndpointConfig):
+        from .native.openai_native import OpenAIChatCompletionsProvider
+
         return OpenAIChatCompletionsProvider(name=provider_name, config=endpoint_provider_config(entry))
     raise UnknownProviderIdError(provider_name)
 
@@ -201,6 +215,8 @@ class RegisteredProvider:
         if _entry_for(self._configs, self._name) is None:
             return None
         provider = self._provider_for(self._name)
+        from .native.openai_native import OpenAIChatCompletionsProvider
+
         return provider.list_models() if isinstance(provider, OpenAIChatCompletionsProvider) else None
 
     def model_limits(self, model_name: str) -> ModelContextLimits | None:

@@ -17,7 +17,7 @@ from typing import ClassVar
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
-from voidcode.sdk.services import ArtifactReference, PluginServices
+from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices
 from voidcode.sdk.tools import (
     CompositeOutput,
     ContentPart,
@@ -205,15 +205,11 @@ class McpTool:
             structured_content = original_result["structured_content"]
             if isinstance(structured_content, Mapping):
                 full_structured = json.dumps(json_wire_object(structured_content), ensure_ascii=False, sort_keys=True)
-                struct_artifact = services.spill_artifact(full_structured, media_type="application/json")
                 preview_bytes = full_structured.encode("utf-8")
-                if len(preview_bytes) <= MAX_VIEW_DATA_BYTES:
-                    preview = full_structured
-                else:
-                    preview = preview_bytes[:MAX_VIEW_DATA_BYTES].decode("utf-8", errors="ignore")
-                    if not preview:
-                        preview = full_structured[:1]
-                parts.append(JsonPart(reference=struct_artifact, preview=preview))
+                if len(preview_bytes) > MAX_VIEW_DATA_BYTES:
+                    raise ValueError(f"MCP structured content preview exceeds {MAX_VIEW_DATA_BYTES} bytes (actual size {len(preview_bytes)} bytes)")
+                struct_artifact = services.spill_artifact(full_structured, media_type="application/json")
+                parts.append(JsonPart(reference=struct_artifact, preview=full_structured))
         except (ValueError, binascii.Error) as exc:
             projection_error = str(exc)
             parts.append(TextPart(f"MCP content projection failed: {projection_error}"))
@@ -295,7 +291,7 @@ def _media_item(
     item: Mapping[str, object],
     *,
     index: int,
-    services: PluginServices,
+    services: ArtifactServices,
 ) -> tuple[ArtifactReference | None, str]:
     """Decode one embedded image/audio/resource item; returns (artifact, description).
 

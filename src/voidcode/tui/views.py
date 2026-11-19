@@ -13,7 +13,6 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from voidcode.sdk.gates import ApprovalGate
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.json_values import json_wire_value
 from voidcode.sdk.views import (
@@ -34,6 +33,7 @@ from voidcode.sdk.views import (
     parse_view_data,
     validate_form_submission,
 )
+from voidcode.tui.gates import ApprovalGate
 
 from .keys import Key
 from .styles import Styles, markdown_theme, render_icon, resolve_component, syntax_theme

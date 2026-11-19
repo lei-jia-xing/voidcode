@@ -7,7 +7,7 @@ import pytest
 
 from voidcode.core.plugins import LeaseContext, PluginRuntime
 from voidcode.core.services import RuntimeServices
-from voidcode.core.storage.store import StoredEvent
+from voidcode.core.storage.store import StoredEvent, canonical_json
 from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.provider import ProviderMessage
 from voidcode.sdk.transcript import TranscriptPage
@@ -24,6 +24,13 @@ class _Store:
     def events(self, session_id, *, after_sequence, limit):
         assert session_id == "session"
         return tuple(event for event in self.source if event.sequence > after_sequence)[:limit]
+
+    def event_payload_bytes(self, session_id, *, after_sequence=0, limit=None):
+        assert session_id == "session"
+        rows = tuple(event for event in self.source if event.sequence > after_sequence)
+        if limit is not None:
+            rows = rows[: max(1, limit)]
+        return {event.sequence: len(canonical_json(event.payload).encode("utf-8")) for event in rows}
 
 
 def _runtime(events):

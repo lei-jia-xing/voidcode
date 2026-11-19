@@ -22,7 +22,6 @@ export type Icon = Schemas["Icon"];
 export type TranscriptEntry = Schemas["TranscriptEntryWire"];
 export type TranscriptContent = TranscriptEntry["content"];
 export type TranscriptTool = Schemas["TranscriptToolWire"];
-export type ToolCall = Schemas["ToolCallWire"];
 export type ToolResult = Schemas["ToolResultWire"];
 export type ToolExecution = Schemas["ExecutionWire"];
 export type ToolOutput = ToolResult["output"];

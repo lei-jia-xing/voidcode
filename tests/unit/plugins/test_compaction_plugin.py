@@ -11,7 +11,7 @@ import pytest
 from tests.fixtures.fake_services import FakeServices
 from voidcode.core.storage.store import StoredEvent
 from voidcode.core.transcript import context_records
-from voidcode.plugins.compaction import create_plugin
+from voidcode.plugins.compaction import compaction_plugin, create_plugin
 from voidcode.plugins.compaction.compaction_plugin import (
     CONTEXT_COMPACTED_EVENT,
     SCHEMA_VERSION,
@@ -49,7 +49,7 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ProviderMessage, ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.services import EventView
-from voidcode.sdk.tools import ResourceChange, TextOutput, ToolCall, ToolFailure, ToolSuccess
+from voidcode.sdk.tools import Change, TextOutput, ToolCall, ToolFailure, ToolSuccess
 
 SESSION_ID = "session-1"
 RUN_ID = "run-1"
@@ -59,6 +59,13 @@ OWNER = "compaction"
 _USER_MESSAGE = "Rebuild the parser. The tokenizer must stay allocation free. Never reorder diagnostics."
 _WRITE_CALL = ToolCall("write", {"path": "src/parser.py"}, "call-1")
 _READ_CALL = ToolCall("read", {"path": "src/parser.py"}, "call-2")
+
+
+def _loaded(payload: Mapping[str, object] | None) -> CompactionState:
+    services = FakeServices(owner=OWNER)
+    if payload is not None:
+        services.seed_state(payload)
+    return compaction_plugin._store(services).load()[0]
 
 
 def _event(sequence: int, event_type: str, payload: Mapping[str, object] | None) -> EventView:
@@ -116,7 +123,7 @@ def _model_turn(
 
 def _tool_completed(sequence: int, *, batch_sequence: int, call: ToolCall, content: str = "", error: str | None = None) -> EventView:
     result = (
-        ToolSuccess(call.tool_name, TextOutput(content), changes=(ResourceChange("src/parser.py"),) if call == _WRITE_CALL else ())
+        ToolSuccess(call.tool_name, TextOutput(content), changes=(Change("src/parser.py"),) if call == _WRITE_CALL else ())
         if error is None
         else ToolFailure(call.tool_name, error, TextOutput(content))
     )
@@ -417,7 +424,7 @@ def test_apply_projection_reports_the_core_measured_accounting() -> None:
             },
         )
     ]
-    assert CompactionState.from_payload(services.state) == CompactionState(
+    assert compaction_plugin._store(services).load()[0] == CompactionState(
         cursor_sequence=8,
         last_projection=LastProjection(
             covered_from_sequence=1,
@@ -563,7 +570,7 @@ def test_observer_projects_once_the_measured_dispatch_crosses_the_trigger() -> N
     config = CompactionConfig(threshold_tokens=1_000, reserve_tokens=0, keep_recent_tokens=0)
     compaction_observer(_usage(8, input_tokens=9_000), _context(), services, config=config)
     assert len(services.projections) == 1
-    state = CompactionState.from_payload(services.state)
+    state = compaction_plugin._store(services).load()[0]
     assert state.cursor_sequence == 8
     assert state.last_projection is not None
     # A second delivery for the same tip repeats nothing.
@@ -700,14 +707,14 @@ def test_state_round_trips_and_rejects_unknown_keys() -> None:
     payload = state.to_payload()
     assert payload["schema_version"] == SCHEMA_VERSION
     assert CompactionState.from_payload(payload) == state
-    assert CompactionState.from_payload(None) == CompactionState()
+    assert _loaded(None) == CompactionState()
     assert CompactionState.from_payload({"schema_version": 1, "cursor_sequence": 0, "last_projection": None}) == CompactionState()
     # Read compatibility: an old stored deterministic row still validates, though nothing writes it again.
     legacy = dict(payload["last_projection"])
     legacy["summary_kind"] = "deterministic"
     assert CompactionState.from_payload({**payload, "last_projection": legacy}).last_projection.summary_kind == "deterministic"
     with pytest.raises(ValueError, match="unsupported field"):
-        CompactionState.from_payload({"schema_version": 1, "cursor_sequence": 0, "last_projection": None, "extra": 1})
+        _loaded({"schema_version": 1, "cursor_sequence": 0, "last_projection": None, "extra": 1})
     with pytest.raises(ValueError, match="schema_version"):
         CompactionState.from_payload({"schema_version": 2, "cursor_sequence": 0, "last_projection": None})
     with pytest.raises(ValueError, match="cursor_sequence"):
@@ -768,7 +775,7 @@ def test_summary_material_ignores_raw_arguments_and_non_transcript_records() -> 
     from voidcode.sdk.transcript import ContextRecord, TranscriptChild, TranscriptEntry, TranscriptTool
 
     call = ToolCall("unrelated_name", {"targets": "actual.py", "path": "misleading.py", "command": "display text"}, "substitute")
-    result = ToolSuccess("unrelated_name", TextOutput("moved"), changes=(ResourceChange("actual.py", "move", "old.py"),))
+    result = ToolSuccess("unrelated_name", TextOutput("moved"), changes=(Change("actual.py", "move", "old.py"),))
     records = (
         ContextRecord(1, 1_000, True, TranscriptEntry(1, RUN_ID, REVISION_ID, "client", ProviderMessage("user", _USER_MESSAGE))),
         ContextRecord(2, 1_000, True, TranscriptEntry(2, RUN_ID, REVISION_ID, "custom", TranscriptTool(call, result, False, 1, False))),

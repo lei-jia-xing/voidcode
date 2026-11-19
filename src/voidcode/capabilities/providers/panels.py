@@ -8,7 +8,7 @@ from typing import ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.provider import ProviderExecutionError
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import HistoryServices, PluginServices
 from voidcode.sdk.tools import ToolEffect
 from voidcode.sdk.transcript import TranscriptDispatch
 from voidcode.sdk.views import PluginViewDescriptor
@@ -17,9 +17,6 @@ from .dispatch import RegisteredProvider
 from .native.model_catalog import static_catalog_model_ids
 from .native.naming import canonical_provider_id, provider_label
 from .native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID, ProviderTableRow
-
-#: Source-event page limit for the public transcript service.
-READ_PAGE = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,18 +77,16 @@ class LastDispatch:
         return {"sequence": self.sequence, "provider": self.provider, "model": self.model}
 
 
-def last_dispatch(services: PluginServices) -> LastDispatch | None:
-    """Read committed dispatches, including those whose response has not completed."""
-    newest: LastDispatch | None = None
-    after = 0
-    while True:
-        page = services.read_transcript(after_sequence=after, limit=READ_PAGE)
-        for entry in page.entries:
-            if isinstance(entry.content, TranscriptDispatch):
-                newest = LastDispatch(entry.sequence, entry.content.provider_name, entry.content.model_name)
-        after = page.next_sequence
-        if not page.has_more:
-            return newest
+#: The stored event behind TranscriptDispatch (core EventType.PROVIDER_INTENT, unimportable from capabilities).
+_DISPATCH_EVENT_TYPE = "core.provider_intent"
+
+
+def last_dispatch(services: HistoryServices) -> LastDispatch | None:
+    """Newest committed dispatch, including one whose response has not completed."""
+    entry = services.latest_event(_DISPATCH_EVENT_TYPE)
+    if entry is None or not isinstance(entry.content, TranscriptDispatch):
+        return None
+    return LastDispatch(entry.sequence, entry.content.provider_name, entry.content.model_name)
 
 
 def _counted(count: int, noun: str) -> str:
@@ -121,7 +116,7 @@ def providers_panel(facts: ProviderFacts) -> tuple[str, dict[str, object]]:
 
 
 def model_panel(
-    services: PluginServices,
+    services: HistoryServices,
     facts: ProviderFacts,
     provider: str | None,
     *,
@@ -244,7 +239,6 @@ class ModelView:
 
 
 __all__ = [
-    "READ_PAGE",
     "ConfiguredProvider",
     "LastDispatch",
     "ModelCommand",

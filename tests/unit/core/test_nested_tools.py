@@ -17,9 +17,9 @@ from voidcode.bootstrap import open_core
 from voidcode.core.coverage import project_tool_result
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import StoreConflict
+from voidcode.sdk.client import CLIENT_PROMPT_MAX_BYTES
 from voidcode.sdk.codec import decode_tool_result
-from voidcode.sdk.limits import CLIENT_PROMPT_MAX_BYTES, TOOL_OUTPUT_BYTES
-from voidcode.sdk.tools import TextOutput, ToolSuccess
+from voidcode.sdk.tools import TOOL_OUTPUT_BYTES, TextOutput, ToolSuccess
 
 #: A full bundled cold start and a killed service tree both need more than the old 10 s bound
 #: when the suite runs under parallel xdist workers.

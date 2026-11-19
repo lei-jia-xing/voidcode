@@ -14,8 +14,8 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import (
+    Change,
     ConfirmedStop,
-    ResourceChange,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -300,7 +300,7 @@ class EditTool:
         return ToolSuccess(
             self.definition.name,
             output=TextOutput(content),
-            changes=(ResourceChange(display_path),),
+            changes=(Change(display_path),),
             body=EditResultBody(
                 path=display_path,
                 additions=additions,

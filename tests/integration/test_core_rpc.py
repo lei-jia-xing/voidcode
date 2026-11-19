@@ -22,8 +22,8 @@ from websockets.typing import Subprotocol
 
 from voidcode.bootstrap import bundled_sources
 from voidcode.sdk.client import CoreClientError, ErrorFrame, EventFrame, HeadFrame
-from voidcode.sdk.rpc import RPC_SUBPROTOCOL
 from voidcode.transport.http import CoreTransportApp, create_core_app
+from voidcode.transport.models import RPC_SUBPROTOCOL
 from voidcode.tui.client import CoreRpcClient
 
 TOKEN = "rpc-test-secret"
@@ -93,8 +93,10 @@ def test_rpc_authentication_and_retired_http_routes(remote) -> None:
         for path in ("/api/commands", "/api/sessions", "/api/sessions/s/events"):
             assert client.get(path).status_code == 404
         document = client.get("/api/openapi.json").json()
-    assert set(document["paths"]) == {"/api/health"}
+    assert document["paths"] == {}
     assert set(document["x-rpc-methods"]) >= {"session.run", "session.cancel", "session.subscribe", "command.invoke", "action.confirm"}
+    assert set(document["x-rpc-notifications"]) >= {"session.frame", "subscription.closed"}
+    assert document["x-rpc-transport"] == {"path": "/api/rpc", "subprotocol": "voidcode.rpc.v1"}
     assert app._core is not None and app._core.sessions() == ()
 
 
@@ -216,7 +218,7 @@ def test_subscription_replays_in_bounded_pages_and_resumes_from_applied_cursor(r
 
 def test_subscription_credit_pauses_replay_without_blocking_other_calls(remote) -> None:
     from voidcode.core.storage.store import EventDraft
-    from voidcode.sdk.rpc import RPC_EVENT_WINDOW
+    from voidcode.transport.models import RPC_EVENT_WINDOW
 
     base, app, _workspace = remote
     core = app._core

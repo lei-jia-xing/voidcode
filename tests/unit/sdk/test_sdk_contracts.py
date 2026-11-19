@@ -4,6 +4,7 @@ import pytest
 
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.provider import ProviderMessage
+from voidcode.sdk.services import BudgetExhaustion
 from voidcode.sdk.tools import ToolCall, ToolDefinition, ToolEffect
 
 
@@ -35,3 +36,39 @@ def test_implicit_replay_requires_unambiguously_read_only_effects(effects: froze
     # The name and arguments cannot turn an executable tool into a safe read.
     definition = ToolDefinition("ast_grep", "search", effects=effects)
     assert definition.effective_replay_policy == replay
+
+
+def _budget_payload() -> dict[str, object]:
+    return {
+        "dimension": "provider_turns",
+        "source": "max_steps",
+        "limit": 10,
+        "consumed": 10,
+        "remaining": 0,
+        "continue_with": "resume_with_max_steps",
+    }
+
+
+def test_budget_exhaustion_round_trips_and_absent_stays_absent() -> None:
+    assert BudgetExhaustion.from_payload(None) is None
+    parsed = BudgetExhaustion.from_payload(_budget_payload())
+    assert parsed is not None
+    assert parsed.as_payload() == _budget_payload()
+
+
+def test_budget_exhaustion_rejects_anything_but_the_six_typed_fields() -> None:
+    base = _budget_payload()
+    bad: list[object] = ["nope", 42, []]
+    missing = dict(base)
+    del missing["remaining"]
+    bad.append(missing)
+    bad.append({**base, "extra": 1})
+    bad.append({**base, "consumed": True})
+    bad.append({**base, "limit": "10"})
+    bad.append({**base, "remaining": 1.0})
+    bad.append({**base, "consumed": -1})
+    bad.append({**base, "source": "root_action_budget"})
+    bad.append({**base, "dimension": "turns"})
+    for value in bad:
+        with pytest.raises(ValueError):
+            BudgetExhaustion.from_payload(value)

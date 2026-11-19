@@ -16,6 +16,7 @@ from .provider import ProviderMessage, ProviderTurnResult
 from .services import ArtifactReference
 from .tools import (
     AttachmentOutput,
+    Change,
     CompositeOutput,
     ConfirmedStop,
     EmptyOutput,
@@ -24,7 +25,6 @@ from .tools import (
     OpaqueToolBody,
     OutputBounds,
     ReadObservation,
-    ResourceChange,
     TablePart,
     TextOutput,
     TextPart,
@@ -63,6 +63,11 @@ def _encode(value: object) -> dict[str, object]:
     return encoded
 
 
+def _encode_change(change: Change) -> dict[str, object]:
+    """Result-wire projection: identity triple only, never observation metadata."""
+    return {"path": change.path, "operation": change.operation, "old_path": change.old_path}
+
+
 def _decode[T](adapter: TypeAdapter[T], payload: Mapping[str, object]) -> T:
     if not isinstance(payload, Mapping):
         raise ValueError("wire payload must be an object")
@@ -87,14 +92,7 @@ def decode_tool_call(payload: Mapping[str, object]) -> ToolCall:
 
 
 def encode_tool_definition(definition: ToolDefinition | Mapping[str, object]) -> dict[str, object]:
-    if isinstance(definition, Mapping):
-        return _encode(definition)
-    payload = _encode(definition)
-    if definition.output_schema is None:
-        # Undeclared stays absent: definitions without a body contract encode
-        # byte-identically to before the field existed.
-        payload.pop("output_schema", None)
-    return payload
+    return _encode(definition)
 
 
 def decode_tool_definition(payload: Mapping[str, object]) -> ToolDefinition:
@@ -283,7 +281,7 @@ def encode_tool_result(result: ToolResult | Mapping[str, object]) -> dict[str, o
     if isinstance(result, ToolSuccess) and result.coverage:
         payload["coverage"] = [observation.as_payload() for observation in result.coverage]
     if result.changes:
-        payload["changes"] = [_encode(change) for change in result.changes]
+        payload["changes"] = [_encode_change(change) for change in result.changes]
     if result.result_reference is not None:
         payload["result_reference"] = _encode(result.result_reference)
     if isinstance(result, ToolFailure):
@@ -351,7 +349,7 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
             decoded,
             body,
             coverage,
-            tuple(ResourceChange(item.path, item.operation, item.old_path) for item in wire.changes or ()),
+            tuple(Change(item.path, item.operation, item.old_path) for item in wire.changes or ()),
             steering_context=wire.steering_context,
             result_reference=wire.result_reference,
         )
@@ -376,7 +374,7 @@ def decode_tool_result(payload: Mapping[str, object]) -> ToolResult:
         wire.diagnostics,
         execution,
         wire.timeout_seconds,
-        tuple(ResourceChange(item.path, item.operation, item.old_path) for item in wire.changes or ()),
+        tuple(Change(item.path, item.operation, item.old_path) for item in wire.changes or ()),
         steering_context=wire.steering_context,
         result_reference=wire.result_reference,
     )

@@ -72,8 +72,13 @@ def _create(services: FakeServices, tmp_path: Path, schedule: str, prompt: str =
 
 
 def _stored(services: FakeServices) -> CronState:
-    payload, _version = services.get_state("session")
-    return CronState.from_payload(payload)
+    return cron_plugin._store(services).load()[0]
+
+
+def _seeded(payload: Mapping[str, object]) -> FakeServices:
+    services = FakeServices(owner=OWNER)
+    services.seed_state(payload)
+    return services
 
 
 def _entry(services: FakeServices, schedule_id: str) -> ScheduleEntry:
@@ -502,9 +507,9 @@ def test_state_document_is_strict() -> None:
     assert CronState.from_payload(payload) == CronState(schedules={"sched-1": ScheduleEntry("every 10m", "every", "x", True, None, "w-1")})
 
     with pytest.raises(ValueError, match="field 'bogus' is not supported"):
-        CronState.from_payload({**payload, "bogus": 1})
+        cron_plugin._store(_seeded({"bogus": 1})).load()
     with pytest.raises(ValueError, match="missing field"):
-        CronState.from_payload({"schema_version": SCHEMA_VERSION})
+        cron_plugin._store(_seeded({"schema_version": SCHEMA_VERSION})).load()
     with pytest.raises(ValueError, match="schema_version must be 1"):
         CronState.from_payload({"schema_version": 2, "schedules": {}, "cursor_sequence": 0})
     with pytest.raises(ValueError, match="cursor_sequence must be a non-negative integer"):

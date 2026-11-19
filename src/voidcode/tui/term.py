@@ -37,7 +37,6 @@ styling while preserving terminal controls on an available raw TTY.
 
 from __future__ import annotations
 
-import ctypes
 import importlib
 import os
 import secrets
@@ -48,6 +47,7 @@ import threading
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from io import StringIO
 from typing import Any
 
@@ -286,25 +286,15 @@ def crop_row_right(text: str, width: int) -> str:
     return RESET_STYLE + prefix + suffix + RESET_STYLE
 
 
-def render_lines(
-    renderable: RenderableType,
-    width: int,
-    *,
-    theme: RichTheme | None = None,
-    color_system: ColorSystem | None = ColorSystem.TRUECOLOR,
-    overflow: OverflowMethod | None = None,
-    no_wrap: bool = False,
-) -> list[str]:
-    """Render ``renderable`` at ``width`` and return it as ANSI row strings.
+_RENDER_LOCK = threading.Lock()
 
-    Every row is guaranteed to be at most ``width`` cells wide: rich owns the
-    wrapping (wide characters, emoji, grapheme clusters) and this module's
-    :func:`clamp_row` is the final guard.
-    """
-    buffer = StringIO()
+
+@lru_cache(maxsize=16)
+def _render_console(width: int, theme: RichTheme | None, color_system: ColorSystem | None) -> Console:
+    """One shared off-screen console per (width, theme, color) shape; callers swap in a fresh buffer per render."""
     console = Console(
-        file=buffer,
-        width=max(1, width),
+        file=StringIO(),
+        width=width,
         # rich's ``size`` ignores an explicit ``width`` when only one of
         # width/height is set and the console is forced to a terminal
         # (``rich/console.py`` ``size``); an explicit height keeps the width
@@ -322,8 +312,30 @@ def render_lines(
     # which already honours NO_COLOR / TERM=dumb; rich must not second-guess it
     # here (an off-screen console otherwise drops every style).
     console.no_color = False
-    console.print(renderable, overflow=overflow, no_wrap=no_wrap)
-    rendered = buffer.getvalue()
+    return console
+
+
+def render_lines(
+    renderable: RenderableType,
+    width: int,
+    *,
+    theme: RichTheme | None = None,
+    color_system: ColorSystem | None = ColorSystem.TRUECOLOR,
+    overflow: OverflowMethod | None = None,
+    no_wrap: bool = False,
+) -> list[str]:
+    """Render ``renderable`` at ``width`` and return it as ANSI row strings.
+
+    Every row is guaranteed to be at most ``width`` cells wide: rich owns the
+    wrapping (wide characters, emoji, grapheme clusters) and this module's
+    :func:`clamp_row` is the final guard.
+    """
+    buffer = StringIO()
+    console = _render_console(max(1, width), theme, color_system)
+    with _RENDER_LOCK:
+        console.file = buffer
+        console.print(renderable, overflow=overflow, no_wrap=no_wrap)
+        rendered = buffer.getvalue()
     rows = rendered.split("\n")
     if rows and rows[-1] == "":
         rows.pop()
@@ -483,13 +495,11 @@ class Terminal:
         self._previous_winch: Any = None
         self._previous_termination: dict[int, Any] = {}
         self._previous_suspend: Any = None
-        self._windows_saved_modes: dict[int, int] = {}
-        self._windows_console_handles: dict[int, int] = {}
-        self._windows_kernel: Any = None
         self._suspended_alt = False
         self._pending_input = bytearray()
         self._kitty_supported = False
         self._kitty_probe_pending = False
+        self._kitty_probed = False
         self._kitty_input = bytearray()
         self._kitty_replies: list[TerminalKittyReply] = []
         self._kitty_uploads: dict[int, tuple[str, tuple[int, int]]] = {}
@@ -498,8 +508,6 @@ class Terminal:
         self._kitty_image_ids: dict[int, str] = {}
         self._kitty_placements: dict[str, int] = {}
         self._painted_image: KittyImagePlacement | None = None
-        self._windows_input_record_type: Any = None
-        self._windows_pending_high_surrogate: int | None = None
         self._keyboard_active = False
         self._enabled_private_modes: set[int] = set()
         self._unsupported_private_modes: set[int] = set()
@@ -532,7 +540,6 @@ class Terminal:
                 terminal._enter_raw_mode()
                 if terminal.is_tty:
                     terminal._capture_private_modes()
-                    terminal._probe_kitty_graphics()
                     terminal._enter_application_mode()
                     terminal._install_winch()
                     terminal._install_termination_handlers()
@@ -560,7 +567,18 @@ class Terminal:
 
     @property
     def kitty_graphics_supported(self) -> bool:
+        self._ensure_kitty_probed()
         return self._kitty_supported
+
+    def _ensure_kitty_probed(self) -> None:
+        """Run the one graphics-capability probe, on first image render instead of at startup."""
+        if self._kitty_probed:
+            return
+        with self._lock:
+            if self._kitty_probed:
+                return
+            self._kitty_probed = True
+            self._probe_kitty_graphics()
 
     @property
     def cell_pixel_size(self) -> tuple[float, float] | None:
@@ -581,6 +599,7 @@ class Terminal:
 
     def upload_kitty_png(self, sha256: str, png: bytes, dimensions: tuple[int, int]) -> int:
         """Transmit trusted PNG bytes once; the correlated terminal reply validates decoding."""
+        self._ensure_kitty_probed()
         if not self._kitty_supported:
             raise TerminalCapabilityError("Kitty Graphics is not supported by the active terminal")
         cached = self._kitty_images.get(sha256)
@@ -664,8 +683,6 @@ class Terminal:
     def _read_input_chunk(self, timeout: float | None) -> bytes | None:
         if self._input_fd is None:
             return b""
-        if os.name == "nt":
-            return self._read_windows_console_chunk(timeout)
         try:
             ready, _, _ = select.select([self._input_fd], [], [], timeout)
         except OSError, TypeError, ValueError:
@@ -676,108 +693,6 @@ class Terminal:
             return os.read(self._input_fd, _READ_CHUNK)
         except OSError:
             return b""
-
-    def _read_windows_console_chunk(self, timeout: float | None) -> bytes | None:
-        record_type = self._windows_input_record_type
-        if record_type is None:
-            return b""
-        handle = self._windows_console_handles.get(self._input_fd)
-        if handle is None:
-            return b""
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while True:
-            remaining = None if deadline is None else deadline - time.monotonic()
-            if remaining is not None and remaining <= 0:
-                return None
-            milliseconds = 0xFFFFFFFF if remaining is None else min(0xFFFFFFFE, int(remaining * 1000 + 0.999))
-            wait_result = self._windows_kernel.WaitForSingleObject(handle, milliseconds)
-            if wait_result == 0x102:
-                return None
-            if wait_result != 0:
-                return b""
-            record = record_type()
-            count = ctypes.c_uint32()
-            if not self._windows_kernel.ReadConsoleInputW(handle, ctypes.byref(record), 1, ctypes.byref(count)):
-                return b""
-            if not count.value or record.EventType != 1:
-                continue
-            key_event = record.Event.KeyEvent
-            if not key_event.bKeyDown:
-                continue
-            codepoint = key_event.uChar.UnicodeChar
-            if 0xD800 <= codepoint <= 0xDBFF:
-                if self._windows_pending_high_surrogate is None:
-                    self._windows_pending_high_surrogate = codepoint
-                    continue
-                self._windows_pending_high_surrogate = codepoint
-                return "\ufffd".encode("utf-8")
-            if 0xDC00 <= codepoint <= 0xDFFF:
-                high = self._windows_pending_high_surrogate
-                self._windows_pending_high_surrogate = None
-                text = chr(0x10000 + ((high - 0xD800) << 10) + codepoint - 0xDC00) if high is not None else "\ufffd"
-                return (text * max(1, key_event.wRepeatCount)).encode("utf-8")
-            replacement = "\ufffd" if self._windows_pending_high_surrogate is not None else ""
-            self._windows_pending_high_surrogate = None
-            text = self._windows_key_text(key_event, codepoint)
-            if text or replacement:
-                repeated = text * max(1, key_event.wRepeatCount)
-                return (replacement + repeated).encode("utf-8")
-
-    @staticmethod
-    def _windows_key_text(key_event: Any, codepoint: int) -> str:
-        control_state = key_event.dwControlKeyState
-        modifiers = int(bool(control_state & 0x0010)) | (int(bool(control_state & 0x0003)) << 1) | (int(bool(control_state & 0x000C)) << 2)
-        virtual_key = key_event.wVirtualKeyCode
-        altgr = control_state & 0x0009 == 0x0009 and not control_state & 0x0006
-        if codepoint:
-            text = chr(codepoint)
-            if altgr and text.isprintable():
-                return text
-            if not modifiers:
-                return text
-            if modifiers & 1 and 0x41 <= virtual_key <= 0x5A:
-                base = chr(virtual_key + ord("a") - ord("A"))
-                return f"\x1b[{ord(base)}:{codepoint};{modifiers + 1}u"
-            if modifiers & 4 and 1 <= codepoint <= 26:
-                codepoint += ord("a") - 1
-            return f"\x1b[{codepoint};{modifiers + 1}u"
-        navigation = {
-            0x23: "F",
-            0x24: "H",
-            0x25: "D",
-            0x26: "A",
-            0x27: "C",
-            0x28: "B",
-        }
-        final = navigation.get(virtual_key)
-        if final is not None:
-            return f"\x1b[1;{modifiers + 1}{final}" if modifiers else f"\x1b[{final}"
-        tilde = {0x21: 5, 0x22: 6, 0x2D: 2, 0x2E: 3}.get(virtual_key)
-        if tilde is not None:
-            return f"\x1b[{tilde};{modifiers + 1}~" if modifiers else f"\x1b[{tilde}~"
-        if 0x70 <= virtual_key <= 0x73:
-            final = chr(ord("P") + virtual_key - 0x70)
-            return f"\x1b[1;{modifiers + 1}{final}" if modifiers else f"\x1bO{final}"
-        function_key = {
-            0x74: 15,
-            0x75: 17,
-            0x76: 18,
-            0x77: 19,
-            0x78: 20,
-            0x79: 21,
-            0x7A: 23,
-            0x7B: 24,
-        }.get(virtual_key)
-        if function_key is not None:
-            return f"\x1b[{function_key};{modifiers + 1}~" if modifiers else f"\x1b[{function_key}~"
-        if virtual_key in (0x09, 0x0D, 0x1B, 0x20, 0x08):
-            codepoint = {0x09: 9, 0x0D: 13, 0x1B: 27, 0x20: 32, 0x08: 127}[virtual_key]
-            if modifiers:
-                return f"\x1b[{codepoint};{modifiers + 1}u"
-            return chr(codepoint)
-        if modifiers and 0x41 <= virtual_key <= 0x5A:
-            return f"\x1b[{virtual_key + 32};{modifiers + 1}u"
-        return ""
 
     def _query_cursor_style(self) -> int | None:
         if self._input_fd is None:
@@ -1193,9 +1108,6 @@ class Terminal:
     def _enter_application_mode(self) -> None:
         """Enable only session modes whose original state can be restored."""
         paste_mode = self._private_modes.get(2004)
-        if os.name == "nt" and paste_mode is not True and (paste_mode is None or 2004 in self._unsupported_private_modes):
-            detail = "unsupported" if 2004 in self._unsupported_private_modes else "not reported"
-            raise TerminalCapabilityError(f"Windows terminal bracketed paste mode is {detail}; paste-safe input is unavailable")
         parts = []
         if paste_mode is False:
             parts.append(BRACKETED_PASTE_ON)
@@ -1230,20 +1142,6 @@ class Terminal:
 
     def _emit(self, text: str) -> None:
         with self._lock:
-            if self._output_fd in self._windows_console_handles:
-                handle = self._windows_console_handles[self._output_fd]
-                units = len(text.encode("utf-16-le")) // 2
-                written = ctypes.c_ulong()
-                ok = self._windows_kernel.WriteConsoleW(
-                    handle,
-                    ctypes.c_wchar_p(text),
-                    units,
-                    ctypes.byref(written),
-                    None,
-                )
-                if not ok or written.value != units:
-                    self._eof = True
-                return
             data = text.encode("utf-8", "replace")
             while data:
                 try:
@@ -1254,11 +1152,10 @@ class Terminal:
                 data = data[written:]
 
     def _enter_raw_mode(self) -> None:
+        if os.name == "nt":
+            raise TerminalCapabilityError("interactive terminal requires a VT-capable terminal; native Windows console support was removed")
         if self._input_fd is None or not os.isatty(self._input_fd):
             self._is_tty = False
-            return
-        if os.name == "nt":
-            self._enter_windows_console()
             return
         if termios is None or tty is None:
             self._is_tty = False
@@ -1272,99 +1169,7 @@ class Terminal:
             return
         self._raw = True
 
-    def _enter_windows_console(self) -> None:
-        import ctypes
-        import msvcrt
-        from ctypes import wintypes
-
-        windows_dll = getattr(ctypes, "Win" + "DLL")
-        get_last_error = getattr(ctypes, "get_" + "last_error")
-        kernel32 = windows_dll("kernel32", use_last_error=True)
-        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-        kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        kernel32.WriteConsoleW.argtypes = [
-            wintypes.HANDLE,
-            wintypes.LPCWSTR,
-            wintypes.DWORD,
-            ctypes.POINTER(wintypes.DWORD),
-            wintypes.LPVOID,
-        ]
-
-        class _UnicodeChar(ctypes.Union):
-            _fields_ = [("UnicodeChar", ctypes.c_uint16), ("AsciiChar", ctypes.c_char)]
-
-        class _KeyEventRecord(ctypes.Structure):
-            _fields_ = [
-                ("bKeyDown", ctypes.c_int32),
-                ("wRepeatCount", ctypes.c_uint16),
-                ("wVirtualKeyCode", ctypes.c_uint16),
-                ("wVirtualScanCode", ctypes.c_uint16),
-                ("uChar", _UnicodeChar),
-                ("dwControlKeyState", ctypes.c_uint32),
-            ]
-
-        class _InputRecordEvent(ctypes.Union):
-            _fields_ = [("KeyEvent", _KeyEventRecord), ("Padding", ctypes.c_uint8 * 16)]
-
-        class _InputRecord(ctypes.Structure):
-            _fields_ = [("EventType", ctypes.c_uint16), ("Event", _InputRecordEvent)]
-
-        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        kernel32.WaitForSingleObject.restype = wintypes.DWORD
-        kernel32.ReadConsoleInputW.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(_InputRecord),
-            wintypes.DWORD,
-            ctypes.POINTER(wintypes.DWORD),
-        ]
-        kernel32.ReadConsoleInputW.restype = wintypes.BOOL
-        self._windows_input_record_type = _InputRecord
-        self._windows_kernel = kernel32
-        try:
-            for fd in dict.fromkeys((self._input_fd, self._output_fd)):
-                assert fd is not None
-                handle = getattr(msvcrt, "get_" + "osfhandle")(fd)
-                mode = wintypes.DWORD()
-                if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-                    raise OSError(get_last_error(), "GetConsoleMode failed")
-                self._windows_console_handles[fd] = handle
-                self._windows_saved_modes[fd] = mode.value
-            for fd, original in self._windows_saved_modes.items():
-                if fd == self._input_fd:
-                    desired = (original & ~(0x0001 | 0x0002 | 0x0004)) | 0x0200
-                else:
-                    desired = original | 0x0004
-                if not kernel32.SetConsoleMode(self._windows_console_handles[fd], desired):
-                    raise OSError(get_last_error(), "SetConsoleMode failed")
-        except OSError as error:
-            try:
-                self._leave_windows_console()
-            except OSError as restore_error:
-                self._is_tty = False
-                raise TerminalCapabilityError(f"Windows console mode restore failed: {restore_error}") from restore_error
-            self._is_tty = False
-            raise TerminalCapabilityError(f"Windows console VT mode unavailable: {error}") from error
-        self._raw = True
-
-    def _leave_windows_console(self) -> None:
-        if not self._windows_saved_modes:
-            return
-        errors = []
-        remaining: dict[int, int] = {}
-        for fd, mode in self._windows_saved_modes.items():
-            if not self._windows_kernel.SetConsoleMode(self._windows_console_handles[fd], mode):
-                remaining[fd] = mode
-                errors.append(OSError(getattr(ctypes, "get_" + "last_error")(), f"SetConsoleMode restore failed for fd {fd}"))
-        self._windows_saved_modes = remaining
-        self._windows_console_handles = {fd: self._windows_console_handles[fd] for fd in remaining}
-        self._raw = bool(remaining)
-        if errors:
-            raise errors[0]
-
     def _leave_raw_mode(self) -> None:
-        if os.name == "nt":
-            self._leave_windows_console()
-            return
         if self._saved_termios is None or self._input_fd is None or termios is None:
             return
         try:

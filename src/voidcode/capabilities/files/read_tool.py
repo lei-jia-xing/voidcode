@@ -17,7 +17,7 @@ from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES, RASTER
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.resources import ResourceReadRequest, ResourceUnavailable
-from voidcode.sdk.services import ArtifactReference, PluginServices
+from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices
 from voidcode.sdk.tools import (
     AttachmentOutput,
     ConfirmedStop,
@@ -33,6 +33,8 @@ from voidcode.sdk.tools import (
     ToolResult,
     ToolSuccess,
 )
+
+from ._common import validate_non_empty
 
 
 class ReadArgs(BaseModel):
@@ -57,12 +59,7 @@ class ReadArgs(BaseModel):
         default=None, ge=4, le=MAX_RESOURCE_PAGE_BYTES, description="Maximum UTF-8 bytes in a resource page; requires byte_offset."
     )
 
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("path must not be empty")
-        return value
+    _path_non_empty = field_validator("path", mode="after")(validate_non_empty)
 
 
 DEFAULT_READ_LIMIT = 2000
@@ -196,7 +193,7 @@ def _is_binary_content(path: Path, sample: bytes) -> bool:
 
 
 def _render_file(
-    candidate: Path, *, relative_path: str, offset: int, limit: int, services: PluginServices, context: ToolContext
+    candidate: Path, *, relative_path: str, offset: int, limit: int, services: ArtifactServices, context: ToolContext
 ) -> _ReadOutcome | ToolFailure:
     mime, _ = mimetypes.guess_type(candidate.name)
     is_svg = candidate.suffix.lower() == ".svg" or mime == "image/svg+xml"

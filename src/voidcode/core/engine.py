@@ -6,6 +6,7 @@ import base64
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -21,7 +22,8 @@ from uuid import uuid4
 import jsonschema
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..sdk.client import BudgetExhaustion
+from ..sdk.ask import AskAnswerStatus, AskError, AskRequest, AskRequestDraft, AskResultBody, validate_ask_answer
+from ..sdk.client import CLIENT_PROMPT_MAX_BYTES, BudgetExhaustion
 from ..sdk.codec import (
     decode_provider_result,
     decode_tool_call,
@@ -40,9 +42,8 @@ from ..sdk.commands import (
 from ..sdk.hooks import RequestWindow, StopCause, WindowSegment
 from ..sdk.icons import Icon
 from ..sdk.invocation import ToolContext
-from ..sdk.json_values import json_wire_object, own_json_object
-from ..sdk.limits import CLIENT_PROMPT_MAX_BYTES, TOOL_OUTPUT_BYTES
-from ..sdk.observed_effects import MAX_OBSERVED_CHANGES, ObservedChange
+from ..sdk.json_values import json_wire_object, json_wire_value, own_json_object
+from ..sdk.observed_effects import MAX_OBSERVED_CHANGES
 from ..sdk.provider import ImageAttachment, ProviderExecutionError, ProviderMessage, ProviderTurnRequest, ProviderTurnResult
 from ..sdk.services import (
     ArtifactPage,
@@ -59,13 +60,15 @@ from ..sdk.services import (
     ToolAwaitResult,
     ToolInvocationReceipt,
 )
+from ..sdk.suspend import ParkRevisionError
 from ..sdk.tools import (
+    TOOL_OUTPUT_BYTES,
+    Change,
     CompositeOutput,
     ConfirmedStop,
     ContentPart,
     ExecutionObservation,
     JsonPart,
-    ResourceChange,
     TablePart,
     TextOutput,
     TextPart,
@@ -109,13 +112,15 @@ from .delegation import (
 from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
 from .facts import FACT_EVENT_TYPES as _FACT_EVENT_TYPES
 from .facts import fact_for_event
-from .plugins import CommandInvocationOutcome, LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome
+from .plugins import CommandInvocationOutcome, LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome, ToolSuspension
 from .sandbox import SandboxBackend
 from .storage.store import (
     DATABASE_FILENAME,
+    AskAnswerConflict,
     Checkpoint,
     ContinuationRecord,
     EventDraft,
+    InvalidRevision,
     ObserverReceiptRecord,
     RootBudgetExhausted,
     SequenceConflict,
@@ -126,10 +131,14 @@ from .storage.store import (
     StagedConfirmation,
     StagedContinuationDraft,
     StagedStateUpdate,
+    StaleRevision,
     StoreConflict,
     StoredEvent,
+    WaitingAskPark,
     canonical_json,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Cancellation:
@@ -144,6 +153,7 @@ class Cancellation:
         self._event = Event()
         self._reason: str | None = None
         self._lock = threading.Lock()
+        self._cancel_callbacks: list[Callable[[], None]] = []
         self._stop_cause: StopCause = "user_stop"
         self._linked_event = linked_event
         self._linked_reason = linked_reason
@@ -176,10 +186,45 @@ class Cancellation:
         with self._lock:
             self._reason = reason if value else None
             self._stop_cause = stop_cause if value else "user_stop"
+            firing: tuple[Callable[[], None], ...] = ()
             if value:
                 self._event.set()
+                firing = tuple(self._cancel_callbacks)
+                self._cancel_callbacks.clear()
             else:
                 self._event.clear()
+        for callback in firing:
+            self._fire_cancel_callback(callback)
+
+    def on_cancel(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Register a one-shot callback fired when this signal is set-cancelled.
+
+        Callbacks run outside the internal lock, each at most once; registering on
+        an already-cancelled signal fires immediately. Returns an idempotent
+        unregister handle.
+        """
+        with self._lock:
+            already = self._event.is_set() or (self._linked_event is not None and self._linked_event.is_set())
+            if not already:
+                self._cancel_callbacks.append(callback)
+
+        def _unregister() -> None:
+            with self._lock:
+                try:
+                    self._cancel_callbacks.remove(callback)
+                except ValueError:
+                    pass
+
+        if already:
+            self._fire_cancel_callback(callback)
+        return _unregister
+
+    @staticmethod
+    def _fire_cancel_callback(callback: Callable[[], None]) -> None:
+        try:
+            callback()
+        except Exception:
+            logger.exception("cancellation callback failed")
 
 
 class _EventAbortSignal:
@@ -585,6 +630,8 @@ class _Cursor(BaseModel):
     next_call: int = Field(default=0, ge=0)
     intent_sequence: int | None = Field(default=None, ge=1)
     approval_sequence: int | None = Field(default=None, ge=1)
+    ask_sequence: int | None = Field(default=None, ge=1)
+    ask_request_id: str | None = None
     deferred_sequence: int | None = Field(default=None, ge=1)
     deferred_depth: int = Field(default=0, ge=0)
     deferred_action_id: str | None = None
@@ -619,6 +666,7 @@ class CoreResult:
     output: str | None = None
     error: str | None = None
     pending_approval: Mapping[str, object] | None = None
+    pending_ask: Mapping[str, object] | None = None
     stop_cause: StopCause | None = None
     budget_exhaustion: BudgetExhaustion | None = None
 
@@ -632,6 +680,8 @@ class CoreResult:
             "error": self.error,
             "pending_approval": None if self.pending_approval is None else json_wire_object(self.pending_approval),
         }
+        if self.pending_ask is not None:
+            payload["pending_ask"] = json_wire_object(self.pending_ask)
         if self.stop_cause is not None:
             payload["stop_cause"] = self.stop_cause
         if self.budget_exhaustion is not None:
@@ -658,6 +708,21 @@ class _Execution:
     ephemeral_steering: list[str] = field(default_factory=list)
     projection_allocation: ProjectionAllocation | None = None
     allocation_ineffective_tools: int = 0
+    #: Request-scoped interaction declaration for this drive (D3): None means
+    #: interactive. Unattended drives refuse ask and approval parks at the
+    #: park-commit site with a typed ToolFailure and continue. Ephemeral:
+    #: never checkpointed, re-declared by every run/resume entry.
+    interaction: Literal["interactive", "unattended"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _AskBinding:
+    """One validated live ask park: its committed request plus park-time facts."""
+
+    event: StoredEvent
+    request: AskRequest
+    parked_at_ms: int
+    idempotency_key: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -713,6 +778,10 @@ class Core:
         self._background_abort_causes: dict[str, StopCause | None] = {}
         self._background_cond = threading.Condition()
         self._tool_wait_cond = threading.Condition()
+        # Commit clock for event streams: bumped under this condition after every
+        # committed session-events write (see notify_commit); waiters re-read cursors.
+        self._commit_cond = threading.Condition()
+        self._commit_generation = 0
         self._background_identity = {"pid": os.getpid(), "core": uuid4().hex}
         # One pointer per capability generation, plus short-critical-section call accounting.
         # The activation fence rejects new dispatches and reports foreign in-flight calls as
@@ -946,6 +1015,31 @@ class Core:
     @property
     def revision_id(self) -> str:
         return self._snapshot.revision_id
+
+    @property
+    def commit_generation(self) -> int:
+        """Current store-commit generation; event streams wait for it to advance."""
+        with self._commit_cond:
+            return self._commit_generation
+
+    def notify_commit(self) -> None:
+        """Record one committed session-events write and wake event-stream waiters.
+
+        Call after every committed session-events write affecting sessions (all commit_staged /
+        commit_activation / claim paths in engine and delegation). Level-triggered:
+        waiters record a generation, wait for ANY change, then re-read their event
+        cursor — no wakeup is ever lost (a check after a bump sees the new value),
+        and spurious wakes or timeouts just re-read an unchanged cursor.
+        """
+        with self._commit_cond:
+            self._commit_generation += 1
+            self._commit_cond.notify_all()
+
+    def wait_for_commit(self, after_generation: int, timeout: float) -> int:
+        """Block until a commit lands past ``after_generation`` (or timeout); return current generation."""
+        with self._commit_cond:
+            self._commit_cond.wait_for(lambda: self._commit_generation != after_generation, timeout=timeout)
+            return self._commit_generation
 
     @contextmanager
     def _dispatch(self, description: str) -> Generator[_Snapshot]:
@@ -1198,6 +1292,7 @@ class Core:
         max_steps: int | None = None,
         root_action_budget: int | None = None,
         images: tuple[ImageAttachment, ...] = (),
+        interaction: Literal["interactive", "unattended"] | None = None,
     ) -> CoreResult:
         return self._run(
             prompt,
@@ -1206,6 +1301,7 @@ class Core:
             root_action_budget=root_action_budget,
             prompt_max_bytes=CLIENT_PROMPT_MAX_BYTES,
             images=images,
+            interaction=interaction,
         )
 
     def _run(
@@ -1219,11 +1315,13 @@ class Core:
         images: tuple[ImageAttachment, ...] = (),
         _root_id: str | None = None,
         _refuse_reserved_cancelled: bool = False,
+        interaction: Literal["interactive", "unattended"] | None = None,
     ) -> CoreResult:
         # A core-driven child run carries a delegated payload (e.g. a review diff).
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > prompt_max_bytes:
             raise ValueError(f"prompt must be nonempty UTF-8 text within {prompt_max_bytes // 1024} KiB")
         self._validate_steps(max_steps)
+        self._validate_interaction(interaction)
         self._validate_root_action_budget(root_action_budget)
         if _root_id is not None and (not isinstance(_root_id, str) or not _root_id or "\0" in _root_id):
             raise ValueError("inherited root action id must be nonempty text without NUL")
@@ -1293,6 +1391,7 @@ class Core:
                     _Cursor(root_id=root_id, initial_root_budget=initial_root_budget, max_steps=max_steps),
                     list(self.store.events(session_id)),
                     run_abort_id,
+                    interaction=interaction,
                 )
                 if _refuse_reserved_cancelled and _reserved_cancelled(execution.events):
                     # A cancel claimed this reserved child before its first run started
@@ -1372,8 +1471,7 @@ class Core:
     def _rehydrate_followup_images(self, raw_images: list[dict[str, object]], continuation_id: str) -> tuple[ImageAttachment, ...]:
         """Rebuild provider-visible images from continuation references.
 
-        Legacy inline entries (`{"media_type", "data"}`) still decode in place;
-        reference entries (`{"media_type", "sha256", "bytes"}`) read back through
+        Reference entries (`{"media_type", "sha256", "bytes"}`) read back through
         the shared artifact pager with digest+size verification. Missing,
         unreadable, or malformed references raise `StoreConflict` — the caller
         completes the continuation as failed first, so delivery never falls back
@@ -1385,12 +1483,6 @@ class Core:
         for index, entry in enumerate(raw_images):
             if not isinstance(entry, Mapping):
                 raise StoreConflict(f"queued follow-up {continuation_id!r} image {index} is malformed")
-            if "data" in entry:
-                try:
-                    rehydrated.append(ImageAttachment.from_payload(entry))
-                except ValueError as exc:
-                    raise StoreConflict(f"queued follow-up {continuation_id!r} image {index} is malformed") from exc
-                continue
             media_type = entry.get("media_type")
             sha = entry.get("sha256")
             size = entry.get("bytes")
@@ -1580,9 +1672,10 @@ class Core:
         max_steps: int | None = None,
         extend_root_actions: int | None = None,
         root_action_grant_id: str | None = None,
+        interaction: Literal["interactive", "unattended"] | None = None,
     ) -> CoreResult:
         self._validate_steps(max_steps)
-        self._validate_root_action_extension(extend_root_actions, root_action_grant_id)
+        self._validate_interaction(interaction)
         with self._session_lock(session_id):
             self._ensure_open()
             self._abort.set_cancelled(False)
@@ -1634,7 +1727,7 @@ class Core:
                     self._delegation._captured_child_root_id(session_id)
                 if max_steps is not None:
                     cursor.max_steps = max_steps
-                execution = _Execution(session, cursor, list(self.store.events(session_id)), run_abort_id)
+                execution = _Execution(session, cursor, list(self.store.events(session_id)), run_abort_id, interaction=interaction)
                 self._messages(execution, allow_pending=True)
                 if cursor.intent_sequence is not None:
                     intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
@@ -1651,6 +1744,17 @@ class Core:
                         raise ValueError("pending approval does not match its native batch member")
                 elif approval_request_id is not None or decision is not None:
                     raise ValueError("session is not waiting for approval")
+                if cursor.ask_sequence is not None or cursor.ask_request_id is not None:
+                    # An ask park resumes only through answer_ask/cancel_ask: a plain
+                    # resume would re-invoke the parked tool. Refuse while live; when
+                    # the caller-declared deadline passed, settle the expiry here and
+                    # fall through so RUN_RESUMED plus _drive continue the run.
+                    if approval_request_id is not None or decision is not None:
+                        raise ValueError("session is not waiting for approval")
+                    binding = self._ask_binding(execution, cursor)
+                    if not self._ask_binding_expired(binding):
+                        raise ValueError(f"session is waiting for ask {cursor.ask_request_id!r}; answer via ask.answer or ask.cancel")
+                    self._adopt_ask_terminal(execution, binding, status="expired", values={})
                 resume_payload: dict[str, object] = {"max_steps": max_steps}
                 root_budget_grant: tuple[str, int, str] | None = None
                 if extend_root_actions is not None:
@@ -1744,6 +1848,342 @@ class Core:
         if session.parent_session_id is not None:
             self._delegation.notify_child_state_changed()
         return result
+
+    def _ask_binding(self, execution: _Execution, cursor: _Cursor) -> _AskBinding:
+        """Validate the cursor's live ask binding against its committed request event."""
+        if cursor.ask_sequence is None or cursor.ask_request_id is None:
+            raise ValueError("session holds no live ask binding")
+        event = self._event(execution, cursor.ask_sequence, EventType.ASK_REQUESTED)
+        request = AskRequest.from_payload(_wire_object(event.payload.get("request"), "ask request"))
+        if request.request_id != cursor.ask_request_id:
+            raise ValueError("parked ask binding does not match its committed request")
+        parked_at = event.payload.get("parked_at_ms")
+        if type(parked_at) is not int or parked_at < 0:
+            raise ValueError("parked ask request has no honest park time")
+        raw_key = event.payload.get("idempotency_key")
+        return _AskBinding(event=event, request=request, parked_at_ms=parked_at, idempotency_key=raw_key if isinstance(raw_key, str) else None)
+
+    @staticmethod
+    def _ask_binding_expired(binding: _AskBinding) -> bool:
+        """Whether the caller-declared deadline passed; None waits indefinitely like approvals."""
+        timeout = binding.request.timeout_ms
+        if timeout is None:
+            return False
+        return int(time.time() * 1000) > binding.parked_at_ms + timeout
+
+    @staticmethod
+    def _render_ask_answers(request: AskRequest, values: Mapping[str, object]) -> str:
+        """Render every answer as model-projected text; bodies are omitted from projection."""
+        lines = [f"Ask: {request.title}"]
+        for question in request.questions:
+            label = question.label or question.name
+            if question.name in values:
+                value = values[question.name]
+                rendered = value if isinstance(value, str) else json.dumps(json_wire_value(value), ensure_ascii=False)
+                lines.append(f"{label}: {rendered}")
+            else:
+                lines.append(f"{label}: (no answer)")
+        return "\n".join(lines)
+
+    def _adopt_ask_terminal(self, execution: _Execution, binding: _AskBinding, *, status: AskAnswerStatus, values: Mapping[str, object]) -> None:
+        """Adopt one ask terminal without re-invoking the parked tool, exactly once.
+
+        Commits ASK_ANSWERED plus the parked call's TOOL_COMPLETED in one guarded
+        transaction (the guard raises AskAnswerConflict when a terminal already
+        exists) and clears the park binding via _report.
+        """
+        request = binding.request
+        if execution.cursor.intent_sequence is None:
+            raise ValueError("ask adoption requires its parked tool intent")
+        _, call = self._pending(execution)
+        intent = self._event(execution, execution.cursor.intent_sequence, EventType.TOOL_INTENT)
+        if json_wire_object(intent.payload)["call"] != encode_tool_call(call):
+            raise ValueError("parked ask intent does not match its native batch member")
+        if status == "answered":
+            result: ToolResult = ToolSuccess(
+                call.tool_name,
+                TextOutput(text=self._render_ask_answers(request, values)),
+                body=AskResultBody(answers=dict(values), status="answered"),
+            )
+            source, actor = "client", "user"
+        elif status == "cancelled":
+            result = ToolFailure(call.tool_name, f"ask {request.request_id} was cancelled by the user")
+            source, actor = "client", "user"
+        else:
+            result = ToolFailure(call.tool_name, f"ask {request.request_id} expired without an answer")
+            source, actor = "kernel", "kernel"
+        answered = EventDraft(
+            EventType.ASK_ANSWERED, source, actor, {"request_id": request.request_id, "status": status, "values": json_wire_object(values)}
+        )
+        try:
+            self._report(execution, call, result, prefix_events=(answered,), ask_answer_guard=request.request_id)
+        except AskAnswerConflict as exc:
+            raise AskError(f"ask {request.request_id!r} was already answered") from exc
+
+    def _ask_resume_prelude(self, session_id: str, request_id: str, run_abort_id: str, abort: Cancellation) -> tuple[_Execution, _AskBinding]:
+        """Rebuild the parked ask's execution under the session lock, resume-style.
+
+        Validates session, checkpoint identity, parked prefix, root budget, and
+        the ask binding; the named request must be the live one and must have
+        no terminal answer yet. Callers hold the session lock and registered
+        the abort; adoption plus _drive continue from here.
+        """
+        session = self.store.session(session_id)
+        self._check_session(session)
+        for ev in self.store.events(session_id):
+            if ev.event_type == EventType.ASK_ANSWERED and ev.payload.get("request_id") == request_id:
+                raise AskError(f"ask {request_id!r} was already answered (status: {ev.payload.get('status')})")
+        if session.status != "waiting":
+            raise AskError(f"session {session_id!r} holds no live ask park (status: {session.status})")
+        checkpoint = self.store.checkpoint(session_id)
+        if checkpoint is None or checkpoint.kind == "terminal":
+            raise AskError(f"session {session_id!r} holds no live ask park")
+        if (
+            checkpoint.revision_id != self.revision_id
+            or checkpoint.run_id != session.run_id
+            or checkpoint.last_event_sequence > session.last_event_sequence
+        ):
+            raise ParkRevisionError("ask checkpoint identity does not match the durable session")
+        events_after_cp = self.store.events(session_id, after_sequence=checkpoint.last_event_sequence)
+        for ev in events_after_cp:
+            if not _is_parked_intervening(ev):
+                raise ValueError(f"Intervening event {ev.event_type} violates parked checkpoint prefix")
+        if "initial_root_budget" not in checkpoint.payload:
+            raise ValueError("checkpoint has no captured root budget state")
+        cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
+        if not isinstance(cursor.root_id, str) or not cursor.root_id:
+            raise ValueError("checkpoint has no captured root action identity")
+        if cursor.deferred_action_id is not None:
+            with self._background_cond:
+                action_abort = self._background_aborts.get(cursor.deferred_action_id)
+            if action_abort is not None:
+                abort = Cancellation(
+                    action_abort,
+                    linked_reason="background action stopped",
+                    linked_stop_cause_provider=lambda action_id=cursor.deferred_action_id: self._background_abort_stop_cause(action_id),
+                )
+                with self._aborts_lock:
+                    self._session_aborts[session_id] = (run_abort_id, abort)
+        root_state = self.store.root_budget_state(cursor.root_id)
+        if cursor.initial_root_budget is None:
+            if root_state is not None:
+                raise StoreConflict("checkpoint captured an uncapped root with a finite budget row")
+        elif root_state is None or root_state[0] < cursor.initial_root_budget:
+            raise StoreConflict("checkpoint lost its captured finite root authorization")
+        if session.parent_session_id is not None:
+            self._delegation._captured_child_root_id(session_id)
+        execution = _Execution(session, cursor, list(self.store.events(session_id)), run_abort_id)
+        self._messages(execution, allow_pending=True)
+        binding = self._ask_binding(execution, cursor)
+        if binding.request.request_id != request_id:
+            raise AskError(f"ask {request_id!r} is not the live parked ask of session {session_id!r}")
+        if binding.request.revision_id != self.revision_id:
+            raise ParkRevisionError(f"ask {request_id!r} belongs to a retired revision")
+        return execution, binding
+
+    def answer_ask(
+        self,
+        session_id: str,
+        request_id: str,
+        values: Mapping[str, object],
+        *,
+        expected_revision: str,
+    ) -> CoreResult:
+        """Adopt one client's answer for the session's live ask and continue the run.
+
+        Session-locked and resume-like: the request must be live and unexpired,
+        values are validated by the shared strict validator, and the parked
+        tool is adopted without re-invoke. A past-deadline park settles as
+        expired first and the answer is refused as already terminal.
+        """
+        self._check_expected_revision(expected_revision)
+        with self._session_lock(session_id):
+            self._ensure_open()
+            self._abort.set_cancelled(False)
+            abort = Cancellation()
+            run_abort_id = uuid4().hex
+            with self._aborts_lock:
+                self._session_aborts[session_id] = (run_abort_id, abort)
+            resumed_notice: tuple[str, str] | None = None
+            try:
+                execution, binding = self._ask_resume_prelude(session_id, request_id, run_abort_id, abort)
+                session = execution.session
+                expired = self._ask_binding_expired(binding)
+                if expired:
+                    self._adopt_ask_terminal(execution, binding, status="expired", values={})
+                else:
+                    validated = validate_ask_answer(binding.request, values)
+                    self._adopt_ask_terminal(execution, binding, status="answered", values=validated)
+                result = self._drive(execution)
+                if session.parent_session_id is not None and _terminal_run_result(result):
+                    child_now = self.store.session(session_id)
+                    notify = self._delegation._notify_requested(child_now, self.store.events(session_id))
+                    self._delegation._publish_child_terminal(
+                        session.parent_session_id,
+                        session_id,
+                        run_id=result.run_id,
+                        status=_child_run_status(result),
+                        output=result.output,
+                        error=result.error,
+                        stop_cause=result.stop_cause,
+                        label="",
+                        notify=notify,
+                        deliver=False,
+                        budget_exhaustion=result.budget_exhaustion,
+                    )
+                    if notify:
+                        resumed_notice = (
+                            session.parent_session_id,
+                            child_completion_notice_id(session.parent_session_id, session_id, result.run_id),
+                        )
+            finally:
+                with self._aborts_lock:
+                    self._session_aborts.pop(session_id, None)
+        if resumed_notice is not None:
+            self._delegation._deliver_child_notice(*resumed_notice)
+        self._drain_deferred_requests(session_id)
+        self._drain_pending_background_tool_waits(session_id)
+        self._drive_pending(session_id)
+        if session.parent_session_id is not None:
+            self._delegation.notify_child_state_changed()
+        if expired:
+            raise AskError(f"ask {request_id!r} expired without an answer; the run continued with the expiry failure")
+        return result
+
+    def cancel_ask(self, session_id: str, request_id: str, *, expected_revision: str) -> CoreResult:
+        """Adopt one client's cancellation for the session's live ask and continue the run.
+
+        Session-locked and resume-like: the request must be live and unexpired.
+        A past-deadline park settles as expired first and the cancellation is
+        refused as already terminal.
+        """
+        self._check_expected_revision(expected_revision)
+        with self._session_lock(session_id):
+            self._ensure_open()
+            self._abort.set_cancelled(False)
+            abort = Cancellation()
+            run_abort_id = uuid4().hex
+            with self._aborts_lock:
+                self._session_aborts[session_id] = (run_abort_id, abort)
+            resumed_notice: tuple[str, str] | None = None
+            try:
+                execution, binding = self._ask_resume_prelude(session_id, request_id, run_abort_id, abort)
+                session = execution.session
+                expired = self._ask_binding_expired(binding)
+                if expired:
+                    self._adopt_ask_terminal(execution, binding, status="expired", values={})
+                else:
+                    self._adopt_ask_terminal(execution, binding, status="cancelled", values={})
+                result = self._drive(execution)
+                if session.parent_session_id is not None and _terminal_run_result(result):
+                    child_now = self.store.session(session_id)
+                    notify = self._delegation._notify_requested(child_now, self.store.events(session_id))
+                    self._delegation._publish_child_terminal(
+                        session.parent_session_id,
+                        session_id,
+                        run_id=result.run_id,
+                        status=_child_run_status(result),
+                        output=result.output,
+                        error=result.error,
+                        stop_cause=result.stop_cause,
+                        label="",
+                        notify=notify,
+                        deliver=False,
+                        budget_exhaustion=result.budget_exhaustion,
+                    )
+                    if notify:
+                        resumed_notice = (
+                            session.parent_session_id,
+                            child_completion_notice_id(session.parent_session_id, session_id, result.run_id),
+                        )
+            finally:
+                with self._aborts_lock:
+                    self._session_aborts.pop(session_id, None)
+        if resumed_notice is not None:
+            self._delegation._deliver_child_notice(*resumed_notice)
+        self._drain_deferred_requests(session_id)
+        self._drain_pending_background_tool_waits(session_id)
+        self._drive_pending(session_id)
+        if session.parent_session_id is not None:
+            self._delegation.notify_child_state_changed()
+        if expired:
+            raise AskError(f"ask {request_id!r} expired without an answer; the run continued with the expiry failure")
+        return result
+
+    def _settle_expired_ask_candidate(self, candidate: WaitingAskPark) -> None:
+        """Settle one sweep candidate's expired ask and continue its run, if still due.
+
+        Stale candidates (answered, cancelled, or resumed since listing) return
+        quietly; anything else fails loudly per session in the sweep caller.
+        """
+        session_id = candidate.session_id
+        with self._session_lock(session_id):
+            self._ensure_open()
+            abort = Cancellation()
+            run_abort_id = uuid4().hex
+            with self._aborts_lock:
+                self._session_aborts[session_id] = (run_abort_id, abort)
+            resumed_notice: tuple[str, str] | None = None
+            settled = False
+            try:
+                try:
+                    execution, binding = self._ask_resume_prelude(session_id, candidate.ask_request_id, run_abort_id, abort)
+                except AskError, KeyError:
+                    return
+                if not self._ask_binding_expired(binding):
+                    return
+                session = execution.session
+                self._adopt_ask_terminal(execution, binding, status="expired", values={})
+                result = self._drive(execution)
+                settled = True
+                if session.parent_session_id is not None and _terminal_run_result(result):
+                    child_now = self.store.session(session_id)
+                    notify = self._delegation._notify_requested(child_now, self.store.events(session_id))
+                    self._delegation._publish_child_terminal(
+                        session.parent_session_id,
+                        session_id,
+                        run_id=result.run_id,
+                        status=_child_run_status(result),
+                        output=result.output,
+                        error=result.error,
+                        stop_cause=result.stop_cause,
+                        label="",
+                        notify=notify,
+                        deliver=False,
+                        budget_exhaustion=result.budget_exhaustion,
+                    )
+                    if notify:
+                        resumed_notice = (
+                            session.parent_session_id,
+                            child_completion_notice_id(session.parent_session_id, session_id, result.run_id),
+                        )
+            finally:
+                with self._aborts_lock:
+                    self._session_aborts.pop(session_id, None)
+            if not settled:
+                return
+        if resumed_notice is not None:
+            self._delegation._deliver_child_notice(*resumed_notice)
+        self._drain_deferred_requests(session_id)
+        self._drain_pending_background_tool_waits(session_id)
+        self._drive_pending(session_id)
+        if session.parent_session_id is not None:
+            self._delegation.notify_child_state_changed()
+
+    def _sweep_expired_asks(self) -> None:
+        """Settle caller-declared ask expiries due now; one bad session never stops the sweep."""
+        try:
+            candidates = self.store.waiting_ask_parks()
+        except Exception:
+            logger.exception("ask expiry sweep failed to list parked asks")
+            return
+        for candidate in candidates:
+            if self._closed:
+                return
+            try:
+                self._settle_expired_ask_candidate(candidate)
+            except Exception:
+                logger.exception("ask expiry sweep failed for session %s", candidate.session_id)
 
     def _drive_pending(self, session_id: str, *, limit: int = 32) -> None:
         """Drive owned queued follow-up work at a safe boundary, outside the run lock.
@@ -2063,7 +2503,7 @@ class Core:
         else:
             s = session
 
-        all_events = self.store.events(session_id)
+        all_events = self.store.events_by_types(session_id, (EventType.PROVIDER_INTENT, EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED))
         dispatches_in_window: list[int] = []
         completions_by_dispatch: dict[int, StoredEvent] = {}
 
@@ -2232,7 +2672,7 @@ class Core:
         session = self.session(session_id)
         with self._dispatch("command_input") as snapshot:
             if expected_revision != snapshot.revision_id:
-                raise ValueError("displayed catalog revision is stale; refresh the catalog")
+                raise StaleRevision("displayed catalog revision is stale; refresh the catalog", expected_revision, snapshot.revision_id)
             context = ToolContext(
                 workspace=self.workspace,
                 session_id=session_id,
@@ -2415,6 +2855,7 @@ class Core:
                         ),
                     ),
                 )
+                self.notify_commit()
                 return cmd_result
 
             # Handle budget update
@@ -2445,6 +2886,7 @@ class Core:
                     staged_budgets=tuple(staged_budget_updates),
                     observer_receipts=staged_observer_receipts,
                 )
+                self.notify_commit()
                 if self.auto_drain and staged_continuations:
                     latest_sess = self.store.session(session_id)
                     if self._admits_fresh_work(latest_sess):
@@ -2575,6 +3017,7 @@ class Core:
                     staged_budgets=tuple(staged_budget_updates),
                     observer_receipts=staged_observer_receipts,
                 )
+                self.notify_commit()
                 if self.auto_drain and staged_continuations:
                     latest_sess = self.store.session(session_id)
                     if self._admits_fresh_work(latest_sess):
@@ -2612,6 +3055,7 @@ class Core:
                 checkpoint_kind=None,
                 checkpoint_payload=None,
             )
+            self.notify_commit()
         except StoreConflict:
             # The decision itself is durable; a concurrent writer only costs the audit fact.
             return
@@ -2721,6 +3165,7 @@ class Core:
                                 caller_chain=self._delegation._chain_of(session_id),
                                 automatic=_automatic,
                             )
+                            self.notify_commit()
                         except StoreConflict:
                             break
 
@@ -2895,9 +3340,9 @@ class Core:
     def _check_expected_revision(self, expected_revision: str) -> None:
         """Bind a client action to the catalog generation it displayed."""
         if not isinstance(expected_revision, str) or not expected_revision.strip():
-            raise ValueError("expected_revision must be the revision the client displayed")
+            raise InvalidRevision("expected_revision must be the revision the client displayed", expected_revision)
         if expected_revision != self.revision_id:
-            raise ValueError(f"displayed catalog revision {expected_revision} is stale; refresh the catalog")
+            raise StaleRevision(f"displayed catalog revision {expected_revision} is stale; refresh the catalog", expected_revision, self.revision_id)
 
     def _invoke_reload_command(self, session_id: str, arguments: Mapping[str, object]) -> CommandResult:
         """Reserved core command: activate the configured sources on explicit user request."""
@@ -3348,6 +3793,7 @@ class Core:
         )
         if claimed is None:
             return {"fired": None}
+        self.notify_commit()
         wakeup, session = claimed
         cursor = _Cursor(root_id=wakeup.root_id, logical_turn=logical_turn)
         execution = _Execution(session, cursor, list(self.store.events(session.session_id)), run_id)
@@ -3408,6 +3854,10 @@ class Core:
                     if self._closed:
                         return
                     self._background_cond.wait(timeout=1.0)
+                # Existing 1s idle wake (no new thread): settle caller-declared ask
+                # expiries due now. Never kills the loop; per-session containment inside.
+                if not self._closed:
+                    self._sweep_expired_asks()
                 continue
             abort = threading.Event()
             with self._background_cond:
@@ -3609,6 +4059,7 @@ class Core:
                         observer_receipts=staged_receipts,
                         staged_budgets=tuple(staged_budget_updates),
                     )
+                    self.notify_commit()
                 except SequenceConflict:
                     continue
                 committed = True
@@ -3648,6 +4099,7 @@ class Core:
             checkpoint_kind=checkpoint_kind,
             checkpoint_payload=checkpoint_payload,
         )
+        self.notify_commit()
         self._notify_tool_waiters()
 
     @staticmethod
@@ -4196,9 +4648,11 @@ class Core:
                 live = set(self._background_live)
             waited = [record for record in pending if record.status == "pending" or record.continuation_id in live]
             if not waited:
-                # A claimed row outside the live set is stale — but the claim and the live
-                # registration are two steps, so confirm across a beat before reporting it.
-                time.sleep(0.2)
+                # A claimed row outside the live set is stale — unless a claim is
+                # in flight, in which case its completion notifies this cond.
+                with self._background_cond:
+                    if self._background_claiming > 0:
+                        self._background_cond.wait(timeout=max(0.0, deadline - time.monotonic()))
                 pending = self.store.pending_background_actions(session_id)
                 with self._background_cond:
                     live = set(self._background_live)
@@ -4238,7 +4692,9 @@ class Core:
             with self._background_cond:
                 live = action_id in self._background_live
             if current.status == "claimed" and not live:
-                time.sleep(0.2)
+                with self._background_cond:
+                    if self._background_claiming > 0:
+                        self._background_cond.wait(timeout=max(0.0, deadline - time.monotonic()))
                 reconfirmed = self.store.background_action(action_id)
                 assert reconfirmed is not None
                 with self._background_cond:
@@ -4433,6 +4889,7 @@ class Core:
                 checkpoint_kind=None,
                 checkpoint_payload=None,
             )
+            self.notify_commit()
         except Exception:
             # A control fact is diagnostic; losing it never blocks the owner's real work.
             return
@@ -4676,6 +5133,7 @@ class Core:
             cancelled_owners=tuple(sorted(disabled_owners)),
             cleared_budget_owners=tuple(sorted(disabled_owners)),
         )
+        self.notify_commit()
         # Publication: one pointer swap, then revoke the old generation. Nothing can be
         # dispatched to the old runtime afterwards (it is closed and never respawns), and the
         # candidate runtime was already validated before the commit.
@@ -5048,6 +5506,7 @@ class Core:
         checkpoint_bindings: Sequence[tuple[str, str]] = (),
         pinned_run_id: str | None = None,
         enforce_pin: bool = False,
+        ask_answer_guard: str | None = None,
     ) -> tuple[StoredEvent, ...]:
         """Commit against the fresh session tip, validating any intervening parked events first.
 
@@ -5106,7 +5565,9 @@ class Core:
                     completed_continuation_status=completed_continuation_status,
                     start_turn=start_turn,
                     checkpoint_bindings=checkpoint_bindings,
+                    ask_answer_guard=ask_answer_guard,
                 )
+                self.notify_commit()
             except SequenceConflict:
                 if attempt < 15:
                     continue
@@ -5192,6 +5653,7 @@ class Core:
         checkpoint_bindings: Sequence[tuple[str, str]] = (),
         pinned_run_id: str | None = None,
         enforce_pin: bool = False,
+        ask_answer_guard: str | None = None,
     ) -> tuple[StoredEvent, ...]:
         known_before = len(execution.events)
         new_events = self._commit_staged_rebased(
@@ -5212,6 +5674,7 @@ class Core:
             start_turn=start_turn,
             pinned_run_id=pinned_run_id,
             enforce_pin=enforce_pin,
+            ask_answer_guard=ask_answer_guard,
         )
         self._notify_tool_waiters()
         self._deliver_facts(execution, execution.events[known_before:], tolerate_conflicts=True)
@@ -5566,6 +6029,11 @@ class Core:
     def _validate_steps(max_steps: int | None) -> None:
         if max_steps is not None and (type(max_steps) is not int or max_steps < 1):
             raise ValueError("max_steps must be a positive integer or null")
+
+    @staticmethod
+    def _validate_interaction(interaction: Literal["interactive", "unattended"] | None) -> None:
+        if interaction is not None and interaction not in ("interactive", "unattended"):
+            raise ValueError('interaction must be "interactive", "unattended", or null')
 
     @staticmethod
     def _validate_root_action_budget(budget: int | None) -> None:
@@ -5959,6 +6427,16 @@ class Core:
                 self._report(execution, call, ToolFailure(call.tool_name, denial))
                 continue
             if cursor.intent_sequence is None and self._needs_approval(definition):
+                if execution.interaction == "unattended":
+                    # D3: an unattended run refuses the approval park at the
+                    # park-commit site with a typed failure and continues; the
+                    # model sees explicit unsupported, never a hang or a fabricated allow.
+                    self._report(
+                        execution,
+                        call,
+                        ToolFailure(call.tool_name, f"approval is unsupported while unattended; {call.tool_name} was not executed"),
+                    )
+                    continue
                 payload = {
                     "request_id": uuid4().hex,
                     "batch_sequence": batch.sequence,
@@ -6090,6 +6568,12 @@ class Core:
                 staged_receipts = outcome.staged_observer_receipts
                 staged_budget = outcome.staged_budget
                 staged_observations = outcome.staged_observations
+            except ToolSuspension as suspension:
+                # Suspend-by-unwind surfaced with frozen staged work: the park-commit
+                # site below performs the atomic commit (park event + checkpoint
+                # binding + waiting). Caught nowhere else; BaseExceptions bypass the
+                # generic handler by construction.
+                return self._park_suspended_tool(execution, call, snapshot, suspension, effective_abort)
             except ActivationFenced as exc:
                 if effective_abort.cancelled:
                     return self._stop(execution, str(exc), stop_cause=effective_abort.stop_cause or "user_stop")
@@ -6133,6 +6617,115 @@ class Core:
                 # durable, and this chain stops here with the owner cause it stated.
                 return self._stop(execution, "tool cancelled its own durable work", stop_cause="owner_cancel")
             return None
+
+    def _park_suspended_tool(
+        self,
+        execution: _Execution,
+        call: ToolCall,
+        snapshot: _Snapshot,
+        suspension: ToolSuspension,
+        effective_abort: Cancellation,
+    ) -> CoreResult | None:
+        """Commit one suspended tool's park (event + binding + waiting), or refuse it visibly.
+
+        The single park-commit site: the invoke boundary froze staged work and
+        revoked the lease; this commit is atomic like the approval park. Refusals
+        (unattended, second suspend, unimplemented composition) adopt a typed
+        ToolFailure with the frozen staged work and continue the run.
+        """
+        cursor = execution.cursor
+        staged = suspension.staged
+        if effective_abort.cancelled:
+            # Best-effort pre-join read at the boundary; re-checked here before committing.
+            return self._stop(execution, "tool invocation was cancelled", stop_cause=effective_abort.stop_cause or "user_stop")
+        park = suspension.park
+        if park.park_kind != "ask":
+            self._report(
+                execution,
+                call,
+                ToolFailure(
+                    call.tool_name,
+                    "foreground composition is not implemented: the composition slice (driver, rows, terminals) has not landed",
+                ),
+                staged_state=staged.staged_state,
+                staged_events=staged.staged_events,
+                staged_conts=staged.staged_continuations,
+                staged_cancels=staged.staged_cancellations,
+                staged_budget=staged.staged_budget,
+                staged_receipts=staged.staged_observer_receipts,
+                staged_observations=staged.staged_observations,
+            )
+            return None
+        if cursor.ask_sequence is not None or cursor.ask_request_id is not None:
+            live = cursor.ask_request_id if cursor.ask_request_id is not None else "unknown"
+            self._report(
+                execution,
+                call,
+                ToolFailure(
+                    call.tool_name,
+                    f"AskAlreadyParked: session {execution.session.session_id!r} already holds live ask {live!r}; refusing a second suspend",
+                ),
+                staged_state=staged.staged_state,
+                staged_events=staged.staged_events,
+                staged_conts=staged.staged_continuations,
+                staged_cancels=staged.staged_cancellations,
+                staged_budget=staged.staged_budget,
+                staged_receipts=staged.staged_observer_receipts,
+                staged_observations=staged.staged_observations,
+            )
+            return None
+        if execution.interaction == "unattended":
+            self._report(
+                execution,
+                call,
+                ToolFailure(call.tool_name, f"ask is unsupported while unattended; {call.tool_name} was not parked"),
+                staged_state=staged.staged_state,
+                staged_events=staged.staged_events,
+                staged_conts=staged.staged_continuations,
+                staged_cancels=staged.staged_cancellations,
+                staged_budget=staged.staged_budget,
+                staged_receipts=staged.staged_observer_receipts,
+                staged_observations=staged.staged_observations,
+            )
+            return None
+        draft = AskRequestDraft.from_payload(_wire_object(park.intent.get("draft"), "suspend ask draft"))
+        raw_key = park.intent.get("idempotency_key")
+        idempotency_key = raw_key if isinstance(raw_key, str) and raw_key else None
+        request_id = uuid4().hex
+        request = AskRequest(
+            request_id=request_id,
+            session_id=execution.session.session_id,
+            revision_id=self.revision_id,
+            owner=snapshot.owner_of(call.tool_name),
+            title=draft.title,
+            questions=draft.questions,
+            context=draft.context,
+            media=draft.media,
+            timeout_ms=draft.timeout_ms,
+        )
+        envelope: dict[str, object] = {"request": request.as_payload(), "parked_at_ms": int(time.time() * 1000)}
+        if idempotency_key is not None:
+            envelope["idempotency_key"] = idempotency_key
+        staged_budget_updates: list[StagedBudgetUpdate] = []
+        if staged.staged_budget == "clear":
+            staged_budget_updates.append(StagedBudgetUpdate(owner=snapshot.owner_of(call.tool_name), action="clear"))
+        elif isinstance(staged.staged_budget, PluginBudget):
+            staged_budget_updates.append(StagedBudgetUpdate(owner=staged.staged_budget.owner, action="set", budget=staged.staged_budget))
+        cursor.ask_request_id = request_id
+        self._commit(
+            execution,
+            "waiting",
+            "ready",
+            EventDraft(EventType.ASK_REQUESTED, "kernel", "plugin" if cursor.deferred_sequence is not None else "model", envelope),
+            *staged.staged_events,
+            staged_state=staged.staged_state,
+            staged_continuations=staged.staged_continuations,
+            staged_cancellations=staged.staged_cancellations,
+            staged_budgets=tuple(staged_budget_updates),
+            observer_receipts=staged.staged_observer_receipts,
+            checkpoint_bindings=(("ask_sequence", EventType.ASK_REQUESTED),),
+        )
+        return self._result(execution, pending_ask=envelope)
 
     def _artifact_page(self, digest: str, offset: int, limit: int) -> ArtifactPage:
         return self.read_artifact(digest, offset=offset, limit=limit)
@@ -6327,9 +6920,11 @@ class Core:
         staged_budget: PluginBudget | None | Literal["clear"] = None,
         staged_receipts: tuple[ObserverReceiptRecord, ...] = (),
         budget_exhaustion: BudgetExhaustion | None = None,
-        staged_observations: tuple[ObservedChange, ...] = (),
+        staged_observations: tuple[Change, ...] = (),
         pinned_run_id: str | None = None,
         enforce_pin: bool = False,
+        prefix_events: tuple[EventDraft, ...] = (),
+        ask_answer_guard: str | None = None,
     ) -> None:
         # Transparent backend merge: supervisor-observed changes join the tool's self-report
         # (success AND failure — a failed invocation may have committed a prefix). Deduped by
@@ -6338,13 +6933,13 @@ class Core:
         # its own report at 256, so this only bounds multi-child accumulation per invocation.
         if staged_observations:
             seen = {(item.path, item.operation, item.old_path) for item in result.changes}
-            extra: list[ResourceChange] = []
+            extra: list[Change] = []
             for observed in staged_observations:
                 key = (observed.path, observed.operation, observed.old_path)
                 if key in seen:
                     continue
                 seen.add(key)
-                extra.append(ResourceChange(path=observed.path, operation=observed.operation, old_path=observed.old_path))
+                extra.append(Change(path=observed.path, operation=observed.operation, old_path=observed.old_path))
                 if len(extra) >= MAX_MERGED_OBSERVATIONS:
                     break
             if extra:
@@ -6364,6 +6959,8 @@ class Core:
             invocation_id = raw_invocation if isinstance(raw_invocation, str) else None
         cursor.intent_sequence = None
         cursor.approval_sequence = None
+        cursor.ask_sequence = None
+        cursor.ask_request_id = None
         definition = self._snapshot.definition_of(call.tool_name)
         declaration = intent.payload if intent is not None else {}
         diagnostic = result.diagnostics if isinstance(result, ToolFailure) else None
@@ -6402,7 +6999,7 @@ class Core:
             ]
         metadata["changes"] = [
             {
-                **asdict(item),
+                **item.as_payload(),
                 "path": canonical_path(self.workspace, item.path),
                 "old_path": canonical_path(self.workspace, item.old_path) if item.old_path is not None else None,
             }
@@ -6451,7 +7048,7 @@ class Core:
             "plugin" if deferred else "model",
             payload,
         )
-        all_events = (report_event,) + staged_events
+        all_events = prefix_events + (report_event,) + staged_events
 
         staged_budget_updates: list[StagedBudgetUpdate] = []
         if staged_budget == "clear":
@@ -6472,6 +7069,7 @@ class Core:
             observer_receipts=staged_receipts,
             pinned_run_id=pinned_run_id,
             enforce_pin=enforce_pin,
+            ask_answer_guard=ask_answer_guard,
         )
 
     def _interrupt_batch(
@@ -6970,6 +7568,7 @@ class Core:
         output: str | None = None,
         error: str | None = None,
         pending_approval: Mapping[str, object] | None = None,
+        pending_ask: Mapping[str, object] | None = None,
         stop_cause: StopCause | None = None,
         budget_exhaustion: BudgetExhaustion | None = None,
     ) -> CoreResult:
@@ -6981,6 +7580,7 @@ class Core:
             output=output,
             error=error,
             pending_approval=pending_approval,
+            pending_ask=pending_ask,
             stop_cause=stop_cause,
             budget_exhaustion=budget_exhaustion,
         )

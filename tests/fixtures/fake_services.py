@@ -13,11 +13,11 @@ from typing import Literal, NoReturn
 import jsonschema
 import pytest
 
+from voidcode.core.history_renderer import HistoryPage
 from voidcode.core.storage.store import StoredEvent
 from voidcode.core.transcript import context_records
 from voidcode.sdk.ask import AskRequestDraft
 from voidcode.sdk.foreground import CompositionDraft
-from voidcode.sdk.history import HistoryPage
 from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.resources import (

@@ -10,23 +10,31 @@ from itertools import islice
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.limits import TOOL_OUTPUT_BYTES
 from voidcode.sdk.services import PluginServices
-from voidcode.sdk.tools import ConfirmedStop, OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import (
+    TOOL_OUTPUT_BYTES,
+    ConfirmedStop,
+    OutputBounds,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolFailure,
+    ToolResult,
+    ToolSuccess,
+)
 
+from ._common import MAX_RESULT_LIMIT, validate_glob_patterns, validate_non_empty
 from .errors import raise_tool_diagnostic
 from .gitignore import GitIgnoreMatcher
 
 MAX_MATCHES = 200
 _MAX_LINE_CHARS = 64 * 1024
-#: Upper bound for an explicit ``limit`` so one call cannot materialize an
-#: unbounded match list.
-MAX_RESULT_LIMIT = 5000
 DEFAULT_IGNORE_PATTERNS = frozenset(
     (
         ".git",
@@ -51,21 +59,8 @@ class GrepArgs(BaseModel):
     respect_gitignore: bool = False
     limit: int = Field(default=MAX_MATCHES, ge=1, le=MAX_RESULT_LIMIT)
 
-    @field_validator("pattern", "path", mode="after")
-    @classmethod
-    def _validate_non_empty(cls, value: str, info: ValidationInfo) -> str:
-        if not value.strip():
-            raise ValueError(f"{info.field_name} must not be empty")
-        return value
-
-    @field_validator("include", "exclude", mode="after")
-    @classmethod
-    def _validate_glob_patterns(cls, value: list[str] | None) -> list[str] | None:
-        if value is None:
-            return None
-        if not all(item.strip() for item in value):
-            raise ValueError("glob patterns must be non-empty strings")
-        return value
+    _non_empty = field_validator("pattern", "path", mode="after")(validate_non_empty)
+    _glob_patterns = field_validator("include", "exclude", mode="after")(validate_glob_patterns)
 
 
 @dataclass(frozen=True, slots=True)

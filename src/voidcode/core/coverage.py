@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import re
+from bisect import bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,21 +107,47 @@ def _fits(document: Mapping[str, object], budget: int) -> bool:
     return len(_json(document).encode("utf-8")) <= budget
 
 
+def _escaped_prefix_bytes(value: str) -> list[int]:
+    """Cumulative escaped UTF-8 bytes per character prefix, from one serialize.
+
+    Walks the single ``json.dumps`` of the whole value, so per-prefix lengths never
+    re-serialize: backslash units (including defensive ``\\uXXXX`` pairs) and raw
+    characters (including multibyte) each advance exactly one source character.
+    """
+    content = json.dumps(value, ensure_ascii=False)[1:-1]
+    bounds = [0]
+    pos = 0
+    for _ in range(len(value)):
+        end = pos + 1
+        if content[pos] == "\\":
+            end = pos + 2
+            if content[pos + 1] == "u":
+                end = pos + 6
+                if content[pos + 6 : pos + 8] == "\\u" and "\ud800" <= chr(int(content[pos + 2 : pos + 6], 16)) <= "\udbff":
+                    end = pos + 12
+        bounds.append(bounds[-1] + len(content[pos:end].encode("utf-8")))
+        pos = end
+    return bounds
+
+
 def _fit_field(document: dict[str, object], name: str, value: str, budget: int) -> bool:
     """Keep valid JSON and complete Unicode code points; return whether the field was shortened."""
-    document[name] = value
-    if _fits(document, budget):
-        return False
-    low, high = 0, len(value)
-    while low < high:
-        middle = (low + high + 1) // 2
-        document[name] = value[:middle]
-        if _fits(document, budget):
-            low = middle
-        else:
-            high = middle - 1
-    document[name] = value[:low]
-    return True
+    overhead = len(_json({**document, name: ""}).encode("utf-8"))
+    bounds = _escaped_prefix_bytes(value)
+    room = budget - overhead
+    if room < 0:
+        # Even the empty field exceeds the budget: bottom out like the old binary
+        # search; the caller re-checks fit and raises.
+        document[name] = ""
+        return True
+    length = bisect_right(bounds, room) - 1
+    document[name] = value[:length]
+    shortened = length < len(value)
+    if not _fits(document, budget):
+        raise AssertionError("prefix budget arithmetic must fit")
+    if shortened and bounds[length + 1] <= room:
+        raise AssertionError("prefix budget arithmetic must be maximal")
+    return shortened
 
 
 def _textual_artifact(reference: ArtifactReference) -> bool:
@@ -388,24 +415,6 @@ def effective_input_limit_tokens(limits: ModelContextLimits | None) -> tuple[int
     return None, None
 
 
-def _intent_windows(events: Sequence[CommittedEvent]) -> dict[int, RequestWindow]:
-    windows: dict[int, RequestWindow] = {}
-    for event in events:
-        if event.event_type != EventType.PROVIDER_INTENT:
-            continue
-        payload = event.payload
-        if not isinstance(payload, Mapping):
-            continue
-        window = payload.get("request_window")
-        if not isinstance(window, Mapping):
-            continue
-        try:
-            windows[int(event.sequence)] = RequestWindow.from_payload(window)
-        except ValueError, KeyError, TypeError:
-            continue
-    return windows
-
-
 def measured_tokens_per_character(events: Sequence[CommittedEvent], *, provider_name: str, model_name: str) -> float | None:
     """Tokens per character from this session's own newest qualifying dispatch.
 
@@ -418,7 +427,7 @@ def measured_tokens_per_character(events: Sequence[CommittedEvent], *, provider_
     """
     if not isinstance(provider_name, str) or not provider_name or not isinstance(model_name, str) or not model_name:
         return None
-    windows = _intent_windows(events)
+    intent_payloads = {event.sequence: event.payload for event in events if event.event_type == EventType.PROVIDER_INTENT}
     for event in reversed(events):
         if event.event_type != EventType.MODEL_TURN:
             continue
@@ -430,8 +439,17 @@ def measured_tokens_per_character(events: Sequence[CommittedEvent], *, provider_
         dispatch = payload.get("dispatch_sequence")
         if type(dispatch) is not int:
             continue
-        window = windows.get(dispatch)
-        if window is None or window.total_image_count != 0:
+        intent_payload = intent_payloads.get(dispatch)
+        if not isinstance(intent_payload, Mapping):
+            continue
+        raw_window = intent_payload.get("request_window")
+        if not isinstance(raw_window, Mapping):
+            continue
+        try:
+            window = RequestWindow.from_payload(raw_window)
+        except ValueError, KeyError, TypeError:
+            continue
+        if window.total_image_count != 0:
             continue
         characters = window.total_characters
         if characters <= 0:
