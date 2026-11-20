@@ -11,6 +11,7 @@ from voidcode.sdk.commands import CommandCatalog
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolSuccess
 from voidcode.sdk.transcript import TranscriptEntry, TranscriptTool
 from voidcode.tui import rendering
+from voidcode.tui.stream_handlers import handle_stream_event
 from voidcode.tui.terminal_app import CoreTuiApp
 
 
@@ -88,7 +89,8 @@ def test_tool_intent_rendered_in_live_frame_without_committing_scrollback() -> N
     rows: list[str] = []
 
     call = ToolCall(tool_name="shell_exec", arguments={"command": "sleep 10"})
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             1,
             "core.tool_intent",
@@ -116,13 +118,15 @@ def test_tool_progress_chunking_joins_split_lines_and_unicode_visibly() -> None:
     rows: list[str] = []
 
     call = ToolCall(tool_name="shell_exec", arguments={"command": "compile"})
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(1, "core.tool_intent", invocation_id="inv-1", call=encode_tool_call(call)),
         rows,
     )
 
     # Chunk 1: fragment without newline
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(2, "core.tool_progress", invocation_id="inv-1", progress={"stream": "stdout", "text": "Compil"}),
         rows,
     )
@@ -130,7 +134,8 @@ def test_tool_progress_chunking_joins_split_lines_and_unicode_visibly() -> None:
     assert "Compil" in _plain_frame(terminal)
 
     # Chunk 2: completes the line with newline -> joins into single line "Compiling foo.c"
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(3, "core.tool_progress", invocation_id="inv-1", progress={"stream": "stdout", "text": "ing foo.c\n"}),
         rows,
     )
@@ -139,11 +144,13 @@ def test_tool_progress_chunking_joins_split_lines_and_unicode_visibly() -> None:
     assert "Compiling foo.c" in frame_2
 
     # Chunk 3: stream switch from stdout to stderr flushes pending fragment instead of merging
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(4, "core.tool_progress", invocation_id="inv-1", progress={"stream": "stdout", "text": "warning prefix "}),
         rows,
     )
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(5, "core.tool_progress", invocation_id="inv-1", progress={"stream": "stderr", "text": "stderr error message\n"}),
         rows,
     )
@@ -153,7 +160,8 @@ def test_tool_progress_chunking_joins_split_lines_and_unicode_visibly() -> None:
     assert "stderr error message" in frame_switch
 
     # Chunk 4: Unicode characters preserved
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(6, "core.tool_progress", invocation_id="inv-1", progress={"stream": "stdout", "text": "Done 🚀 [100%]\n"}),
         rows,
     )
@@ -168,14 +176,16 @@ def test_narrow_viewport_preserves_tool_identity_and_composer_usability() -> Non
     rows: list[str] = []
 
     call = ToolCall(tool_name="long_running_task", arguments={"command": "run"})
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(1, "core.tool_intent", invocation_id="inv-1", call=encode_tool_call(call)),
         rows,
     )
 
     # Stream 50 lines of output into progress
     bulk = "".join(f"output row {i}\n" for i in range(50))
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(2, "core.tool_progress", invocation_id="inv-1", progress={"stream": "stdout", "text": bulk}),
         rows,
     )
@@ -204,7 +214,8 @@ def test_one_row_live_space_with_multiple_tools_never_overflows() -> None:
     # 3 active tools running concurrently
     for i in range(1, 4):
         call = ToolCall(tool_name=f"worker_tool_{i}", arguments={})
-        app._handle_stream_event(
+        handle_stream_event(
+            app,
             _event(i, "core.tool_intent", invocation_id=f"inv-{i}", call=encode_tool_call(call)),
             rows,
         )
@@ -226,11 +237,13 @@ def test_multi_invocation_headers_survive_concurrently() -> None:
     # Two tools running in parallel
     call_1 = ToolCall(tool_name="build_engine", arguments={})
     call_2 = ToolCall(tool_name="test_runner", arguments={})
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(1, "core.tool_intent", invocation_id="inv-1", call=encode_tool_call(call_1)),
         rows,
     )
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(2, "core.tool_intent", invocation_id="inv-2", call=encode_tool_call(call_2)),
         rows,
     )
@@ -248,14 +261,16 @@ def test_stale_run_and_wrong_session_progress_rejected_and_subsequent_valid_even
     rows: list[str] = []
 
     call = ToolCall(tool_name="current_tool", arguments={})
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(1, "core.tool_intent", session_id="s1", run_id="run-active", revision_id="rev-1", invocation_id="inv-1", call=encode_tool_call(call)),
         rows,
     )
 
     # 1. Event from a different session (with a higher sequence) must be rejected immediately
     # AND must NOT advance app._session_cursors["s1"]
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             999,
             "core.tool_progress",
@@ -272,7 +287,8 @@ def test_stale_run_and_wrong_session_progress_rejected_and_subsequent_valid_even
     assert "WRONG_SESSION" not in _plain_frame(terminal)
 
     # 2. Event with stale run_id from an older run must be rejected
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             2,
             "core.tool_progress",
@@ -288,7 +304,8 @@ def test_stale_run_and_wrong_session_progress_rejected_and_subsequent_valid_even
     assert "OLD_RUN" not in _plain_frame(terminal)
 
     # 3. Event with mismatched revision_id must be rejected
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             3,
             "core.tool_progress",
@@ -304,7 +321,8 @@ def test_stale_run_and_wrong_session_progress_rejected_and_subsequent_valid_even
     assert "WRONG_REVISION" not in _plain_frame(terminal)
 
     # 4. Valid event with matching session, run, revision, and generation is accepted and applied
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             4,
             "core.tool_progress",
@@ -327,7 +345,8 @@ def test_tool_completion_settles_header_and_result_exactly_once() -> None:
     rows: list[str] = []
 
     call = ToolCall(tool_name="shell_exec", arguments={"command": "echo done"})
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(1, "core.tool_intent", invocation_id="inv-1", call=encode_tool_call(call)),
         rows,
     )
@@ -341,7 +360,8 @@ def test_tool_completion_settles_header_and_result_exactly_once() -> None:
         batch_sequence=1,
         deferred=False,
     )
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(2, "core.tool_completed", invocation_id="inv-1", content=transcript_tool),
         rows,
     )
@@ -369,18 +389,21 @@ def test_run_termination_clears_matching_run_tools_and_spinner_stays_active_for_
 
     call_1 = ToolCall(tool_name="tool_run_1", arguments={})
     call_2 = ToolCall(tool_name="tool_run_2", arguments={})
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(1, "core.tool_intent", session_id="s1", run_id="run-1", invocation_id="inv-1", call=encode_tool_call(call_1)),
         rows,
     )
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(2, "core.tool_intent", session_id="s1", run_id="run-2", invocation_id="inv-2", call=encode_tool_call(call_2)),
         rows,
     )
     assert len(app._active_tools) == 2
 
     # Interrupt run-1 only
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(3, "core.run_interrupted", session_id="s1", run_id="run-1", reason="user cancel"),
         rows,
     )

@@ -137,40 +137,8 @@ def test_terminal_controls_in_parts_are_escaped() -> None:
     assert "hi\\x1b[2J" in text
 
 
-def _composite_wire() -> dict[str, object]:
-    return {
-        "status": "ok",
-        "output": {
-            "type": "composite",
-            "parts": [
-                {"kind": "text", "text": "explanation here"},
-                {"kind": "table", "columns": ["a", "b"], "rows": [["1", "2"], ["3", "4"]]},
-                {
-                    "kind": "media",
-                    "reference": {"sha256": PNG_REF.sha256, "bytes": PNG_REF.bytes, "media_type": PNG_REF.media_type},
-                    "mime": "image/png",
-                    "presentation": "first chart",
-                },
-                {
-                    "kind": "media",
-                    "reference": {"sha256": JPG_REF.sha256, "bytes": JPG_REF.bytes, "media_type": JPG_REF.media_type},
-                    "mime": "image/jpeg",
-                    "presentation": "second chart",
-                },
-                {
-                    "kind": "json",
-                    "reference": {"sha256": JSON_REF.sha256, "bytes": JSON_REF.bytes, "media_type": JSON_REF.media_type},
-                    "preview": '{"ok": true}',
-                },
-            ],
-            "bounds": {},
-        },
-    }
-
-
 def test_artifact_sources_discovers_part_references_in_order() -> None:
-    result = _composite_wire()
-    result["result_reference"] = {"sha256": "f" * 64, "bytes": 99, "media_type": "application/json"}
+    result = ToolSuccess("capture", _composite_output(), result_reference=ArtifactReference("f" * 64, 99, "application/json"))
     sources = artifact_sources(result)
     assert [source.label for source in sources] == [
         "Part 2 (media)",
@@ -183,10 +151,7 @@ def test_artifact_sources_discovers_part_references_in_order() -> None:
 
 
 def test_artifact_sources_dedups_bounds_reference_before_parts() -> None:
-    result = _composite_wire()
-    output = result["output"]
-    assert isinstance(output, dict)
-    output["bounds"] = {"reference": {"sha256": PNG_REF.sha256, "bytes": PNG_REF.bytes, "media_type": PNG_REF.media_type}}
+    result = ToolSuccess("capture", _composite_output(bounds=OutputBounds(reference=PNG_REF)))
     sources = artifact_sources(result)
     assert sources[0].label == "Original output source"
     assert [source.sha256 for source in sources].count("a" * 64) == 1

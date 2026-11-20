@@ -46,6 +46,7 @@ from voidcode.tui.events import (
 )
 from voidcode.tui.gates import ApprovalGate
 from voidcode.tui.keys import Key
+from voidcode.tui.stream_handlers import handle_stream_event
 from voidcode.tui.views import (
     InteractiveApproval,
     InteractiveChoices,
@@ -887,7 +888,7 @@ def test_activation_refresh_is_silent_for_optional_views() -> None:
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)
 
     rows: list[str] = []
-    app._handle_stream_event(_event(1, "core.activation_committed", to_revision_id="rev-2"), rows)
+    handle_stream_event(app, _event(1, "core.activation_committed", to_revision_id="rev-2"), rows)
     app._render_frame()
     assert app.active_overlay is None
     assert not any("No active goal" in row for row in rows)
@@ -906,7 +907,8 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)
     rows: list[str] = []
 
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(1, "core.approval_requested", request_id="appr-1", call={"tool_name": "write", "arguments": {}}),
         rows,
     )
@@ -917,7 +919,8 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
     assert any("Tool approval required" in row for row in terminal.frames[-1]), terminal.frames[-1]
 
     app.pending_approval = None
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             2,
             "core.confirmation_requested",
@@ -1209,9 +1212,9 @@ def test_rows_carry_no_hardcoded_colors() -> None:
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     app._stream_ready = True
     rows: list[str] = []
-    app._handle_stream_event(_user_event(1, "hi"), rows)
-    app._handle_stream_event(_event(2, "core.model_turn", content=ProviderTurnResult(output="hello", reasoning="why"), dispatch_sequence=2), rows)
-    app._handle_stream_event(_event(3, "core.run_failed", content=TranscriptRun("failed"), error="boom"), rows)
+    handle_stream_event(app, _user_event(1, "hi"), rows)
+    handle_stream_event(app, _event(2, "core.model_turn", content=ProviderTurnResult(output="hello", reasoning="why"), dispatch_sequence=2), rows)
+    handle_stream_event(app, _event(3, "core.run_failed", content=TranscriptRun("failed"), error="boom"), rows)
     # color_system=None strips every SGR code: a hardcoded escape would survive the strip.
     assert not any("\x1b" in row for row in rows), rows
     plain = [re.sub(r"\x1b\[[0-9;]*m", "", row) for row in rows]
@@ -1229,7 +1232,8 @@ def test_model_turn_renders_markdown_and_structured_tool_rows() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             1,
             "core.model_turn",
@@ -1241,7 +1245,8 @@ def test_model_turn_renders_markdown_and_structured_tool_rows() -> None:
         ),
         rows,
     )
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             2,
             "core.tool_completed",
@@ -1272,7 +1277,8 @@ def test_tool_result_prefers_presentation_and_flags_failure() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             1,
             "core.tool_completed",
@@ -1286,7 +1292,8 @@ def test_tool_result_prefers_presentation_and_flags_failure() -> None:
         ),
         rows,
     )
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             2,
             "core.tool_completed",
@@ -1315,7 +1322,8 @@ def test_approval_gate_shows_full_args_with_diff_and_scrolls() -> None:
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
     long_value = "x" * 300
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(
             1,
             "core.approval_requested",
@@ -1387,11 +1395,13 @@ def test_provider_progress_buffers_partial_text_and_spinner_advances() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(1, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="Hello "),
         rows,
     )
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(2, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="world"),
         rows,
     )
@@ -1414,11 +1424,13 @@ def test_model_turn_settles_stream_buffer_to_committed_markdown() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(1, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="partial"),
         rows,
     )
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(2, "core.model_turn", content=ProviderTurnResult(output="final answer"), dispatch_sequence=2, dispatch_id="d1"),
         rows,
     )
@@ -1438,11 +1450,13 @@ def test_reasoning_progress_does_not_pollute_the_text_buffer() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
     rows: list[str] = []
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(1, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="reasoning", text_delta="secret plan"),
         rows,
     )
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _event(2, "core.provider_progress", run_id="r", dispatch_id="d1", dispatch_sequence=1, channel="text", text_delta="visible"),
         rows,
     )
@@ -1607,8 +1621,8 @@ def test_idle_cancel_is_silent() -> None:
 
 
 def test_multiline_user_message_preserves_line_breaks() -> None:
+    from voidcode.tui.rendering import content_rows as _content_rows
     from voidcode.tui.styles import Styles
-    from voidcode.tui.terminal_app import _content_rows
 
     text = "first\n\n第二行 <literal>"
     rows = _content_rows(ProviderMessage("user", text), 80, Styles(None))
@@ -1621,11 +1635,11 @@ def test_system_context_is_hidden_without_replaying_visible_messages() -> None:
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=_StubTerminal())
     rows: list[str] = []
     context = _event(1, "core.continuation_started", content=ProviderMessage("system", "private model context"))
-    app._handle_stream_event(context, rows)
+    handle_stream_event(app, context, rows)
     assert rows == []
     assert app._session_cursors["s1"] == 1
-    app._handle_stream_event(_user_event(2, "visible prompt"), rows)
-    app._handle_stream_event(context, rows)
+    handle_stream_event(app, _user_event(2, "visible prompt"), rows)
+    handle_stream_event(app, context, rows)
     assert sum("visible prompt" in row for row in rows) == 1
     assert not any("private model context" in row for row in rows)
     assert app._session_cursors["s1"] == 2
@@ -2064,7 +2078,7 @@ def test_command_choices_open_only_on_live_reply_and_dispatch_displayed_revision
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
     app.catalog_revision = "rev-1"
     rows: list[str] = []
-    app._handle_stream_event(_event(1, "core.command_completed", name="demo", result=result.as_payload()), rows)
+    handle_stream_event(app, _event(1, "core.command_completed", name="demo", result=result.as_payload()), rows)
     assert app.active_overlay is None
     assert rows == ["Explore"]
     app._invoke_async("demo", {}, "rev-1")
@@ -2168,8 +2182,8 @@ def test_markdown_action_history_is_passive_but_explicit_presentation_opens_deta
     )
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=_StubTerminal())  # type: ignore[arg-type]
     rows = []
-    app._handle_stream_event(
-        _event(1, "core.command_completed", name="todo", result=CommandResult(status="ok", presentation=presentation).as_payload()), rows
+    handle_stream_event(
+        app, _event(1, "core.command_completed", name="todo", result=CommandResult(status="ok", presentation=presentation).as_payload()), rows
     )
     assert app.active_overlay is None
     assert "Task status" in "\n".join(rows)

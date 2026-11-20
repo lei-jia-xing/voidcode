@@ -6,6 +6,7 @@ import threading
 import time
 from typing import Any
 
+from tests.fixtures.polling import wait_for
 from voidcode.tui.events import WakeEvent
 from voidcode.tui.terminal_app import CoreTuiApp
 
@@ -44,15 +45,6 @@ class _IdleTerminal:
         pass
 
 
-def _wait_for(predicate: Any, timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("condition never became true")
-
-
 def test_idle_main_loop_renders_once_then_sleeps() -> None:
     """No input/events/timers: exactly the initial paint, then silence (no 30 Hz wakeups)."""
     terminal = _IdleTerminal()
@@ -61,7 +53,7 @@ def test_idle_main_loop_renders_once_then_sleeps() -> None:
     worker = threading.Thread(target=app._main_loop, daemon=True)
     worker.start()
     try:
-        _wait_for(lambda: len(terminal.frames) >= 1)
+        wait_for(lambda: len(terminal.frames) >= 1, what="the initial idle paint")
         settled = len(terminal.frames)
         time.sleep(0.4)
         assert len(terminal.frames) == settled
@@ -79,10 +71,10 @@ def test_queued_frame_renders_while_idle() -> None:
     worker = threading.Thread(target=app._main_loop, daemon=True)
     worker.start()
     try:
-        _wait_for(lambda: len(terminal.frames) >= 1)
+        wait_for(lambda: len(terminal.frames) >= 1, what="the initial idle paint")
         settled = len(terminal.frames)
         app.event_queue.put(WakeEvent())
-        _wait_for(lambda: len(terminal.frames) >= settled + 1)
+        wait_for(lambda: len(terminal.frames) >= settled + 1, what="one frame after WakeEvent")
         assert len(terminal.frames) == settled + 1
     finally:
         app.running = False

@@ -19,6 +19,7 @@ from rich.text import Text
 
 from voidcode.sdk.client import SessionClient
 from voidcode.sdk.services import ArtifactPage, ArtifactReference
+from voidcode.sdk.tools import CompositeOutput, JsonPart, MediaPart, TablePart, TextPart, ToolResult
 
 from .keys import Key
 from .region import KittyImagePlacement
@@ -53,22 +54,12 @@ class ArtifactSource:
         return self.reference.media_type if self.reference is not None else "application/octet-stream"
 
 
-def artifact_sources(result: Mapping[str, object]) -> tuple[ArtifactSource, ...]:
+def artifact_sources(result: ToolResult) -> tuple[ArtifactSource, ...]:
     """Discover typed references without classifying tools or relabelling selected text."""
     sources: list[ArtifactSource] = []
     seen: set[str] = set()
 
-    def add(label: str, value: object) -> bool:
-        reference: ArtifactReference | None = None
-        if isinstance(value, Mapping):
-            digest, total, media = value.get("sha256"), value.get("bytes"), value.get("media_type")
-            if not isinstance(digest, str) or type(total) is not int or total < 0 or not isinstance(media, str):
-                return False
-            reference = ArtifactReference(sha256=digest, bytes=total, media_type=media)
-        elif isinstance(value, str) and value.startswith("artifact://"):
-            digest = value.removeprefix("artifact://")
-        else:
-            return False
+    def record(label: str, digest: str, reference: ArtifactReference | None) -> bool:
         try:
             source = ArtifactSource(label, digest, reference)
         except ValueError:
@@ -78,22 +69,24 @@ def artifact_sources(result: Mapping[str, object]) -> tuple[ArtifactSource, ...]
             seen.add(digest)
         return True
 
-    output = result.get("output")
-    if isinstance(output, Mapping):
-        bounds = output.get("bounds")
-        if isinstance(bounds, Mapping):
-            add("Original output source", bounds.get("reference"))
-        parts = output.get("parts")
-        if isinstance(parts, list):
-            for index, part in enumerate(parts):
-                if not isinstance(part, Mapping):
-                    continue
-                kind = part.get("kind")
-                label = f"Part {index} ({kind})" if isinstance(kind, str) and kind else f"Part {index}"
-                add(label, part.get("reference"))
+    def add_reference(label: str, value: ArtifactReference | str | None) -> None:
+        if isinstance(value, ArtifactReference):
+            record(label, value.sha256, value)
+        elif isinstance(value, str) and value.startswith("artifact://"):
+            record(label, value.removeprefix("artifact://"), None)
+
+    def add_raw(label: str, value: object) -> bool:
+        if isinstance(value, Mapping):
+            digest, total, media = value.get("sha256"), value.get("bytes"), value.get("media_type")
+            if not isinstance(digest, str) or type(total) is not int or total < 0 or not isinstance(media, str):
+                return False
+            return record(label, digest, ArtifactReference(sha256=digest, bytes=total, media_type=media))
+        if isinstance(value, str) and value.startswith("artifact://"):
+            return record(label, value.removeprefix("artifact://"), None)
+        return False
 
     def visit(value: object, path: str) -> None:
-        if add(path, value):
+        if add_raw(path, value):
             return
         if isinstance(value, Mapping):
             for name, child in value.items():
@@ -102,8 +95,24 @@ def artifact_sources(result: Mapping[str, object]) -> tuple[ArtifactSource, ...]
             for index, child in enumerate(value):
                 visit(child, f"{path}[{index}]")
 
-    visit(result.get("body"), "Result body")
-    add("Complete structured result JSON", result.get("result_reference"))
+    output = result.output
+    add_reference("Original output source", output.bounds.reference)
+    if isinstance(output, CompositeOutput):
+        for index, part in enumerate(output.parts):
+            if isinstance(part, TextPart):
+                kind, reference = "text", part.reference
+            elif isinstance(part, MediaPart):
+                kind, reference = "media", part.reference
+            elif isinstance(part, TablePart):
+                kind, reference = "table", part.reference
+            elif isinstance(part, JsonPart):
+                kind, reference = "json", part.reference
+            else:
+                continue
+            add_reference(f"Part {index} ({kind})", reference)
+    if result.body is not None:
+        visit(result.body.as_payload(), "Result body")
+    add_reference("Complete structured result JSON", result.result_reference)
     return tuple(sources)
 
 

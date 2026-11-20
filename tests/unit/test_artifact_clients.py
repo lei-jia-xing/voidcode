@@ -113,13 +113,7 @@ def test_real_client_tui_pages_keep_unicode_boundaries_and_never_preview_fallbac
         OpaqueToolBody({"stdout": reference.as_payload(), "stderr": secondary.as_payload()}),
         result_reference=canonical,
     )
-    sources = artifact_sources(
-        {
-            "output": {"type": "empty", "bounds": {"reference": reference.as_payload()}},
-            "body": {"stdout": reference.as_payload(), "stderr": secondary.as_payload()},
-            "result_reference": canonical.as_payload(),
-        }
-    )
+    sources = artifact_sources(result)
     assert [source.sha256 for source in sources] == [reference.sha256, secondary.sha256, canonical.sha256]
     session = client.create_session()
     output_fd = os.open(os.devnull, os.O_WRONLY)

@@ -60,6 +60,7 @@ from .events import (
 )
 from .formatting import notice_row, prefixed_rows, safe
 from .gates import ApprovalRequested, ConfirmationGate, ConfirmationRequested, GateDecided
+from .stream_handlers import handle_stream_event
 from .views import InteractiveChoices, InteractiveConfirmation, InteractiveForm, InteractiveMarkdown, render_plugin_view
 
 if TYPE_CHECKING:
@@ -197,12 +198,12 @@ def _handle_stream_head(app: CoreTuiApp, frame: StreamHeadEvent, rows: list[str]
     if frame.frame.events:
         app._welcomed_sessions.add(app.session_id)
     for event in frame.frame.events:
-        app._handle_stream_event(event, rows)
+        handle_stream_event(app, event, rows)
 
 
 def _handle_stream_event(app: CoreTuiApp, frame: StreamEventEvent, rows: list[str]) -> None:
     app._welcomed_sessions.add(app.session_id)
-    app._handle_stream_event(frame.frame.event, rows)
+    handle_stream_event(app, frame.frame.event, rows)
 
 
 def _handle_server_restart(app: CoreTuiApp, _frame: ServerRestartEvent, _rows: list[str]) -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-from voidcode.sdk.codec import encode_tool_result
 from voidcode.sdk.services import ArtifactReference
 from voidcode.sdk.tools import (
     CompositeOutput,
@@ -20,6 +19,7 @@ from voidcode.sdk.tools import (
 )
 from voidcode.sdk.transcript import TranscriptTool
 from voidcode.tui.artifact_viewer import artifact_sources
+from voidcode.tui.stream_handlers import handle_stream_event
 from voidcode.tui.styles import Styles
 from voidcode.tui.terminal_app import CoreTuiApp
 from voidcode.tui.views import render_tool_result
@@ -69,7 +69,7 @@ def test_diff_card_keeps_output_and_artifact_entry_in_order() -> None:
     assert "Diff: src/foo.py (+1 -1)" in text
     assert "Artifacts: Ctrl+O / /tui output" in text
     assert text.index("Diff: src/foo.py") < text.index("Artifacts: Ctrl+O")
-    sources = artifact_sources(encode_tool_result(result))
+    sources = artifact_sources(result)
     assert [source.label for source in sources] == ["Complete structured result JSON"]
     assert sources[0].sha256 == "c" * 64
 
@@ -137,7 +137,7 @@ def test_large_diff_preserves_every_hunk_and_resource_identity() -> None:
     assert "-old 1" in text and "+new 50" in text
     assert "@@ -25,1 +25,1 @@" in text
     assert "Artifacts: Ctrl+O / /tui output" in text
-    sources = artifact_sources(encode_tool_result(result))
+    sources = artifact_sources(result)
     assert sources and sources[0].sha256 == "d" * 64
 
 
@@ -156,7 +156,7 @@ def test_composite_table_json_keep_hierarchy_and_references() -> None:
     assert "[showing 2/7 rows; full table: artifact://" + "a" * 64 + "]" in text
     assert '{"ok": true}' in text
     assert "[full JSON: artifact://" + "b" * 64 + "]" in text
-    sources = artifact_sources(encode_tool_result(result))
+    sources = artifact_sources(result)
     assert [source.sha256 for source in sources] == ["a" * 64, "b" * 64]
 
 
@@ -225,7 +225,7 @@ def test_edit_card_flows_through_transcript_harness() -> None:
         transcript=TranscriptEntry(6, "r", "rev-1", "k", tool),
     )
     rows: list[str] = []
-    app._handle_stream_event(event, rows)
+    handle_stream_event(app, event, rows)
     text = "\n".join(PLAIN.sub("", row) for row in rows)
     assert "Edit applied successfully." in text
     assert "Diff: src/foo.py (+1 -1)" in text

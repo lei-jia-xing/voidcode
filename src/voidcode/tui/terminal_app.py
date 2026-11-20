@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 from voidcode.config import BannerConfig
-from voidcode.core.events import EventType
 from voidcode.sdk.client import (
     MAX_PROMPT_BYTES,
     MAX_PROMPT_CHARS,
@@ -29,15 +28,14 @@ from voidcode.sdk.client import (
     SessionClient,
     SessionRow,
     StreamCancellation,
-    StreamEvent,
 )
-from voidcode.sdk.codec import decode_tool_call, encode_tool_result
+from voidcode.sdk.codec import decode_tool_call
 from voidcode.sdk.command_help import command_argument_hints
-from voidcode.sdk.commands import CommandDescriptor, ConfirmationRequest
-from voidcode.sdk.icons import Icon
+from voidcode.sdk.commands import CommandDescriptor
 from voidcode.sdk.provider import ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.tools import (
     ToolEffect,
+    ToolResult,
 )
 from voidcode.sdk.transcript import (
     TranscriptTool,
@@ -57,7 +55,6 @@ from voidcode.tui.gates import (
     ActivationCommitted,
     ApprovalGate,
     ApprovalRequested,
-    ConfirmationGate,
     ConfirmationRequested,
     GateChange,
     GateDecided,
@@ -101,7 +98,6 @@ from .help_view import TUI_CONTROLS, TUI_CONTROLS_BY_NAME, render_help
 from .keys import Key, KeyDecoder
 from .rendering import ActiveToolProgress, render_frame
 from .rendering import banner_rows as _banner_rows
-from .rendering import content_rows as _content_rows
 from .session_follower import SessionFollower
 from .styles import Styles
 from .term import Terminal, TerminalCapabilityError, copy_to_clipboard
@@ -168,52 +164,6 @@ def _approval_gate_from_payload(payload: Mapping[str, object], *, run_id: str, r
         raise ValueError("approval payload requires a call object")
     call = decode_tool_call(raw_call)
     return ApprovalGate(call=call, request_id=request_id, run_id=run_id, revision_id=revision_id)
-
-
-def _gate_changes(event: StreamEvent) -> tuple[list[GateChange], bool]:
-    """Decode one stream event's gate changes plus whether the run terminated.
-
-    Returns ``(changes, run_terminated)``; the caller folds changes through
-    the reducer and applies the same gate UI rules as before.
-    """
-    payload = event.payload if isinstance(event.payload, Mapping) else {}
-    if event.type == EventType.CONFIRMATION_REQUESTED:
-        if str(payload.get("ui_type", "")) != "confirmation":
-            return [], False
-        request = ConfirmationRequest.from_payload(payload)
-        return [ConfirmationRequested(ConfirmationGate.from_request(request, revision_id=event.revision_id))], False
-    if event.type == EventType.CONFIRMATION_DECIDED:
-        request_id = str(payload.get("request_id") or "")
-        return ([GateDecided(request_id)] if request_id else []), False
-    if event.type == EventType.APPROVAL_REQUESTED:
-        request_id = payload.get("request_id")
-        raw_call = payload.get("call")
-        if not isinstance(request_id, str) or not request_id or not isinstance(raw_call, Mapping):
-            return [], False
-        gate = _approval_gate_from_payload(payload, run_id=event.run_id, revision_id=event.revision_id)
-        return [ApprovalRequested(gate)], False
-    if event.type == EventType.APPROVAL_DECIDED:
-        request_id = str(payload.get("request_id") or "")
-        return ([GateDecided(request_id)] if request_id else []), False
-    if event.type == EventType.ACTIVATION_COMMITTED:
-        return [ActivationCommitted(str(payload.get("to_revision_id") or ""))], False
-    if event.type in (EventType.RUN_INTERRUPTED, EventType.RUN_FAILED):
-        return [RunTerminated(event.run_id)], True
-    if event.type == EventType.RUN_COMPLETED:
-        return [RunTerminated(event.run_id)], False
-    return [], False
-
-
-def _tool_icon(raw: object) -> Icon | None:
-    """Strict birth icon: None stays generic, malformed fails visibly."""
-    if raw is None:
-        return None
-    if not isinstance(raw, Mapping):
-        raise ValueError(f"tool icon must be an object or null, got {type(raw).__name__}")
-    glyph = raw.get("glyph")
-    if not isinstance(glyph, str):
-        raise ValueError("tool icon requires a glyph string")
-    return Icon(glyph=glyph)
 
 
 _IGNORED_PATH_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".codegraph"}
@@ -569,164 +519,6 @@ class CoreTuiApp:
         """Drain typed frames through the one pump/router in ``event_pump``."""
         return drain_events(self, timeout)
 
-    def _handle_stream_event(self, event: StreamEvent, rows: list[str]) -> None:
-        if event.session_id != self.session_id:
-            return  # Reject wrong-session events immediately without advancing this session's cursor
-        committed = self._session_cursors.get(self.session_id, 0)
-        if event.sequence <= committed:
-            return  # Settled ledger: never replay already committed events
-        self._session_cursors[self.session_id] = event.sequence
-        payload = event.payload if isinstance(event.payload, Mapping) else {}
-        etype = event.type
-        entry = event.transcript
-        if (
-            entry is not None
-            and entry.sequence == event.sequence
-            and etype
-            not in (
-                EventType.RUN_COMPLETED,
-                EventType.RUN_FAILED,
-                EventType.RUN_INTERRUPTED,
-            )
-        ):
-            if isinstance(entry.content, ProviderTurnResult):
-                self._settle_stream(payload)
-            content = entry.content
-            if isinstance(content, TranscriptTool):
-                invocation = payload.get("invocation_id")
-                active = None
-                if isinstance(invocation, str) and invocation in self._active_tools:
-                    tool_entry = self._active_tools[invocation]
-                    if (
-                        event.session_id == tool_entry.session_id
-                        and event.run_id == tool_entry.run_id
-                        and event.revision_id == tool_entry.revision_id
-                        and self._generation == tool_entry.generation
-                    ):
-                        active = self._active_tools.pop(invocation, None)
-                if active is not None and content.icon is None and active.icon is not None:
-                    content = TranscriptTool(
-                        content.call,
-                        content.result,
-                        interrupted=content.interrupted,
-                        batch_sequence=content.batch_sequence,
-                        deferred=content.deferred,
-                        icon=active.icon,
-                    )
-                self._record_tool_artifact(content)
-            rows.extend(_content_rows(content, self.terminal.width, self.styles, include_tool_header=True))
-        if etype in (EventType.USER_MESSAGE, EventType.RUN_RESUMED):
-            self._run_active = True
-            self.status_line = ""
-        elif etype == EventType.MODEL_TURN:
-            self._record_model_turn(payload, entry.content if entry else None)
-        elif etype == EventType.TOOL_INTENT:
-            invocation = payload.get("invocation_id")
-            raw_call = payload.get("call")
-            if isinstance(invocation, str) and invocation and isinstance(raw_call, Mapping):
-                call = decode_tool_call(raw_call)
-                icon = _tool_icon(payload.get("icon"))
-                self._active_tools[invocation] = ActiveToolProgress(
-                    invocation_id=invocation,
-                    tool_name=_safe(call.tool_name or "tool"),
-                    icon=icon,
-                    start_time=time.monotonic(),
-                    session_id=event.session_id,
-                    run_id=event.run_id,
-                    revision_id=event.revision_id,
-                    generation=self._generation,
-                )
-                self._run_active = True
-        elif etype == EventType.TOOL_PROGRESS:
-            invocation = payload.get("invocation_id")
-            raw_progress = payload.get("progress")
-            if isinstance(invocation, str) and invocation in self._active_tools and isinstance(raw_progress, Mapping):
-                active = self._active_tools[invocation]
-                if (
-                    event.session_id == active.session_id
-                    and self._generation == active.generation
-                    and event.run_id == active.run_id
-                    and event.revision_id == active.revision_id
-                ):
-                    text = raw_progress.get("text")
-                    stream_name = str(raw_progress.get("stream", "stdout"))
-                    if isinstance(text, str) and text:
-                        cols = max(1, self.terminal.width)
-                        rows_budget = max(1, getattr(self.terminal, "height", 24))
-                        active.append_chunk(stream_name, text, cols=cols, rows=rows_budget)
-        elif etype in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
-            invocation = payload.get("invocation_id")
-            if isinstance(invocation, str) and invocation in self._active_tools:
-                tool_entry = self._active_tools[invocation]
-                if (
-                    event.session_id == tool_entry.session_id
-                    and event.run_id == tool_entry.run_id
-                    and event.revision_id == tool_entry.revision_id
-                    and self._generation == tool_entry.generation
-                ):
-                    self._active_tools.pop(invocation, None)
-            if entry is None or not isinstance(entry.content, TranscriptTool):
-                self._record_tool_artifact(payload)
-        elif etype == EventType.PROVIDER_PROGRESS:
-            dispatch = payload.get("dispatch_id")
-            delta = payload.get("text_delta")
-            if isinstance(dispatch, str) and dispatch and isinstance(delta, str) and delta:
-                channel = str(payload.get("channel", "text"))
-                target = self._stream_reasoning if channel == "reasoning" else self._stream_buffers
-                target.setdefault(dispatch, []).append(delta)
-                self._stream_dispatch = dispatch
-                self._run_active = True
-        elif etype == EventType.COMMAND_COMPLETED:
-            raw_result = payload.get("result")
-            raw_name = str(payload.get("name") or "command")
-            if isinstance(raw_result, Mapping):
-                rows.extend(self._command_receipt_rows(raw_name, CommandResult.from_payload(raw_result)))
-        elif etype == EventType.ACTIVATION_COMMITTED:
-            # The displayed generation changed: the command catalog is
-            # refetched and anything captured under the previous revision is
-            # dropped — never relabelled, never retried. Optional views are
-            # explicit-only, so activation never fetches or renders them.
-            to_revision_id = str(payload.get("to_revision_id") or "")
-            overlay = self.active_overlay
-            if isinstance(overlay, InteractiveArtifactViewer):
-                overlay.mark_revision_changed(to_revision_id)
-            dropped = (
-                overlay is not None and not isinstance(overlay, InteractiveArtifactViewer) and getattr(overlay, "revision_id", "") != to_revision_id
-            )
-            if dropped:
-                self._close_live_input()
-                self.active_overlay = None
-            self._apply_gate_change(ActivationCommitted(to_revision_id))
-            catalog.load(self)
-            self._refresh_health_async()
-            self._present_queued_confirmation()
-            if dropped:
-                rows.append(self.styles.fg("warning", "Warning: pending action discarded after configuration changed"))
-        elif etype in (EventType.CONFIRMATION_REQUESTED, EventType.CONFIRMATION_DECIDED, EventType.APPROVAL_REQUESTED, EventType.APPROVAL_DECIDED):
-            for change in _gate_changes(event)[0]:
-                self._apply_gate_change(change)
-        elif etype == EventType.RUN_INTERRUPTED:
-            self._render_run_notice("interrupted", payload.get("reason"), rows, stop_cause=payload.get("stop_cause"))
-            self._clear_run_tools(event.session_id, event.run_id)
-            for change in _gate_changes(event)[0]:
-                self._apply_gate_change(change)
-            self._clear_stream()
-            self._present_queued_confirmation()
-        elif etype == EventType.RUN_FAILED:
-            self._render_run_notice("failed", payload.get("error"), rows)
-            self._clear_run_tools(event.session_id, event.run_id)
-            for change in _gate_changes(event)[0]:
-                self._apply_gate_change(change)
-            self._clear_stream()
-            self._present_queued_confirmation()
-        elif etype == EventType.RUN_COMPLETED:
-            self._clear_run_tools(event.session_id, event.run_id)
-            for change in _gate_changes(event)[0]:
-                self._apply_gate_change(change)
-            self._clear_stream()
-        elif etype == EventType.OBSERVER_ERROR:
-            rows.extend(_prefixed_rows("Warning: plugin observer:", str(payload.get("error") or "Observer failed"), self.styles, slot="warning"))
-
     def _record_model_turn(self, payload: Mapping[str, object], entry_content: object = None) -> None:
         usage = None
         if isinstance(entry_content, ProviderTurnResult) and entry_content.usage is not None:
@@ -763,20 +555,16 @@ class CoreTuiApp:
         if out_tok is not None:
             self.cumulative_output_tokens += out_tok
 
-    def _record_tool_artifact(self, target: Any) -> None:
+    def _record_tool_artifact(self, target: TranscriptTool | ToolResult) -> None:
         if isinstance(target, TranscriptTool):
             tool_name = target.call.tool_name or "tool"
-            result = encode_tool_result(target.result)
-        elif isinstance(target, Mapping):
-            call = target.get("call")
-            tool_name = str(call.get("tool_name") or "tool") if isinstance(call, Mapping) else "tool"
-            result = target.get("result")
+            result = target.result
         else:
-            return
-        if isinstance(result, Mapping):
-            sources = artifact_sources(result)
-            if sources:
-                self._latest_tool_artifacts = (tool_name, sources)
+            tool_name = target.tool_name or "tool"
+            result = target
+        sources = artifact_sources(result)
+        if sources:
+            self._latest_tool_artifacts = (tool_name, sources)
 
     def _show_truncated_output(self) -> None:
         if self._latest_tool_artifacts is None:

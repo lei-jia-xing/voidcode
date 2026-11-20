@@ -20,8 +20,8 @@ from voidcode.sdk.provider import (
     ProviderTurnRequest,
 )
 from voidcode.sdk.transcript import decode_transcript_content, encode_transcript_content
+from voidcode.tui.rendering import content_rows as _content_rows
 from voidcode.tui.styles import Styles
-from voidcode.tui.terminal_app import _content_rows
 
 
 def test_image_attachment_contract() -> None:

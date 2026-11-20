@@ -7,6 +7,7 @@ import re
 from rich.color import ColorSystem
 
 from voidcode.sdk.icons import Icon
+from voidcode.tui.stream_handlers import handle_stream_event
 from voidcode.tui.styles import Styles, render_icon
 from voidcode.tui.term import visible_width
 from voidcode.tui.views import render_tool_call
@@ -109,7 +110,8 @@ def test_intent_header_then_result_renders_once_with_owned_icon() -> None:
 
     app = _icon_app()
     rows: list[str] = []
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _stream_event(
             5,
             "core.tool_intent",
@@ -122,7 +124,8 @@ def test_intent_header_then_result_renders_once_with_owned_icon() -> None:
         ),
         rows,
     )
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _stream_event(
             6,
             "core.tool_completed",
@@ -150,7 +153,8 @@ def test_same_call_id_across_batches_never_leaks_icon() -> None:
     app = _icon_app()
     rows: list[str] = []
     for seq, invocation, glyph in ((5, "iv-1", "\u2211"), (9, "iv-2", "\u754c")):
-        app._handle_stream_event(
+        handle_stream_event(
+            app,
             _stream_event(
                 seq,
                 "core.tool_intent",
@@ -163,7 +167,8 @@ def test_same_call_id_across_batches_never_leaks_icon() -> None:
             ),
             rows,
         )
-        app._handle_stream_event(
+        handle_stream_event(
+            app,
             _stream_event(
                 seq + 1,
                 "core.tool_completed",
@@ -193,7 +198,8 @@ def test_settled_result_without_intent_emits_recorded_icon_header_first() -> Non
 
     app = _icon_app()
     rows: list[str] = []
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _stream_event(
             6,
             "core.tool_completed",
@@ -215,7 +221,8 @@ def test_settled_result_without_intent_emits_recorded_icon_header_first() -> Non
     assert header_at < body_at
 
     failing: list[str] = []
-    app._handle_stream_event(
+    handle_stream_event(
+        app,
         _stream_event(
             7,
             "core.tool_interrupted",
@@ -237,7 +244,8 @@ def test_settled_result_without_intent_emits_recorded_icon_header_first() -> Non
     assert header_at < body_at
 
     with pytest.raises(ValueError, match="glyph string"):
-        app._handle_stream_event(
+        handle_stream_event(
+            app,
             _stream_event(8, "core.tool_intent", {"invocation_id": "iv-x", "call": {"tool_name": "t", "arguments": {}}, "icon": {"glyph": 1}}),
             [],
         )
