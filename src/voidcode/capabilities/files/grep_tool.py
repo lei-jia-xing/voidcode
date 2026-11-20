@@ -27,21 +27,12 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from ._common import MAX_RESULT_LIMIT, resolve_workspace_path, validate_glob_patterns, validate_non_empty
+from ._common import MAX_RESULT_LIMIT, is_default_ignored, resolve_workspace_path, validate_glob_patterns, validate_non_empty
 from .errors import raise_tool_diagnostic
 from .gitignore import GitIgnoreMatcher
 
 MAX_MATCHES = 200
 _MAX_LINE_CHARS = 64 * 1024
-DEFAULT_IGNORE_PATTERNS = frozenset(
-    (
-        ".git",
-        "node_modules",
-        "__pycache__",
-        "dist",
-        "build",
-    )
-)
 
 
 class GrepArgs(BaseModel):
@@ -112,7 +103,9 @@ class GrepTool:
         icon=Icon(glyph="⌕"),
         description=(
             "Search workspace files. Pattern is literal by default; set regex=true to use regular expressions, "
-            "and ignore_case=true for case-insensitive matching."
+            "and ignore_case=true for case-insensitive matching. Standard dependency, VCS, and build directories "
+            "(.git, node_modules, __pycache__, dist, build, target, vendor, .venv, ...) are skipped at any depth; "
+            "pass one explicitly as path to search inside it."
         ),
         input_schema={
             "type": "object",
@@ -173,10 +166,12 @@ class GrepTool:
             if context.abort_signal is not None and context.abort_signal.cancelled:
                 return
             directory_relative = directory.relative_to(project_root)
+            # Default-ignore names are judged below the requested root, so an explicit
+            # ``path`` naming one is honored; gitignore rules stay project-relative.
             dirnames[:] = sorted(
                 name
                 for name in dirnames
-                if name not in DEFAULT_IGNORE_PATTERNS
+                if not is_default_ignored((directory / name).relative_to(root), is_directory=True)
                 and (gitignore is None or not gitignore.is_ignored((directory_relative / name).as_posix(), is_directory=True))
             )
             for name in sorted(filenames):

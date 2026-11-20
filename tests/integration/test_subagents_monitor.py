@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import threading
-import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import register_core
+from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -39,16 +40,6 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
         server.server_close()
 
 
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -61,17 +52,8 @@ def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=tmp_path / "state")
-    _CREATED.append(core)
+    register_core(core)
     return core
-
-
-def _wait_for(predicate: Callable[[], bool], *, what: str, timeout: float = 20.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.05)
-    raise AssertionError(f"timed out waiting for {what}")
 
 
 def _continuation_status(core: Core, session_id: str, continuation_id: str) -> str | None:
@@ -141,8 +123,8 @@ def test_monitor_browsing_consumes_no_notice_and_stays_descendant_bound(tmp_path
             grandchild = core.spawn_child(child, "grandchild work NOTICE-GRAND", notify_on_completion=False)
             assert entered["NOTICE-GRAND"].wait(timeout=30), "grandchild never reached the provider gate"
             release.set()
-            _wait_for(lambda: core.session(child).status == "completed", what="the child terminal commit")
-            _wait_for(
+            wait_for(lambda: core.session(child).status == "completed", what="the child terminal commit")
+            wait_for(
                 lambda: any(event.event_type == "core.child_finished" for event in core.store.events("root")),
                 what="the child terminal fact",
             )
@@ -243,11 +225,11 @@ def test_monitor_detail_paging_reaches_every_marker_exactly_once(tmp_path: Path)
         }
         (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
         core = open_core(workspace, state_dir=tmp_path / "state")
-        _CREATED.append(core)
+        register_core(core)
         core.create_session("root")
         rev = core.command_catalog().revision_id
         child = core.spawn_child("root", "emit every marker through the tool", notify_on_completion=False)
-        _wait_for(lambda: core.session(child).status == "completed", what="the marker run")
+        wait_for(lambda: core.session(child).status == "completed", what="the marker run")
         expected = [*markers, big]
         # Ground truth: every committed readable block of the child session, in
         # durable order, from the same renderer the monitor pages through.
@@ -312,7 +294,7 @@ def test_cancel_deny_leaves_work_running_and_allow_requests_cancellation(tmp_pat
             assert receipt.data is not None and child in receipt.data["cancelled"]
             assert "requested" in (receipt.output or "")
             release.set()
-            _wait_for(lambda: core.session(child).status == "interrupted", what="the owner-cancel settle")
+            wait_for(lambda: core.session(child).status == "interrupted", what="the owner-cancel settle")
             assert core.store.latest_stop_cause(child, core.session(child).run_id) == "owner_cancel"
 
 
@@ -352,7 +334,7 @@ def test_cancel_subtree_covers_nested_queued_work_and_refuses_siblings(tmp_path:
             assert sibling not in receipt.data["cancelled"]
             assert core.store.pending_continuations(grandchild, limit=10) == ()
             release.set()
-            _wait_for(lambda: core.session(grandchild).status == "interrupted", what="the grandchild settle")
+            wait_for(lambda: core.session(grandchild).status == "interrupted", what="the grandchild settle")
             assert core.store.latest_stop_cause(grandchild, core.session(grandchild).run_id) == "owner_cancel"
             assert core.session("root").status == "idle"
             # A completed parent with a detached live descendant stays cancellable, and an
@@ -406,7 +388,7 @@ def test_cancel_reports_a_run_claimed_after_census_distinctly(tmp_path: Path) ->
                 # Release the provider so the first run settles, then start a
                 # real newer run on its own gate while the sweep is held.
                 release.set()
-                _wait_for(lambda: core.session(child).status == "completed", what="the first run settle")
+                wait_for(lambda: core.session(child).status == "completed", what="the first run settle")
                 newer_release = threading.Event()
                 with _gated_markers(server, ["RACE-NEWER"], release=newer_release) as newer_entered:
                     runner: dict[str, object] = {}
@@ -461,7 +443,7 @@ def test_stale_confirmation_cannot_cancel_a_real_newer_run(tmp_path: Path) -> No
         core.create_session("root")
         rev = core.command_catalog().revision_id
         child = core.spawn_child("root", "child work", notify_on_completion=False)
-        _wait_for(lambda: core.session(child).status == "completed", what="the first run")
+        wait_for(lambda: core.session(child).status == "completed", what="the first run")
         first_run = core.session(child).run_id
         assert first_run is not None
         pending = core.invoke_command(
@@ -547,7 +529,7 @@ def test_reserved_claim_loses_to_first_run_at_boundary(tmp_path: Path) -> None:
                     assert child in result.data.get("observed_newer_run", ())
                     assert child not in result.data.get("claimed_reserved", ())
                     release.set()
-                    _wait_for(lambda: core.session(child).status == "completed", what="the first run")
+                    wait_for(lambda: core.session(child).status == "completed", what="the first run")
                 finally:
                     claim_release.set()
                     driver_release.set()
@@ -597,12 +579,12 @@ def test_parked_settle_pin_refuses_after_newer_run_claims(tmp_path: Path) -> Non
         }
         (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
         core = open_core(workspace, state_dir=tmp_path / "state")
-        _CREATED.append(core)
+        register_core(core)
         core.auto_drain = False
         core.create_session("root")
         rev = core.command_catalog().revision_id
         child = core.spawn_child("root", "park on the probe", notify_on_completion=False)
-        _wait_for(lambda: core.session(child).status == "waiting", what="the parked run")
+        wait_for(lambda: core.session(child).status == "waiting", what="the parked run")
         parked_run = core.session(child).run_id
         assert parked_run is not None
         pending = core.invoke_command(
@@ -644,7 +626,7 @@ def test_parked_settle_pin_refuses_after_newer_run_claims(tmp_path: Path) -> Non
                 approval = next(e for e in core.store.events(child) if e.event_type == "core.approval_requested")
                 denied = core.resume(child, approval_request_id=approval.payload["request_id"], decision="deny")
                 assert denied.status in ("completed", "failed", "interrupted", "waiting"), denied
-                _wait_for(lambda: core.session(child).status in ("completed", "failed"), what="the denied settle")
+                wait_for(lambda: core.session(child).status in ("completed", "failed"), what="the denied settle")
                 runner: dict[str, object] = {}
 
                 def _run_newer() -> None:
@@ -721,7 +703,7 @@ def test_late_completion_notice_cannot_restart_a_cancelled_parent(tmp_path: Path
                 receipt = core.cancel_descendant_subtree("root", child, expected_run_id=child_run)
                 assert set(receipt.cancelled) == {child, grandchild}
                 release.set()
-                _wait_for(lambda: core.session(child).status == "interrupted", what="parent cancellation before the late notice")
+                wait_for(lambda: core.session(child).status == "interrupted", what="parent cancellation before the late notice")
                 late_terminal.set()
                 assert delivered.wait(timeout=30), "late completion notice was not delivered"
                 assert core.session(child).run_id == child_run
@@ -853,7 +835,7 @@ def create_plugin(config):
                 new_nodes = [node for node in core.list_descendants(child) if node.session_id != grandchild]
                 assert len(new_nodes) == 1 and new_nodes[0].parent_session_id == child
             else:
-                _wait_for(lambda: core.session(grandchild).status == "completed", what="fresh SDK follow-up")
+                wait_for(lambda: core.session(grandchild).status == "completed", what="fresh SDK follow-up")
                 assert core.session(grandchild).run_id != old_grandchild_run
         finally:
             release_registration.set()
@@ -885,7 +867,7 @@ def test_newer_run_keeps_queued_input_at_the_disarm_boundary(tmp_path: Path, mon
             queued = core.send_child("root", child, "INPUT-FOR-NEXT-RUN", notify_on_completion=False)
             assert queued.delivery == "queued"
             release.set()
-            _wait_for(lambda: core.session(child).status == "completed", what="old run completion")
+            wait_for(lambda: core.session(child).status == "completed", what="old run completion")
             at_disarm = threading.Event()
             release_disarm = threading.Event()
             at_merge = threading.Event()

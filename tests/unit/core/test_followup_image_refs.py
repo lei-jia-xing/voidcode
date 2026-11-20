@@ -108,9 +108,9 @@ def test_queued_followup_images_spill_to_references_under_bound(tmp_path: Path) 
             assert queued.status == "queued"
 
             pending = core.store.pending_continuations(session_id, limit=10)
-            kernel_pending = [c for c in pending if c.owner == "kernel"]
-            assert len(kernel_pending) == 1
-            payload = kernel_pending[0].payload
+            core_pending = [c for c in pending if c.owner == "core"]
+            assert len(core_pending) == 1
+            payload = core_pending[0].payload
             assert "images" in payload
             refs = payload["images"]
             assert isinstance(refs, (list, tuple)) and len(refs) == 1
@@ -131,7 +131,7 @@ def test_queued_followup_images_spill_to_references_under_bound(tmp_path: Path) 
             (workspace / "block.release").touch()
             t1.join(timeout=10)
             assert not t1.is_alive()
-            assert core.store.continuation_status(kernel_pending[0].continuation_id) == "pending"
+            assert core.store.continuation_status(core_pending[0].continuation_id) == "pending"
         finally:
             core.close()
 
@@ -202,9 +202,9 @@ def test_text_only_followup_payload_unchanged(tmp_path: Path) -> None:
             assert queued.status == "queued"
 
             pending = core.store.pending_continuations(session_id, limit=10)
-            kernel_pending = [c for c in pending if c.owner == "kernel"]
-            assert len(kernel_pending) == 1
-            payload = kernel_pending[0].payload
+            core_pending = [c for c in pending if c.owner == "core"]
+            assert len(core_pending) == 1
+            payload = core_pending[0].payload
             expected: dict[str, object] = {"prompt": "Turn 2 follow-up prompt", "root_action_budget": 3, "max_steps": 7}
             assert payload == expected
             assert "images" not in payload
@@ -231,7 +231,7 @@ def test_missing_artifact_bytes_fail_visibly(tmp_path: Path) -> None:
             }
             cid = core.store.enqueue_continuation(
                 "cid-dangling",
-                "kernel",
+                "core",
                 session_id,
                 "user_message",
                 "",
@@ -262,7 +262,7 @@ def test_legacy_inline_entry_fails_visibly(tmp_path: Path) -> None:
             }
             cid = core.store.enqueue_continuation(
                 "cid-inline",
-                "kernel",
+                "core",
                 session_id,
                 "user_message",
                 "",

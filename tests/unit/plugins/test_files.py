@@ -1056,7 +1056,7 @@ def test_workspace_edit_missing_hash_rejects_frozen_arguments(tmp_path: Path) ->
 
 @pytest.mark.parametrize("failure", ["replace", "concurrent_change"])
 def test_workspace_edit_failed_commit_preserves_target_and_cleans_temporary_file(tmp_path: Path, monkeypatch, failure: str) -> None:
-    from voidcode.capabilities.files import _replace
+    from voidcode.capabilities.files import apply_workspace_edit
     from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
 
     target = tmp_path / "target.txt"
@@ -1064,17 +1064,20 @@ def test_workspace_edit_failed_commit_preserves_target_and_cleans_temporary_file
     target.write_bytes(original)
     target.chmod(0o750)
 
-    def fail_replace(source, destination):
-        raise OSError("injected replace failure")
+    original_replace = apply_workspace_edit.replace_file
+
+    def fail_replace(path, content, *, expected_content):
+        if failure == "concurrent_change":
+            target.write_bytes(b"concurrent writer\r\n")
+        else:
+            raise OSError("injected replace failure")
+        return original_replace(path, content, expected_content=expected_content)
 
     class Services(_VersionServices):
         def query(self, name, arguments=None):
-            if failure == "concurrent_change":
-                target.write_bytes(b"concurrent writer\r\n")
             return None
 
-    if failure == "replace":
-        monkeypatch.setattr(_replace.os, "replace", fail_replace)
+    monkeypatch.setattr(apply_workspace_edit, "replace_file", fail_replace)
     result = ApplyWorkspaceEditTool().invoke(
         ToolCall(
             tool_name="apply_workspace_edit",
@@ -1139,7 +1142,7 @@ def test_workspace_edit_preserves_executable_mode_and_crlf(tmp_path: Path) -> No
 @pytest.mark.parametrize("batch", [False, True])
 @pytest.mark.parametrize("failure", [None, "replace", "concurrent_change"])
 def test_edit_commit_preserves_bytes_permissions_and_concurrent_changes(tmp_path: Path, monkeypatch, batch: bool, failure: str | None) -> None:
-    from voidcode.capabilities.files import _replace, edit_tool
+    from voidcode.capabilities.files import edit_tool
 
     target = tmp_path / "target.txt"
     original = b"original\r\n"
@@ -1148,20 +1151,17 @@ def test_edit_commit_preserves_bytes_permissions_and_concurrent_changes(tmp_path
     arguments = {"path": "target.txt", "expectedHash": hashlib.sha256(original).hexdigest()}
     edit = {"oldString": "original", "newString": "changed"}
     arguments.update({"edits": [edit]} if batch else edit)
-    original_replace = edit_tool._replace
+    original_replace = edit_tool.replace_file
 
-    def replace_with_concurrent_writer(*args, **kwargs):
-        result = original_replace(*args, **kwargs)
-        target.write_bytes(b"concurrent writer\r\n")
-        return result
+    def fail_replace(path, content, *, expected_content):
+        if failure == "concurrent_change":
+            target.write_bytes(b"concurrent writer\r\n")
+        else:
+            raise OSError("injected replace failure")
+        return original_replace(path, content, expected_content=expected_content)
 
-    def fail_replace(*args, **kwargs):
-        raise OSError("injected replace failure")
-
-    if failure == "replace":
-        monkeypatch.setattr(_replace.os, "replace", fail_replace)
-    elif failure == "concurrent_change":
-        monkeypatch.setattr(edit_tool, "_replace", replace_with_concurrent_writer)
+    if failure is not None:
+        monkeypatch.setattr(edit_tool, "replace_file", fail_replace)
 
     tool = edit_tool.EditTool()
     if failure is None:

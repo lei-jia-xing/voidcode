@@ -200,8 +200,8 @@ def _spawn_model_reloading_holder(workspace: Path, state: Path, session_id: str,
 def _add_activation_barrier(source: Path, marker: Path) -> None:
     """Make the written generation block once between its activation and the next dispatch.
 
-    `Plugin.context` runs in `_messages`, after `kernel.activation_committed` committed the
-    switch and before the continuation's `kernel.provider_intent`: killing at the marker leaves
+    `Plugin.context` runs in `_messages`, after `core.activation_committed` committed the
+    switch and before the continuation's `core.provider_intent`: killing at the marker leaves
     the owed resume intent durable. The marker also lets the restart's own context call pass.
     """
     path = source / "__init__.py"

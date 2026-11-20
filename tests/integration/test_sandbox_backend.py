@@ -12,26 +12,17 @@ from __future__ import annotations
 import json
 import shutil
 import threading
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import locate_sandbox_helper, open_core
 from voidcode.core.engine import Core
 from voidcode.core.plugins import LeaseContext
 from voidcode.core.services import RuntimeServices
 from voidcode.sdk.json_values import json_wire_object
-
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
 
 
 def _helper_available() -> bool:
@@ -54,7 +45,7 @@ def _core(tmp_path: Path, *, sandbox: dict | None, extra: dict | None = None) ->
         config.update(extra)
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 

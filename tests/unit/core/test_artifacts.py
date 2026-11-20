@@ -11,17 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import loopback_server, open_core_for_test, write_loopback_config
 from tests.fixtures.reload_plugin import SERVICES_READ_TOOL, SERVICES_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.bootstrap import open_core
-from voidcode.core.engine import Core
 
 PLUGIN_ID = "reload-fixture"
 EMPTY_SHA = hashlib.sha256(b"").hexdigest()
@@ -35,56 +30,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
     return openai_response(
         message={"role": "assistant", "content": output, "reasoning_content": "artifact reasoning", "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
-    )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
-def _open(tmp_path: Path) -> Core:
-    core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
-    _CREATED.append(core)
-    return core
-
-
-def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
-    workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "model": {"model": "endpoint/exact-model"},
-                "policy": {"approval_mode": "yolo"},
-                "providers": {
-                    "endpoint": {
-                        "api_key": "loopback-secret-not-for-storage",
-                        "base_url": f"http://127.0.0.1:{server.server_port}/v1",
-                    }
-                },
-                "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
-            }
-        ),
-        encoding="utf-8",
     )
 
 
@@ -127,9 +72,9 @@ def test_spill_writes_the_bytes_under_their_digest_before_the_result_commits(tmp
         ),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-spill")
         assert core.run("spill it", session_id="sess-spill").status == "completed"
 
@@ -160,9 +105,9 @@ def test_pages_are_bounded_and_report_their_own_geometry(tmp_path: Path) -> None
         _turn(_call("page-3", SERVICES_TOOL, action="page", sha256=sha, offset=1000, limit=10)),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-page")
         assert core.run("page it", session_id="sess-page").status == "completed"
 
@@ -182,9 +127,9 @@ def test_spilling_the_same_bytes_again_is_free(tmp_path: Path) -> None:
         _turn(_call("spill-2", SERVICES_TOOL, action="spill", text=payload)),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-dedupe")
         assert core.run("spill twice", session_id="sess-dedupe").status == "completed"
 
@@ -206,9 +151,9 @@ def test_the_media_type_survives_the_reference(tmp_path: Path) -> None:
         _turn(_call("page-1", SERVICES_TOOL, action="page", sha256=sha, offset=0, limit=64)),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-media")
         assert core.run("spill an image", session_id="sess-media").status == "completed"
 
@@ -229,9 +174,9 @@ def test_empty_payloads_are_stored_and_read_back(tmp_path: Path) -> None:
         _turn(_call("page-1", SERVICES_TOOL, action="page", sha256=EMPTY_SHA, offset=0, limit=10)),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-empty")
         assert core.run("spill nothing", session_id="sess-empty").status == "completed"
 
@@ -250,9 +195,9 @@ def test_a_foreign_reference_is_refused_and_never_read(tmp_path: Path) -> None:
         _turn(_call("page-1", SERVICES_TOOL, action="page", sha256="../outside.txt", offset=0, limit=10)),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-foreign")
         # The tool call fails visibly: the runtime refuses the reference and the model is told so.
         assert core.run("read outside", session_id="sess-foreign").status == "completed"
@@ -268,9 +213,9 @@ def test_a_read_only_lease_may_spill_because_the_store_is_not_the_machine(tmp_pa
         _turn(_call("spill-1", SERVICES_READ_TOOL, action="spill", text="read-only spill")),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-ro-spill")
         assert core.run("spill", session_id="sess-ro-spill").status == "completed"
         payload = _tool_payloads(server)[0]
@@ -289,9 +234,9 @@ def test_hook_lease_cannot_spill(tmp_path: Path) -> None:
         post_tool_spill=True,
     )
     replies = [_turn(_call("spill-1", SERVICES_TOOL, action="spill", text="hook spill")), _turn(output="done")]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-hook-spill")
         assert core.run("spill", session_id="sess-hook-spill").status == "completed"
         tool_text = json.dumps(server.requests[1].get("messages"))

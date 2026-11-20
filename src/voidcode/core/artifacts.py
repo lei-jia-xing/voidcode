@@ -20,11 +20,9 @@ from typing import Any, BinaryIO, Final
 
 #: Content address: a sha256 digest, and nothing else — never a caller-supplied path.
 SHA256_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
-#: Bounded chunk size for streaming artifact spills.
-CHUNK_BYTES: Final[int] = 256 * 1024
 #: One artifact is bounded so a runaway producer cannot exhaust the disk through this service.
 MAX_ARTIFACT_BYTES: Final[int] = 256 * 1024 * 1024
-#: Bounded page size for reading artifact chunks.
+#: Bounded page size for reading artifact and process-output chunks.
 MAX_PAGE_BYTES: Final[int] = 256 * 1024
 
 _MODE: Final[int] = 0o600
@@ -160,10 +158,6 @@ class ArtifactStore:
         if spill is not None:
             spill.close()
             spill.path.unlink(missing_ok=True)
-
-    def discard_all(self) -> None:
-        for spill_id in tuple(self._spills):
-            self.discard(spill_id)
 
     def discard_owner(self, token: str) -> None:
         """Drop the unfinished spills of one lease; a lease can never outlive its own bytes."""

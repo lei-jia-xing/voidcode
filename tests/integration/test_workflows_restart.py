@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import json
 import threading
-import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -94,15 +94,6 @@ def _open(workspace: Path, state_dir: Path) -> Core:
     return core
 
 
-def _wait_for(predicate: Callable[[], bool], *, timeout: float = 30.0, what: str) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.05)
-    raise AssertionError(f"timed out waiting for {what}")
-
-
 def _nodes(core: Core, session: str, run_id: str) -> dict[str, dict[str, object]]:
     result = core.invoke_command(session, "workflow.status", {"run_id": run_id}, expected_revision=core.revision_id)
     assert result.status == "ok", result
@@ -167,17 +158,19 @@ def test_workflow_resume_after_restart_reuses_both_children(tmp_path: Path) -> N
 
         # First node parks on its real approval; allow it publicly, resume the parked
         # run, and wait for the node to complete through key reuse (no respawn).
-        _wait_for(lambda: _nodes(core_a, "parent", run_id).get("first", {}).get("status") == "waiting", what="first node approval park")
+        wait_for(lambda: _nodes(core_a, "parent", run_id).get("first", {}).get("status") == "waiting", what="first node approval park", timeout=30.0)
         first_child = str(_nodes(core_a, "parent", run_id)["first"]["child_session_id"])
         first_request = _approval_request_id(core_a, first_child)
         assert core_a.resume(first_child, approval_request_id=first_request, decision="allow").status == "completed"
         resumed_first = core_a.invoke_command("parent", "workflow.resume", {"run_id": run_id}, expected_revision=core_a.revision_id)
         assert resumed_first.status == "ok", resumed_first
-        _wait_for(lambda: _nodes(core_a, "parent", run_id).get("first", {}).get("status") == "completed", what="first node completion", timeout=90.0)
+        wait_for(lambda: _nodes(core_a, "parent", run_id).get("first", {}).get("status") == "completed", what="first node completion", timeout=90.0)
         assert (workspace / "restart-marker.txt").read_text(encoding="utf-8") == "first-marker\n"
 
         # Second node parks on its real approval; leave it parked and close CoreA.
-        _wait_for(lambda: _nodes(core_a, "parent", run_id).get("second", {}).get("status") == "waiting", what="second node approval park")
+        wait_for(
+            lambda: _nodes(core_a, "parent", run_id).get("second", {}).get("status") == "waiting", what="second node approval park", timeout=30.0
+        )
         second_child = str(_nodes(core_a, "parent", run_id)["second"]["child_session_id"])
         requests_before_close = len(server.requests)
         assert requests_before_close == 3, "first turn, first resume, second turn"
@@ -190,7 +183,7 @@ def test_workflow_resume_after_restart_reuses_both_children(tmp_path: Path) -> N
         assert core_b.resume(second_child, approval_request_id=second_request, decision="allow").status == "completed"
         resumed = core_b.invoke_command("parent", "workflow.resume", {"run_id": run_id}, expected_revision=core_b.revision_id)
         assert resumed.status == "ok", resumed
-        _wait_for(lambda: _run_status(core_b, "parent", run_id) == "completed", what="workflow completion after resume")
+        wait_for(lambda: _run_status(core_b, "parent", run_id) == "completed", what="workflow completion after resume", timeout=30.0)
         final = core_b.invoke_command("parent", "workflow.status", {"run_id": run_id}, expected_revision=core_b.revision_id)
         assert isinstance(final.data, Mapping)
         assert final.data["status"] == "completed"

@@ -19,14 +19,12 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
-from threading import Thread
 
 import jsonschema
-import pytest
 
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -112,29 +110,6 @@ def _probe_source(tmp_path: Path) -> Path:
     return root
 
 
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
-
-
 def _core(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: int = 1_000) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -170,7 +145,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: int
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 
@@ -225,7 +200,7 @@ def test_a_crossed_threshold_projects_the_window_and_keeps_history(tmp_path: Pat
         _summary("the probe kept going"),
         _turn(output="fourth answer"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         session_id = core.create_session("sess-compaction").session_id
         first_prompt = "first prompt: start the probe"
@@ -322,7 +297,7 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         openai_response(message={"role": "assistant", "content": "the manual probe notes"}, finish="stop"),
         _turn(output="second answer", prompt_tokens=10),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         session_id = core.create_session("sess-manual").session_id
         first_prompt = "first prompt: start the probe manually"
@@ -384,7 +359,7 @@ def test_a_blank_model_summary_fails_loudly_and_stages_nothing(tmp_path: Path) -
         _turn(output="notes written", prompt_tokens=10),
         openai_response(message={"role": "assistant", "content": "   \n  "}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         session_id = core.create_session("sess-blank").session_id
         assert core.run("first prompt: start the probe", session_id=session_id).status == "completed"

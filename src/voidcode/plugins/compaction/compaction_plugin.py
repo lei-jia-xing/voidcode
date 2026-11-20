@@ -54,7 +54,6 @@ SCHEMA_VERSION = 1
 #: manual) carrying core-measured accounting. Consumers count these events for the cumulative
 #: total; ``window_projection()`` is latest-only and never a substitute.
 CONTEXT_COMPACTED_EVENT = "context_compacted"
-COMPACTED_FACT_TYPE = "plugin.compaction.context_compacted"
 #: How many event pages one observation may consume; the prefix is what matters, not the tail.
 _MAX_EVENT_PAGES = 3
 _EVENT_PAGE_SIZE = 200

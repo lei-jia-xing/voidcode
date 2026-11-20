@@ -498,14 +498,14 @@ def test_p2a_usage_windowing_and_unknown_semantics(tmp_path: Path) -> None:
             events=(
                 EventDraft(
                     "core.provider_intent",
-                    "kernel",
-                    "kernel",
+                    "core",
+                    "core",
                     {"attempt": 1, "start_time_ms": 1000},
                 ),
                 EventDraft(
                     "core.provider_interrupted",
-                    "kernel",
-                    "kernel",
+                    "core",
+                    "core",
                     {"dispatch_sequence": latest_s.last_event_sequence + 1, "error": "simulated transport loss"},
                 ),
             ),

@@ -17,17 +17,19 @@ from typing import Literal, cast
 from .json_values import json_wire_object, own_json_object
 from .services import ArtifactReference
 from .suspend import SuspendPark
-from .views import ChoiceOption, FormField, FormFieldType, validate_view_data
+from .views import (
+    INTEGER_LITERAL_PATTERN,
+    NUMBER_LITERAL_PATTERN,
+    ChoiceOption,
+    FormField,
+    FormFieldType,
+    validate_view_data,
+)
 
 AskAnswerStatus = Literal["answered", "cancelled", "expired"]
 
 _SQLITE_INT_MAX = 9_223_372_036_854_775_807
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-
-#: Strict numeric literals: no silent truncation, no scientific-integer coercion
-#: (same shapes as sdk/views.py:454-455).
-_INTEGER_PATTERN = re.compile(r"^[+-]?\d+$")
-_NUMBER_PATTERN = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -535,11 +537,11 @@ def _validate_field(
         return
     candidate = text.strip()
     if field.field_type == "integer":
-        if not _INTEGER_PATTERN.match(candidate):
+        if not INTEGER_LITERAL_PATTERN.match(candidate):
             raise AskValidationError(field=name, reason=f"Field '{label}' must be an integer.")
         validated[name] = int(candidate)
     elif field.field_type == "number":
-        if not _NUMBER_PATTERN.match(candidate):
+        if not NUMBER_LITERAL_PATTERN.match(candidate):
             raise AskValidationError(field=name, reason=f"Field '{label}' must be a number.")
         value = float(candidate)
         if not math.isfinite(value):

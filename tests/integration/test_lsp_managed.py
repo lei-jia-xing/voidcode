@@ -16,14 +16,13 @@ import json
 import shlex
 import sys
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from threading import Event, Thread
 from types import ModuleType
 
 import pytest
 
+from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -32,27 +31,6 @@ from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.tools import TextOutput, ToolFailure, ToolSuccess
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "lsp_echo_server.py"
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
-
-
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, object]:
@@ -115,7 +93,7 @@ def _core(
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core, workspace
 
 
@@ -177,7 +155,7 @@ def test_yolo_lsp_spawns_fixture_and_opens_document(tmp_path: Path) -> None:
         _turn(_call("call-lsp-1", "lsp", operation="hover", path="note.txt", line=1, character=2)),
         _turn(output="smoke done"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _core(tmp_path, server, record)
         (workspace / "note.txt").write_text("hello\n", encoding="utf-8")
         session_id = core.create_session().session_id
@@ -247,7 +225,7 @@ def test_apply_workspace_edit_version_match_and_stale_refusal(tmp_path: Path) ->
         ),
         _turn(output="edit smoke done"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _core(tmp_path, server, record)
         (workspace / "note.txt").write_text(content, encoding="utf-8")
         session_id = core.create_session().session_id
@@ -280,7 +258,7 @@ def test_session_cancel_during_blocked_use_kills_server_and_term_ignoring_descen
         _turn(_call("call-lsp-2", "lsp", operation="hover", path="note.txt", line=1, character=2)),
         _turn(output="second done"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _core(tmp_path, server, record, grandchild=grandchild_cmd, hang_after=2)
         (workspace / "note.txt").write_text("x\n", encoding="utf-8")
         session_id = core.create_session().session_id
@@ -313,7 +291,7 @@ def test_ask_parks_before_spawn_and_allow_spawns_successfully(tmp_path: Path) ->
         _turn(_call("call-lsp-1", "lsp", operation="hover", path="note.txt", line=1, character=2)),
         _turn(output="ask done"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _core(tmp_path, server, record, approval_mode="ask")
         (workspace / "note.txt").write_text("hello\n", encoding="utf-8")
         session_id = core.create_session().session_id
@@ -339,7 +317,7 @@ def test_read_only_refuses_tool_but_inventory_stays_passive(tmp_path: Path) -> N
         _turn(_call("call-lsp-1", "lsp", operation="hover", path="note.txt", line=1, character=2)),
         _turn(output="ro done"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _core(tmp_path, server, record, read_only=True)
         (workspace / "note.txt").write_text("hello\n", encoding="utf-8")
         session_id = core.create_session().session_id
@@ -369,7 +347,7 @@ def test_live_graceful_close_kills_server_and_term_ignoring_descendant(tmp_path:
         _turn(_call("call-lsp-1", "lsp", operation="hover", path="note.txt", line=1, character=2)),
         _turn(output="close done"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _core(tmp_path, server, record, grandchild=grandchild_cmd)
         (workspace / "note.txt").write_text("x\n", encoding="utf-8")
         session_id = core.create_session().session_id
@@ -381,7 +359,7 @@ def test_live_graceful_close_kills_server_and_term_ignoring_descendant(tmp_path:
         assert not _pid_gone(descendant, timeout=0.1), "descendant must be alive before close"
 
         # Live graceful close: the core stops the owned tree without any kill -9.
-        _CREATED_CORES.remove(core)
+        discard_core(core)
         core.close()
         assert _pid_gone(server_pid, timeout=20), f"server pid {server_pid} survived graceful close"
         assert _pid_gone(descendant, timeout=20), f"descendant pid {descendant} survived graceful close"
@@ -412,7 +390,7 @@ def test_reload_retires_old_runtime_and_its_service_tree(tmp_path: Path) -> None
         ),
         _turn(output="reload done"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _core(tmp_path, server, record, grandchild=grandchild_cmd)
         (workspace / "note.txt").write_text("x\n", encoding="utf-8")
         session_id = core.create_session().session_id
@@ -448,7 +426,7 @@ def test_exec_proc_resources_are_scoped_and_preserve_process_bytes(tmp_path: Pat
         "os.write(2, b'err-tail\\n')\n",
         encoding="utf-8",
     )
-    with _loopback_server([]) as server:
+    with loopback_server([]) as server:
         core, workspace = _core(tmp_path, server, record)
         (workspace / "note.txt").write_text("hello\n", encoding="utf-8")
 
@@ -625,10 +603,10 @@ def test_exec_proc_resources_are_scoped_and_preserve_process_bytes(tmp_path: Pat
             assert command not in encoded
             assert "stdout_path" not in encoded and "stderr_path" not in encoded
 
-        _CREATED_CORES.remove(core)
+        discard_core(core)
         core.close()
         core = open_core(workspace, state_dir=tmp_path / "state")
-        _CREATED_CORES.append(core)
+        register_core(core)
         stale_result = run_tool(core, session_id, "read", path=resource_uri)
         assert isinstance(stale_result, ToolSuccess)
         stale = dict(stale_result.body.structured_content)
@@ -661,7 +639,7 @@ def test_cancelling_inflight_resource_log_read_preserves_its_service(
     monkeypatch.setitem(sys.modules, gate_name, gate)
 
     plugin_path = Path(__file__).resolve().parents[1] / "fixtures" / "resource_read_cancel_plugin"
-    with _loopback_server([]) as server:
+    with loopback_server([]) as server:
         core, workspace = _core(
             tmp_path,
             server,

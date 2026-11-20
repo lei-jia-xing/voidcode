@@ -21,30 +21,8 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from ._common import MAX_RESULT_LIMIT, resolve_workspace_path
+from ._common import MAX_RESULT_LIMIT, is_default_ignored, resolve_workspace_path
 from .gitignore import GitIgnoreMatcher
-
-DEFAULT_IGNORE_PATTERNS = frozenset(
-    [
-        "node_modules",
-        "__pycache__",
-        ".git",
-        "dist",
-        "build",
-        "target",
-        "vendor",
-        ".venv",
-        "venv",
-        ".idea",
-        ".vscode",
-        ".coverage",
-        "coverage",
-        "tmp",
-        "temp",
-        ".cache",
-        "logs",
-    ]
-)
 
 LIMIT = 100
 
@@ -94,7 +72,11 @@ class GlobTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="glob",
         icon=Icon(glyph="❋"),
-        description="Find files matching a glob pattern.",
+        description=(
+            "Find files matching a glob pattern. Standard dependency, VCS, and build directories "
+            "(.git, node_modules, __pycache__, dist, build, target, vendor, .venv, ...) are skipped "
+            "at any depth; pass one explicitly as path to search inside it."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -141,8 +123,9 @@ class GlobTool:
 
         def excluded(path: Path, *, is_directory: bool) -> bool:
             relative = path.relative_to(project_root)
+            scanned = path.relative_to(search_dir)
             return (
-                any(part in DEFAULT_IGNORE_PATTERNS for part in relative.parts)
+                is_default_ignored(scanned, is_directory=is_directory)
                 or (not include_hidden and any(part.startswith(".") for part in relative.parts))
                 or (gitignore is not None and gitignore.is_ignored(relative.as_posix(), is_directory=is_directory))
             )

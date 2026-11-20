@@ -4,40 +4,17 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
-from threading import Thread
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
 
 _REVIEW_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "review"
-
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
-
-
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _git(root: Path, *args: str) -> str:
@@ -97,7 +74,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, custom_reader: bool =
         config["plugins"]["custom_reader"] = {"path": str(source)}
         (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 
@@ -126,7 +103,7 @@ def test_review_command_spawns_a_real_child_that_receives_the_git_diff(tmp_path:
             usage={"prompt_tokens": 40, "completion_tokens": 9, "total_tokens": 49},
         ),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         parent_id = core.create_session("parent").session_id
 
@@ -182,7 +159,7 @@ def test_review_command_carries_a_custom_focus_into_the_child_prompt(tmp_path: P
     replies: list[dict[str, object]] = [
         openai_response(message={"role": "assistant", "content": "focus answered"}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         parent_id = core.create_session("parent").session_id
 
@@ -200,7 +177,7 @@ def test_review_command_carries_a_custom_focus_into_the_child_prompt(tmp_path: P
 
 def test_review_command_refuses_an_unknown_target_without_touching_the_provider(tmp_path: Path) -> None:
     replies: list[dict[str, object]] = [openai_response(message={"role": "assistant", "content": "unreachable"}, finish="stop")]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         parent_id = core.create_session("parent").session_id
 
@@ -215,7 +192,7 @@ def test_review_command_refuses_an_unknown_target_without_touching_the_provider(
 
 def test_review_command_reviews_a_commit_sha(tmp_path: Path) -> None:
     replies: list[dict[str, object]] = [openai_response(message={"role": "assistant", "content": "commit reviewed"}, finish="stop")]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         parent_id = core.create_session("parent").session_id
         _git(tmp_path / "workspace", "commit", "--quiet", "-am", "dirty commit")
@@ -242,7 +219,7 @@ def test_review_reaches_the_child_for_a_diff_in_the_64kib_256kib_band(tmp_path: 
             usage={"prompt_tokens": 60, "completion_tokens": 8, "total_tokens": 68},
         )
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         parent_id = core.create_session("parent").session_id
         (tmp_path / "workspace" / "big.txt").write_text("".join(f"line {index} {'x' * 80}\n" for index in range(1500)), encoding="utf-8")
@@ -262,7 +239,7 @@ def test_review_reaches_the_child_for_a_diff_in_the_64kib_256kib_band(tmp_path: 
 def test_review_refuses_a_diff_over_its_legacy_256kib_budget_without_spawning(tmp_path: Path) -> None:
     """Above the legacy product budget the plugin refuses visibly and never truncates."""
     replies: list[dict[str, object]] = [openai_response(message={"role": "assistant", "content": "unreachable"}, finish="stop")]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         parent_id = core.create_session("parent").session_id
         (tmp_path / "workspace" / "huge.txt").write_text("".join(f"line {index} {'x' * 120}\n" for index in range(3000)), encoding="utf-8")
@@ -290,7 +267,7 @@ def test_review_inherits_new_inspection_tools_without_widening_parent_scope(tmp_
         ),
         openai_response(message={"role": "assistant", "content": "review complete"}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, custom_reader=True)
         root = core.create_session("root")
         parent_id = root.session_id
@@ -324,7 +301,7 @@ def test_review_inherits_new_inspection_tools_without_widening_parent_scope(tmp_
 def test_review_input_preparation_does_not_start_child_or_provider(tmp_path: Path) -> None:
     from voidcode.sdk.views import FormViewData
 
-    with _loopback_server([]) as server:
+    with loopback_server([]) as server:
         core = _core(tmp_path, server)
         session = core.create_session().session_id
         catalog = core.command_catalog()
@@ -359,7 +336,7 @@ def test_long_review_returns_immutable_ref_readable_in_full_across_followup(tmp_
         openai_response(message={"role": "assistant", "content": long_text}, finish="stop"),
         openai_response(message={"role": "assistant", "content": follow_text}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         parent_id = core.create_session("parent").session_id
 

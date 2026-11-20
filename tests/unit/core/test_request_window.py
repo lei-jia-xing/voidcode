@@ -9,8 +9,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import register_core
 from tests.fixtures.reload_plugin import PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -43,16 +42,6 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
-
-
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
 
 
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
@@ -88,7 +77,7 @@ def test_window_measures_the_literal_messages_of_each_dispatch(tmp_path: Path) -
     with _server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
-        _CREATED.append(core)
+        register_core(core)
         core.create_session("sess-window")
         assert core.run(PROMPT, session_id="sess-window").status == "completed"
 

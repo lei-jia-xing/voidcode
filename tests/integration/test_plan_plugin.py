@@ -9,12 +9,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from threading import Thread
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -53,19 +52,6 @@ def _close_created_cores() -> Iterator[None]:
     yield
     while _CREATED_CORES:
         _CREATED_CORES.pop().close()
-
-
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _write_tool_plugin(workspace: Path) -> Path:
@@ -146,7 +132,7 @@ def test_plan_mode_hides_and_denies_write_tools_until_plan_off(tmp_path: Path) -
             usage={"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
         ),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         session_id = core.create_session().session_id
 
@@ -203,7 +189,7 @@ def test_plan_off_never_lifts_a_user_frozen_read_only(tmp_path: Path) -> None:
             usage={"prompt_tokens": 15, "completion_tokens": 4, "total_tokens": 19},
         )
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, read_only=True)
         session_id = core.create_session().session_id
         assert _invoke(core, session_id, "plan", {}).status == "ok"

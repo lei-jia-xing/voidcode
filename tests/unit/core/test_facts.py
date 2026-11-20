@@ -34,7 +34,7 @@ def append(runtime, *drafts):
 
 
 def event(kind, **payload):
-    return EventDraft(kind, "kernel", "kernel", payload)
+    return EventDraft(kind, "core", "core", payload)
 
 
 def test_pages_advance_over_private_events_and_keep_batch_observations_together(runtime):
@@ -121,7 +121,7 @@ def test_projection_and_fact_commit_or_rollback_together(runtime):
     bad = event("core.window_projected", **{**lease.staged_events[0].payload, "replacement": "different"})
     with pytest.raises(IntegrityError):
         # An invalid event insert rolls back the projection upsert in the same transaction.
-        append(runtime, bad, EventDraft(None, "kernel", "kernel", {}))
+        append(runtime, bad, EventDraft(None, "core", "core", {}))
     assert store.window_projection("session") == projection
     assert len(store.events("session")) == 2
 

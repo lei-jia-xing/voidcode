@@ -8,23 +8,13 @@ mutation, and records exactly one durable event with the exit code and truncatio
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import register_core
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 
 _SHELL_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "user_shell"
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
 
 
 def _core(tmp_path: Path, *, read_only: bool, approval_mode: str) -> Core:
@@ -43,7 +33,7 @@ def _core(tmp_path: Path, *, read_only: bool, approval_mode: str) -> Core:
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 

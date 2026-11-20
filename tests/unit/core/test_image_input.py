@@ -135,7 +135,7 @@ def test_followup_queue_retains_images_without_loss(tmp_path: Path) -> None:
         }
         store.enqueue_continuation(
             "cid-1",
-            "kernel",
+            "core",
             "sess-followup",
             "user_message",
             "run-1",

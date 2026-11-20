@@ -8,13 +8,9 @@ file to the NEXT dispatch, and that the touched path is durable in the plugin's 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from threading import Thread
 
-import pytest
-
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -61,29 +57,6 @@ def create_plugin(config):
 '''
 
 
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
-
-
 def _write_touch_plugin(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "__init__.py").write_text(_TOUCH_PLUGIN_IMPL, encoding="utf-8")
@@ -118,7 +91,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, skills_enabled: bool)
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 
@@ -153,7 +126,7 @@ def _write_workspace_rules(workspace: Path) -> None:
 
 
 def test_first_dispatch_carries_the_agents_hierarchy_and_rulebook(tmp_path: Path) -> None:
-    with _loopback_server([_turn(output="plain answer")]) as server:
+    with loopback_server([_turn(output="plain answer")]) as server:
         core = _core(tmp_path, server, skills_enabled=False)
         workspace = tmp_path / "workspace"
         _write_workspace_rules(workspace)
@@ -177,7 +150,7 @@ def test_touched_path_brings_its_rule_file_into_the_next_dispatch(tmp_path: Path
         _turn(_call("call-touch-1", _TOUCH_TOOL, path="sub/file.txt")),
         _turn(output="touched the file"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, skills_enabled=False)
         workspace = tmp_path / "workspace"
         _write_workspace_rules(workspace)
@@ -203,7 +176,7 @@ def test_touched_path_brings_its_rule_file_into_the_next_dispatch(tmp_path: Path
 
 
 def test_skill_catalog_precedes_the_rule_context_when_skills_are_enabled(tmp_path: Path) -> None:
-    with _loopback_server([_turn(output="plain answer")]) as server:
+    with loopback_server([_turn(output="plain answer")]) as server:
         core = _core(tmp_path, server, skills_enabled=True)
         workspace = tmp_path / "workspace"
         _write_workspace_rules(workspace)

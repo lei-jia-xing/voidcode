@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import register_core
 from tests.fixtures.reload_plugin import DEACTIVATE_TOOL, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -45,16 +46,6 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
         server.server_close()
 
 
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def _configure(
     workspace: Path,
     server: OpenAILoopbackServer,
@@ -86,7 +77,7 @@ def _open(tmp_path: Path, *, trusted: frozenset[str] = frozenset({PLUGIN_ID})) -
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     core = open_core(workspace, state_dir=tmp_path / "state")
-    _CREATED.append(core)
+    register_core(core)
     return core
 
 
@@ -344,7 +335,7 @@ def test_restart_restores_the_persisted_generation_until_an_explicit_reload(tmp_
         write_reload_plugin(source, tool_output="v2")
         _configure(tmp_path / "workspace", server, source, model="endpoint/other-model")
         restarted = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
-        _CREATED.append(restarted)
+        register_core(restarted)
         assert restarted.revision_id == persisted
         assert restarted.config.model == "endpoint/exact-model"
         resumed = restarted.run("still v1", session_id=session.session_id)

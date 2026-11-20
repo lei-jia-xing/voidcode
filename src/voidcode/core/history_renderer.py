@@ -12,15 +12,12 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Final, Protocol
+from typing import Protocol
 
 from ..sdk.codec import decode_provider_result, decode_tool_result, encode_tool_call
 from ..sdk.json_values import json_wire_object
+from ..sdk.services import PAGE_BYTES
 from ..sdk.tools import CompositeOutput, TextOutput, composite_ordered_text
-
-#: One live history page stays well below the core's 50 KiB model projection, leaving room
-#: for the result body and markers.
-PAGE_BYTES: Final[int] = 40 * 1024
 
 
 class HistoryEvent(Protocol):

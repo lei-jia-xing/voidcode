@@ -21,13 +21,8 @@ from voidcode.sdk.foreground import CompositionDraft
 from voidcode.sdk.hooks import FactPage
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.resources import (
-    ResourceEnumPage,
-    ResourceEnumRequest,
     ResourcePage,
     ResourceReadRequest,
-    ResourceSchemeCaps,
-    ResourceSearchPage,
-    ResourceSearchRequest,
     ResourceUnavailable,
 )
 from voidcode.sdk.services import (
@@ -502,18 +497,6 @@ class FakeServices(PluginServices):
         if request.scheme in self.resources_dict:
             return self.resources_dict[request.scheme]
         raise ResourceUnavailable(f"no admitted plugin reads the resource scheme {request.scheme!r}")
-
-    def resource_schemes(self) -> tuple[str, ...]:
-        raise NotImplementedError("FakeServices does not enumerate resource schemes")
-
-    def resource_capabilities(self, scheme: str) -> ResourceSchemeCaps | None:
-        raise NotImplementedError("FakeServices does not report resource capabilities")
-
-    def enumerate_resources(self, request: ResourceEnumRequest) -> ResourceEnumPage | None:
-        raise NotImplementedError("FakeServices does not enumerate resources")
-
-    def search_resources(self, request: ResourceSearchRequest) -> ResourceSearchPage | None:
-        raise NotImplementedError("FakeServices does not search resources")
 
     ask_query = query
 

@@ -124,7 +124,7 @@ def test_foreign_file_rejection_and_byte_preservation(tmp_path: Path) -> None:
 
 def test_revision_opaque_ids_and_immutability(tmp_path: Path) -> None:
     """A generation id is opaque; the same id accepts identical bytes and refuses changed ones."""
-    db_path = tmp_path / "kernel.sqlite3"
+    db_path = tmp_path / "core.sqlite3"
     with SqliteStore(db_path) as store:
         payload_1 = {"b": 2, "a": {"z": 10, "y": 20}}
         payload_2 = {"a": {"y": 20, "z": 10}, "b": 2}

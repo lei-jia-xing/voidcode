@@ -20,12 +20,14 @@ import hashlib
 import json
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 
 import pytest
 
+from tests.fixtures.polling import wait_for
 from tests.fixtures.s5_plugin import PLUGIN_ID as S5_PLUGIN_ID
 from tests.fixtures.s5_plugin import PROBE_TOOL as S5_PROBE_TOOL
 from tests.fixtures.s5_plugin import write_s5_plugin
@@ -218,13 +220,7 @@ def _open(
     return core
 
 
-def _wait_for(predicate: Callable[[], bool], *, timeout: float = 15.0, what: str) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.05)
-    raise AssertionError(f"timed out waiting for {what}")
+_wait_for = partial(wait_for, timeout=15.0)
 
 
 def _child_facts(core: Core, parent: str) -> list[dict[str, object]]:
@@ -1967,7 +1963,7 @@ def test_late_same_run_control_event_does_not_extend_the_history_snapshot(tmp_pa
             assert run_a is not None and core.session(child).status == "completed"
 
             # A real descendant run completes on A while the payload build is still gated:
-            # its kernel.child_spawned/child_finished control facts land after run_completed.
+            # its core.child_spawned/child_finished control facts land after run_completed.
             grandchild = core.spawn_child(child, "late descendant task", notify_on_completion=False)
             descendant = core.join_child(child, grandchild, timeout_seconds=30)
             assert descendant.status == "completed" and descendant.output == "LATE DESCENDANT OUTPUT MARKER"

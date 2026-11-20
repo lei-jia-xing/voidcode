@@ -12,18 +12,13 @@ from __future__ import annotations
 import json
 import os
 import sys
-import threading
 import time
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import loopback_server, open_core_for_test, write_loopback_config
 from tests.fixtures.reload_plugin import SERVICES_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.bootstrap import open_core
-from voidcode.core.engine import Core
 
 PLUGIN_ID = "reload-fixture"
 
@@ -36,56 +31,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
     return openai_response(
         message={"role": "assistant", "content": output, "reasoning_content": "background reasoning", "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
-    )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
-def _open(tmp_path: Path) -> Core:
-    core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
-    _CREATED.append(core)
-    return core
-
-
-def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
-    workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "model": {"model": "endpoint/exact-model"},
-                "policy": {"approval_mode": "yolo"},
-                "providers": {
-                    "endpoint": {
-                        "api_key": "loopback-secret-not-for-storage",
-                        "base_url": f"http://127.0.0.1:{server.server_port}/v1",
-                    }
-                },
-                "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
-            }
-        ),
-        encoding="utf-8",
     )
 
 
@@ -172,9 +117,9 @@ def test_a_supervised_process_outlives_the_call_and_lists_itself(tmp_path: Path)
         _turn(_call("bg-2", SERVICES_TOOL, action="bg_list")),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-bg")
         assert core.run("start it", session_id="sess-bg").status == "completed"
 
@@ -208,9 +153,9 @@ def test_pages_read_the_log_by_offset_and_report_liveness(tmp_path: Path) -> Non
         ),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-bg-pages")
         assert core.run("start it", session_id="sess-bg-pages").status == "completed"
         handle = _payload(server, 1)["handle"]
@@ -257,9 +202,9 @@ def test_written_stdin_reaches_the_process(tmp_path: Path) -> None:
         _turn(_call("w1", SERVICES_TOOL, action="bg_write", process_id="echo-service", text="hello\n")),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-bg-stdin")
         assert core.run("start it", session_id="sess-bg-stdin").status == "completed"
         handle = _payload(server, 1)["handle"]
@@ -290,9 +235,9 @@ def test_a_live_id_cannot_be_started_twice_and_cancel_kills_the_group(tmp_path: 
         _turn(_call("c1", SERVICES_TOOL, action="bg_cancel", process_id="fixed-id")),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-bg-cancel")
         assert core.run("start it", session_id="sess-bg-cancel").status == "completed"
         handle = _payload(server, 1)["handle"]
@@ -328,9 +273,9 @@ def test_another_session_cannot_see_or_stop_a_supervised_process(tmp_path: Path)
         _turn(_call("c1", SERVICES_TOOL, action="bg_cancel", process_id="session-bound")),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-owner")
         core.create_session("sess-intruder")
         assert core.run("start it", session_id="sess-owner").status == "completed"
@@ -368,9 +313,9 @@ def test_core_shutdown_stops_supervised_processes_by_group(tmp_path: Path) -> No
         ),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(workspace, server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(workspace, server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-bg-shutdown")
         assert core.run("start it", session_id="sess-bg-shutdown").status == "completed"
         assert _pid_alive(int(_payload(server, 1)["handle"]["pid"]))

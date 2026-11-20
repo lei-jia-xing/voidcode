@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import register_core
 from tests.fixtures.reload_plugin import PROBE_TOOL, PROCESS_READ_TOOL, PROCESS_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -57,21 +58,11 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
         server.server_close()
 
 
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def _open(tmp_path: Path) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     core = open_core(workspace, state_dir=tmp_path / "state")
-    _CREATED.append(core)
+    register_core(core)
     return core
 
 

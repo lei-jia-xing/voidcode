@@ -3,21 +3,21 @@
 Drives the real core, plugin runtime, loopback provider and durable storage: a parent run whose
 model calls ``task(prompt=..., run_in_background=false)`` spawns a real child session, the child's
 run completes against the same provider, and its outcome comes back inside the parent's tool
-result with ``kernel.child_spawned``/``kernel.child_finished`` facts on the parent session.
+result with ``core.child_spawned``/``core.child_finished`` facts on the parent session.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 from threading import Event, Thread, current_thread
 from unittest.mock import patch
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
@@ -29,29 +29,6 @@ from voidcode.sdk.codec import decode_tool_result
 _SUBAGENTS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
 _EXPLORE_PROMPT_BODY = EXPLORE_AGENT.prompt
-
-
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
 
 
 def _admitted_source(tmp_path: Path) -> Path:
@@ -94,7 +71,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, minimal: bool = False
         }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 
@@ -161,7 +138,7 @@ def test_parent_spawns_a_real_child_and_receives_its_output(tmp_path: Path) -> N
             usage={"prompt_tokens": 80, "completion_tokens": 6, "total_tokens": 86},
         ),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         parent_id = core.create_session("parent").session_id
         result = core.run("count the doors", session_id=parent_id)
@@ -243,7 +220,7 @@ def test_profile_child_inherits_parent_scope_or_uses_explicit_narrowing(tmp_path
         openai_response(message={"role": "assistant", "content": "child answer: explored"}, finish="stop"),
         openai_response(message={"role": "assistant", "content": "profile delegation complete"}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, minimal=True)
         parent_id = core.create_session("parent").session_id
         result = core.run("explore the visitor guide", session_id=parent_id)
@@ -292,7 +269,7 @@ def test_standard_markdown_agent_applies_its_prompt_and_turn_cap(tmp_path: Path)
         openai_response(message={"role": "assistant", "content": "inspection complete"}, finish="stop"),
         openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, minimal=True)
         directory = core.workspace / ".claude" / "agents"
         directory.mkdir(parents=True)
@@ -338,7 +315,7 @@ def test_task_output_preserves_provider_turn_budget_exhaustion(tmp_path: Path) -
         ),
         openai_response(message={"role": "assistant", "content": "delegation stopped at its cap"}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         parent = core.create_session("parent").session_id
         result = core.run("delegate one capped task", session_id=parent)
@@ -407,7 +384,7 @@ def test_wait_keeps_paged_inline_old_run_output_immutable_after_followup_starts(
         assert result.body is not None
         return dict(result.body.as_payload()), projection
 
-    with _loopback_server([]) as server:
+    with loopback_server([]) as server:
 
         def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
             if request.get("method") == "GET":
@@ -622,7 +599,7 @@ def test_agent_snapshot_refreshes_current_run_after_concurrent_publication(tmp_p
         assert isinstance(output, dict) and isinstance(output.get("text"), str), payload
         return output["text"]
 
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, minimal=True)
         parent = core.create_session("parent").session_id
         assert core.run("create first child result", session_id=parent).status == "completed"
@@ -758,7 +735,7 @@ def test_batch_shared_context_reaches_the_real_child_prompt(tmp_path: Path) -> N
             return wait_reply
         return batch_reply
 
-    with _loopback_server([]) as server:
+    with loopback_server([]) as server:
         server.before_reply = route
         core = _core(tmp_path, server)
         parent_id = core.create_session("parent").session_id

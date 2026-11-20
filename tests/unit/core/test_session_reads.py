@@ -10,8 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import pytest
-
+from tests.fixtures.core_factory import register_core
 from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL, WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -45,16 +44,6 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
         server.server_close()
 
 
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     config = {
@@ -69,7 +58,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> N
 
 def _open(tmp_path: Path) -> Core:
     core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
-    _CREATED.append(core)
+    register_core(core)
     return core
 
 

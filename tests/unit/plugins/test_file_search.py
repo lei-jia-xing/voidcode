@@ -187,3 +187,34 @@ def test_grep_and_glob_do_not_prematurely_truncate_on_output_bytes(tmp_path: Pat
     assert glob_limited.output.bounds.truncated is True
     assert glob_limited.body.truncated is True
     assert "[TRUNCATED]" not in glob_limited.output.text
+
+
+_IGNORED_SEARCH_DIRS = ("target", ".venv", "vendor", "node_modules", "build", "dist", "__pycache__", ".git")
+
+
+def test_glob_and_grep_skip_the_same_default_directories(tmp_path: Path) -> None:
+    for directory in _IGNORED_SEARCH_DIRS:
+        (tmp_path / directory).mkdir(parents=True, exist_ok=True)
+        (tmp_path / directory / "skip.txt").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "keep.txt").write_text("needle\n", encoding="utf-8")
+
+    glob_payload = invoke(GlobTool(), tmp_path, {"pattern": "**/*.txt"}).body.as_payload()
+    grep_payload = invoke(GrepTool(), tmp_path, {"pattern": "needle"}).body.as_payload()
+
+    assert glob_payload["matches"] == ["src/keep.txt"]
+    assert [match["file"] for match in grep_payload["matches"]] == ["src/keep.txt"]
+
+
+@pytest.mark.parametrize("directory", ["vendor", "target"])
+def test_explicit_path_searches_a_default_ignored_directory(tmp_path: Path, directory: str) -> None:
+    (tmp_path / directory / "sub").mkdir(parents=True)
+    (tmp_path / directory / "sub" / "kept.txt").write_text("needle\n", encoding="utf-8")
+    (tmp_path / directory / "top.txt").write_text("needle\n", encoding="utf-8")
+
+    glob_payload = invoke(GlobTool(), tmp_path, {"pattern": "**/*.txt", "path": directory}).body.as_payload()
+    grep_payload = invoke(GrepTool(), tmp_path, {"pattern": "needle", "path": directory}).body.as_payload()
+
+    expected = {f"{directory}/sub/kept.txt", f"{directory}/top.txt"}
+    assert set(glob_payload["matches"]) == expected
+    assert {match["file"] for match in grep_payload["matches"]} == expected

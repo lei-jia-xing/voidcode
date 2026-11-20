@@ -6,26 +6,14 @@ Proves the plugin loads from its admitted artifact and registers its tools and c
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import register_core
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 
 _SUBAGENTS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"
 _REVIEW_PROMPT = (_SUBAGENTS_PLUGIN_ROOT / "profiles" / "texts" / "review.txt").read_text(encoding="utf-8").strip()
-
-
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
 
 
 def _core(tmp_path: Path) -> Core:
@@ -44,7 +32,7 @@ def _core(tmp_path: Path) -> Core:
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 

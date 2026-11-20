@@ -7,12 +7,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from threading import Thread
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -20,19 +19,6 @@ from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.commands import CommandResult
 
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
-
-
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 _CREATED_CORES: list[Core] = []
@@ -118,7 +104,7 @@ def test_todo_tool_call_writes_plan_context_and_survives_restart(tmp_path: Path)
             usage={"prompt_tokens": 60, "completion_tokens": 10, "total_tokens": 70},
         ),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, todo_enabled=True)
         session_id = core.create_session().session_id
 

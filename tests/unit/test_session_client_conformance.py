@@ -303,7 +303,7 @@ def test_sse_preserves_business_tool_body() -> None:
         9,
         "r",
         "core.tool_completed",
-        "kernel",
+        "core",
         "agent",
         "v",
         {"batch_sequence": 4, "call": encode_tool_call(call), "result": encode_tool_result(ToolSuccess("read", TextOutput("hi"), body))},
@@ -312,7 +312,7 @@ def test_sse_preserves_business_tool_body() -> None:
     assert stream_entry is not None and isinstance(stream_entry.content, TranscriptTool)
     assert stream_entry.content.result.body is not None
     assert dict(stream_entry.content.result.body.structured_content) == {"marker": 1}
-    bookkeeping = StoredEvent("s", 10, "r", "plugin.probe.tick", "kernel", "agent", "v", {})
+    bookkeeping = StoredEvent("s", 10, "r", "plugin.probe.tick", "core", "agent", "v", {})
     assert StreamEvent.from_payload(event_payload("s", bookkeeping)).transcript is None
 
 
@@ -334,7 +334,7 @@ def test_cancelled_tool_records_decode_through_sse_and_keep_execution_flags(even
         11,
         "r",
         event_type,
-        "kernel",
+        "core",
         "agent",
         "v",
         {"batch_sequence": 4, "call": encode_tool_call(ToolCall("read", {}, "c1")), "result": encode_tool_result(failure)},

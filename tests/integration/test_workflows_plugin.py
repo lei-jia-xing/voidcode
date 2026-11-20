@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event
 
-import pytest
-
+from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
@@ -26,29 +23,6 @@ async def run(ctx, task):
 
 import asyncio  # noqa: E402 - example keeps the entry first
 '''
-
-
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
 
 
 def _core(tmp_path: Path, server: OpenAILoopbackServer, script: str = _REVIEW_SCRIPT, *, approval_mode: str = "yolo") -> Core:
@@ -76,7 +50,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, script: str = _REVIEW_SC
         encoding="utf-8",
     )
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 
@@ -107,7 +81,7 @@ def test_model_tool_start_receives_terminal_summary_as_followup(tmp_path: Path) 
         _reply("B done"),
         _reply("noticed the summary"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         session_id = core.create_session().session_id
         result = core.run("start the parallel review workflow", session_id=session_id)
@@ -123,7 +97,7 @@ def test_model_tool_start_receives_terminal_summary_as_followup(tmp_path: Path) 
 
 
 def test_parallel_review_completes_with_combined_result(tmp_path: Path) -> None:
-    with _loopback_server([_reply("A says ship it."), _reply("B says fix one thing.")]) as server:
+    with loopback_server([_reply("A says ship it."), _reply("B says fix one thing.")]) as server:
         core = _core(tmp_path, server)
         session_id = core.create_session().session_id
         started = _invoke(core, session_id, "workflow.run", {"workflow": "parallel_review", "task": "diff 42"})
@@ -219,7 +193,7 @@ def _confirm_cancel(core: Core, session_id: str, run_id: str) -> None:
 
 def test_cancel_while_both_children_blocked_stops_everything(tmp_path: Path) -> None:
     barrier = _TwoFlightBarrier(_reply("A late"), _reply("B late"))
-    with _loopback_server([]) as server:
+    with loopback_server([]) as server:
         server.before_reply = barrier
         core = _core(tmp_path, server, script=_BLOCKING_SCRIPT)
         session_id = core.create_session().session_id
@@ -245,7 +219,7 @@ def test_cancel_while_both_children_blocked_stops_everything(tmp_path: Path) -> 
 
 def test_pause_keeps_children_and_resume_completes_without_duplicates(tmp_path: Path) -> None:
     barrier = _TwoFlightBarrier(_reply("A says ship it."), _reply("B says fix one thing."))
-    with _loopback_server([]) as server:
+    with loopback_server([]) as server:
         server.before_reply = barrier
         core = _core(tmp_path, server)
         session_id = core.create_session().session_id
@@ -284,7 +258,7 @@ def test_spawn_budget_exhaustion_fails_visibly(tmp_path: Path) -> None:
         '    return "unreachable"\n\n\nimport asyncio  # noqa: E402\n'
     )
     replies = [_reply(f"done {i}") for i in range(6)]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, script=script)
         session_id = core.create_session().session_id
         started = _invoke(core, session_id, "workflow.run", {"workflow": "parallel_review", "task": "flood"})
@@ -306,7 +280,7 @@ def test_approval_park_then_resume_completes_without_new_child(tmp_path: Path) -
         '    return await ctx.agent("execute", f"Run it: {task}", key="only")\n'
     )
     replies = [_waiting_reply("needs approval"), _reply("approved and done")]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, script=script, approval_mode="ask")
         session_id = core.create_session().session_id
         started = _invoke(core, session_id, "workflow.run", {"workflow": "parallel_review", "task": "go"})
@@ -339,7 +313,7 @@ def test_approval_park_then_resume_completes_without_new_child(tmp_path: Path) -
 def test_run_snapshots_without_executing_and_changed_source_refuses_resume(tmp_path: Path) -> None:
     marker = tmp_path / "executed.txt"
     script = f"import pathlib\npathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')\nasync def run(ctx, task):\n    return 'ok'\n"
-    with _loopback_server([]) as server:
+    with loopback_server([]) as server:
         core = _core(tmp_path, server, script=script)
         session_id = core.create_session().session_id
         started = _invoke(core, session_id, "workflow.run", {"workflow": "parallel_review", "task": "t"})
@@ -364,7 +338,7 @@ def test_status_pages_large_multibyte_node_result_without_corruption(tmp_path: P
     full = "汉" * 9000
     expected_hash = hashlib.sha256(full.encode("utf-8")).hexdigest()
     script = '"""One node with a large reply."""\n\n\nasync def run(ctx, task):\n    return await ctx.agent("review", f"Say it: {task}", key="big")\n'
-    with _loopback_server([_reply(full)]) as server:
+    with loopback_server([_reply(full)]) as server:
         core = _core(tmp_path, server, script=script)
         session_id = core.create_session().session_id
         started = _invoke(core, session_id, "workflow.run", {"workflow": "parallel_review", "task": "t"})
@@ -401,12 +375,12 @@ def _open_configured(tmp_path: Path, tag: str, name: str, body: str) -> tuple[Co
         json.dumps({"schema_version": 1, "policy": {"approval_mode": "yolo"}, "plugins": plugins}), encoding="utf-8"
     )
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core, core.create_session().session_id
 
 
 def test_two_cores_keep_their_own_workflow_registries(tmp_path: Path) -> None:
-    with _loopback_server([]):
+    with loopback_server([]):
         core_a, session_a = _open_configured(tmp_path, "a", "only_a", "result A")
         core_b, session_b = _open_configured(tmp_path, "b", "only_b", "result B")
         run_a = _invoke(core_a, session_a, "workflow.run", {"workflow": "only_a", "task": "t"})
@@ -425,7 +399,7 @@ def test_two_cores_keep_their_own_workflow_registries(tmp_path: Path) -> None:
 
 def test_close_during_blocked_children_then_reopen_resume_rejoins(tmp_path: Path) -> None:
     barrier = _TwoFlightBarrier(_reply("A says ship it."), _reply("B says fix one thing."))
-    with _loopback_server([_reply("A resumed done."), _reply("B resumed done.")]) as server:
+    with loopback_server([_reply("A resumed done."), _reply("B resumed done.")]) as server:
         server.before_reply = barrier
         core = _core(tmp_path, server)
         session_id = core.create_session().session_id
@@ -435,11 +409,11 @@ def test_close_during_blocked_children_then_reopen_resume_rejoins(tmp_path: Path
         assert barrier.arrived.wait(timeout=60.0), "both children never reached the provider"
         workspace = tmp_path / "workspace"
         state_dir = tmp_path / "state"
-        _CREATED_CORES.remove(core)
+        discard_core(core)
         barrier.abort()
         core.close()
         reopened = open_core(workspace, state_dir=state_dir)
-        _CREATED_CORES.append(reopened)
+        register_core(reopened)
         status = _invoke(reopened, session_id, "workflow.status", {"run_id": run_id})
         assert status.data is not None and status.data["status"] == "running", status.output  # type: ignore[index]
         children = [node["child_session_id"] for node in status.data["nodes"]]  # type: ignore[index]
@@ -468,7 +442,7 @@ def test_status_rejects_split_character_offset_on_both_paths(tmp_path: Path) -> 
         '    second = await ctx.agent("review", f"large: {task}", key="large")\n'
         '    return f"{first}/{second[:8]}"\n'
     )
-    with _loopback_server([_reply("中文"), _reply("汉" * 9000)]) as server:
+    with loopback_server([_reply("中文"), _reply("汉" * 9000)]) as server:
         core = _core(tmp_path, server, script=script)
         session_id = core.create_session().session_id
         started = _invoke(core, session_id, "workflow.run", {"workflow": "parallel_review", "task": "t"})

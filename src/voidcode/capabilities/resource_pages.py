@@ -15,11 +15,10 @@ from typing import Protocol
 
 from voidcode.sdk.resources import ResourcePage, ResourceReadCaller
 from voidcode.sdk.services import ArtifactPage
-from voidcode.sdk.tools import TOOL_OUTPUT_BYTES, AttachmentOutput, OutputBounds, TextOutput
+from voidcode.sdk.tools import RASTER_IMAGE_MIMES, TOOL_OUTPUT_BYTES, AttachmentOutput, OutputBounds, TextOutput
 
 #: One bounded page stays below the model projection so result metadata fits.
 MAX_RESOURCE_PAGE_BYTES = TOOL_OUTPUT_BYTES - 4096
-RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
 
 
 class ArtifactPageReader(Protocol):

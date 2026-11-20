@@ -160,7 +160,7 @@ def test_session_switch_survives_a_late_old_stream_attach(remote) -> None:
             expected_run_id=session.run_id,
             run_id=session.run_id or "notice",
             revision_id=core.revision_id,
-            events=(EventDraft("core.observer_error", "kernel", "system", {"error": "after-switch"}),),
+            events=(EventDraft("core.observer_error", "core", "system", {"error": "after-switch"}),),
             status=session.status,
             checkpoint_kind=None,
             checkpoint_payload=None,

@@ -111,7 +111,7 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
                 events=(
                     EventDraft(
                         "core.provider_intent",
-                        "kernel",
+                        "core",
                         "model",
                         {
                             "provider": "endpoint",
@@ -123,8 +123,8 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
                     ),
                     EventDraft(
                         "core.run_interrupted",
-                        "kernel",
-                        "kernel",
+                        "core",
+                        "core",
                         {
                             "stop_cause": "shutdown",
                             "logical_turn": "orphan-turn",

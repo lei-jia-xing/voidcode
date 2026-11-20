@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import register_core
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 
@@ -55,15 +53,6 @@ def create_plugin(config=None):
     return Plugin(queries=(AGENT_DEFINITIONS.bind(resolve),))
 """
 
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
-
 
 def _core(tmp_path: Path, *, subagents: bool, substitute: bool) -> Core:
     workspace = tmp_path / "workspace"
@@ -85,7 +74,7 @@ def _core(tmp_path: Path, *, subagents: bool, substitute: bool) -> Core:
         json.dumps({"schema_version": 1, "policy": {"approval_mode": "ask"}, "plugins": plugins}), encoding="utf-8"
     )
     core = open_core(workspace, state_dir=tmp_path / "state")
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 

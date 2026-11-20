@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import difflib
 from io import StringIO
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Literal
 
 from pydantic import ValidationInfo
@@ -14,6 +14,44 @@ from voidcode.sdk.tools import Change
 #: Upper bound for an explicit ``limit`` so one call cannot materialize an
 #: unbounded match list.
 MAX_RESULT_LIMIT = 5000
+
+#: Directory names file-discovery tools never descend into by default.
+#:
+#: Entries are exact directory names matched at any depth, never globs or path
+#: fragments, and they apply only while walking below the requested search
+#: root: an explicit ``path`` that names one of these directories is searched,
+#: because the caller asked for it directly.
+DEFAULT_IGNORE_PATTERNS = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        ".git",
+        "dist",
+        "build",
+        "target",
+        "vendor",
+        ".venv",
+        "venv",
+        ".idea",
+        ".vscode",
+        ".coverage",
+        "coverage",
+        "tmp",
+        "temp",
+        ".cache",
+        "logs",
+    }
+)
+
+
+def is_default_ignored(relative: PurePath, *, is_directory: bool) -> bool:
+    """True when a directory component of ``relative`` is default-ignored.
+
+    Only directory components count: a regular file named like an entry (for
+    example ``build``) is not hidden from directory listings.
+    """
+    parts = relative.parts if is_directory else relative.parts[:-1]
+    return any(part in DEFAULT_IGNORE_PATTERNS for part in parts)
 
 
 def validate_non_empty(value: str, info: ValidationInfo) -> str:
@@ -123,9 +161,11 @@ def read_utf8_text(path: Path, *, tool_name: str = "edit") -> str:
 
 
 __all__ = [
+    "DEFAULT_IGNORE_PATTERNS",
     "MAX_RESULT_LIMIT",
     "convert_line_endings",
     "detect_line_ending",
+    "is_default_ignored",
     "make_file_change",
     "normalize_line_endings",
     "read_utf8_text",

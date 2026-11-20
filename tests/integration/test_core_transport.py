@@ -642,7 +642,7 @@ def test_malformed_conversational_record_is_a_terminal_error_not_a_null_transcri
                     tip + 1,
                     shown["run_id"] or "run-probe",
                     "core.user_message",
-                    "kernel",
+                    "core",
                     "user",
                     catalog["revision_id"],
                     payload_text,

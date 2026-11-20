@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from tests.fixtures.fake_services import FakeServices
 from voidcode.sdk.resources import (
     ResourceEnumEntry,
     ResourceEnumPage,
@@ -123,15 +122,3 @@ def test_search_match_and_page_validation() -> None:
 
 def test_resource_unsupported_is_plain_value() -> None:
     assert issubclass(ResourceUnsupported, ValueError)
-
-
-def test_fake_services_resource_stubs_raise() -> None:
-    fake = FakeServices()
-    with pytest.raises(NotImplementedError):
-        fake.resource_schemes()
-    with pytest.raises(NotImplementedError):
-        fake.resource_capabilities("proc")
-    with pytest.raises(NotImplementedError):
-        fake.enumerate_resources(ResourceEnumRequest(uri="proc://"))
-    with pytest.raises(NotImplementedError):
-        fake.search_resources(ResourceSearchRequest(uri="proc://", pattern="x"))

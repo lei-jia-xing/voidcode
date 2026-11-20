@@ -5,10 +5,13 @@ import os
 import socket
 import ssl
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from tests.fixtures.core_factory import close_cores
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 os.environ.setdefault("PYTHONUTF8", "1")
@@ -32,6 +35,12 @@ def _isolated_xdg_runtime_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / ".xdg-data"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / ".local-app-data"))
     monkeypatch.delenv("VOIDCODE_DB_PATH", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _close_core_factory() -> Iterator[None]:
+    """Close every Core opened through ``open_core_for_test`` after each test."""
+    yield from close_cores()
 
 
 # ---------------------------------------------------------------------------

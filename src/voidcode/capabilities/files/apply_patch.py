@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from voidcode.sdk.atomic_file import replace_file
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.tools import ConfirmedStop, OutputBounds, TextOutput, ToolFailure, ToolResult, ToolSuccess
 
 from ._common import make_file_change, normalize_line_endings, resolve_workspace_path, to_display_path
-from ._replace import replace_file
 from .errors import raise_tool_diagnostic
 
 _CHANGE_OPERATIONS: dict[str, Literal["create", "update", "delete", "move"]] = {"A": "create", "M": "update", "D": "delete", "R": "move"}

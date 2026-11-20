@@ -6,8 +6,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core, _Cursor, _Execution
@@ -85,16 +84,6 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
         server.server_close()
 
 
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     (source / "__init__.py").write_text(PLUGIN_CODE, encoding="utf-8")
@@ -110,7 +99,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> N
 
 def _open(tmp_path: Path) -> Core:
     core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
-    _CREATED.append(core)
+    register_core(core)
     return core
 
 

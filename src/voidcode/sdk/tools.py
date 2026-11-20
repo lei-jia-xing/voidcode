@@ -18,10 +18,12 @@ from .invocation import ToolContext
 from .json_values import json_wire_object, own_json_object
 from .services import ArtifactReference, PluginServices
 
-DIAGNOSTIC_TEXT_CHARS: Final[int] = 4000
 DIAGNOSTIC_DEPTH: Final[int] = 8
 DIAGNOSTIC_ITEMS: Final[int] = 256
 TOOL_OUTPUT_BYTES: Final[int] = 50 * 1024
+#: Raster image MIME types the model attachment path renders as media. Other
+#: image formats (notably SVG) stay readable text presentations instead.
+RASTER_IMAGE_MIMES: Final[frozenset[str]] = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
 _MAX_DIAGNOSTIC_DEPTH = DIAGNOSTIC_DEPTH
 _MAX_DIAGNOSTIC_ITEMS = DIAGNOSTIC_ITEMS
 
@@ -60,14 +62,6 @@ def is_read_tier(effects: frozenset[ToolEffect]) -> bool:
     if not effects or ToolEffect.WRITE in effects or ToolEffect.SESSION in effects:
         return False
     return ToolEffect.READ in effects or not has_external_mutations(effects)
-
-
-#: Appended to a timeout message when the runtime could not confirm that the
-#: execution stopped, so no surface reports a plain failure.
-UNCONFIRMED_STOP_CLAUSE = (
-    "the runtime stopped waiting for it without confirming that the execution stopped, "
-    "so it may still be running and the state of its side effects is unknown"
-)
 
 
 def _freeze_diagnostic_value(value: object, *, depth: int = 0) -> object:

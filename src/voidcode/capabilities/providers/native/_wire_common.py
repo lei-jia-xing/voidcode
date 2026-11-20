@@ -67,6 +67,38 @@ def parse_tool_arguments(value: object) -> dict[str, object]:
     return dict(decoded)
 
 
+def decode_response_payload(value: object) -> dict[str, object]:
+    """Decode one provider response object into its plain mapping.
+
+    SDK responses may already be mappings or expose ``model_dump``; a value that
+    is neither is a wire contract violation, not a retryable network failure.
+    """
+    if isinstance(value, Mapping):
+        return dict(value)
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump()
+        if isinstance(dumped, Mapping):
+            return dict(dumped)
+    raise ValueError("provider response must be a mapping")
+
+
+def response_metadata(payload: Mapping[str, object], *, thinking_blocks: bool = False) -> dict[str, object]:
+    """Request identity and served model; vendor-specific blocks are opt-in."""
+    metadata: dict[str, object] = {}
+    if isinstance(payload.get("id"), str) and payload["id"]:
+        metadata["request_id"] = payload["id"]
+    if isinstance(payload.get("model"), str) and payload["model"]:
+        metadata["served_model"] = payload["model"]
+    if thinking_blocks:
+        content = payload.get("content")
+        if isinstance(content, list):
+            blocks = [dict(block) for block in content if isinstance(block, Mapping) and block.get("type") in {"thinking", "redacted_thinking"}]
+            if blocks:
+                metadata["thinking_blocks"] = blocks
+    return metadata
+
+
 def resolve_extra_request_headers(declared: Mapping[str, str], session_id: str | None) -> dict[str, str]:
     """Resolve declared request headers for one turn, dropping ones with no value.
 
@@ -90,6 +122,13 @@ def resolve_extra_request_headers(declared: Mapping[str, str], session_id: str |
 #: per-chunk timeout gets the same longer first-token allowance
 #: (``utils/idle-iterator.ts:56-62,79-91``).
 DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS = 300.0
+#: Fallback per-request timeout when the provider configuration sets none.
+DEFAULT_TIMEOUT_SECONDS = 300.0
+#: Output cap when the model catalog reports no maximum output.
+OUTPUT_CAP_WHEN_UNKNOWN = 64000
+#: Satisfies an SDK's "credential required" construction check without sending
+#: one; each wire's headers decide whether and which credential is transmitted.
+PLACEHOLDER_API_KEY = "voidcode-no-api-key"
 
 
 def abort_signal_cancelled(request: object) -> bool:

@@ -29,12 +29,16 @@ from voidcode.sdk.tools import ToolCall
 
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
+    OUTPUT_CAP_WHEN_UNKNOWN,
+    PLACEHOLDER_API_KEY,
     OwnedResource,
     Transport,
     TransportError,
     abort_signal_cancelled,
     build_usage,
     cancelled_events,
+    decode_response_payload,
     fallback_execution_error,
     iter_stream_with_timeout,
     map_done_reason,
@@ -43,6 +47,7 @@ from ._wire_common import (
     open_event_stream,
     parse_tool_arguments,
     resolve_extra_request_headers,
+    response_metadata,
     safe_tool_name,
     strip_base_url,
     usage_int,
@@ -60,14 +65,6 @@ from .trace import write_provider_trace
 
 _DEFAULT_ANTHROPIC_BASE_URL = PROVIDER_TABLE_BY_ID["anthropic"].default_base_url
 _DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
-_DEFAULT_TIMEOUT_SECONDS = 300.0
-# Required output cap when the catalog does not report one.
-_OUTPUT_CAP_WHEN_UNKNOWN = 64000
-# The SDK refuses to construct a client without a credential, and an explicit
-# credential also stops it from reading ambient ones (``ANTHROPIC_API_KEY``,
-# profile, workload identity). The placeholder only satisfies that check:
-# ``_default_headers`` decides which credential headers are sent.
-_PLACEHOLDER_API_KEY = "voidcode-no-api-key"
 
 
 class AnthropicMessagesTransport:
@@ -131,7 +128,7 @@ class AnthropicMessagesTransport:
             if self._sdk_client is None:
                 # ``max_retries=0`` keeps retry/fallback owned by the runtime.
                 self._sdk_client = Anthropic(
-                    api_key=self.api_key or _PLACEHOLDER_API_KEY,
+                    api_key=self.api_key or PLACEHOLDER_API_KEY,
                     base_url=self.base_url,
                     default_headers=self._default_headers(),
                     http_client=self.http_client,
@@ -213,20 +210,6 @@ class AnthropicWireCodec:
     @staticmethod
     def done_reason(value: object) -> ProviderDoneReason:
         return map_done_reason(value, AnthropicWireCodec.DONE_REASONS)
-
-
-def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
-    metadata: dict[str, object] = {}
-    if isinstance(payload.get("id"), str) and payload["id"]:
-        metadata["request_id"] = payload["id"]
-    if isinstance(payload.get("model"), str) and payload["model"]:
-        metadata["served_model"] = payload["model"]
-    content = payload.get("content")
-    if isinstance(content, list):
-        thinking_blocks = [dict(block) for block in content if isinstance(block, Mapping) and block.get("type") in {"thinking", "redacted_thinking"}]
-        if thinking_blocks:
-            metadata["thinking_blocks"] = thinking_blocks
-    return metadata
 
 
 @dataclass(slots=True)
@@ -441,7 +424,7 @@ class AnthropicMessagesProvider:
         # The Anthropic Messages API requires ``max_tokens``, so the cap is the
         # model's own maximum (OMP's ``maxAllowedTokens``); 64000 is only the
         # unknown-model fallback, never a ceiling over a larger known model.
-        max_tokens = metadata.max_output_tokens if metadata is not None and metadata.max_output_tokens else _OUTPUT_CAP_WHEN_UNKNOWN
+        max_tokens = metadata.max_output_tokens if metadata is not None and metadata.max_output_tokens else OUTPUT_CAP_WHEN_UNKNOWN
         payload: dict[str, object] = {"model": request.model_name, "max_tokens": max_tokens, "messages": messages, "stream": stream}
         if system:
             payload["system"] = system
@@ -471,17 +454,6 @@ class AnthropicMessagesProvider:
             # request and never serializes it into the JSON payload.
             payload["extra_headers"] = extra_headers
         return payload
-
-    @staticmethod
-    def _response_payload(value: object) -> dict[str, object]:
-        if isinstance(value, Mapping):
-            return dict(value)
-        model_dump = getattr(value, "model_dump", None)
-        if callable(model_dump):
-            dumped = model_dump()
-            if isinstance(dumped, Mapping):
-                return dict(dumped)
-        raise ValueError("provider response must be a mapping")
 
     @staticmethod
     def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: str) -> ProviderExecutionError:
@@ -538,7 +510,7 @@ class AnthropicMessagesProvider:
         model_name = request.model_name or "unknown"
         try:
             payload = self._payload(request, stream=False)
-            response = self._response_payload(self._transport().request(payload, timeout_seconds=self._timeout()))
+            response = decode_response_payload(self._transport().request(payload, timeout_seconds=self._timeout()))
             if response.get("type") == "error" or response.get("error") is not None:
                 raise TransportError(response)
             stop_reason = response.get("stop_reason")
@@ -555,7 +527,7 @@ class AnthropicMessagesProvider:
                 )
                 for call in calls
             )
-            metadata = _response_metadata(response)
+            metadata = response_metadata(response, thinking_blocks=True)
             done_reason = AnthropicWireCodec.done_reason(stop_reason)
             if done_reason == "unknown" and finish_reason_reported:
                 # The token is reported but unmapped; preserve it for core diagnostics.
@@ -585,7 +557,7 @@ class AnthropicMessagesProvider:
             raise self._map_exception(exc, provider_name=provider_name, model_name=model_name, source="api") from exc
 
     def _timeout(self) -> float:
-        return _DEFAULT_TIMEOUT_SECONDS if self.config is None or self.config.timeout_seconds is None else self.config.timeout_seconds
+        return DEFAULT_TIMEOUT_SECONDS if self.config is None or self.config.timeout_seconds is None else self.config.timeout_seconds
 
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         provider_name = request.provider_name or self.name
@@ -615,7 +587,7 @@ class AnthropicMessagesProvider:
                 if abort_signal_cancelled(request):
                     yield from cancelled_events()
                     return
-                chunk = self._response_payload(raw_chunk)
+                chunk = decode_response_payload(raw_chunk)
                 if chunk.get("type") == "error" or chunk.get("error") is not None:
                     raise TransportError(chunk)
                 event_type = chunk.get("type")
@@ -626,7 +598,7 @@ class AnthropicMessagesProvider:
                 if event_type == "message_start":
                     message = chunk.get("message")
                     if isinstance(message, Mapping):
-                        metadata.update(_response_metadata(message))
+                        metadata.update(response_metadata(message, thinking_blocks=True))
                         latest_usage = merge_usage(latest_usage, AnthropicWireCodec.usage(message))
                 elif event_type == "content_block_start":
                     if index in accumulators or index in thinking_blocks:

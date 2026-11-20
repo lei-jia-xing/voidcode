@@ -9,13 +9,10 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
-from threading import Thread
 
-import pytest
-
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -77,27 +74,6 @@ def create_plugin(config):
     return Plugin(tools=(WriteTool(), ReadTool()))
 '''
 _EMIT_ARGV = "import json, sys; print(json.dumps(json.loads(sys.argv[1])))"
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
-
-
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _action_command(payload: dict[str, object]) -> list[str]:
@@ -135,7 +111,7 @@ def _core(
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 
@@ -207,7 +183,7 @@ def _model_messages(server: OpenAILoopbackServer) -> list[str]:
 
 def test_pre_tool_hook_denies_the_write_before_it_runs(tmp_path: Path) -> None:
     diagnostic = "hooks-rule: this workspace is frozen"
-    with _loopback_server(_write_replies()) as server:
+    with loopback_server(_write_replies()) as server:
         core = _core(tmp_path, server, {"pre_tool": [_action_command({"action": "cancel", "diagnostic": diagnostic})]})
         session_id = core.create_session().session_id
         assert core.run("write a note", session_id=session_id).status == "completed"
@@ -226,7 +202,7 @@ def test_pre_tool_hook_denies_the_write_before_it_runs(tmp_path: Path) -> None:
 
 def test_post_tool_hook_appends_its_guidance_to_the_successful_result(tmp_path: Path) -> None:
     guidance = "hooks-note: run the formatter next"
-    with _loopback_server(_write_replies()) as server:
+    with loopback_server(_write_replies()) as server:
         core = _core(
             tmp_path,
             server,
@@ -244,7 +220,7 @@ def test_post_tool_hook_appends_its_guidance_to_the_successful_result(tmp_path: 
 def test_disabled_hooks_config_leaves_both_paths_normal(tmp_path: Path) -> None:
     diagnostic = "hooks-rule: this workspace is frozen"
     guidance = "hooks-note: run the formatter next"
-    with _loopback_server(_write_replies()) as server:
+    with loopback_server(_write_replies()) as server:
         core = _core(
             tmp_path,
             server,
@@ -265,7 +241,7 @@ def test_disabled_hooks_config_leaves_both_paths_normal(tmp_path: Path) -> None:
 
 
 def test_no_commands_configured_is_a_transparent_no_op(tmp_path: Path) -> None:
-    with _loopback_server(_write_replies()) as server:
+    with loopback_server(_write_replies()) as server:
         core = _core(tmp_path, server, {"timeout_seconds": 5})
         session_id = core.create_session().session_id
         assert core.run("write a note", session_id=session_id).status == "completed"
@@ -277,7 +253,7 @@ def test_no_commands_configured_is_a_transparent_no_op(tmp_path: Path) -> None:
 def test_session_lifecycle_hooks_run_for_their_side_effects(tmp_path: Path) -> None:
     start_marker = tmp_path / "start-ran.txt"
     end_marker = tmp_path / "end-ran.txt"
-    with _loopback_server(_write_replies()) as server:
+    with loopback_server(_write_replies()) as server:
         core = _core(
             tmp_path,
             server,
@@ -296,7 +272,7 @@ def test_session_lifecycle_hooks_run_for_their_side_effects(tmp_path: Path) -> N
 
 def test_read_only_policy_skips_a_matching_gate_and_notes_it_on_the_result(tmp_path: Path) -> None:
     marker = tmp_path / "gate-ran.txt"
-    with _loopback_server(_read_replies()) as server:
+    with loopback_server(_read_replies()) as server:
         core = _core(tmp_path, server, {"post_tool": [_marker_command(marker)]}, read_only=True)
         (tmp_path / "workspace" / "note.txt").write_text("note contents", encoding="utf-8")
         session_id = core.create_session().session_id
@@ -314,7 +290,7 @@ def test_read_only_policy_skips_a_matching_gate_and_notes_it_on_the_result(tmp_p
 
 def test_read_only_read_ignores_a_write_only_hook(tmp_path: Path) -> None:
     marker = tmp_path / "gate-ran.txt"
-    with _loopback_server(_read_replies()) as server:
+    with loopback_server(_read_replies()) as server:
         core = _core(
             tmp_path,
             server,
@@ -332,7 +308,7 @@ def test_read_only_read_ignores_a_write_only_hook(tmp_path: Path) -> None:
 
 
 def test_read_only_read_with_no_hooks_configured_is_exact(tmp_path: Path) -> None:
-    with _loopback_server(_read_replies()) as server:
+    with loopback_server(_read_replies()) as server:
         core = _core(tmp_path, server, {"timeout_seconds": 5}, read_only=True)
         (tmp_path / "workspace" / "note.txt").write_text("note contents", encoding="utf-8")
         session_id = core.create_session().session_id

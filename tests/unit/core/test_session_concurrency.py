@@ -9,8 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import register_core
 from tests.fixtures.reload_plugin import BLOCK_TOOL, OVERLAY_COMMAND, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -42,16 +41,6 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
         server.server_close()
 
 
-_CREATED: list = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def test_a_blocked_session_does_not_serialize_another_session(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", blocking=True, overlay_command=True)
@@ -75,7 +64,7 @@ def test_a_blocked_session_does_not_serialize_another_session(tmp_path: Path) ->
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
         core = open_core(workspace, state_dir=tmp_path / "state")
-        _CREATED.append(core)
+        register_core(core)
         blocked_session = core.create_session("sess-blocked")
         other_session = core.create_session("sess-other")
 

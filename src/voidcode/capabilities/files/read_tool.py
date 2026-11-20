@@ -13,12 +13,13 @@ from typing import ClassVar, final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES, RASTER_IMAGE_MIMES, format_resource_text
+from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES, format_resource_text
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.resources import ResourceReadRequest, ResourceUnavailable
 from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices
 from voidcode.sdk.tools import (
+    RASTER_IMAGE_MIMES,
     AttachmentOutput,
     ConfirmedStop,
     OpaqueToolBody,

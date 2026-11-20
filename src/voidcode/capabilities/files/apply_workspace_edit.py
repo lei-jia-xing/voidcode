@@ -10,6 +10,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from voidcode.capabilities.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
+from voidcode.sdk.atomic_file import replace_file
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
@@ -28,7 +29,6 @@ from voidcode.sdk.tools import (
 )
 
 from ._common import make_file_change, resolve_workspace_path, summarize_diff
-from ._replace import replace_file
 
 
 class _TextEdit(BaseModel):

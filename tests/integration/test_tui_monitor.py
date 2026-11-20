@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import bundled_sources, open_core
 from voidcode.tui.client import CoreRpcClient
@@ -195,15 +196,6 @@ class _TerminalProcess:
         os.close(self.master)
 
 
-def _wait_for(predicate, *, what: str, timeout: float = 20.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.05)
-    raise AssertionError(f"timed out waiting for {what}")
-
-
 def _write_config(workspace: Path, server: OpenAILoopbackServer, *, subagents: bool = True) -> None:
     plugins = {name: {"enabled": False} for name in bundled_sources()}
     plugins["subagents"] = {"enabled": subagents}
@@ -294,9 +286,9 @@ def test_monitor_shortcut_opens_restored_roster_and_restores_draft(tmp_path: Pat
         with open_core(workspace, state_dir=state) as core:
             root = core.create_session("pty-root").session_id
             child = core.spawn_child(root, "pty child work", label=_CHILD_LABEL, notify_on_completion=False)
-            _wait_for(lambda: core.session(child).status == "completed", what="child completion")
+            wait_for(lambda: core.session(child).status == "completed", what="child completion")
             grandchild = core.spawn_child(child, "pty grandchild work", label=_GRANDCHILD_LABEL, notify_on_completion=False)
-            _wait_for(lambda: core.session(grandchild).status == "completed", what="grandchild completion")
+            wait_for(lambda: core.session(grandchild).status == "completed", what="grandchild completion")
         terminal = _TerminalProcess(workspace, state, width=width, height=height, palette=palette, session_id=root)
         try:
             terminal.until("exact-mode")
@@ -410,7 +402,7 @@ def test_monitor_open_view_invalidates_on_remote_plugin_disable(tmp_path: Path) 
                     raise AssertionError(f"served core exited early: {output[-2000:]}") from exc
                 return False
 
-        _wait_for(_healthy, what="served core health")
+        wait_for(_healthy, what="served core health")
         with CoreRpcClient(base, token=token) as client:
             root = client.create_session("pty-remote-disable").session_id
             terminal = _TerminalProcess(workspace, state, width=80, height=24, palette="15;0", session_id=root, server=base, token=token)
@@ -542,7 +534,7 @@ class _LiveScene:
                     raise AssertionError(f"served core exited early: {output[-2000:]}") from exc
                 return False
 
-        _wait_for(_healthy, what="served core health")
+        wait_for(_healthy, what="served core health")
         self._client = CoreRpcClient(self.base, token=self.token)
         client = self._client
         self.root = client.create_session(self.root_name).session_id
@@ -708,8 +700,8 @@ def test_live_remote_tui_cancel_deny_preserves_and_allow_settles(tmp_path: Path)
             visible = terminal.settle(0.05)
             assert scene.child_id[:8] in visible, f"receipt missing target:\n{visible}"
             scene.gate.set()
-            _wait_for(lambda: client.get_session(scene.child_id).status == "interrupted", what="child owner-cancel settle")
-            _wait_for(lambda: client.get_session(scene.grandchild_id).status == "interrupted", what="grandchild owner-cancel settle")
+            wait_for(lambda: client.get_session(scene.child_id).status == "interrupted", what="child owner-cancel settle")
+            wait_for(lambda: client.get_session(scene.grandchild_id).status == "interrupted", what="grandchild owner-cancel settle")
             terminal.until("interrupted")
             visible = terminal.settle(0.05)
             assert "owner_cancel" in visible, f"settled stop cause missing:\n{visible}"

@@ -451,8 +451,9 @@ def choices_dispatch(view: ChoicesViewData, option_id: str) -> tuple[str, dict[s
 
 
 #: Strict numeric literals: no silent truncation, no scientific-integer coercion.
-_INTEGER_PATTERN = re.compile(r"^[+-]?\d+$")
-_NUMBER_PATTERN = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
+#: Shared by form submission and ask answers so both clients admit the same shapes.
+INTEGER_LITERAL_PATTERN = re.compile(r"^[+-]?\d+$")
+NUMBER_LITERAL_PATTERN = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
 
 
 def _field_schema_allows_null(schema: Mapping[str, object]) -> bool:
@@ -540,11 +541,11 @@ def validate_form_submission(
         # Numeric candidates are trimmed for parsing only; text stays verbatim.
         candidate = text.strip()
         if form_field.field_type == "integer":
-            if not _INTEGER_PATTERN.match(candidate):
+            if not INTEGER_LITERAL_PATTERN.match(candidate):
                 raise ValueError(f"Field '{label}' must be an integer.")
             arguments[name] = int(candidate)
         elif form_field.field_type == "number":
-            if not _NUMBER_PATTERN.match(candidate):
+            if not NUMBER_LITERAL_PATTERN.match(candidate):
                 raise ValueError(f"Field '{label}' must be a number.")
             value = float(candidate)
             if not math.isfinite(value):

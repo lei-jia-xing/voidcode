@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import json
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server, open_core_for_test, write_loopback_config
 from tests.fixtures.reload_plugin import DEACTIVATE_TOOL, DELEGATE_TOOL, PROBE_TOOL, write_reload_plugin
-from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.bootstrap import open_core
+from tests.provider_loopback import openai_response
 from voidcode.core.engine import Core
 from voidcode.sdk.json_values import json_wire_object
 
@@ -28,48 +26,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
         message={"role": "assistant", "content": output, "reasoning_content": "delegation reasoning", "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
     )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
-def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
-    workspace.mkdir(parents=True, exist_ok=True)
-    config = {
-        "schema_version": 1,
-        "model": {"model": "endpoint/exact-model"},
-        "policy": {"approval_mode": "yolo", "read_only": False},
-        "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
-        # Hermetic: bundled file tools are irrelevant to delegation semantics.
-        "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
-    }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-
-
-def _open(tmp_path: Path) -> Core:
-    core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
-    _CREATED.append(core)
-    return core
 
 
 def _tools_in_request(request: dict[str, object]) -> set[str]:
@@ -105,9 +61,9 @@ def test_delegated_children_run_and_join_with_a_narrowed_tool_scope(tmp_path: Pa
         # Parent continues after both joins.
         _turn(output="parent done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("parent")
         result = core.run("delegate the work", session_id="parent")
         assert result.status == "completed"
@@ -148,9 +104,9 @@ def test_child_limits_and_scope_are_enforced_by_the_core(tmp_path: Path) -> None
     # reply per child the quota admits, then join each child before the server
     # exits so no child thread outlives its provider or the store.
     replies = [_turn(output=f"child {index} done") for index in range(budget)]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         assert core.config.max_root_children == budget
         core.create_session("root")
         session = core.session("root")
@@ -194,9 +150,9 @@ def test_child_cannot_call_a_tool_outside_its_scope(tmp_path: Path) -> None:
         _turn(output="child finished"),
         _turn(output="parent done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("parent")
         assert core.run("delegate", session_id="parent").status == "completed"
         children = [record for record in core.sessions() if record.parent_session_id == "parent"]

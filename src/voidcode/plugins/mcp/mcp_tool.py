@@ -19,6 +19,7 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices
 from voidcode.sdk.tools import (
+    RASTER_IMAGE_MIMES,
     CompositeOutput,
     ContentPart,
     JsonPart,
@@ -36,8 +37,6 @@ from voidcode.sdk.tools import (
 from voidcode.sdk.views import MAX_VIEW_DATA_BYTES
 
 from .types import McpManager, McpToolCallResult, McpToolSafety
-
-RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
 
 _MAX_MCP_BINARY_BYTES = 50 * 1024 * 1024
 _MIME_TOKEN = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"

@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from threading import Thread
 
-import pytest
-
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -43,27 +39,6 @@ class NotesWriteTool:
 def create_plugin(config):
     return Plugin(tools=(NotesWriteTool(),))
 '''
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
-
-
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _notes_plugin(workspace: Path) -> Path:
@@ -98,7 +73,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *plugin_ids: str, approv
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    register_core(core)
     return core
 
 
@@ -124,7 +99,7 @@ def test_btw_answers_without_polluting_history(tmp_path: Path) -> None:
             usage={"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
         ),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, "btw")
         session_id = core.create_session().session_id
         assert core.run("main question", session_id=session_id).status == "completed"
@@ -169,7 +144,7 @@ def test_btw_uses_complete_context_while_tool_approval_is_pending(tmp_path: Path
         ),
         openai_response(message={"role": "assistant", "content": "side answer"}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core(tmp_path, server, "btw", approval_mode="ask")
         session_id = core.create_session().session_id
         main = core.run("write a note", session_id=session_id)

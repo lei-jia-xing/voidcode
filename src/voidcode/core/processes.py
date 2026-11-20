@@ -28,13 +28,12 @@ from uuid import uuid4
 from voidcode.sdk.observed_effects import ObservedEffects
 from voidcode.sdk.services import ProcessHandle, ProcessResult
 
+from .artifacts import MAX_PAGE_BYTES
 from .sandbox import SandboxBackend, build_plan, native_backend, read_effects_file, scratch_dir
 
 #: Hard ceiling for one stream's capture. The bound exists so a runaway command cannot exhaust the
 #: core's memory; a caller that wants more must spill the output itself.
 MAX_CAPTURE_BYTES: Final[int] = 256 * 1024 * 1024
-#: One bounded page of a background process's log, matching the artifact page bound.
-MAX_PAGE_BYTES: Final[int] = 256 * 1024
 _DEFAULT_CAPTURE_BYTES: Final[int] = 256 * 1024
 _READ_CHUNK_BYTES: Final[int] = 8192
 _POLL_SECONDS: Final[float] = 0.05

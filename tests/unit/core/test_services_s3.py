@@ -5,15 +5,12 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import loopback_server, open_core_for_test, write_loopback_config
 from tests.fixtures.reload_plugin import SERVICES_TOOL, write_reload_plugin
-from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.bootstrap import open_core
+from tests.provider_loopback import openai_response
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import SqliteStore, WakeupRecord
 
@@ -57,47 +54,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
     )
 
 
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
-def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
-    workspace.mkdir(parents=True, exist_ok=True)
-    config = {
-        "schema_version": 1,
-        "model": {"model": "endpoint/exact-model"},
-        "policy": {"approval_mode": "yolo", "read_only": False},
-        "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
-        "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
-    }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-
-
-def _open(tmp_path: Path) -> Core:
-    core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
-    _CREATED.append(core)
-    return core
-
-
 def _messages(request: Mapping[str, object]) -> list[Mapping[str, object]]:
     raw = request.get("messages")
     assert isinstance(raw, list)
@@ -130,9 +86,9 @@ def test_user_role_continuation_is_rendered_verbatim(tmp_path: Path) -> None:
         # The wakeup's own turn sees the reminder as a user message.
         _turn(output="reminder acted on"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-wakeup")
         assert core.run("schedule a reminder", session_id="sess-wakeup").status == "completed"
         scheduled = json.loads(_tool_result(core, "sess-wakeup", SERVICES_TOOL))
@@ -163,9 +119,9 @@ def test_bounded_event_read_and_governed_model_query(tmp_path: Path) -> None:
         _turn(output="a quiet answer"),
         _turn(output="query done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-read")
         assert core.run("read events", session_id="sess-read").status == "completed"
         views = json.loads(_tool_result(core, "sess-read", SERVICES_TOOL))
@@ -194,9 +150,9 @@ def test_bounded_event_read_and_governed_model_query(tmp_path: Path) -> None:
 def test_wakeup_claim_is_atomic_and_never_replayed(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", services_probe=True)
-    with _server([_turn(output="unused")]) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server([_turn(output="unused")]) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-claim")
         now = int(time.time() * 1000)
         core.store.schedule_wakeup(

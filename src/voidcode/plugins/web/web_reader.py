@@ -13,7 +13,6 @@ from voidcode.sdk.resources import (
     ResourceReadRequest,
 )
 
-WEB_URI_PREFIX = "web://"
 _WEB_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 

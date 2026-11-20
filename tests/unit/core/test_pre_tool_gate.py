@@ -8,8 +8,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import register_core
 from tests.fixtures.reload_plugin import PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -42,16 +41,6 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
         server.server_close()
 
 
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def _run_with_gate(tmp_path: Path, gate: str) -> tuple[Core, list[Mapping[str, object]]]:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", pre_tool_gate=gate)
@@ -80,7 +69,7 @@ def _run_with_gate(tmp_path: Path, gate: str) -> tuple[Core, list[Mapping[str, o
     )
     try:
         core = open_core(workspace, state_dir=tmp_path / "state")
-        _CREATED.append(core)
+        register_core(core)
         core.create_session("sess-gate")
         assert core.run("call the probe", session_id="sess-gate").status == "completed"
         results = [

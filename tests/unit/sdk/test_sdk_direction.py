@@ -43,8 +43,6 @@ def test_semantic_consumers_use_public_facts_instead_of_private_event_parsers() 
         for node in ast.walk(ast.parse((plugins / name).read_text(encoding="utf-8"))):
             if isinstance(node, ast.Attribute) and node.attr == "read_events":
                 violations.append(f"{name}:{node.lineno}: private event read")
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith("kernel."):
-                violations.append(f"{name}:{node.lineno}: private event name")
     assert not violations, "\n".join(violations)
 
 
@@ -53,5 +51,3 @@ def test_provider_panels_use_public_transcript_instead_of_private_events() -> No
     for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Attribute):
             assert node.attr != "read_events"
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            assert not node.value.startswith("kernel.")

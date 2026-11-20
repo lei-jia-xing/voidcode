@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -42,16 +43,6 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
         server.server_close()
 
 
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -73,7 +64,7 @@ def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
         encoding="utf-8",
     )
     core = open_core(workspace, state_dir=tmp_path / "state")
-    _CREATED.append(core)
+    register_core(core)
     core.create_session("sess-structured")
     return core
 

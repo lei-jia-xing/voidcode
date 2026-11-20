@@ -98,11 +98,11 @@ def test_submitting_prompt_while_run_active_queues_without_altering_context(tmp_
 
         # Verify continuation was staged in SQLite continuations table
         pending = core.store.pending_continuations(session_id, limit=10)
-        kernel_pending = [c for c in pending if c.owner == "kernel"]
-        assert len(kernel_pending) == 1
-        assert kernel_pending[0].source == "user_message"
-        assert kernel_pending[0].payload == {"prompt": "Turn 2 follow-up prompt", "root_action_budget": 3}
-        assert kernel_pending[0].root_id == root_id
+        core_pending = [c for c in pending if c.owner == "core"]
+        assert len(core_pending) == 1
+        assert core_pending[0].source == "user_message"
+        assert core_pending[0].payload == {"prompt": "Turn 2 follow-up prompt", "root_action_budget": 3}
+        assert core_pending[0].root_id == root_id
 
         # Verify Turn 1 context does NOT contain Turn 2 prompt
         events = core.store.events(session_id)
@@ -123,7 +123,7 @@ def test_submitting_prompt_while_run_active_queues_without_altering_context(tmp_
         assert user_events_after[1].payload["content"] == "Turn 2 follow-up prompt"
 
         # Continuation is completed
-        assert core.store.continuation_status(kernel_pending[0].continuation_id) == "completed"
+        assert core.store.continuation_status(core_pending[0].continuation_id) == "completed"
         assert core.store.root_budget_state(root_id) == (3, 3)
         assert len(server.requests) == 3
         core.close()
@@ -155,9 +155,9 @@ def test_interrupting_active_run_cancels_queued_followup(tmp_path: Path) -> None
 
         # Check pending in SQLite
         pending = core.store.pending_continuations(session_id, limit=10)
-        kernel_pending = [c for c in pending if c.owner == "kernel"]
-        assert len(kernel_pending) == 1
-        cid = kernel_pending[0].continuation_id
+        core_pending = [c for c in pending if c.owner == "core"]
+        assert len(core_pending) == 1
+        cid = core_pending[0].continuation_id
 
         # Cancel session (Esc / user interrupt)
         cancelled = core.cancel_session(session_id, reason="user cancel")

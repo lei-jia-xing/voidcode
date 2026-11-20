@@ -6,6 +6,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from voidcode.sdk.atomic_file import replace_file
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
@@ -29,7 +30,6 @@ from ._common import (
     resolve_workspace_path,
     summarize_diff,
 )
-from ._replace import replace_file
 from .errors import ToolDiagnosticError, raise_tool_diagnostic
 
 

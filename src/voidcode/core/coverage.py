@@ -19,6 +19,7 @@ from ..sdk.hooks import RequestWindow
 from ..sdk.provider import ImageAttachment, ModelContextLimits
 from ..sdk.services import ArtifactPage, ArtifactReference
 from ..sdk.tools import (
+    RASTER_IMAGE_MIMES,
     AttachmentOutput,
     CompositeOutput,
     EmptyOutput,
@@ -35,7 +36,6 @@ from .artifacts import MAX_PAGE_BYTES
 from .events import EventType
 
 MODEL_PROJECTION_MARKER = "partial model projection; complete result unchanged"
-RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 type ArtifactPageReader = Callable[[str, int, int], ArtifactPage]
 

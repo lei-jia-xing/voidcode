@@ -16,16 +16,6 @@ from .tools import Change, optional_str, required_str
 MAX_OBSERVED_CHANGES: Final[int] = 256
 #: Bound on reported denials per execution.
 MAX_OBSERVED_DENIALS: Final[int] = 64
-#: Bytes the helper hashes eagerly per file during snapshot-diff.
-SNAPSHOT_HASH_BYTES: Final[int] = 1024 * 1024
-#: Single READ page bound in bytes.
-READ_PAGE_BYTES: Final[int] = 1024 * 1024
-#: Single WRITE bound in bytes (matches the file tools' wire bound).
-WRITE_MAX_BYTES: Final[int] = 64 * 1024
-#: LIST/WALK entry bound.
-LIST_MAX_ENTRIES: Final[int] = 10_000
-#: Symlink chain elements the helper canonicalizes before refusing.
-MAX_SYMLINK_FOLLOW: Final[int] = 8
 
 
 @dataclass(frozen=True, slots=True)

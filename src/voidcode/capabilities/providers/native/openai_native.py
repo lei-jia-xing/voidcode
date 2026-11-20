@@ -29,12 +29,16 @@ from voidcode.sdk.tools import ToolCall
 
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
+    OUTPUT_CAP_WHEN_UNKNOWN,
+    PLACEHOLDER_API_KEY,
     OwnedResource,
     Transport,
     TransportError,
     abort_signal_cancelled,
     build_usage,
     cancelled_events,
+    decode_response_payload,
     fallback_execution_error,
     iter_stream_with_timeout,
     map_done_reason,
@@ -42,6 +46,7 @@ from ._wire_common import (
     open_event_stream,
     parse_tool_arguments,
     resolve_extra_request_headers,
+    response_metadata,
     safe_tool_name,
     strip_base_url,
     usage_int,
@@ -57,13 +62,10 @@ from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_eff
 from .thinking_rules import thinking_rule_for
 from .trace import write_provider_trace
 
-#: OMP's fallback cap when a model's own maximum is unknown (``types.ts:70``).
-_OUTPUT_CAP_WHEN_UNKNOWN = 64000
-
 
 def _output_cap(metadata: ProviderModelMetadata | None) -> int:
     """The cap the kimi family always gets: the model's own maximum, else 64000."""
-    return metadata.max_output_tokens if metadata is not None and metadata.max_output_tokens else _OUTPUT_CAP_WHEN_UNKNOWN
+    return metadata.max_output_tokens if metadata is not None and metadata.max_output_tokens else OUTPUT_CAP_WHEN_UNKNOWN
 
 
 def _requires_reasoning_content_with_tool_calls(*, provider_name: str | None, model_name: str) -> bool:
@@ -82,10 +84,6 @@ def _requires_reasoning_content_with_tool_calls(*, provider_name: str | None, mo
 # default (``provider_config.openai_wire_default_base_url``) or fails with
 # ``not_configured``.
 _DEFAULT_OPENAI_BASE_URL = PROVIDER_TABLE_BY_ID["openai"].default_base_url
-# The SDK refuses to construct a client without a credential; the placeholder only
-# satisfies that check -- ``_auth_headers``/``_request_headers`` decide what is sent.
-_PLACEHOLDER_API_KEY = "voidcode-no-api-key"
-_DEFAULT_TIMEOUT_SECONDS = 300.0
 _MAX_TOOL_NAME_LENGTH = 64
 _TOOL_NAME_HASH_LENGTH = 8
 
@@ -202,7 +200,7 @@ class OpenAIChatCompletionsTransport:
                 # configured scheme stays authoritative. ``max_retries=0`` keeps
                 # retry/fallback owned by the runtime instead of the SDK.
                 self._sdk_client = OpenAI(
-                    api_key=self.api_key or _PLACEHOLDER_API_KEY,
+                    api_key=self.api_key or PLACEHOLDER_API_KEY,
                     base_url=self.base_url,
                     organization=self.organization,
                     project=self.project,
@@ -707,18 +705,7 @@ class OpenAIChatCompletionsProvider:
 
     def _timeout(self) -> float:
         configured = None if self.config is None else self.config.timeout_seconds
-        return _DEFAULT_TIMEOUT_SECONDS if configured is None else configured
-
-    @staticmethod
-    def _response_payload(value: object) -> dict[str, object]:
-        if isinstance(value, Mapping):
-            return dict(value)
-        model_dump = getattr(value, "model_dump", None)
-        if callable(model_dump):
-            dumped = model_dump()
-            if isinstance(dumped, Mapping):
-                return dict(dumped)
-        raise ValueError("provider response must be a mapping")
+        return DEFAULT_TIMEOUT_SECONDS if configured is None else configured
 
     @staticmethod
     def _stream_chunk_payload(value: object) -> dict[str, object]:
@@ -729,7 +716,7 @@ class OpenAIChatCompletionsProvider:
         than being reported as a retryable network failure; it is a non-retryable malformed provider stream.
         """
         try:
-            return OpenAIChatCompletionsProvider._response_payload(value)
+            return decode_response_payload(value)
         except ValueError as exc:
             raise TransportError(_stream_event_error_payload(exc)) from exc
 
@@ -810,11 +797,11 @@ class OpenAIChatCompletionsProvider:
         model_name = request.model_name or "unknown"
         try:
             payload = self._payload(request, stream=False)
-            response_payload = self._response_payload(self._transport().request(payload, timeout_seconds=self._timeout()))
+            response_payload = decode_response_payload(self._transport().request(payload, timeout_seconds=self._timeout()))
             if response_payload.get("error") is not None or response_payload.get("type") == "error":
                 raise TransportError(response_payload)
             usage = OpenAIWireCodec.usage(response_payload)
-            metadata = _response_metadata(response_payload)
+            metadata = response_metadata(response_payload)
             choices = response_payload.get("choices")
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
                 raise ProviderExecutionError(
@@ -904,7 +891,7 @@ class OpenAIChatCompletionsProvider:
                 chunk = self._stream_chunk_payload(raw_chunk)
                 if chunk.get("error") is not None or chunk.get("type") == "error":
                     raise TransportError(chunk)
-                metadata.update(_response_metadata(chunk))
+                metadata.update(response_metadata(chunk))
                 latest_usage = OpenAIWireCodec.usage(chunk) or latest_usage
                 choices = chunk.get("choices")
                 if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
@@ -1151,15 +1138,6 @@ class OpenAIChatCompletionsProvider:
                 "transport": "openai_chat_completions",
             },
         )
-
-
-def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
-    metadata: dict[str, object] = {}
-    if isinstance(payload.get("id"), str) and payload["id"]:
-        metadata["request_id"] = payload["id"]
-    if isinstance(payload.get("model"), str) and payload["model"]:
-        metadata["served_model"] = payload["model"]
-    return metadata
 
 
 __all__ = [

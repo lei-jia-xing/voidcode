@@ -350,8 +350,8 @@ def _stored(sequence: int, event_type: str, payload: dict) -> StoredEvent:
         sequence=sequence,
         run_id="run",
         event_type=event_type,
-        source="kernel",
-        actor="kernel",
+        source="core",
+        actor="core",
         revision_id="rev",
         payload=payload,
     )
