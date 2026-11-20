@@ -14,7 +14,7 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from threading import Event, Lock
+from threading import Lock
 from types import MappingProxyType
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -33,6 +33,7 @@ from ..sdk.codec import (
     encode_tool_definition,
     encode_tool_result,
 )
+from ..sdk.command_help import grouped_help_entries
 from ..sdk.commands import (
     CommandCatalog,
     CommandDescriptor,
@@ -64,14 +65,9 @@ from ..sdk.suspend import ParkRevisionError
 from ..sdk.tools import (
     TOOL_OUTPUT_BYTES,
     Change,
-    CompositeOutput,
     ConfirmedStop,
-    ContentPart,
     ExecutionObservation,
-    JsonPart,
-    TablePart,
     TextOutput,
-    TextPart,
     ToolCall,
     ToolDefinition,
     ToolEffect,
@@ -84,19 +80,14 @@ from ..sdk.tools import (
 )
 from ..sdk.transcript import ContextHistory, TranscriptPage
 from ..sdk.views import PluginViewDescriptor, ViewsSnapshot
-from .activation import (
-    PRIVATE_DIR_NAME,
-    Admission,
-    ExecutionConfig,
-    StateCopyPlan,
-    load_private_snapshot,
-    plan_state_copies,
-    write_private_snapshot,
-)
-from .artifacts import SHA256_PATTERN, ArtifactNotFoundError, ArtifactStore
+from .activation import Admission, ExecutionConfig
+from .activation_coordinator import ActivationCoordinator, ActivationFenced, ActivationSnapshot, PreparedActivation
+from .artifacts import SHA256_PATTERN, ArtifactStore
+from .background_actions import BackgroundActionRegistry
+from .cancellation import Cancellation, _EventAbortSignal
+from .child_contracts import ChildSpawnRequest
 from .coverage import (
     ProjectionAllocation,
-    ProjectionRequiresReference,
     _target_paths,
     allocate_tool_text_budget,
     canonical_path,
@@ -112,6 +103,7 @@ from .delegation import (
 from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
 from .facts import FACT_EVENT_TYPES as _FACT_EVENT_TYPES
 from .facts import fact_for_event
+from .output_projection import ResultProjector
 from .plugins import CommandInvocationOutcome, LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome, ToolSuspension
 from .sandbox import SandboxBackend
 from .storage.store import (
@@ -137,125 +129,9 @@ from .storage.store import (
     WaitingAskPark,
     canonical_json,
 )
+from .usage import UsageProjector
 
 logger = logging.getLogger(__name__)
-
-
-class Cancellation:
-    def __init__(
-        self,
-        linked_event: threading.Event | None = None,
-        *,
-        linked_reason: str = "background action cancelled",
-        linked_stop_cause: StopCause = "owner_cancel",
-        linked_stop_cause_provider: Callable[[], StopCause] | None = None,
-    ) -> None:
-        self._event = Event()
-        self._reason: str | None = None
-        self._lock = threading.Lock()
-        self._cancel_callbacks: list[Callable[[], None]] = []
-        self._stop_cause: StopCause = "user_stop"
-        self._linked_event = linked_event
-        self._linked_reason = linked_reason
-        self._linked_stop_cause_provider = linked_stop_cause_provider
-        self._linked_stop_cause = linked_stop_cause
-
-    @property
-    def cancelled(self) -> bool:
-        return self._event.is_set() or (self._linked_event is not None and self._linked_event.is_set())
-
-    @property
-    def reason(self) -> str | None:
-        with self._lock:
-            if self._event.is_set():
-                return self._reason
-        return self._linked_reason if self._linked_event is not None and self._linked_event.is_set() else None
-
-    @property
-    def stop_cause(self) -> StopCause:
-        with self._lock:
-            if self._event.is_set():
-                return self._stop_cause
-        if self._linked_event is None or not self._linked_event.is_set():
-            return "user_stop"
-        if self._linked_stop_cause_provider is not None:
-            return self._linked_stop_cause_provider()
-        return self._linked_stop_cause
-
-    def set_cancelled(self, value: bool, *, reason: str | None = None, stop_cause: StopCause = "user_stop") -> None:
-        with self._lock:
-            self._reason = reason if value else None
-            self._stop_cause = stop_cause if value else "user_stop"
-            firing: tuple[Callable[[], None], ...] = ()
-            if value:
-                self._event.set()
-                firing = tuple(self._cancel_callbacks)
-                self._cancel_callbacks.clear()
-            else:
-                self._event.clear()
-        for callback in firing:
-            self._fire_cancel_callback(callback)
-
-    def on_cancel(self, callback: Callable[[], None]) -> Callable[[], None]:
-        """Register a one-shot callback fired when this signal is set-cancelled.
-
-        Callbacks run outside the internal lock, each at most once; registering on
-        an already-cancelled signal fires immediately. Returns an idempotent
-        unregister handle.
-        """
-        with self._lock:
-            already = self._event.is_set() or (self._linked_event is not None and self._linked_event.is_set())
-            if not already:
-                self._cancel_callbacks.append(callback)
-
-        def _unregister() -> None:
-            with self._lock:
-                try:
-                    self._cancel_callbacks.remove(callback)
-                except ValueError:
-                    pass
-
-        if already:
-            self._fire_cancel_callback(callback)
-        return _unregister
-
-    @staticmethod
-    def _fire_cancel_callback(callback: Callable[[], None]) -> None:
-        try:
-            callback()
-        except Exception:
-            logger.exception("cancellation callback failed")
-
-
-class _EventAbortSignal:
-    """A `ProviderAbortSignal` view over one background action's abort event.
-
-    The driver owns the event; callbacks only observe it. `set_cancelled` mirrors into
-    the shared event so cooperative tools can signal, but clearing is refused: an abort
-    once observed must stay observed for every later invoke of the same action.
-    """
-
-    def __init__(self, event: threading.Event) -> None:
-        self._event = event
-        self._reason: str | None = None
-        self._lock = threading.Lock()
-
-    @property
-    def cancelled(self) -> bool:
-        return self._event.is_set()
-
-    @property
-    def reason(self) -> str | None:
-        with self._lock:
-            return self._reason
-
-    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
-        with self._lock:
-            if value:
-                self._reason = reason
-                self._event.set()
-            elif not self._event.is_set():
-                self._reason = None
 
 
 class _BackgroundContext:
@@ -322,10 +198,6 @@ class _BackgroundContext:
 
     def wait_tool(self, receipt: ToolInvocationReceipt) -> ToolAwaitResult:
         return self._core._await_background_tool(self, receipt)
-
-
-class ActivationFenced(RuntimeError):
-    """A dispatch or activation raced the activation fence; retry after it settles."""
 
 
 class _UnboundRun:
@@ -418,7 +290,6 @@ _CORE_TOOL_SPECS: tuple[tuple[str, str, Mapping[str, object], tuple[ToolEffect, 
         Icon(glyph="↻"),
     ),
 )
-CORE_TOOL_NAMES = frozenset(name for name, _d, _s, _e, _i in _CORE_TOOL_SPECS)
 
 
 #: One truthful, actionable message for a providerless core. Launch, commands, tools, and
@@ -725,17 +596,6 @@ class _AskBinding:
     idempotency_key: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class _PreparedActivation:
-    """A validated candidate generation, its state copies, and the generation it was prepared against."""
-
-    admission: Admission
-    plugin_runtime: PluginRuntime
-    copies: StateCopyPlan
-    source: str
-    prepared_against: str
-
-
 class Core:
     def __init__(
         self,
@@ -772,17 +632,11 @@ class Core:
         # Cross-process double-driving is impossible: construction holds an exclusive
         # workspace flock (`another process owns this workspace`), so a claimed row this
         # process does not drive is necessarily stale, never a live foreign claim.
-        self._background_live: set[str] = set()
-        self._background_claiming = 0
-        self._background_aborts: dict[str, threading.Event] = {}
-        self._background_abort_causes: dict[str, StopCause | None] = {}
-        self._background_cond = threading.Condition()
-        self._tool_wait_cond = threading.Condition()
+        self._background = BackgroundActionRegistry(self)
         # Commit clock for event streams: bumped under this condition after every
         # committed session-events write (see notify_commit); waiters re-read cursors.
         self._commit_cond = threading.Condition()
         self._commit_generation = 0
-        self._background_identity = {"pid": os.getpid(), "core": uuid4().hex}
         # One pointer per capability generation, plus short-critical-section call accounting.
         # The activation fence rejects new dispatches and reports foreign in-flight calls as
         # busy instead of blocking any run, and no lock is ever held across an RPC.
@@ -810,6 +664,9 @@ class Core:
             state_dir.mkdir(parents=True, exist_ok=True)
             self.store = SqliteStore(state_dir / DATABASE_FILENAME)
             self._delegation.attach_store(self.store)
+            self._activation = ActivationCoordinator(self)
+            self._usage = UsageProjector(self.store)
+            self._projection = ResultProjector(self._artifacts)
             resources.callback(self.store.close)
             runtime = PluginRuntime(
                 plugins,
@@ -820,7 +677,7 @@ class Core:
                 budget_callback=self._get_owner_budget,
                 spawn_child_callback=self._spawn_child_callback,
                 find_child_callback=self._delegation.find_keyed_child,
-                join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
+                join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout),
                 wait_children_callback=lambda _owner, parent, children, guard: self._delegation.wait_children(
                     parent, children, admission_guard=guard
                 ),
@@ -834,7 +691,7 @@ class Core:
                     label=label,
                     notify_on_completion=notify,
                     admission_guard=guard,
-                ).as_payload(),
+                ),
                 cancel_child_callback=self.cancel_child,
                 list_descendants_callback=self.list_descendants,
                 read_child_snapshot_callback=self._delegation.read_child_snapshot,
@@ -913,68 +770,28 @@ class Core:
             if self._closed or self._background_started:
                 return
             self._background_started = True
-            self._wire_background_runtime(self._snapshot.plugin_runtime)
+            self._background.wire(self._snapshot.plugin_runtime)
             for target, name in (
                 (self._drive_pending_activations, "CoreActivationDriver"),
                 (self._wakeup_loop, "CoreWakeupTicker"),
-                (self._background_loop, "CoreBackgroundLoop"),
             ):
                 worker = threading.Thread(target=target, name=name, daemon=True)
                 worker.start()
                 self._background_workers.append(worker)
+            self._background_workers.append(self._background.start())
 
     def _wire_background_runtime(self, runtime: PluginRuntime) -> None:
         """Bind one runtime's background projections to this core's live driver registry."""
-        runtime.background_action_notify_callback = self._notify_background_loop
-        runtime.background_claim_live_callback = self._background_claim_live
-        runtime.background_live_actions = set(self._background_live)
-
-    def _notify_background_loop(self) -> None:
-        with self._background_cond:
-            self._background_cond.notify_all()
-
-    def _notify_tool_waiters(self) -> None:
-        with self._tool_wait_cond:
-            self._tool_wait_cond.notify_all()
-
-    def _background_claim_live(self, record: ContinuationRecord) -> bool:
-        """Whether one claimed background row is driven by this process right now.
-
-        Cross-process liveness needs no detection: construction holds the workspace's
-        exclusive flock, so no second process can hold a claim on this database.
-        """
-        with self._background_cond:
-            return record.continuation_id in self._background_live
-
-    def _park_background_drivers(self, *, reason: str) -> None:
-        """Signal every live driver to stop at its next invoke boundary, then wait for them.
-
-        Drivers settle their own rows (cancelled); rows whose driver never reaches a
-        boundary stay claimed-but-unattended and report `interrupted`. Nothing is
-        auto-replayed: resume is always an explicit new action.
-        """
-        _ = reason
-        with self._background_cond:
-            for action_id, abort in self._background_aborts.items():
-                self._background_abort_causes[action_id] = "shutdown"
-                abort.set()
-            self._background_cond.notify_all()
-        self._notify_tool_waiters()
-        deadline = time.monotonic() + 30.0
-        with self._background_cond:
-            while self._background_live and time.monotonic() < deadline:
-                remaining = deadline - time.monotonic()
-                self._background_cond.wait(timeout=min(remaining, 0.2))
+        self._background.wire(runtime)
 
     def _stop_background_work(self) -> None:
         """Join coordination workers before runtime/store callbacks close their resources."""
         self.cancel("core shutdown", cause="shutdown")
-        self._park_background_drivers(reason="core shutdown")
+        self._background.park("core shutdown")
         with self._session_locks_guard:
             self._closed = True
             workers, self._background_workers = self._background_workers, []
-        with self._background_cond:
-            self._background_cond.notify_all()
+        self._background.notify()
         for worker in workers:
             worker.join()
 
@@ -1078,10 +895,6 @@ class Core:
             if self._active_dispatch_threads.get(thread_id, 0) or self._activating_thread == thread_id:
                 raise RuntimeError("background tool wait is unavailable inside an active Core dispatch")
 
-    def _background_abort_stop_cause(self, action_id: str) -> StopCause:
-        with self._background_cond:
-            return self._background_abort_causes.get(action_id) or "shutdown"
-
     def __enter__(self) -> Core:
         return self
 
@@ -1103,7 +916,7 @@ class Core:
         match the bound run under one aborts-lock critical section; a stale
         request touches no signal, including beside-running commands.
         """
-        self._ensure_open()
+        self.ensure_open()
         # Ownership first: a session id from another workspace sharing this
         # database may never be signalled or settled.
         self.session(session_id)
@@ -1131,7 +944,7 @@ class Core:
                 signals = []
             for signal in signals:
                 signal.set_cancelled(True, reason=reason, stop_cause=cause)
-        self.store.cancel_pending_continuations(session_id, "kernel")
+        self.store.cancel_pending_continuations(session_id, "core")
         self._delegation.notify_child_state_changed()
         # A bound call with no live abort for the bound run falls through to
         # the pinned parked settle; an unbound call keeps legacy behavior.
@@ -1186,8 +999,8 @@ class Core:
                 "terminal",
                 EventDraft(
                     EventType.RUN_INTERRUPTED,
-                    "kernel",
-                    "kernel",
+                    "core",
+                    "core",
                     {
                         "reason": reason,
                         "stop_cause": cause,
@@ -1241,7 +1054,7 @@ class Core:
         self._abort.set_cancelled(True, reason=reason, stop_cause=cause)
         with self._aborts_lock:
             for session_id in list(self._session_aborts.keys()):
-                self.store.cancel_pending_continuations(session_id, "kernel")
+                self.store.cancel_pending_continuations(session_id, "core")
             for _, abort in self._session_aborts.values():
                 abort.set_cancelled(True, reason=reason, stop_cause=cause)
             for commands in self._command_aborts.values():
@@ -1255,19 +1068,12 @@ class Core:
             if self._closed:
                 return
             self._closed = True
-        with self._background_cond:
-            for action_id, abort in self._background_aborts.items():
-                self._background_abort_causes[action_id] = "shutdown"
-                abort.set()
-            self._background_cond.notify_all()
-        self._notify_tool_waiters()
+        self._background.signal_stop("core shutdown")
         self._delegation.close()
         # No new session work can start (run/resume check `_closed` under their lock), so
         # draining every session lock now waits only for work that was already admitted.
         self._drain_session_locks()
-        with self._background_cond:
-            while self._background_live or self._background_claiming:
-                self._background_cond.wait()
+        self._background.quiesce("core shutdown")
         snapshot = self._snapshot
         if snapshot is not None:
             # The core's own shutdown is an owner shutdown: supervised background processes end
@@ -1277,12 +1083,8 @@ class Core:
 
     def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
         """Read immutable workspace artifact bytes, never a caller-supplied path."""
-        self._ensure_open()
-        try:
-            data, total, eof, media_type = self._artifacts.read(sha256, offset=offset, limit=limit)
-        except ArtifactNotFoundError as exc:
-            raise FileNotFoundError(f"artifact is not stored: {sha256}") from exc
-        return ArtifactPage(ArtifactReference(sha256, total, media_type), offset, data, eof)
+        self.ensure_open()
+        return self._projection.read(sha256, offset=offset, limit=limit)
 
     def run(
         self,
@@ -1340,7 +1142,7 @@ class Core:
                 pass
         session_id = uuid4().hex if session_id is None else session_id
         with self._session_lock(session_id):
-            self._ensure_open()
+            self.ensure_open()
             self._abort.set_cancelled(False)
             abort = Cancellation()
             run_abort_id = uuid4().hex
@@ -1458,7 +1260,7 @@ class Core:
                 raise ValueError(f"queued follow-up image {index} has invalid base64 data") from exc
         refs: list[dict[str, object]] = []
         for img, raw in zip(images, decoded, strict=True):
-            spill_id, spill = self._artifacts.start_spill(img.media_type, owner="kernel")
+            spill_id, spill = self._artifacts.start_spill(img.media_type, owner="core")
             try:
                 spill.append(raw)
                 digest, size, _media_type = self._artifacts.finish(spill_id)
@@ -1525,7 +1327,7 @@ class Core:
             payload["images"] = self._spill_followup_images(images)
         self.store.enqueue_continuation(
             cid,
-            "kernel",
+            "core",
             session.session_id,
             "user_message",
             session.run_id or "",
@@ -1573,7 +1375,7 @@ class Core:
                 stop_cause="error",
             )
         with self._session_lock(session_id):
-            self._ensure_open()
+            self.ensure_open()
             self._abort.set_cancelled(False)
             abort = Cancellation()
             run_abort_id = uuid4().hex
@@ -1677,7 +1479,7 @@ class Core:
         self._validate_steps(max_steps)
         self._validate_interaction(interaction)
         with self._session_lock(session_id):
-            self._ensure_open()
+            self.ensure_open()
             self._abort.set_cancelled(False)
             abort = Cancellation()
             run_abort_id = uuid4().hex
@@ -1707,13 +1509,12 @@ class Core:
                 if not isinstance(cursor.root_id, str) or not cursor.root_id:
                     raise ValueError("checkpoint has no captured root action identity")
                 if cursor.deferred_action_id is not None:
-                    with self._background_cond:
-                        action_abort = self._background_aborts.get(cursor.deferred_action_id)
+                    action_abort = self._background.abort_event(cursor.deferred_action_id)
                     if action_abort is not None:
                         abort = Cancellation(
                             action_abort,
                             linked_reason="background action stopped",
-                            linked_stop_cause_provider=lambda action_id=cursor.deferred_action_id: self._background_abort_stop_cause(action_id),
+                            linked_stop_cause_provider=lambda action_id=cursor.deferred_action_id: self._background.stop_cause(action_id),
                         )
                         with self._aborts_lock:
                             self._session_aborts[session_id] = (run_abort_id, abort)
@@ -1772,7 +1573,7 @@ class Core:
                     execution,
                     "running",
                     "ready",
-                    EventDraft(EventType.RUN_RESUMED, "kernel", "user", resume_payload),
+                    EventDraft(EventType.RUN_RESUMED, "core", "user", resume_payload),
                     root_budget_grant=root_budget_grant,
                 )
                 if approval is not None:
@@ -1911,7 +1712,7 @@ class Core:
             source, actor = "client", "user"
         else:
             result = ToolFailure(call.tool_name, f"ask {request.request_id} expired without an answer")
-            source, actor = "kernel", "kernel"
+            source, actor = "core", "core"
         answered = EventDraft(
             EventType.ASK_ANSWERED, source, actor, {"request_id": request.request_id, "status": status, "values": json_wire_object(values)}
         )
@@ -1954,13 +1755,12 @@ class Core:
         if not isinstance(cursor.root_id, str) or not cursor.root_id:
             raise ValueError("checkpoint has no captured root action identity")
         if cursor.deferred_action_id is not None:
-            with self._background_cond:
-                action_abort = self._background_aborts.get(cursor.deferred_action_id)
+            action_abort = self._background.abort_event(cursor.deferred_action_id)
             if action_abort is not None:
                 abort = Cancellation(
                     action_abort,
                     linked_reason="background action stopped",
-                    linked_stop_cause_provider=lambda action_id=cursor.deferred_action_id: self._background_abort_stop_cause(action_id),
+                    linked_stop_cause_provider=lambda action_id=cursor.deferred_action_id: self._background.stop_cause(action_id),
                 )
                 with self._aborts_lock:
                     self._session_aborts[session_id] = (run_abort_id, abort)
@@ -1998,7 +1798,7 @@ class Core:
         """
         self._check_expected_revision(expected_revision)
         with self._session_lock(session_id):
-            self._ensure_open()
+            self.ensure_open()
             self._abort.set_cancelled(False)
             abort = Cancellation()
             run_abort_id = uuid4().hex
@@ -2059,7 +1859,7 @@ class Core:
         """
         self._check_expected_revision(expected_revision)
         with self._session_lock(session_id):
-            self._ensure_open()
+            self.ensure_open()
             self._abort.set_cancelled(False)
             abort = Cancellation()
             run_abort_id = uuid4().hex
@@ -2118,7 +1918,7 @@ class Core:
         """
         session_id = candidate.session_id
         with self._session_lock(session_id):
-            self._ensure_open()
+            self.ensure_open()
             abort = Cancellation()
             run_abort_id = uuid4().hex
             with self._aborts_lock:
@@ -2170,7 +1970,7 @@ class Core:
         if session.parent_session_id is not None:
             self._delegation.notify_child_state_changed()
 
-    def _sweep_expired_asks(self) -> None:
+    def sweep_expired_asks(self) -> None:
         """Settle caller-declared ask expiries due now; one bad session never stops the sweep."""
         try:
             candidates = self.store.waiting_ask_parks()
@@ -2241,7 +2041,7 @@ class Core:
         """Run committed deferred requests after their caller's callback lease has returned."""
         with self._session_lock(session_id):
             while True:
-                self._ensure_open()
+                self.ensure_open()
                 session = self.session(session_id)
                 if not self._admits_fresh_work(session):
                     return
@@ -2273,10 +2073,9 @@ class Core:
                 request_action_id = raw_action_id if isinstance(raw_action_id, str) else None
                 if action_abort is not None and action_abort.is_set():
                     if request_action_id is not None:
-                        with self._background_cond:
-                            action_stop_cause = self._background_abort_causes.get(request_action_id)
+                        action_stop_cause = self._background.abort_cause(request_action_id)
                         status = "cancelled" if action_stop_cause == "owner_cancel" else "interrupted"
-                        self._cancel_background_tool_requests(
+                        self.cancel_background_tool_requests(
                             session_id,
                             request_action_id,
                             status=status,
@@ -2318,7 +2117,7 @@ class Core:
                     abort = Cancellation(
                         action_abort,
                         linked_reason="background action stopped",
-                        linked_stop_cause_provider=lambda action_id=request_action_id or "": self._background_abort_stop_cause(action_id),
+                        linked_stop_cause_provider=lambda action_id=request_action_id or "": self._background.stop_cause(action_id),
                     )
                 with self._aborts_lock:
                     self._session_aborts[session_id] = (execution.run_id, abort)
@@ -2337,7 +2136,7 @@ class Core:
         Descriptor list and revision come from ONE immutable snapshot, so a client can
         bind a later action to exactly the generation it displayed.
         """
-        self._ensure_open()
+        self.ensure_open()
         snapshot = self._snapshot
         return CommandCatalog(revision_id=snapshot.revision_id, commands=snapshot.commands)
 
@@ -2404,7 +2203,7 @@ class Core:
 
     def create_session(self, session_id: str | None = None) -> SessionRecord:
         """Create a new durable session in idle state bound to workspace and active revision."""
-        self._ensure_open()
+        self.ensure_open()
         sid = uuid4().hex if session_id is None else session_id
         return self._create_session_row(sid)
 
@@ -2420,7 +2219,7 @@ class Core:
 
     def session(self, session_id: str) -> SessionRecord:
         """Fetch session metadata by ID, verifying workspace."""
-        self._ensure_open()
+        self.ensure_open()
         s = self.store.session(session_id)
         if s.workspace != str(self.workspace):
             raise ValueError("session belongs to another workspace")
@@ -2428,12 +2227,12 @@ class Core:
 
     def sessions(self, *, limit: int = 100) -> tuple[SessionRecord, ...]:
         """Fetch sessions for this workspace, ordered by updated_at descending, up to limit."""
-        self._ensure_open()
+        self.ensure_open()
         return self.store.sessions(workspace=str(self.workspace), limit=limit)
 
     def show(self, session_id: str, *, events: bool = False) -> dict[str, object]:
         """Return session metadata, active checkpoint, and optional events as JSON-serializable dict."""
-        self._ensure_open()
+        self.ensure_open()
         s = self.session(session_id)
         checkpoint = self.store.checkpoint(session_id)
         payload: dict[str, object] = {
@@ -2462,13 +2261,13 @@ class Core:
 
     def events_after(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> tuple[StoredEvent, ...]:
         """Bounded tail read of stored events for continuous SSE streaming."""
-        self._ensure_open()
+        self.ensure_open()
         self.session(session_id)
         return self.store.events_after(session_id, after_sequence=after_sequence, limit=limit)
 
     def transcript_page(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
         """One bounded transcript page; advance to next_sequence while has_more, even when empty."""
-        self._ensure_open()
+        self.ensure_open()
         self.session(session_id)
         if type(after_sequence) is not int or after_sequence < 0:
             raise ValueError("after_sequence must be a non-negative integer")
@@ -2478,7 +2277,7 @@ class Core:
 
     def context_history(self, session_id: str, *, limit: int = 100) -> ContextHistory:
         """One bounded context prefix from the session's first record."""
-        self._ensure_open()
+        self.ensure_open()
         self.session(session_id)
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("limit must be an integer in 1..1000")
@@ -2486,7 +2285,7 @@ class Core:
 
     def usage(self, session_id: str, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
         """Calculate truthful token usage metrics strictly from immutable core facts."""
-        self._ensure_open()
+        self.ensure_open()
         s = self.session(session_id)
         return self._get_session_usage(session_id, since_sequence, until_sequence, session=s)
 
@@ -2498,130 +2297,8 @@ class Core:
         *,
         session: SessionRecord | None = None,
     ) -> SessionUsageReport:
-        if session is None:
-            s = self.session(session_id)
-        else:
-            s = session
-
-        all_events = self.store.events_by_types(session_id, (EventType.PROVIDER_INTENT, EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED))
-        dispatches_in_window: list[int] = []
-        completions_by_dispatch: dict[int, StoredEvent] = {}
-
-        for ev in all_events:
-            if ev.sequence > s.last_event_sequence:
-                # Only events already inside the captured session tip are reported,
-                # so through_sequence never claims less than what was included.
-                break
-            if ev.event_type == EventType.PROVIDER_INTENT:
-                seq = ev.sequence
-                if seq > since_sequence and (until_sequence is None or seq <= until_sequence):
-                    dispatches_in_window.append(seq)
-            elif ev.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
-                disp_seq = ev.payload.get("dispatch_sequence")
-                if disp_seq is not None and isinstance(disp_seq, (int, float)):
-                    completions_by_dispatch[int(disp_seq)] = ev
-
-        if not dispatches_in_window:
-            return SessionUsageReport(
-                session_id=session_id,
-                input_tokens=0,
-                output_tokens=0,
-                cache_read_tokens=0,
-                uncached_input_tokens=0,
-                total_cost_usd=0.0,
-                has_unknown_usage=False,
-                turn_count=0,
-                elapsed_seconds=0.0,
-                since_sequence=since_sequence,
-                until_sequence=until_sequence,
-                through_sequence=s.last_event_sequence,
-            )
-
-        total_input = 0
-        total_output = 0
-        total_cache_read = 0
-        total_uncached_input = 0
-        total_cost = 0.0
-        total_elapsed_ms = 0
-        unknown_input = False
-        unknown_output = False
-        unknown_cache = False
-        unknown_uncached = False
-        unknown_cost = False
-        unknown_elapsed = False
-        turn_count = 0
-
-        for disp_seq in dispatches_in_window:
-            comp_ev = completions_by_dispatch.get(disp_seq)
-            if comp_ev is None or comp_ev.event_type == EventType.PROVIDER_INTERRUPTED:
-                unknown_input = True
-                unknown_output = True
-                unknown_cache = True
-                unknown_uncached = True
-                unknown_cost = True
-                if comp_ev is not None:
-                    ms = comp_ev.payload.get("elapsed_ms")
-                    if ms is not None and isinstance(ms, (int, float)):
-                        total_elapsed_ms += int(ms)
-                    else:
-                        unknown_elapsed = True
-                else:
-                    unknown_elapsed = True
-            elif comp_ev.event_type == EventType.MODEL_TURN:
-                turn_count += 1
-                turn = decode_provider_result(_wire_object(comp_ev.payload["result"], "model turn"))
-                u = turn.usage
-                if u is not None and u.input_tokens is not None:
-                    total_input += u.input_tokens
-                else:
-                    unknown_input = True
-
-                if u is not None and u.output_tokens is not None:
-                    total_output += u.output_tokens
-                else:
-                    unknown_output = True
-
-                if u is not None and u.cache_read_tokens is not None:
-                    total_cache_read += u.cache_read_tokens
-                else:
-                    unknown_cache = True
-
-                if u is not None and u.uncached_input_tokens is not None:
-                    total_uncached_input += u.uncached_input_tokens
-                else:
-                    unknown_uncached = True
-
-                # One canonical usage DTO carries cost; the event envelope may also
-                # carry it, and either source is truthful for this dispatch.
-                cost = comp_ev.payload.get("cost_usd")
-                if cost is None and u is not None and u.cost_usd is not None:
-                    cost = u.cost_usd
-                if cost is not None and isinstance(cost, (int, float)):
-                    total_cost += float(cost)
-                else:
-                    unknown_cost = True
-
-                ms = comp_ev.payload.get("elapsed_ms")
-                if ms is not None and isinstance(ms, (int, float)):
-                    total_elapsed_ms += int(ms)
-                else:
-                    unknown_elapsed = True
-
-        through_seq = s.last_event_sequence
-        return SessionUsageReport(
-            session_id=session_id,
-            input_tokens=None if unknown_input else total_input,
-            output_tokens=None if unknown_output else total_output,
-            cache_read_tokens=None if unknown_cache else total_cache_read,
-            uncached_input_tokens=None if unknown_uncached else total_uncached_input,
-            total_cost_usd=None if unknown_cost else total_cost,
-            has_unknown_usage=unknown_input or unknown_output,
-            turn_count=turn_count,
-            elapsed_seconds=None if unknown_elapsed else (total_elapsed_ms / 1000.0),
-            since_sequence=since_sequence,
-            until_sequence=until_sequence,
-            through_sequence=through_seq,
-        )
+        resolved = self.session(session_id) if session is None else session
+        return self._usage.report(resolved, since_sequence=since_sequence, until_sequence=until_sequence)
 
     def _get_owner_budget(self, session_id: str, owner: str) -> PluginBudget | None:
         return self.store.owner_budget(session_id, owner)
@@ -2631,7 +2308,7 @@ class Core:
         # Commands may run alongside a turn and other commands: each owns its signal.
         abort = Cancellation()
         with self._aborts_lock:
-            self._ensure_open()
+            self.ensure_open()
             self._command_aborts.setdefault(context.session_id, {})[context.invocation_id] = abort
         try:
             yield replace(context, abort_signal=abort)
@@ -2668,7 +2345,7 @@ class Core:
         self, session_id: str, name: str, *, expected_revision: str, arguments: Mapping[str, object] | None = None
     ) -> CommandInputSnapshot:
         """Render optional plugin-owned input; never execute the command to discover values."""
-        self._ensure_open()
+        self.ensure_open()
         session = self.session(session_id)
         with self._dispatch("command_input") as snapshot:
             if expected_revision != snapshot.revision_id:
@@ -2697,7 +2374,7 @@ class Core:
         `expected_revision` is required and must be the revision the client displayed: a
         command advertised by one generation is never silently executed by another.
         """
-        self._ensure_open()
+        self.ensure_open()
         self._check_expected_revision(expected_revision)
         s = self.session(session_id)
 
@@ -2757,19 +2434,15 @@ class Core:
                 lines.extend(f"{event_type}: {count}" for event_type, count in sorted(counts.items()))
                 return CommandResult(status="ok", output="\n".join(lines), data=data)
             if name == "help":
-                payload = dict(self.command_catalog().as_payload())
-                commands = payload.get("commands")
+                catalog = self.command_catalog()
                 lines = ["Available commands:"]
-                if isinstance(commands, list):
-                    for command in commands:
-                        if isinstance(command, Mapping):
-                            if command.get("slash_visible", True) is False:
-                                continue
-                            syntax = command.get("client_syntax")
-                            stripped = syntax[1:].strip().replace(".", " ") if isinstance(syntax, str) and syntax.startswith("/") else ""
-                            shown = stripped if stripped else str(command.get("name", "")).replace(".", " ")
-                            lines.append(f"  /{shown} — {command.get('description', '')}")
-                return CommandResult(status="ok", output="\n".join(lines), data=payload)
+                for group, entries in grouped_help_entries(catalog.commands):
+                    lines.append("")
+                    lines.append(f"{group}:")
+                    for entry in entries:
+                        lines.append(f"  {entry.usage} — {entry.description}")
+                        lines.extend(f"    e.g. {example}" for example in entry.examples)
+                return CommandResult(status="ok", output="\n".join(lines), data=catalog.as_payload())
             return CommandResult(status="ok", data=dict(self.command_catalog().as_payload()))
 
         cmd_desc = self._snapshot.command_of(name)
@@ -2911,7 +2584,7 @@ class Core:
         expected_revision: str,
     ) -> CommandResult:
         """Resolve a pending confirmation request by exact ID and state version."""
-        self._ensure_open()
+        self.ensure_open()
         self._check_expected_revision(expected_revision)
         s = self.session(session_id)
         rec = self.store.confirmation(request_id)
@@ -3046,7 +2719,7 @@ class Core:
                 events=(
                     EventDraft(
                         EventType.CONFIRMATION_DECIDED,
-                        "kernel",
+                        "core",
                         "user",
                         {"request_id": request_id, "command_name": command_name, "decision": decision},
                     ),
@@ -3069,7 +2742,7 @@ class Core:
         The whole set renders under ONE captured generation and carries that revision,
         so a late view from an older revision is never relabelled with the new one.
         """
-        self._ensure_open()
+        self.ensure_open()
         session = self.session(session_id)
         with self._dispatch("views") as snapshot:
             views: list[PluginViewDescriptor] = []
@@ -3110,7 +2783,7 @@ class Core:
         results: list[ContinuationResult] = []
         parent_deliveries: list[tuple[str, str]] = []
         with self._session_lock(session_id):
-            self._ensure_open()
+            self.ensure_open()
             self._abort.set_cancelled(False)
             s = self.session(session_id)
             abort = Cancellation()
@@ -3329,7 +3002,8 @@ class Core:
             self._delegation._deliver_child_notice(parent_id, notice_id)
         return tuple(results)
 
-    def _ensure_open(self) -> None:
+    def ensure_open(self) -> None:
+        """Refuse work on a closed core; also the explicit host-protocol open check."""
         if self._closed:
             raise RuntimeError("engine is closed")
 
@@ -3364,49 +3038,121 @@ class Core:
         return CommandResult(status="ok", data={key: value for key, value in outcome.items() if key != "error"})
 
     def activate(self, *, session_id: str, source: str, request_id: str = "", target_revision_id: str = "") -> dict[str, object]:
-        """Run one capability activation for an already-safe boundary.
+        """Run one capability activation for an already-safe boundary; refusals stay durable outcomes."""
+        return self._activation.activate(
+            session_id=session_id,
+            source=source,
+            request_id=request_id,
+            target_revision_id=target_revision_id,
+        )
 
-        With `target_revision_id` the activation uses exactly that pinned candidate (the one an
-        approval was bound to); otherwise the live configuration is pinned now. Returns a
-        JSON-safe outcome and never raises for a refused activation: the refusal is recorded
-        durably on the session and the active revision stays untouched.
-        """
-        self._ensure_open()
-        snapshot = self._snapshot
-        session = self.session(session_id)
-        request_id = request_id or uuid4().hex
-        blockers = self.store.activation_blockers(str(self.workspace), session_id)
-        if blockers:
-            error = f"activation blocked: {'; '.join(blockers)}"
-            self._record_activation_refusal(session_id, request_id, source, error, blockers)
-            return {"activated": False, "error": error, "request_id": request_id}
-        try:
-            if target_revision_id:
-                admission = self._pinned_target(target_revision_id)
-            else:
-                target_revision_id, admission = self._prepare_target()
-            prepared = self._prepare_activation(snapshot, admission=admission, source=source)
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-            blocked = self.store.activation_blockers(str(self.workspace), session_id)
-            self._record_activation_refusal(session_id, request_id, source, error, blocked)
-            return {"activated": False, "error": error, "request_id": request_id}
-        try:
-            self._commit_activation(snapshot, session, request_id=request_id, source=source, prepared=prepared)
-        except Exception as exc:
-            self._clear_fence()
-            prepared.plugin_runtime.close()
-            if not isinstance(exc, StoreConflict):
-                raise
-            self._record_activation_refusal(session_id, request_id, source, str(exc), ())
-            return {"activated": False, "error": str(exc), "request_id": request_id}
-        return {
-            "activated": True,
-            "request_id": request_id,
-            "from_revision_id": snapshot.revision_id,
-            "to_revision_id": prepared.admission.revision_id,
-            "deactivated_owners": list(prepared.copies.deactivated_owners),
-        }
+    @property
+    def state_dir(self) -> Path:
+        return self._state_dir
+
+    @property
+    def config_filename(self) -> str:
+        return self._config_filename
+
+    @property
+    def admits(self) -> Callable[..., Admission] | None:
+        return self._admits
+
+    @property
+    def snapshot(self) -> _Snapshot | None:
+        return self._snapshot
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def begin_activation(self) -> None:
+        """Enter the dispatch fence, refusing while another activation or foreign dispatch is active."""
+        thread_id = threading.get_ident()
+        with self._calls_lock:
+            if self._activating_thread is not None:
+                raise ActivationFenced("another capability activation is already in progress")
+            if self._active_calls:
+                busy = ", ".join(sorted(self._active_calls.values()))
+                raise ActivationFenced(f"capability activation is blocked by in-flight work: {busy}")
+            self._activating_thread = thread_id
+
+    def end_activation(self) -> None:
+        self._clear_fence()
+
+    def park_background_drivers(self, reason: str) -> None:
+        self._background.park(reason)
+
+    def flush_old_generation_facts(self, deferred_to_candidate: frozenset[str]) -> None:
+        self._replay_pending_observers(require_complete=True, defer_to_candidate=deferred_to_candidate)
+
+    def build_candidate_runtime(self, admission: Admission, target_revision_id: str) -> PluginRuntime:
+        """Assemble one candidate generation with every host callback bound to this core."""
+        return PluginRuntime(
+            admission.plugins,
+            workspace=self.workspace,
+            revision_id=target_revision_id,
+            store=self.store,
+            usage_callback=self._get_session_usage,
+            budget_callback=self._get_owner_budget,
+            spawn_child_callback=self._spawn_child_callback,
+            find_child_callback=self._delegation.find_keyed_child,
+            join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout),
+            wait_children_callback=lambda _owner, parent, children, guard: self._delegation.wait_children(parent, children, admission_guard=guard),
+            acknowledge_child_completion_callback=lambda _owner, parent, child, run: self._delegation.acknowledge_child_completion(
+                parent, child, run
+            ),
+            send_child_callback=lambda parent, child, prompt, label, notify, guard: self.send_child(
+                parent,
+                child,
+                prompt,
+                label=label,
+                notify_on_completion=notify,
+                admission_guard=guard,
+            ),
+            cancel_child_callback=self.cancel_child,
+            list_descendants_callback=self.list_descendants,
+            read_child_snapshot_callback=self._delegation.read_child_snapshot,
+            cancel_subtree_callback=lambda bound, target, run, reason: self.cancel_descendant_subtree(
+                bound, target, expected_run_id=run, reason=reason
+            ),
+            cancel_background_action_callback=self.cancel_background_action,
+            model_query_callback=self.governed_model_query,
+            model_query_structured_callback=self.governed_model_query_structured,
+            progress_callback=self._report_progress,
+            tool_definition_callback=self._visible_tool_definition,
+            artifacts_dir=self._state_dir / "artifacts",
+            sandbox_backend=self._activation.candidate_sandbox_backend(admission),
+            process_spool_dir=self._process_spool_dir(),
+        )
+
+    def publish_activation(self, snapshot: ActivationSnapshot, prepared: PreparedActivation) -> None:
+        """Swap the generation pointer, release the fence, and retire the old runtime."""
+        admission = prepared.admission
+        with self._calls_lock:
+            self._snapshot = _Snapshot.build(
+                revision_id=admission.revision_id,
+                config=admission.config,
+                admission=admission,
+                plugin_runtime=prepared.plugin_runtime,
+                with_reload=self._admits is not None,
+            )
+            self._activating_thread = None
+            self._calls_lock.notify_all()
+        # Deliver facts deferred to owners the candidate now registers, under the new runtime.
+        self._replay_pending_observers()
+        snapshot.plugin_runtime.close()
+        self._wire_background_runtime(prepared.plugin_runtime)
+        self._background.notify()
+
+    def activation_checkpoint(self, payload: Mapping[str, object] | None, /, *, source: str, request_id: str) -> Mapping[str, object]:
+        """Carry the session's own cursor across the switch, plus a real resume intent where owed."""
+        cursor = _Cursor()
+        if payload is not None:
+            cursor = _Cursor.model_validate(json_wire_object(payload))
+        if source == "model":
+            cursor.resume_intent = request_id
+        return json_wire_object(cursor.model_dump())
 
     def _bound_target(self, execution: _Execution, call: ToolCall) -> str | None:
         """The pinned candidate an approval was bound to, if one exists for this exact native call."""
@@ -3444,7 +3190,7 @@ class Core:
             self._activating_thread = None
             self._calls_lock.notify_all()
 
-    def _record_activation_refusal(
+    def record_activation_refusal(
         self,
         session_id: str,
         request_id: str,
@@ -3466,8 +3212,8 @@ class Core:
                 checkpoint.kind if checkpoint is not None else "ready",
                 EventDraft(
                     EventType.ACTIVATION_FAILED,
-                    "kernel",
-                    "kernel",
+                    "core",
+                    "core",
                     {
                         "request_id": request_id,
                         "source": source,
@@ -3480,184 +3226,21 @@ class Core:
             # The refusal is a diagnostic, never a reason to lose the durable request.
             pass
 
-    def _prepare_target(self) -> tuple[str, Admission]:
-        """Pin the candidate the live configuration currently describes; imports no user code.
-
-        Called before an approval is requested, so what the user is asked about is exactly the
-        immutable artifact and private configuration that a later activation will use.
-        """
-        admits = self._admits
-        if admits is None:
-            raise ValueError("capability activation is unavailable")
-        admission = admits()
-        # Only the private configuration is pinned here; the revision row is inserted atomically
-        # with the activation commit, after the candidate runtime reported its metadata.
-        write_private_snapshot(self._state_dir, admission.revision_id, admission.private_snapshot)
-        return admission.revision_id, admission
-
-    def _pinned_target(self, target_revision_id: str) -> Admission:
-        """Rebuild a previously pinned target from durable records and its current plugin source."""
-        snapshot = load_private_snapshot(self._state_dir, target_revision_id)
-        admits = self._admits
-        if admits is None:
-            raise ValueError("capability activation is unavailable")
-        return admits(snapshot=snapshot, revision_id=target_revision_id)
-
-    def _prepare_activation(self, snapshot: _Snapshot, *, admission: Admission, source: str) -> _PreparedActivation:
-        """Build and verify a candidate generation under the activation fence."""
-        thread_id = threading.get_ident()
-        with self._calls_lock:
-            if self._activating_thread is not None:
-                raise ActivationFenced("another capability activation is already in progress")
-            if self._active_calls:
-                busy = ", ".join(sorted(self._active_calls.values()))
-                raise ActivationFenced(f"capability activation is blocked by in-flight work: {busy}")
-            self._activating_thread = thread_id
-        # Drivers hold no dispatch slot between invokes, so the busy check above cannot see
-        # them: park them explicitly before the candidate builds, or an old-revision driver
-        # would keep running (and its next invoke would only then be refused).
-        self._park_background_drivers(reason="capability activation")
-        try:
-            return self._prepare_activation_locked(snapshot, admission=admission, source=source)
-        except Exception:
-            self._clear_fence()
-            raise
-
-    def _candidate_sandbox_backend(self, admission: Admission) -> SandboxBackend | None:
-        """Rebuild the exec backend for a candidate generation (core-side assembly).
-
-        Same neutral rule as bootstrap: the current backend's policy/helper/baseline plus
-        freshly resolved protected paths (live config + admitted plugin roots + helper +
-        state private/db). None stays None. No gate: new spawns use the current policy.
-        """
-        current = self._snapshot.plugin_runtime.sandbox_backend if self._snapshot is not None else None
-        if current is None:
-            return None
-        protected = [str(self.workspace / self._config_filename)]
-        for source in admission.plugins:
-            try:
-                protected.append(str(source.root.resolve(strict=True)))
-            except OSError:
-                protected.append(str(source.root))
-        if current.helper_path:
-            protected.append(current.helper_path)
-        protected.append(str(self._state_dir / PRIVATE_DIR_NAME))
-        protected.append(str(self._state_dir / DATABASE_FILENAME))
-        protected.append(str(self._state_dir / "process-spool"))
-        return SandboxBackend(
-            policy=current.policy,
-            helper_path=current.helper_path,
-            protected_paths=tuple(dict.fromkeys(protected)),
-            env_baseline=current.env_baseline,
-        )
-
-    def _prepare_activation_locked(self, snapshot: _Snapshot, *, admission: Admission, source: str) -> _PreparedActivation:
-        target_revision_id = admission.revision_id
-        if target_revision_id == snapshot.revision_id:
-            raise ValueError("the configured sources already produce the active revision")
-        candidate_runtime: PluginRuntime | None = None
-        try:
-            candidate_runtime = PluginRuntime(
-                admission.plugins,
-                workspace=self.workspace,
-                revision_id=target_revision_id,
-                store=self.store,
-                usage_callback=self._get_session_usage,
-                budget_callback=self._get_owner_budget,
-                spawn_child_callback=self._spawn_child_callback,
-                find_child_callback=self._delegation.find_keyed_child,
-                join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout).as_payload(),
-                wait_children_callback=lambda _owner, parent, children, guard: self._delegation.wait_children(
-                    parent, children, admission_guard=guard
-                ),
-                acknowledge_child_completion_callback=lambda _owner, parent, child, run: self._delegation.acknowledge_child_completion(
-                    parent, child, run
-                ),
-                send_child_callback=lambda parent, child, prompt, label, notify, guard: self.send_child(
-                    parent,
-                    child,
-                    prompt,
-                    label=label,
-                    notify_on_completion=notify,
-                    admission_guard=guard,
-                ).as_payload(),
-                cancel_child_callback=self.cancel_child,
-                list_descendants_callback=self.list_descendants,
-                read_child_snapshot_callback=self._delegation.read_child_snapshot,
-                cancel_subtree_callback=lambda bound, target, run, reason: self.cancel_descendant_subtree(
-                    bound, target, expected_run_id=run, reason=reason
-                ),
-                cancel_background_action_callback=self.cancel_background_action,
-                model_query_callback=self.governed_model_query,
-                model_query_structured_callback=self.governed_model_query_structured,
-                progress_callback=self._report_progress,
-                tool_definition_callback=self._visible_tool_definition,
-                artifacts_dir=self._state_dir / "artifacts",
-                sandbox_backend=self._candidate_sandbox_backend(admission),
-                process_spool_dir=self._process_spool_dir(),
-            )
-            # Flush facts that belong to the OLD generation before its runtime and subscriptions go
-            # away. An eligible owner the candidate re-registers receives its fact right after the
-            # swap, so that fact is deferred instead of aborting the activation.
-            self._replay_pending_observers(require_complete=True, defer_to_candidate=admission.plugin_ids)
-            if admission.validate is not None:
-                admission.validate(candidate_runtime.providers)
-            session_ids = tuple(record.session_id for record in self.store.sessions(workspace=str(self.workspace)))
-            old_states = snapshot.plugin_runtime.state_metadata()
-            candidate_states = candidate_runtime.state_metadata()
-            copies = plan_state_copies(
-                store=self.store,
-                workspace=str(self.workspace),
-                session_ids=session_ids,
-                old_states=old_states,
-                candidate_states=candidate_states,
-                deactivate=lambda owner, payload, scope, scope_key, tip: self._deactivate_state(
-                    snapshot.plugin_runtime, owner, payload, scope, scope_key, tip
-                ),
-            )
-        except Exception:
-            if candidate_runtime is not None:
-                candidate_runtime.close()
-            self._clear_fence()
-            raise
-        return _PreparedActivation(
-            admission=admission,
-            plugin_runtime=candidate_runtime,
-            copies=copies,
-            source=source,
-            prepared_against=snapshot.revision_id,
-        )
-
-    def _spawn_child_callback(
-        self,
-        parent_session_id: str,
-        prompt: str,
-        label: str,
-        max_steps: int | None,
-        scope: tuple[str, ...] | None,
-        readonly: bool,
-        notify: bool,
-        owner: str,
-        key: str | None,
-        root_id: str,
-        root_budget: int | None,
-        guard: Callable[[], bool] | None,
-        result_schema: Mapping[str, object] | None = None,
-    ) -> str:
+    def _spawn_child_callback(self, request: ChildSpawnRequest) -> str:
         return self.spawn_child(
-            parent_session_id,
-            prompt,
-            label=label,
-            tool_allowlist=scope,
-            max_steps=max_steps,
-            readonly=readonly,
-            notify_on_completion=notify,
-            owner=owner,
-            idempotency_key=key,
-            root_action_id=root_id,
-            initial_root_budget=root_budget,
-            admission_guard=guard,
-            result_schema=result_schema,
+            request.parent_session_id,
+            request.prompt,
+            label=request.label,
+            tool_allowlist=request.tool_allowlist,
+            max_steps=request.max_steps,
+            readonly=request.readonly,
+            notify_on_completion=request.notify_on_completion,
+            owner=request.owner,
+            idempotency_key=request.idempotency_key,
+            root_action_id=request.root_action_id,
+            initial_root_budget=request.initial_root_budget,
+            admission_guard=request.admission_guard,
+            result_schema=request.result_schema,
         )
 
     def _capture_root_authorization(self, session: SessionRecord) -> tuple[str, int | None]:
@@ -3783,7 +3366,7 @@ class Core:
 
     def tick(self, now_ms: int | None = None) -> dict[str, object]:
         """Fire at most one due wakeup: claim it atomically with its run, then drive that run."""
-        self._ensure_open()
+        self.ensure_open()
         now = int(time.time() * 1000) if now_ms is None else now_ms
         if type(now) is not int or now < 0:
             raise ValueError("now_ms must be a non-negative integer")
@@ -3830,60 +3413,7 @@ class Core:
 
     # --- Background actions: owner drivers outside any model turn ---
 
-    def _background_loop(self) -> None:
-        """Claim pending background actions and drive each on its own thread.
-
-        The loop only claims and spawns; each driver runs independently, so one slow
-        action never blocks another session's actions or any model turn. Claimed rows
-        reported as `interrupted` — and are never auto-replayed.
-        """
-        while True:
-            with self._background_cond:
-                if self._closed:
-                    return
-                self._background_claiming += 1
-            try:
-                claimed = self.store.claim_background_action(workspace=str(self.workspace), claim_identity=self._background_identity)
-            except StoreConflict:
-                # Lost a claim race; back off and retry. Anything else is a real
-                # store/contract failure and stays visible instead of idling as "no work".
-                claimed = None
-            except BaseException:
-                with self._background_cond:
-                    self._background_claiming -= 1
-                    self._background_cond.notify_all()
-                raise
-            if claimed is None:
-                with self._background_cond:
-                    self._background_claiming -= 1
-                    self._background_cond.notify_all()
-                    if self._closed:
-                        return
-                    self._background_cond.wait(timeout=1.0)
-                # Existing 1s idle wake (no new thread): settle caller-declared ask
-                # expiries due now. Never kills the loop; per-session containment inside.
-                if not self._closed:
-                    self._sweep_expired_asks()
-                continue
-            abort = threading.Event()
-            with self._background_cond:
-                self._background_live.add(claimed.continuation_id)
-                self._background_aborts[claimed.continuation_id] = abort
-                self._background_abort_causes[claimed.continuation_id] = "shutdown" if self._closed else None
-                if self._closed:
-                    abort.set()
-                self._background_claiming -= 1
-                self._background_cond.notify_all()
-            self._snapshot.plugin_runtime.background_live_actions.add(claimed.continuation_id)
-            worker = threading.Thread(
-                target=self._drive_background_action,
-                args=(claimed, abort),
-                name=f"CoreBackground-{claimed.continuation_id[:8]}",
-                daemon=True,
-            )
-            worker.start()
-
-    def _drive_background_action(self, claimed: ContinuationRecord, abort: threading.Event) -> None:
+    def drive_background_action(self, claimed: ContinuationRecord, abort: threading.Event) -> None:
         """Run one claimed action's owner driver, then settle the row terminally."""
         action_id = claimed.continuation_id
         terminal: Literal["completed", "failed", "cancelled"] = "completed"
@@ -3951,12 +3481,8 @@ class Core:
             # propagates visibly out of the worker; cleanup still runs in `finally`.
             pass
         finally:
-            with self._background_cond:
-                self._background_live.discard(action_id)
-                self._background_abort_causes.pop(action_id, None)
-                self._background_cond.notify_all()
+            self._background.settle_driver(action_id)
             self._snapshot.plugin_runtime.background_live_actions.discard(action_id)
-            self._notify_tool_waiters()
 
     def _invoke_background_action[T](
         self,
@@ -4072,7 +3598,7 @@ class Core:
                 break
             if not committed:
                 raise SequenceConflict(f"background action {action_id!r} could not commit its staged work")
-        self._notify_tool_waiters()
+        self._background.notify_tool_waiters()
         if staged_cancels:
             self._owner_cancel_claimed_work(
                 session_id,
@@ -4106,7 +3632,7 @@ class Core:
             checkpoint_payload=checkpoint_payload,
         )
         self.notify_commit()
-        self._notify_tool_waiters()
+        self._background.notify_tool_waiters()
 
     @staticmethod
     def _terminal_background_tool_request_ids(events: Sequence[StoredEvent]) -> set[str]:
@@ -4133,12 +3659,12 @@ class Core:
                 terminal.add(request_id)
         return terminal
 
-    def _cancel_background_tool_requests(
+    def cancel_background_tool_requests(
         self,
         session_id: str,
         action_id: str,
         *,
-        status: Literal["cancelled", "interrupted", "kernel_lost", "budget_exhausted"],
+        status: Literal["cancelled", "interrupted", "core_lost", "budget_exhausted"],
         stop_cause: StopCause | None,
         reason: str,
     ) -> None:
@@ -4179,13 +3705,13 @@ class Core:
                 }
                 if stop_cause is not None:
                     payload["stop_cause"] = stop_cause
-                if intent_exists and status in {"interrupted", "kernel_lost"}:
+                if intent_exists and status in {"interrupted", "core_lost"}:
                     payload["execution"] = {
                         "cancellation_signalled": stop_cause in {"user_stop", "owner_cancel", "shutdown"},
                         "execution_stopped": False,
                         "side_effect_state": "unknown",
                     }
-                terminal_events.append(EventDraft(EventType.TOOL_DEFERRED_CANCELLED, "kernel", "plugin", payload))
+                terminal_events.append(EventDraft(EventType.TOOL_DEFERRED_CANCELLED, "core", "plugin", payload))
             if not terminal_events:
                 return
             checkpoint = self.store.checkpoint(session_id)
@@ -4198,7 +3724,7 @@ class Core:
                 if (
                     current_request is not None
                     and current_request.payload.get("background_action_id") == action_id
-                    and (not request_intents.get(current_request.sequence, False) or status == "kernel_lost")
+                    and (not request_intents.get(current_request.sequence, False) or status == "core_lost")
                 ):
                     approval_id: str | None = None
                     if cursor.approval_sequence is not None:
@@ -4216,8 +3742,8 @@ class Core:
                         terminal_events.append(
                             EventDraft(
                                 EventType.APPROVAL_DECIDED,
-                                "kernel",
-                                "kernel",
+                                "core",
+                                "core",
                                 {"request_id": approval_id, "decision": "deny", "reason": reason},
                             )
                         )
@@ -4229,7 +3755,7 @@ class Core:
                     }
                     if stop_cause is not None:
                         run_payload["stop_cause"] = stop_cause
-                    terminal_events.append(EventDraft(EventType.RUN_INTERRUPTED, "kernel", "kernel", run_payload))
+                    terminal_events.append(EventDraft(EventType.RUN_INTERRUPTED, "core", "core", run_payload))
                     cursor.batch_sequence = None
                     cursor.next_call = 0
                     cursor.intent_sequence = None
@@ -4272,10 +3798,10 @@ class Core:
             record = self.store.background_action(action_id)
             if record is not None and record.status == "pending":
                 continue
-            if record is not None and record.status == "claimed" and self._background_claim_live(record):
+            if record is not None and record.status == "claimed" and self._background.claim_live(record):
                 continue
             if record is None or record.status in {"claimed", "interrupted"}:
-                status: Literal["cancelled", "interrupted", "kernel_lost", "budget_exhausted"] = "kernel_lost"
+                status: Literal["cancelled", "interrupted", "core_lost", "budget_exhausted"] = "core_lost"
                 stop_cause: StopCause | None = None
                 reason = "background script was lost before its tool request reached a terminal result"
             elif record.status == "cancelled":
@@ -4288,7 +3814,7 @@ class Core:
                 reason = "background driver settled before its tool request reached a terminal result"
             else:
                 raise StoreConflict(f"background action {action_id!r} has unknown status {record.status!r}")
-            self._cancel_background_tool_requests(
+            self.cancel_background_tool_requests(
                 session_id,
                 action_id,
                 status=status,
@@ -4315,15 +3841,13 @@ class Core:
                 return
             action_id = cast(str, request.payload["background_action_id"])
             record = self.store.background_action(action_id)
-            with self._background_cond:
-                action_abort = self._background_aborts.get(action_id)
-                live = action_id in self._background_live
+            action_abort = self._background.abort_event(action_id)
+            live = self._background.is_live(action_id)
             if record is None or record.status != "claimed" or not live:
                 self._reconcile_lost_background_tool_waits(session_id)
                 record = self.store.background_action(action_id)
-                with self._background_cond:
-                    action_abort = self._background_aborts.get(action_id)
-                    live = action_id in self._background_live
+                action_abort = self._background.abort_event(action_id)
+                live = self._background.is_live(action_id)
                 if record is None or record.status != "claimed" or not live:
                     return
             if action_abort is None:
@@ -4336,44 +3860,7 @@ class Core:
 
     def cancel_background_action(self, session_id: str, owner: str, action_id: str, reason: str = "owner cancellation") -> bool:
         """Cancel one owner action and only its own queued or in-flight tool requests."""
-        self._ensure_open()
-        record = self.store.background_action(action_id)
-        if record is None or record.owner != owner or record.session_id != session_id:
-            return False
-        if record.status in ("completed", "failed", "cancelled"):
-            return False
-        with self._background_cond:
-            abort = self._background_aborts.get(action_id)
-            live = action_id in self._background_live
-            if live and abort is not None:
-                self._background_abort_causes[action_id] = "owner_cancel"
-                abort.set()
-                self._background_cond.notify_all()
-        if live and abort is not None:
-            self._notify_tool_waiters()
-            self._cancel_background_tool_requests(
-                session_id,
-                action_id,
-                status="cancelled",
-                stop_cause="owner_cancel",
-                reason=reason,
-            )
-            return True
-        self._cancel_background_tool_requests(
-            session_id,
-            action_id,
-            status="cancelled",
-            stop_cause="owner_cancel",
-            reason=reason,
-        )
-        try:
-            self.store.complete_background_action(action_id, status="cancelled")
-        except StoreConflict:
-            return False
-        with self._background_cond:
-            self._background_cond.notify_all()
-        self._notify_tool_waiters()
-        return True
+        return self._background.cancel_action(session_id, owner, action_id, reason)
 
     def _await_background_tool(self, context: _BackgroundContext, receipt: ToolInvocationReceipt) -> ToolAwaitResult:
         self._assert_background_wait_unleased()
@@ -4407,7 +3894,7 @@ class Core:
             if record.owner != context._owner or record.session_id != context._session_id:
                 raise ValueError("background action identity changed while awaiting its tool request")
             if self._closed:
-                self._cancel_background_tool_requests(
+                self.cancel_background_tool_requests(
                     context._session_id,
                     context.action_id,
                     status="interrupted",
@@ -4415,10 +3902,9 @@ class Core:
                     reason="core shutdown interrupted the background tool wait",
                 )
             elif context.abort_signal.is_set():
-                with self._background_cond:
-                    stop_cause = self._background_abort_causes.get(context.action_id)
+                stop_cause = self._background.abort_cause(context.action_id)
                 status = "cancelled" if stop_cause == "owner_cancel" else "interrupted"
-                self._cancel_background_tool_requests(
+                self.cancel_background_tool_requests(
                     context._session_id,
                     context.action_id,
                     status=status,
@@ -4426,15 +3912,15 @@ class Core:
                     reason="background action stopped",
                 )
             elif record.status == "interrupted":
-                self._cancel_background_tool_requests(
+                self.cancel_background_tool_requests(
                     context._session_id,
                     context.action_id,
-                    status="kernel_lost",
+                    status="core_lost",
                     stop_cause=None,
                     reason="background driver did not survive the previous core process",
                 )
             elif record.status == "failed":
-                self._cancel_background_tool_requests(
+                self.cancel_background_tool_requests(
                     context._session_id,
                     context.action_id,
                     status="interrupted",
@@ -4442,7 +3928,7 @@ class Core:
                     reason="background driver failed before completing its deferred tool wait",
                 )
             elif record.status == "cancelled":
-                self._cancel_background_tool_requests(
+                self.cancel_background_tool_requests(
                     context._session_id,
                     context.action_id,
                     status="cancelled",
@@ -4450,18 +3936,16 @@ class Core:
                     reason="background action was cancelled",
                 )
             elif record.status == "completed":
-                self._cancel_background_tool_requests(
+                self.cancel_background_tool_requests(
                     context._session_id,
                     context.action_id,
                     status="interrupted",
                     stop_cause="error",
                     reason="background driver completed without a terminal result for its tool request",
                 )
-            with self._tool_wait_cond:
-                outcome = self._background_tool_outcome(context, request)
-                if outcome is not None:
-                    return outcome
-                self._tool_wait_cond.wait()
+            outcome = self._background.wait_for_tool_outcome(lambda: self._background_tool_outcome(context, request))
+            if outcome is not None:
+                return outcome
 
     def _background_tool_outcome(self, context: _BackgroundContext, request: StoredEvent) -> ToolAwaitResult | None:
         request_id = str(request.payload["request_id"])
@@ -4546,7 +4030,7 @@ class Core:
                     raise RuntimeError(f"complete result for tool request {request_id!r} could not be hydrated: {exc}") from exc
             budget = self._budget_exhaustion_from_payload(budget_value)
             if tool_event.event_type == EventType.TOOL_COMPLETED:
-                status: Literal["completed", "interrupted", "cancelled", "kernel_lost", "budget_exhausted"] = "completed"
+                status: Literal["completed", "interrupted", "cancelled", "core_lost", "budget_exhausted"] = "completed"
             elif stop_cause == "limit_reached" and budget is not None:
                 status = "budget_exhausted"
             elif stop_cause in {"user_stop", "owner_cancel"}:
@@ -4577,9 +4061,9 @@ class Core:
         ):
             raise ValueError("background tool cancellation changed its owner, revision, or tool identity")
         status_value = payload.get("status")
-        if status_value not in {"cancelled", "interrupted", "kernel_lost", "budget_exhausted"}:
+        if status_value not in {"cancelled", "interrupted", "core_lost", "budget_exhausted"}:
             raise ValueError("background tool cancellation event has an unknown terminal status")
-        status = cast(Literal["cancelled", "interrupted", "kernel_lost", "budget_exhausted"], status_value)
+        status = cast(Literal["cancelled", "interrupted", "core_lost", "budget_exhausted"], status_value)
         return ToolAwaitResult(
             request_id=request_id,
             owner=context._owner,
@@ -4643,89 +4127,7 @@ class Core:
         stale row or a timeout is not success: the caller gets the honest remainder, and
         a failed action raises `RuntimeError` naming its id and recorded error.
         """
-        self._ensure_open()
-        self.session(session_id)
-        if action_id is not None:
-            return (self._wait_one_background_action(session_id, action_id, timeout_seconds=timeout_seconds),)
-        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
-        while True:
-            pending = self.store.pending_background_actions(session_id)
-            with self._background_cond:
-                live = set(self._background_live)
-            waited = [record for record in pending if record.status == "pending" or record.continuation_id in live]
-            if not waited:
-                # A claimed row outside the live set is stale — unless a claim is
-                # in flight, in which case its completion notifies this cond.
-                with self._background_cond:
-                    if self._background_claiming > 0:
-                        self._background_cond.wait(timeout=max(0.0, deadline - time.monotonic()))
-                pending = self.store.pending_background_actions(session_id)
-                with self._background_cond:
-                    live = set(self._background_live)
-                waited = [record for record in pending if record.status == "pending" or record.continuation_id in live]
-                if waited:
-                    continue
-                settled: list[dict[str, object]] = []
-                for record in pending:
-                    settled.append(self._stale_action_entry(record))
-                return tuple(settled)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return tuple({"action_id": record.continuation_id, "status": record.status} for record in waited)
-            with self._background_cond:
-                self._background_cond.wait(timeout=min(remaining, 0.2))
-            # One round settled (or was notified): surface failures before waiting further,
-            # so a failed action never hides behind a longer-running sibling.
-            for record in waited:
-                current = self.store.background_action(record.continuation_id)
-                if current is None or current.status != "failed":
-                    continue
-                raise RuntimeError(f"background action {current.continuation_id!r} failed" + self._action_error_suffix(current))
-
-    def _wait_one_background_action(self, session_id: str, action_id: str, *, timeout_seconds: float) -> dict[str, object]:
-        """Wait for one exact action receipt, however it settled — even before this call."""
-        record = self.store.background_action(action_id)
-        if record is None or record.session_id != session_id:
-            raise ValueError(f"background action {action_id!r} does not belong to session {session_id!r}")
-        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
-        while True:
-            current = self.store.background_action(action_id)
-            assert current is not None  # background rows are never deleted
-            if current.status in ("completed", "failed", "cancelled"):
-                if current.status == "failed":
-                    raise RuntimeError(f"background action {action_id!r} failed" + self._action_error_suffix(current))
-                return {"action_id": action_id, "status": current.status}
-            with self._background_cond:
-                live = action_id in self._background_live
-            if current.status == "claimed" and not live:
-                with self._background_cond:
-                    if self._background_claiming > 0:
-                        self._background_cond.wait(timeout=max(0.0, deadline - time.monotonic()))
-                reconfirmed = self.store.background_action(action_id)
-                assert reconfirmed is not None
-                with self._background_cond:
-                    live = action_id in self._background_live
-                if reconfirmed.status == "claimed" and not live:
-                    return self._stale_action_entry(reconfirmed)
-                continue
-            if time.monotonic() >= deadline:
-                return {"action_id": action_id, "status": current.status}
-            with self._background_cond:
-                self._background_cond.wait(timeout=0.2)
-
-    @staticmethod
-    def _stale_action_entry(record: ContinuationRecord) -> dict[str, object]:
-        """The honest report for a claimed-but-unattended row: interrupted, never success."""
-        error = record.payload.get("error")
-        return {"action_id": record.continuation_id, "status": "interrupted", "error": error if isinstance(error, str) else None}
-
-    @staticmethod
-    def _action_error_suffix(record: ContinuationRecord) -> str:
-        """The recorded driver error of one failed row, as a raise suffix (empty when absent)."""
-        error = record.payload.get("error")
-        if isinstance(error, str) and error:
-            return f": {error}"
-        return ""
+        return self._background.wait_actions(session_id, action_id=action_id, timeout_seconds=timeout_seconds)
 
     def governed_model_query(
         self,
@@ -4829,7 +4231,7 @@ class Core:
         """The shared governed side-turn: resolution, abort, dispatch, tool-calls guard."""
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > 64 * 1024:
             raise ValueError("model query prompt must be nonempty UTF-8 text within 64 KiB")
-        self._ensure_open()
+        self.ensure_open()
         self.session(session_id)
         selected = model or self.config.model
         if selected is None:
@@ -4869,7 +4271,7 @@ class Core:
             session_id,
             EventDraft(
                 EventType.MODEL_QUERY,
-                "kernel",
+                "core",
                 "plugin",
                 {
                     "provider": provider_name,
@@ -5058,127 +4460,6 @@ class Core:
             metadata=metadata or None,
         )
 
-    def _deactivated_owners(self, snapshot: _Snapshot, admission: Admission) -> frozenset[str]:
-        """Owners loaded before that the candidate does not admit: disabled, removed, or missing."""
-        return frozenset(snapshot.plugin_runtime.plugin_ids) - admission.plugin_ids
-
-    def _deactivate_state(
-        self,
-        runtime: PluginRuntime,
-        owner: str,
-        payload: Mapping[str, object],
-        scope: str,
-        scope_key: str,
-        tip_sequence: int | None,
-    ) -> Mapping[str, object]:
-        try:
-            return runtime.prepare_deactivate_owner_state(
-                owner,
-                payload,
-                scope=scope,
-                scope_key=scope_key,
-                tip_sequence=tip_sequence,
-            )
-        except RuntimeError as exc:
-            raise ValueError(f"state deactivation for {owner} failed: {exc}") from exc
-
-    def _commit_activation(
-        self,
-        snapshot: _Snapshot,
-        session: SessionRecord,
-        *,
-        request_id: str,
-        source: str,
-        prepared: _PreparedActivation,
-    ) -> None:
-        """One CAS transaction, then publish one new pointer and revoke the old generation."""
-        admission = prepared.admission
-        target_revision_id = admission.revision_id
-        checkpoint = self.store.checkpoint(session.session_id)
-        checkpoint_payload: Mapping[str, object] | None = None
-        checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None = None
-        if checkpoint is not None and isinstance(checkpoint.payload, Mapping):
-            checkpoint_payload = self._activation_checkpoint(
-                json_wire_object(checkpoint.payload),
-                source=source,
-                request_id=request_id,
-            )
-            checkpoint_kind = cast("Literal['ready', 'approval_wait', 'terminal', 'interrupted']", checkpoint.kind)
-        disabled_owners = self._deactivated_owners(snapshot, admission)
-        # The model's request was already recorded durably by its own tool commit; this
-        # transaction only answers it (a client-initiated switch answers no staged request).
-        events = (
-            EventDraft(
-                EventType.ACTIVATION_COMMITTED,
-                "core",
-                "core",
-                {
-                    "request_id": request_id,
-                    "source": source,
-                    "from_revision_id": snapshot.revision_id,
-                    "to_revision_id": target_revision_id,
-                    "deactivated_owners": list(prepared.copies.deactivated_owners),
-                },
-            ),
-        )
-        self.store.commit_activation(
-            workspace=str(self.workspace),
-            session_id=session.session_id,
-            expected_sequence=session.last_event_sequence,
-            expected_run_id=session.run_id,
-            expected_revision_id=snapshot.revision_id,
-            target_revision_id=target_revision_id,
-            target_payload=admission.revision_payload,
-            # Control facts carry the authentic operation identity, never an invented run.
-            run_id=session.run_id or request_id,
-            status=session.status,
-            events=events,
-            checkpoint_kind=checkpoint_kind,
-            checkpoint_payload=checkpoint_payload,
-            state_updates=prepared.copies.updates,
-            cancelled_owners=tuple(sorted(disabled_owners)),
-            cleared_budget_owners=tuple(sorted(disabled_owners)),
-        )
-        self.notify_commit()
-        # Publication: one pointer swap, then revoke the old generation. Nothing can be
-        # dispatched to the old runtime afterwards (it is closed and never respawns), and the
-        # candidate runtime was already validated before the commit.
-        with self._calls_lock:
-            self._snapshot = _Snapshot.build(
-                revision_id=target_revision_id,
-                config=admission.config,
-                admission=admission,
-                plugin_runtime=prepared.plugin_runtime,
-                with_reload=self._admits is not None,
-            )
-            self._activating_thread = None
-            self._calls_lock.notify_all()
-        # Deliver facts deferred to owners the candidate now registers, under the new runtime.
-        self._replay_pending_observers()
-        snapshot.plugin_runtime.close()
-        self._wire_background_runtime(prepared.plugin_runtime)
-        self._notify_background_loop()
-
-    def _activation_checkpoint(
-        self,
-        checkpoint_payload: Mapping[str, object] | None,
-        *,
-        source: str,
-        request_id: str,
-    ) -> Mapping[str, object]:
-        """Carry the session's own cursor across the switch, plus a real resume intent where owed.
-
-        The intent is written only for a model-requested switch inside a live run: that run owes
-        one automatic continuation, and a crash before the in-process continuation persists it
-        lets a restart finish the job exactly once. A user-issued switch owes no such turn.
-        """
-        cursor = _Cursor()
-        if checkpoint_payload is not None:
-            cursor = _Cursor.model_validate(json_wire_object(checkpoint_payload))
-        if source == "model":
-            cursor.resume_intent = request_id
-        return json_wire_object(cursor.model_dump())
-
     @staticmethod
     def _event(execution: _Execution, sequence: int, kind: str) -> StoredEvent:
         if sequence < 1 or sequence > len(execution.events):
@@ -5259,8 +4540,8 @@ class Core:
         """A durable diagnostic for a fact that its own revision's owner can no longer receive."""
         return EventDraft(
             EventType.OBSERVER_ERROR,
-            source="kernel",
-            actor="kernel",
+            source="core",
+            actor="core",
             payload={
                 "owner": ", ".join(missing),
                 "error": f"event {event.sequence} was produced by revision {event.revision_id} but its registered owner is not loaded",
@@ -5418,8 +4699,8 @@ class Core:
             events=(
                 EventDraft(
                     EventType.PROVIDER_INTERRUPTED,
-                    "kernel",
-                    "kernel",
+                    "core",
+                    "core",
                     {
                         "dispatch_sequence": intent.sequence,
                         "logical_turn": intent.payload.get("logical_turn", ""),
@@ -5682,7 +4963,7 @@ class Core:
             enforce_pin=enforce_pin,
             ask_answer_guard=ask_answer_guard,
         )
-        self._notify_tool_waiters()
+        self._background.notify_tool_waiters()
         self._deliver_facts(execution, execution.events[known_before:], tolerate_conflicts=True)
         return new_events
 
@@ -6130,7 +5411,7 @@ class Core:
                         "terminal",
                         EventDraft(
                             EventType.RUN_COMPLETED,
-                            "kernel",
+                            "core",
                             "plugin",
                             {"output": None, "logical_turn": cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},
                         ),
@@ -6226,8 +5507,8 @@ class Core:
                             "ready",
                             EventDraft(
                                 EventType.PROVIDER_INTENT,
-                                "kernel",
-                                "kernel",
+                                "core",
+                                "core",
                                 {
                                     "attempt": cursor.step,
                                     "provider": provider_name,
@@ -6279,8 +5560,8 @@ class Core:
                             "interrupted",
                             EventDraft(
                                 EventType.PROVIDER_INTERRUPTED,
-                                "kernel",
-                                "kernel",
+                                "core",
+                                "core",
                                 {
                                     "error": str(exc),
                                     "unknown_usage": True,
@@ -6309,8 +5590,8 @@ class Core:
                             "interrupted",
                             EventDraft(
                                 EventType.PROVIDER_INTERRUPTED,
-                                "kernel",
-                                "kernel",
+                                "core",
+                                "core",
                                 {
                                     "error": str(exc),
                                     "unknown_usage": True,
@@ -6396,8 +5677,8 @@ class Core:
                             EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
                             EventDraft(
                                 EventType.RUN_COMPLETED,
-                                "kernel",
-                                "kernel",
+                                "core",
+                                "core",
                                 {"logical_turn": execution.cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},
                             ),
                             *self._lifecycle_events(execution, snapshot, "session_end", status="completed"),
@@ -6453,14 +5734,14 @@ class Core:
                     # Pin the exact candidate this approval is about, before the user is asked:
                     # admission imports nothing, and after approval the already-pinned artifact
                     # is activated, so editing the workspace source in between cannot change it.
-                    target_revision_id, _admission = self._prepare_target()
+                    target_revision_id, _admission = self._activation.prepare_target()
                     payload["target_revision_id"] = target_revision_id
                     payload["activation_pending"] = True
                 self._commit(
                     execution,
                     "waiting",
                     "approval_wait",
-                    EventDraft(EventType.APPROVAL_REQUESTED, "kernel", "plugin" if cursor.deferred_sequence is not None else "model", payload),
+                    EventDraft(EventType.APPROVAL_REQUESTED, "core", "plugin" if cursor.deferred_sequence is not None else "model", payload),
                     checkpoint_bindings=(("approval_sequence", EventType.APPROVAL_REQUESTED),),
                 )
                 return self._result(execution, pending_approval=payload)
@@ -6487,7 +5768,7 @@ class Core:
                     "ready",
                     EventDraft(
                         EventType.TOOL_INTENT,
-                        "kernel",
+                        "core",
                         "plugin" if cursor.deferred_sequence is not None else "model",
                         {
                             "invocation_id": invocation_id,
@@ -6524,7 +5805,7 @@ class Core:
                     staged_events=(
                         EventDraft(
                             EventType.ACTIVATION_REQUESTED,
-                            "kernel",
+                            "core",
                             "model",
                             {
                                 "request_id": request_id,
@@ -6722,7 +6003,7 @@ class Core:
             execution,
             "waiting",
             "ready",
-            EventDraft(EventType.ASK_REQUESTED, "kernel", "plugin" if cursor.deferred_sequence is not None else "model", envelope),
+            EventDraft(EventType.ASK_REQUESTED, "core", "plugin" if cursor.deferred_sequence is not None else "model", envelope),
             *staged.staged_events,
             staged_state=staged.staged_state,
             staged_continuations=staged.staged_continuations,
@@ -6734,183 +6015,7 @@ class Core:
         return self._result(execution, pending_ask=envelope)
 
     def _artifact_page(self, digest: str, offset: int, limit: int) -> ArtifactPage:
-        return self.read_artifact(digest, offset=offset, limit=limit)
-
-    def _persist_result(self, result: ToolResult, *, force: bool) -> tuple[ToolResult, int]:
-        """Publish canonical JSON before any compact event can refer to it; never hash a self-reference."""
-        result = replace(result, result_reference=None)
-        encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":"))
-        pending: list[bytes] = []
-        size = 0
-        spill_id: str | None = None
-        try:
-            for piece in encoder.iterencode(encode_tool_result(result)):
-                data = piece.encode("utf-8")
-                size += len(data)
-                if spill_id is None and (force or size > TOOL_OUTPUT_BYTES):
-                    spill_id, spill = self._artifacts.start_spill("application/vnd.voidcode.tool-result+json", owner="kernel")
-                    for prior in pending:
-                        spill.append(prior)
-                    pending.clear()
-                if spill_id is None:
-                    pending.append(data)
-                else:
-                    self._artifacts.spill(spill_id).append(data)
-            if spill_id is None:
-                return result, size
-            digest, total, media_type = self._artifacts.finish(spill_id)
-        except BaseException:
-            if spill_id is not None:
-                self._artifacts.discard(spill_id)
-            raise
-        return replace(result, result_reference=ArtifactReference(digest, total, media_type)), size
-
-    def _prepare_report_result(self, result: ToolResult) -> tuple[ToolResult, int, bool]:
-        stored, size = self._persist_result(
-            result,
-            force=(isinstance(result.output, (TextOutput, CompositeOutput)) and result.body is not None),
-        )
-        try:
-            projected, _, clipped = project_tool_result(
-                stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page, include_images=False
-            )
-        except ProjectionRequiresReference:
-            stored, size = self._persist_result(result, force=True)
-            projected, _, clipped = project_tool_result(
-                stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page, include_images=False
-            )
-        if size <= TOOL_OUTPUT_BYTES:
-            return stored, size, clipped
-        # The event carries a bounded representation, not another copy of a large body/capture.
-        # The complete original JSON is already durable at result_reference.
-        output = stored.output
-        projection = json.loads(projected)
-        if isinstance(output, TextOutput):
-            reference = output.bounds.reference
-            if reference is None and len(output.text.encode("utf-8")) > TOOL_OUTPUT_BYTES:
-                spill_id, spill = self._artifacts.start_spill("text/plain; charset=utf-8", owner="kernel")
-                try:
-                    for start in range(0, len(output.text), 65536):
-                        spill.append(output.text[start : start + 65536].encode("utf-8"))
-                    digest, total, media_type = self._artifacts.finish(spill_id)
-                except BaseException:
-                    self._artifacts.discard(spill_id)
-                    raise
-                reference = ArtifactReference(digest, total, media_type)
-            text = projection.get("text", "")
-            output = TextOutput(
-                text if isinstance(text, str) else "",
-                bounds=replace(output.bounds, reference=reference, partial=output.bounds.partial or clipped),
-            )
-        elif isinstance(output, CompositeOutput):
-            compact_parts, compact_truncated = self._compact_composite_parts(stored)
-            presentation = projection.get("presentation")
-            output = CompositeOutput(
-                parts=tuple(compact_parts),
-                presentation=presentation if isinstance(presentation, str) else None,
-                bounds=replace(output.bounds, partial=output.bounds.partial or clipped or compact_truncated),
-            )
-            clipped = clipped or compact_truncated
-        else:
-            presentation = projection.get("presentation", projection.get("text"))
-            output = replace(
-                output,
-                presentation=presentation if isinstance(presentation, str) else None,
-                bounds=replace(output.bounds, partial=output.bounds.partial or clipped),
-            )
-        compact = replace(stored, body=None, output=output, steering_context=None)
-        if isinstance(compact, ToolFailure):
-            compact = replace(compact, error=str(projection.get("error", compact.error)), diagnostics=None)
-        return compact, size, clipped
-
-    def _spill_composite_text(self, text: str) -> ArtifactReference:
-        spill_id, spill = self._artifacts.start_spill("text/plain; charset=utf-8", owner="kernel")
-        try:
-            for start in range(0, len(text), 65536):
-                spill.append(text[start : start + 65536].encode("utf-8"))
-            digest, total, media_type = self._artifacts.finish(spill_id)
-        except BaseException:
-            self._artifacts.discard(spill_id)
-            raise
-        return ArtifactReference(digest, total, media_type)
-
-    def _spill_composite_table(self, columns: tuple[str, ...], rows: tuple[tuple[str, ...], ...], total_rows: int | None) -> ArtifactReference:
-        document = {"columns": list(columns), "rows": [list(row) for row in rows], "total_rows": total_rows if total_rows is not None else len(rows)}
-        payload = json.dumps(document, ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":")).encode("utf-8")
-        spill_id, spill = self._artifacts.start_spill("application/json", owner="kernel")
-        try:
-            for start in range(0, len(payload), 65536):
-                spill.append(payload[start : start + 65536])
-            digest, total, media_type = self._artifacts.finish(spill_id)
-        except BaseException:
-            self._artifacts.discard(spill_id)
-            raise
-        return ArtifactReference(digest, total, media_type)
-
-    def _compact_composite_parts(self, stored: ToolResult) -> tuple[list[ContentPart], bool]:
-        output = stored.output
-        if not isinstance(output, CompositeOutput):
-            raise ValueError("composite compaction requires a composite output")
-        parts: list[ContentPart] = list(output.parts)
-        truncated = False
-
-        def _candidate_size(candidate: list[ContentPart]) -> int:
-            candidate_output = CompositeOutput(parts=tuple(candidate), presentation=None, bounds=output.bounds)
-            candidate_result = replace(stored, body=None, output=candidate_output, steering_context=None)
-            if isinstance(candidate_result, ToolFailure):
-                candidate_result = replace(candidate_result, diagnostics=None)
-            payload = encode_tool_result(candidate_result)
-            return len(json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":")).encode("utf-8"))
-
-        while _candidate_size(parts) > TOOL_OUTPUT_BYTES:
-            best_index: int | None = None
-            best_size = 0
-            for index, part in enumerate(parts):
-                if isinstance(part, TablePart) and part.rows:
-                    size = sum(len(cell.encode("utf-8")) for row in part.rows for cell in row)
-                    size += sum(len(column.encode("utf-8")) for column in part.columns)
-                elif isinstance(part, TextPart) and part.text:
-                    size = len(part.text.encode("utf-8"))
-                elif isinstance(part, JsonPart) and len(part.preview) > 1:
-                    size = len(part.preview.encode("utf-8"))
-                else:
-                    continue
-                if size > best_size:
-                    best_size = size
-                    best_index = index
-            if best_index is None:
-                break
-            part = parts[best_index]
-            if isinstance(part, TablePart):
-                if part.reference is None:
-                    reference = self._spill_composite_table(part.columns, part.rows, part.total_rows)
-                    total = part.total_rows if part.total_rows is not None else len(part.rows)
-                    keep = len(part.rows) // 2
-                    parts[best_index] = TablePart(
-                        columns=part.columns,
-                        rows=part.rows[:keep],
-                        total_rows=total,
-                        reference=reference,
-                        presentation=part.presentation,
-                    )
-                else:
-                    keep = len(part.rows) // 2
-                    parts[best_index] = replace(part, rows=part.rows[:keep])
-                truncated = True
-            elif isinstance(part, TextPart):
-                if part.reference is None:
-                    reference = self._spill_composite_text(part.text)
-                    keep = len(part.text) // 2
-                    parts[best_index] = TextPart(text=part.text[:keep], reference=reference)
-                else:
-                    keep = len(part.text) // 2
-                    parts[best_index] = TextPart(text=part.text[:keep], reference=part.reference)
-                truncated = True
-            elif isinstance(part, JsonPart):
-                keep = max(1, len(part.preview) // 2)
-                parts[best_index] = JsonPart(reference=part.reference, preview=part.preview[:keep], media_type=part.media_type)
-                truncated = True
-        return parts, truncated
+        return self._projection.page(digest, offset, limit)
 
     def _report(
         self,
@@ -6970,7 +6075,7 @@ class Core:
         definition = self._snapshot.definition_of(call.tool_name)
         declaration = intent.payload if intent is not None else {}
         diagnostic = result.diagnostics if isinstance(result, ToolFailure) else None
-        committed_result, result_bytes, projection_content_clipped = self._prepare_report_result(result)
+        committed_result, result_bytes, projection_content_clipped = self._projection.prepare_report(result)
         model_event = next(
             (event for event in reversed(execution.events) if event.sequence == batch_sequence and event.event_type == EventType.MODEL_TURN), None
         )
@@ -7050,7 +6155,7 @@ class Core:
             payload["invocation_id"] = invocation_id
         report_event = EventDraft(
             EventType.TOOL_INTERRUPTED if interrupted else EventType.TOOL_COMPLETED,
-            "kernel" if interrupted else "tool",
+            "core" if interrupted else "tool",
             "plugin" if deferred else "model",
             payload,
         )
@@ -7397,7 +6502,7 @@ class Core:
         names the real staged fact it came from, never a forged cause.
         """
         with self._session_lock(session_id):
-            self._ensure_open()
+            self.ensure_open()
             with self._aborts_lock:
                 if session_id in self._session_aborts:
                     return
@@ -7487,7 +6592,7 @@ class Core:
         ):
             self._interrupt_batch(execution, budget_exhaustion=budget_exhaustion)
         checkpoint_kind = "terminal" if deliberate else "interrupted"
-        self.store.cancel_pending_continuations(execution.session.session_id, "kernel")
+        self.store.cancel_pending_continuations(execution.session.session_id, "core")
         stop_payload: dict[str, object] = {
             "reason": message,
             "stop_cause": stop_cause,
@@ -7498,7 +6603,7 @@ class Core:
         if bridge_request_id is not None and bridge_action_id is not None:
             stop_payload["deferred_request_id"] = bridge_request_id
             stop_payload["background_action_id"] = bridge_action_id
-        stop_event = EventDraft(EventType.RUN_INTERRUPTED, "kernel", "kernel", stop_payload)
+        stop_event = EventDraft(EventType.RUN_INTERRUPTED, "core", "core", stop_payload)
         terminal_events: list[EventDraft] = []
         if bridge_not_dispatched:
             if budget_exhaustion is not None and stop_cause == "limit_reached":
@@ -7519,7 +6624,7 @@ class Core:
             }
             if budget_exhaustion is not None:
                 terminal_payload["budget_exhaustion"] = asdict(budget_exhaustion)
-            terminal_events.append(EventDraft(EventType.TOOL_DEFERRED_CANCELLED, "kernel", "plugin", terminal_payload))
+            terminal_events.append(EventDraft(EventType.TOOL_DEFERRED_CANCELLED, "core", "plugin", terminal_payload))
             cursor.deferred_sequence = None
             cursor.deferred_depth = 0
             cursor.deferred_action_id = None
@@ -7557,8 +6662,8 @@ class Core:
             "terminal",
             EventDraft(
                 EventType.RUN_FAILED,
-                "kernel",
-                "kernel",
+                "core",
+                "core",
                 {"error": message, "logical_turn": execution.cursor.logical_turn, **self._measured_run_elapsed_fields(execution)},
             ),
             *self._lifecycle_events(execution, self._snapshot, "session_end", status="failed", error=message),

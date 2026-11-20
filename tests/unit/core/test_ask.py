@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -228,15 +229,6 @@ def _open(tmp_path: Path) -> Core:
     return open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
 
 
-def _wait_for(predicate: Callable[[], bool], *, what: str, timeout: float = 15) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.02)
-    raise AssertionError(f"timed out waiting for {what}")
-
-
 def _questions(tag: str) -> list[dict[str, object]]:
     return [
         {"kind": "field", "name": "q1", "label": f"First {tag}", "field_type": "text", "required": True},
@@ -365,7 +357,7 @@ def test_ask_expiry_sweep_settles_typed_failure(tmp_path: Path) -> None:
             assert parked.status == "waiting"
             request_id = str(parked.pending_ask["request"]["request_id"])
             time.sleep(0.15)
-            core._sweep_expired_asks()
+            core.sweep_expired_asks()
             answered = [event for event in core.store.events("s") if event.event_type == EventType.ASK_ANSWERED]
             assert len(answered) == 1 and answered[0].payload["status"] == "expired"
             assert answered[0].payload["request_id"] == request_id
@@ -553,12 +545,14 @@ def test_ask_suspend_outside_tool_refused(tmp_path: Path) -> None:
             assert refused.status == "error" and refused.error is not None and "tool-callback lease" in refused.error
             queued = core.invoke_command("s", "ask_enqueue_bg", {}, expected_revision=core.revision_id)
             assert queued.status == "ok", queued
-            _wait_for(
+            wait_for(
                 lambda: (
                     core.store.plugin_state(PLUGIN_ID, "session", "s")[0] is not None
                     and "bg_refusal" in (core.store.plugin_state(PLUGIN_ID, "session", "s")[0] or {})
                 ),
                 what="background suspend refusal",
+                timeout=15.0,
+                interval=0.02,
             )
             state, _version = core.store.plugin_state(PLUGIN_ID, "session", "s")
             assert state is not None and "tool-callback lease" in str(state["bg_refusal"])

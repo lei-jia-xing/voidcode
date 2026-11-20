@@ -72,6 +72,8 @@ from voidcode.sdk.provider import (
 from voidcode.sdk.resources import ResourceContractError, ResourcePage, ResourceReadCaller, ResourceReadRequest, ResourceUnavailable
 from voidcode.sdk.services import (
     CancelSubtreeReceipt,
+    ChildOutcome,
+    ChildSendReceipt,
     ChildSessionSnapshot,
     DescendantNode,
     EventView,
@@ -97,6 +99,7 @@ from voidcode.sdk.transcript import ContextHistory, TranscriptEntry, TranscriptP
 from voidcode.sdk.views import PluginViewDescriptor
 
 from .artifacts import ArtifactStore
+from .child_contracts import ChildCompletionReceipt, ChildSpawnRequest, ChildWaitDelivery
 from .events import EventType
 from .facts import fact_for_event
 from .processes import ProcessRegistry
@@ -281,30 +284,12 @@ class PluginRuntime:
         store: SqliteStore | None = None,
         usage_callback: Callable[[str, int, int | None], SessionUsageReport] | None = None,
         budget_callback: Callable[[str, str], PluginBudget | None] | None = None,
-        spawn_child_callback: Callable[
-            [
-                str,
-                str,
-                str,
-                int | None,
-                tuple[str, ...] | None,
-                bool,
-                bool,
-                str,
-                str | None,
-                str,
-                int | None,
-                Callable[[], bool],
-                Mapping[str, object] | None,
-            ],
-            str,
-        ]
-        | None = None,
+        spawn_child_callback: Callable[[ChildSpawnRequest], str] | None = None,
         find_child_callback: Callable[[str, str, str], str | None] | None = None,
-        join_child_callback: Callable[[str, str, float], Mapping[str, object]] | None = None,
-        wait_children_callback: Callable[[str, str, tuple[str, ...], Callable[[], bool]], tuple[Mapping[str, object], ...]] | None = None,
-        acknowledge_child_completion_callback: Callable[[str, str, str, str], Mapping[str, object] | None] | None = None,
-        send_child_callback: Callable[[str, str, str, str, bool, Callable[[], bool]], Mapping[str, object]] | None = None,
+        join_child_callback: Callable[[str, str, float], ChildOutcome] | None = None,
+        wait_children_callback: Callable[[str, str, tuple[str, ...], Callable[[], bool]], tuple[ChildWaitDelivery, ...]] | None = None,
+        acknowledge_child_completion_callback: Callable[[str, str, str, str], ChildCompletionReceipt | None] | None = None,
+        send_child_callback: Callable[[str, str, str, str, bool, Callable[[], bool]], ChildSendReceipt] | None = None,
         cancel_child_callback: Callable[[str, str, str], bool] | None = None,
         list_descendants_callback: Callable[[str], tuple[DescendantNode, ...]] | None = None,
         read_child_snapshot_callback: Callable[[str, str], ChildSessionSnapshot | None] | None = None,
@@ -559,6 +544,9 @@ class PluginRuntime:
                 slash_visible=command.definition.slash_visible,
                 text_argument=command.definition.text_argument,
                 default_shortcut=command.definition.default_shortcut,
+                usage=command.definition.usage,
+                examples=command.definition.examples,
+                group=command.definition.group,
             )
             for command, plugin_id in self._commands.values()
         )
@@ -906,7 +894,7 @@ class PluginRuntime:
         lease.staged_events.append(
             EventDraft(
                 EventType.WINDOW_PROJECTED,
-                "kernel",
+                "core",
                 "plugin",
                 {
                     "owner": lease.owner,

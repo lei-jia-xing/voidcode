@@ -7,14 +7,15 @@ import os
 import subprocess
 import sys
 import threading
-import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -449,13 +450,7 @@ def _open(tmp_path: Path) -> Core:
     return open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
 
 
-def _wait_for(predicate: Callable[[], bool], *, what: str, timeout: float = 30) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.02)
-    raise AssertionError(f"timed out waiting for {what}")
+_wait_for = partial(wait_for, timeout=30, interval=0.02)
 
 
 def _enqueue(core: Core, session_id: str, **arguments: object) -> str:
@@ -765,7 +760,7 @@ def test_delayed_tool_request_keeps_original_root_budget(tmp_path: Path) -> None
                     "revision_id": core.revision_id,
                 },
             )
-            core._notify_background_loop()
+            core._background.notify()
             _wait_for(lambda: started.exists(), what="delayed driver gate")
             second = core.run("new unlimited root", session_id="parent")
             assert second.status == "completed", second.error
@@ -824,7 +819,7 @@ def test_hidden_stale_and_missing_wait_authority_are_refused(tmp_path: Path) -> 
                     "revision_id": core.revision_id,
                 },
             )
-            core._notify_background_loop()
+            core._background.notify()
             _wait_for(
                 lambda: core.store.background_action("hidden-tool-wait").status == "completed",
                 what="hidden tool refusal",
@@ -852,7 +847,7 @@ def test_hidden_stale_and_missing_wait_authority_are_refused(tmp_path: Path) -> 
                 root_id="legacy-root",
                 root_action_budget=None,
             )
-            core._notify_background_loop()
+            core._background.notify()
             _wait_for(
                 lambda: core.store.background_action("legacy-missing-authority").status == "completed",
                 what="legacy missing authority refusal",
@@ -927,7 +922,7 @@ def test_activation_retires_live_tool_wait_before_new_revision(tmp_path: Path) -
             assert core.store.background_action(action_id).status == "claimed"
             assert target.read_text(encoding="utf-8") == "unchanged\n"
             # Separately exercise the safe-boundary park transition before retirement.
-            core._park_background_drivers(reason="capability activation")  # noqa: SLF001 - activation lifecycle boundary
+            core.park_background_drivers(reason="capability activation")
             assert core.store.background_action(action_id).status == "cancelled"
             assert target.read_text(encoding="utf-8") == "unchanged\n"
             terminals = [event for event in _events(core, "parent") if event.event_type == EventType.TOOL_INTERRUPTED]
@@ -1045,7 +1040,7 @@ while True:
         try:
             _wait_for(
                 lambda: any(
-                    event.event_type == EventType.TOOL_DEFERRED_CANCELLED and event.payload.get("status") == "kernel_lost"
+                    event.event_type == EventType.TOOL_DEFERRED_CANCELLED and event.payload.get("status") == "core_lost"
                     for event in _events(reopened, "parent")
                 ),
                 what="lost-driver reconciliation",

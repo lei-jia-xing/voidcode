@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+from voidcode.core.child_contracts import ChildWaitDelivery
 from voidcode.core.delegation import DelegationManager
 from voidcode.core.plugins import LeaseContext
 from voidcode.core.services import RuntimeServices
@@ -102,7 +103,7 @@ def test_join_child_parser_preserves_capture_causes() -> None:
         output_preview="partial…",
         output_error="RuntimeError: boom-output",
         history_error="RuntimeError: boom-history",
-    ).as_payload()
+    )
     runtime = SimpleNamespace(closed=False, join_child_callback=lambda _parent, _child, _timeout: wire)
     outcome = RuntimeServices(cast(Any, runtime), _lease()).join_child("child-1", timeout_seconds=1)
     assert outcome.run_id == "run-1" and outcome.output_sha256 is None
@@ -112,29 +113,29 @@ def test_join_child_parser_preserves_capture_causes() -> None:
 
 
 def test_wait_children_parser_keeps_exact_run_causes() -> None:
-    first: dict[str, Any] = {
-        "outcome": ChildOutcome(
+    first = ChildWaitDelivery(
+        outcome=ChildOutcome(
             child_session_id="child-1",
             status="completed",
             run_id="run-1",
             output_preview="partial…",
             output_error="RuntimeError: boom-output",
-        ).as_payload(),
-        "source_session_id": "parent",
-        "event_sequence": 9,
-        "notice_id": None,
-    }
-    second: dict[str, Any] = {
-        "outcome": ChildOutcome(
+        ),
+        source_session_id="parent",
+        event_sequence=9,
+        notice_id=None,
+    )
+    second = ChildWaitDelivery(
+        outcome=ChildOutcome(
             child_session_id="child-1",
             status="completed",
             run_id="run-2",
             output="followup-ok",
-        ).as_payload(),
-        "source_session_id": "parent",
-        "event_sequence": 12,
-        "notice_id": None,
-    }
+        ),
+        source_session_id="parent",
+        event_sequence=12,
+        notice_id=None,
+    )
     runtime = SimpleNamespace(
         closed=False,
         lease_lock=threading.Lock(),

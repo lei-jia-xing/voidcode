@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 
-from voidcode.core.engine import Cancellation
+from voidcode.core.cancellation import Cancellation
 
 
 def test_cancel_callbacks_fire_once_per_registration() -> None:

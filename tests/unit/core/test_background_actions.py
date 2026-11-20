@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import json
 import threading
-import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
@@ -203,15 +203,6 @@ def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     return core
 
 
-def _wait_for(predicate: Callable[[], bool], *, timeout: float = 20.0, what: str) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.05)
-    raise AssertionError(f"timed out waiting for {what}")
-
-
 def _enqueue(core: Core, session: str, **arguments: object) -> str:
     result = core.invoke_command(session, "bg_enqueue", dict(arguments), expected_revision=core.revision_id)
     assert result.status == "ok", result
@@ -253,7 +244,7 @@ def test_driver_checkpoints_are_durable_invoke_by_invoke(tmp_path: Path) -> None
         core = _open(tmp_path, server)
         core.create_session("parent")
         action_id = _enqueue(core, "parent", note="hello", spins=6)
-        _wait_for(lambda: _marks(core, "parent") == ["first:hello"], what="the first checkpoint commit")
+        wait_for(lambda: _marks(core, "parent") == ["first:hello"], what="the first checkpoint commit")
         # The action is still running its later invokes while the first mark is durable.
         assert _status(core, "parent", action_id)["status"] == "running"
         assert core.wait_background_actions("parent", timeout_seconds=20) == ()
@@ -267,10 +258,10 @@ def test_cancel_reaches_a_live_driver_and_keeps_earlier_checkpoints(tmp_path: Pa
         core = _open(tmp_path, server)
         core.create_session("parent")
         action_id = _enqueue(core, "parent", note="slow", spins=50)
-        _wait_for(lambda: _status(core, "parent", action_id)["status"] == "running", what="the claim")
-        _wait_for(lambda: "first:slow" in _marks(core, "parent"), what="the first checkpoint commit")
+        wait_for(lambda: _status(core, "parent", action_id)["status"] == "running", what="the claim")
+        wait_for(lambda: "first:slow" in _marks(core, "parent"), what="the first checkpoint commit")
         assert _cancel(core, "parent", action_id) is True
-        _wait_for(lambda: _status(core, "parent", action_id)["status"] == "cancelled", what="the cancel settle")
+        wait_for(lambda: _status(core, "parent", action_id)["status"] == "cancelled", what="the cancel settle")
         assert _marks(core, "parent")[0] == "first:slow"
         assert core.wait_background_actions("parent", timeout_seconds=5) == ()
 
@@ -281,8 +272,8 @@ def test_stale_claim_reports_interrupted_and_blocks_nothing(tmp_path: Path) -> N
         core = _open(tmp_path, server)
         core.create_session("parent")
         doomed = _enqueue(core, "parent", note="doomed", spins=50)
-        _wait_for(lambda: _claimed(core, doomed), what="the doomed claim")
-        _wait_for(lambda: "first:doomed" in _marks(core, "parent"), what="the doomed first checkpoint commit")
+        wait_for(lambda: _claimed(core, doomed), what="the doomed claim")
+        wait_for(lambda: "first:doomed" in _marks(core, "parent"), what="the doomed first checkpoint commit")
         # Simulate a crashed holder: orphan the claimed row with a foreign identity while the
         # live driver is signalled away, so the row stands alone with no driver in this process.
         with core.store._lock:  # noqa: SLF001 - the test simulates a dead claim holder
@@ -291,11 +282,10 @@ def test_stale_claim_reports_interrupted_and_blocks_nothing(tmp_path: Path) -> N
                 (json.dumps({"pid": 99999999, "core": "dead"}), doomed),
             )
             core.store._connection.commit()
-        with core._background_cond:  # noqa: SLF001 - the test simulates a dead claim holder
-            abort = core._background_aborts.get(doomed)
-            if abort is not None:
-                abort.set()
-        _wait_for(
+        abort = core._background.abort_event(doomed)
+        if abort is not None:
+            abort.set()
+        wait_for(
             lambda: _status(core, "parent", doomed)["status"] in ("cancelled", "interrupted"),
             what="the doomed settle",
         )
@@ -335,7 +325,7 @@ def test_keyed_retry_on_notify_less_spawn_fact_fails_loudly(tmp_path: Path) -> N
         keyless = dict(facts[0])
         del keyless["notify_on_completion"]
         before = len(core.store.events("parent"))
-        core._commit_control_event("parent", EventDraft(EventType.CHILD_SPAWNED, "kernel", "plugin", keyless))
+        core._commit_control_event("parent", EventDraft(EventType.CHILD_SPAWNED, "core", "plugin", keyless))
         assert len(core.store.events("parent")) == before + 1
         with pytest.raises(KeyError, match="notify_on_completion"):
             core.spawn_child("parent", "child work", owner=PLUGIN_ID, idempotency_key="node-repair")
@@ -362,8 +352,8 @@ def test_delayed_background_spawn_keeps_its_original_root_authorization(tmp_path
             root_id=original_root_id,
             root_action_budget=1,
         )
-        core._notify_background_loop()  # noqa: SLF001 - seed the durable queue directly to isolate recovery.
-        _wait_for(lambda: "first:spawn-after-delay" in _marks(core, "parent"), what="background delay point")
+        core._background.notify()  # noqa: SLF001 - seed the durable queue directly to isolate recovery.
+        wait_for(lambda: "first:spawn-after-delay" in _marks(core, "parent"), what="background delay point")
 
         second = core.run("new root", session_id="parent")
         assert second.status == "completed", second.error
@@ -372,15 +362,15 @@ def test_delayed_background_spawn_keeps_its_original_root_authorization(tmp_path
         new_root_id = str(second_checkpoint.payload["root_id"])
         assert new_root_id != original_root_id
 
-        _wait_for(lambda: bool(core.list_descendants("parent")), what="delayed child reservation")
+        wait_for(lambda: bool(core.list_descendants("parent")), what="delayed child reservation")
         child = core.list_descendants("parent")[0]
-        _wait_for(lambda: core.session(child.session_id).status == "interrupted", what="old-root child exhaustion")
+        wait_for(lambda: core.session(child.session_id).status == "interrupted", what="old-root child exhaustion")
         birth = core._delegation._birth_record(child.session_id)  # noqa: SLF001 - assert durable authorization at birth.
         assert birth is not None
         assert birth["root_id"] == original_root_id
         assert birth["root_action_budget"] == 1
         assert core.store.root_budget_state(original_root_id) == (1, 1)
-        _wait_for(
+        wait_for(
             lambda: core.store.background_action(action_id) is not None and core.store.background_action(action_id).status == "completed",
             what="background spawn completion",
         )
@@ -441,10 +431,10 @@ def test_foreground_run_succeeds_while_an_action_is_claimed(tmp_path: Path) -> N
         core = _open(tmp_path, server)
         core.create_session("parent")
         action_id = _enqueue(core, "parent", note="blocker", spins=50)
-        _wait_for(lambda: _status(core, "parent", action_id)["status"] == "running", what="the blocker claim")
+        wait_for(lambda: _status(core, "parent", action_id)["status"] == "running", what="the blocker claim")
         assert core.run("foreground during claim", session_id="parent", max_steps=4).output == "foreground answer"
         assert _cancel(core, "parent", action_id) is True
-        _wait_for(lambda: _status(core, "parent", action_id)["status"] == "cancelled", what="the blocker settle")
+        wait_for(lambda: _status(core, "parent", action_id)["status"] == "cancelled", what="the blocker settle")
 
 
 def test_close_parks_live_drivers_without_replay(tmp_path: Path) -> None:
@@ -453,8 +443,8 @@ def test_close_parks_live_drivers_without_replay(tmp_path: Path) -> None:
         core = _open(tmp_path, server)
         core.create_session("parent")
         action_id = _enqueue(core, "parent", note="parked", spins=50)
-        _wait_for(lambda: _status(core, "parent", action_id)["status"] == "running", what="the parked claim")
-        _wait_for(lambda: "first:parked" in _marks(core, "parent"), what="the parked first checkpoint commit")
+        wait_for(lambda: _status(core, "parent", action_id)["status"] == "running", what="the parked claim")
+        wait_for(lambda: "first:parked" in _marks(core, "parent"), what="the parked first checkpoint commit")
         core.close()
         _CREATED.remove(core)
         # A reopened core reports the settled row and never replays the driver.
@@ -488,7 +478,7 @@ def test_base_exception_driver_exit_settles_and_clears_liveness(tmp_path: Path) 
             core.wait_background_actions("parent", action_id=action_id, timeout_seconds=20)
         assert "SystemExit: base exit from driver" in str(excinfo.value)
         assert _status(core, "parent", action_id) == {"action_id": action_id, "status": "failed", "error": "SystemExit: base exit from driver"}
-        assert action_id not in core._background_live
+        assert not core._background.is_live(action_id)
         assert action_id not in core.plugin_runtime.background_live_actions
 
 
@@ -511,7 +501,7 @@ def test_wait_names_one_receipt_even_after_it_settled(tmp_path: Path) -> None:
         core = _open(tmp_path, server)
         core.create_session("parent")
         failed_id = _enqueue(core, "parent", note="raise", spins=0)
-        _wait_for(lambda: _status(core, "parent", failed_id)["status"] == "failed", what="the failed settle")
+        wait_for(lambda: _status(core, "parent", failed_id)["status"] == "failed", what="the failed settle")
         # The failure settled before the wait starts: the explicit receipt still surfaces it.
         with pytest.raises(RuntimeError, match=failed_id) as excinfo:
             core.wait_background_actions("parent", action_id=failed_id, timeout_seconds=5)

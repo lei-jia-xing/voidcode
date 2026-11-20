@@ -178,7 +178,7 @@ def test_oversize_inline_table_compacts_to_reference_prefix_without_loss(tmp_pat
     result = ToolSuccess("mcp", output=output)
     (tmp_path / "workspace").mkdir(parents=True, exist_ok=True)
     with open_core(tmp_path / "workspace", state_dir=tmp_path / "state") as core:
-        compact, size, clipped = core._prepare_report_result(result)
+        compact, size, clipped = core._projection.prepare_report(result)
         assert size > TOOL_OUTPUT_BYTES
         assert clipped is True
         assert isinstance(compact.output, CompositeOutput)
@@ -211,7 +211,7 @@ def test_small_table_passes_through_without_spill(tmp_path: Path) -> None:
     result = ToolSuccess("mcp", output=output)
     (tmp_path / "workspace").mkdir(parents=True, exist_ok=True)
     with open_core(tmp_path / "workspace", state_dir=tmp_path / "state") as core:
-        compact, size, clipped = core._prepare_report_result(result)
+        compact, size, clipped = core._projection.prepare_report(result)
         assert size <= TOOL_OUTPUT_BYTES
         assert clipped is False
         assert isinstance(compact.output, CompositeOutput)

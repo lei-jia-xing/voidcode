@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NoReturn, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Final, Literal, NoReturn, Protocol, cast, runtime_checkable
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -20,17 +20,14 @@ if TYPE_CHECKING:
     from .invocation import ToolContext
     from .observed_effects import ObservedEffects
     from .provider import ProviderDoneReason
-    from .resources import (
-        ResourceEnumPage,
-        ResourceEnumRequest,
-        ResourcePage,
-        ResourceReadRequest,
-        ResourceSchemeCaps,
-        ResourceSearchPage,
-        ResourceSearchRequest,
-    )
+    from .resources import ResourcePage, ResourceReadRequest
     from .tools import ExecutionObservation, ToolDefinition, ToolResult
     from .transcript import ContextHistory, TranscriptEntry, TranscriptPage
+
+
+#: Rendered-text budget for one history page. Defined here because the SDK
+#: service default and core's renderer must agree, and the SDK cannot import core.
+PAGE_BYTES: Final[int] = 40 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -767,7 +764,7 @@ class ToolAwaitResult:
     session_id: str
     revision_id: str
     tool_name: str
-    status: Literal["completed", "interrupted", "cancelled", "kernel_lost", "budget_exhausted"]
+    status: Literal["completed", "interrupted", "cancelled", "core_lost", "budget_exhausted"]
     result: ToolResult | None
     terminal_sequence: int
     stop_cause: StopCause | None = None
@@ -778,7 +775,7 @@ class ToolAwaitResult:
         for name in ("request_id", "owner", "action_id", "session_id", "revision_id", "tool_name"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"tool await result requires a non-empty {name}")
-        if self.status not in ("completed", "interrupted", "cancelled", "kernel_lost", "budget_exhausted"):
+        if self.status not in ("completed", "interrupted", "cancelled", "core_lost", "budget_exhausted"):
             raise ValueError(f"unknown tool await terminal status {self.status!r}")
         if type(self.terminal_sequence) is not int or self.terminal_sequence < 1:
             raise ValueError("tool await terminal sequence must be a positive integer")
@@ -1278,7 +1275,7 @@ class HistoryServices(Protocol):
         after_sequence: int = 0,
         offset: int = 0,
         limit: int = 100,
-        page_bytes: int = 40 * 1024,  # == history_renderer.PAGE_BYTES; inlined (sdk must not import core)
+        page_bytes: int = PAGE_BYTES,
     ) -> HistoryPageView:
         """Render one bounded Markdown transcript page for the bound session or an owned descendant.
 
@@ -1364,7 +1361,7 @@ class ToolServices(Protocol):
 
 @runtime_checkable
 class ArtifactServices(Protocol):
-    """Artifacts and resources: blobs, schemes, enumeration and search."""
+    """Artifacts and scheme resources: spill/read content-addressed blobs and dispatch registered readers."""
 
     def read_resource(self, request: ResourceReadRequest) -> ResourcePage | None:
         """Dispatch one ``scheme://`` URI to its registering provider's reader.
@@ -1375,33 +1372,6 @@ class ArtifactServices(Protocol):
         scheme raises ``ResourceUnavailable``; a malformed page raises
         ``ResourceContractError``; handler bugs and backend failures raise
         visibly and are never confused with "unavailable" or ``None``.
-        """
-        ...
-
-    def resource_schemes(self) -> tuple[str, ...]:
-        """Admitted resource schemes in admission order, read from the live generation map."""
-        ...
-
-    def resource_capabilities(self, scheme: str) -> ResourceSchemeCaps | None:
-        """Declared capabilities of one admitted scheme; None means registered-but-undeclared.
-
-        An unregistered scheme raises ``ResourceUnavailable``.
-        """
-        ...
-
-    def enumerate_resources(self, request: ResourceEnumRequest) -> ResourceEnumPage | None:
-        """Enumerate one scope URI of a known scheme; None means no such scope.
-
-        A known scheme lacking enumeration raises ``ResourceUnsupported`` (never
-        a silent empty page); a malformed page raises ``ResourceContractError``.
-        """
-        ...
-
-    def search_resources(self, request: ResourceSearchRequest) -> ResourceSearchPage | None:
-        """Search one scope URI of a known scheme for a pattern; None means no such scope.
-
-        A known scheme lacking search raises ``ResourceUnsupported`` (never a
-        silent empty page); a malformed page raises ``ResourceContractError``.
         """
         ...
 

@@ -21,6 +21,7 @@ from ..sdk.child_schema import CHILD_PROMPT_MAX_BYTES, canonical_result_schema, 
 from ..sdk.codec import decode_provider_result
 from ..sdk.json_values import json_wire_object
 from ..sdk.services import BudgetExhaustion, CancelSubtreeReceipt, ChildOutcome, ChildSendReceipt, ChildSessionSnapshot, DescendantNode
+from .child_contracts import ChildCompletionReceipt, ChildWaitDelivery
 from .events import CHILD_MESSAGE_OWNER, CHILD_OUTCOME_RECEIPT_OWNER, EventType, child_completion_notice_id
 from .history_renderer import iter_event_blocks
 from .storage.store import (
@@ -150,7 +151,7 @@ class DelegationManager:
             self._child_finished_lock.notify_all()
 
     def _check_child_wait_interrupt(self, parent_session_id: str, admission_guard: Callable[[], bool] | None) -> None:
-        self.core._ensure_open()
+        self.core.ensure_open()
         if admission_guard is not None and not admission_guard():
             raise CancelledError("child wait was cancelled")
         if self.core.store.has_pending_user_message(parent_session_id):
@@ -207,7 +208,7 @@ class DelegationManager:
         if type(notify_on_completion) is not bool:
             raise ValueError("notify_on_completion must be a boolean")
         self.core._validate_steps(max_steps)
-        self.core._ensure_open()
+        self.core.ensure_open()
         parent = self.core.session(parent_session_id)
         depth = parent.depth + 1
         if depth > DELEGATION_MAX_DEPTH:
@@ -349,7 +350,7 @@ class DelegationManager:
         if readonly:
             # Core-owned stance record: the child stays restricted even if the parent's
             # own overlay is later cleared, and no plugin can revoke it.
-            self.core.store.set_session_overlay(child_id, "kernel")
+            self.core.store.set_session_overlay(child_id, "core")
         spawned_payload: dict[str, object] = {
             "child_session_id": child_id,
             "root_id": root_id,
@@ -367,7 +368,7 @@ class DelegationManager:
             spawned_payload["spec_hash"] = spec_hash
         self.core._commit_control_event(
             parent.session_id,
-            EventDraft(EventType.CHILD_SPAWNED, "kernel", "plugin", spawned_payload),
+            EventDraft(EventType.CHILD_SPAWNED, "core", "plugin", spawned_payload),
         )
         self._start_child_run(parent.session_id, child_id, effective_prompt, max_steps, label, notify_on_completion)
         return child_id
@@ -522,7 +523,7 @@ class DelegationManager:
                 repaired["notify_on_completion"] = notify_on_completion
                 self.core._commit_control_event(
                     parent_session_id,
-                    EventDraft(EventType.CHILD_SPAWNED, "kernel", "plugin", repaired),
+                    EventDraft(EventType.CHILD_SPAWNED, "core", "plugin", repaired),
                 )
                 # Fresh process repairing the crash window; the start claim itself is
                 # atomic, so a retry in the spawning process never starts a second driver.
@@ -542,16 +543,16 @@ class DelegationManager:
         if birth.get("spec_hash") != spec_hash:
             raise ValueError("spawn idempotency key was already used with a different spec")
         if birth.get("readonly") is True and "read-only" not in self.core.store.session_overlays(child_id):
-            self.core.store.set_session_overlay(child_id, "kernel")
+            self.core.store.set_session_overlay(child_id, "core")
         if child.status != "idle" or child.run_id is not None:
             return child_id
         if readonly:
-            self.core.store.set_session_overlay(child_id, "kernel")
+            self.core.store.set_session_overlay(child_id, "core")
         self.core._commit_control_event(
             parent_session_id,
             EventDraft(
                 EventType.CHILD_SPAWNED,
-                "kernel",
+                "core",
                 "plugin",
                 {
                     "child_session_id": child_id,
@@ -669,9 +670,9 @@ class DelegationManager:
         child_session_ids: Sequence[str],
         *,
         admission_guard: Callable[[], bool] | None = None,
-    ) -> tuple[Mapping[str, object], ...]:
+    ) -> tuple[ChildWaitDelivery, ...]:
         """Deliver exact undelivered child facts, then wait for entry-bound work."""
-        self.core._ensure_open()
+        self.core.ensure_open()
         if isinstance(child_session_ids, (str, bytes)) or not isinstance(child_session_ids, Sequence):
             raise ValueError("child_session_ids must be a sequence of session ids")
         selected: list[str] = []
@@ -772,7 +773,7 @@ class DelegationManager:
                 for event in parent_events
                 if event.event_type == EventType.CONTINUATION_STARTED and isinstance((notice_id := event.payload.get("continuation_id")), str)
             }
-            deliveries: list[Mapping[str, object]] = []
+            deliveries: list[ChildWaitDelivery] = []
             for event in parent_events:
                 if event.event_type != EventType.CHILD_FINISHED:
                     continue
@@ -798,12 +799,12 @@ class DelegationManager:
                 if outcome.run_id != run_id:
                     raise StoreConflict("committed child completion fact changed its run identity")
                 deliveries.append(
-                    {
-                        "outcome": outcome.as_payload(),
-                        "source_session_id": parent_session_id,
-                        "event_sequence": event.sequence,
-                        "notice_id": notice_id,
-                    }
+                    ChildWaitDelivery(
+                        outcome=outcome,
+                        source_session_id=parent_session_id,
+                        event_sequence=event.sequence,
+                        notice_id=notice_id,
+                    )
                 )
 
             for child_id in selected:
@@ -835,12 +836,12 @@ class DelegationManager:
                     budget_exhaustion=budget_exhaustion,
                 )
                 deliveries.append(
-                    {
-                        "outcome": outcome.as_payload(),
-                        "source_session_id": child_id,
-                        "event_sequence": stop_event.sequence,
-                        "notice_id": None,
-                    }
+                    ChildWaitDelivery(
+                        outcome=outcome,
+                        source_session_id=child_id,
+                        event_sequence=stop_event.sequence,
+                        notice_id=None,
+                    )
                 )
             if deliveries:
                 self._check_child_wait_interrupt(parent_session_id, admission_guard)
@@ -931,7 +932,7 @@ class DelegationManager:
 
     def join_child(self, parent_session_id: str, child_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
         """Wait for the child's CURRENT run; never satisfy a newer join with an older fact."""
-        self.core._ensure_open()
+        self.core.ensure_open()
         self._owned_child(parent_session_id, child_id)
         deadline = time.monotonic() + max(0.0, float(timeout_seconds))
         with self._child_finished_lock:
@@ -1008,9 +1009,9 @@ class DelegationManager:
             self._child_finished_lock.wait(timeout=remaining)
             return self._child_finished_generation
 
-    def acknowledge_child_completion(self, parent_session_id: str, child_id: str, run_id: str) -> Mapping[str, object] | None:
+    def acknowledge_child_completion(self, parent_session_id: str, child_id: str, run_id: str) -> ChildCompletionReceipt | None:
         """Stage common receipt identity only for this run's durable terminal fact."""
-        self.core._ensure_open()
+        self.core.ensure_open()
         self._owned_child(parent_session_id, child_id)
         if not isinstance(run_id, str) or not run_id:
             raise ValueError("run_id must be a non-empty string")
@@ -1030,11 +1031,11 @@ class DelegationManager:
             raise StoreConflict("committed child completion fact has an invalid notice identity")
         if notice_id is not None and self.core.store.continuation_started(parent_session_id, notice_id):
             notice_id = None
-        return {
-            "source_session_id": event.session_id,
-            "event_sequence": event.sequence,
-            "notice_id": notice_id,
-        }
+        return ChildCompletionReceipt(
+            source_session_id=event.session_id,
+            event_sequence=event.sequence,
+            notice_id=notice_id,
+        )
 
     def send_child(
         self,
@@ -1057,7 +1058,7 @@ class DelegationManager:
             raise ValueError(f"child prompt must be nonempty UTF-8 text within {CHILD_PROMPT_MAX_BYTES // 1024} KiB")
         if type(notify_on_completion) is not bool:
             raise ValueError("notify_on_completion must be a boolean")
-        self.core._ensure_open()
+        self.core.ensure_open()
         parent = self.core.session(parent_session_id)
         child = self._owned_child(parent_session_id, child_id)
         self.core._check_session(child)
@@ -1078,7 +1079,7 @@ class DelegationManager:
                 message_id,
                 CHILD_MESSAGE_OWNER,
                 child_id,
-                "kernel",
+                "core",
                 run_id=parent.run_id or uuid4().hex,
                 revision_id=self.core.revision_id,
                 payload={
@@ -1176,7 +1177,7 @@ class DelegationManager:
 
     def list_descendants(self, session_id: str) -> tuple[DescendantNode, ...]:
         """Every transitive descendant of one session with verbatim lifecycle facts."""
-        self.core._ensure_open()
+        self.core.ensure_open()
         caller = self.core.session(session_id)
         nodes: list[DescendantNode] = []
         for child in self.core.store.descendant_sessions(session_id):
@@ -1220,7 +1221,7 @@ class DelegationManager:
         deduplicated immutable artifact for resource paging; the committed event and join result
         stay unchanged. The event contract has no separate OMP-style accepted-yield marker.
         """
-        self.core._ensure_open()
+        self.core.ensure_open()
         initial_descendant = next(
             (node for node in self.list_descendants(caller_session_id) if node.session_id == child_session_id),
             None,
@@ -1293,7 +1294,7 @@ class DelegationManager:
     def cancel_descendant_subtree(
         self, bound_session_id: str, target_session_id: str, *, expected_run_id: str | None, reason: str = "owner cancellation"
     ) -> CancelSubtreeReceipt:
-        self.core._ensure_open()
+        self.core.ensure_open()
         bound = self.core.session(bound_session_id)
         try:
             target = self.core.store.session(target_session_id)
@@ -1443,8 +1444,8 @@ class DelegationManager:
                 events=(
                     EventDraft(
                         EventType.RUN_INTERRUPTED,
-                        "kernel",
-                        "kernel",
+                        "core",
+                        "core",
                         {"reason": reason, "stop_cause": "owner_cancel", "logical_turn": ""},
                     ),
                 ),
@@ -1631,7 +1632,7 @@ class DelegationManager:
                 notice = StagedContinuationDraft(
                     continuation_id=cast(str, notice_id),
                     owner=CHILD_MESSAGE_OWNER,
-                    source="kernel",
+                    source="core",
                     payload=self._child_notice_payload(
                         child_id,
                         run_id=run_id,
@@ -1649,7 +1650,7 @@ class DelegationManager:
                 )
             committed = self._commit_child_fact(
                 parent_session_id,
-                EventDraft(EventType.CHILD_FINISHED, "kernel", "plugin", payload),
+                EventDraft(EventType.CHILD_FINISHED, "core", "plugin", payload),
                 notice,
             )
             if not committed:
@@ -1808,7 +1809,7 @@ class DelegationManager:
         return notice
 
     def _spill_child_output(self, text: str) -> dict[str, object]:
-        spill_id, spill = self.core._artifacts.start_spill("text/plain; charset=utf-8", owner="kernel")
+        spill_id, spill = self.core._artifacts.start_spill("text/plain; charset=utf-8", owner="core")
         try:
             spill.append(text.encode("utf-8"))
             sha256, size, _media_type = self.core._artifacts.finish(spill_id)
