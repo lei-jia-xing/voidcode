@@ -27,6 +27,7 @@ from voidcode.sdk.provider import (
 )
 from voidcode.sdk.tools import ToolCall
 
+from ..registry import PROVIDER_TABLE_BY_ID
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
@@ -57,7 +58,6 @@ from .errors import (
 )
 from .model_catalog import ProviderModelMetadata, catalog_model_limits, static_catalog_metadata
 from .provider_config import openai_wire_default_base_url
-from .provider_table import PROVIDER_TABLE_BY_ID
 from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_effort, reasoning_kwargs
 from .thinking_rules import thinking_rule_for
 from .trace import write_provider_trace

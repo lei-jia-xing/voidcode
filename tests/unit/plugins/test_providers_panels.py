@@ -13,7 +13,7 @@ import pytest
 import voidcode.plugins.providers as providers_plugin
 from tests.provider_loopback import OpenAILoopbackServer
 from voidcode.capabilities.providers.native.model_catalog import static_catalog_model_ids
-from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
+from voidcode.capabilities.providers.registry import PROVIDER_TABLE
 from voidcode.sdk.commands import Command, CommandInvocation, CommandResult
 from voidcode.sdk.hooks import RequestWindow
 from voidcode.sdk.invocation import ToolContext

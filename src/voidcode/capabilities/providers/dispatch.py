@@ -39,8 +39,8 @@ from .native.config import (
 )
 from .native.naming import UnknownProviderIdError, canonical_provider_id
 from .native.provider_config import copilot_provider_config, endpoint_provider_config
-from .native.provider_table import PROVIDER_TABLE
 from .pricing import price_event, price_result
+from .registry import PROVIDER_TABLE
 
 #: Provider names this plugin registers with the plugin host: every built-in
 #: provider the shipped table declares. The configured name is the selection and

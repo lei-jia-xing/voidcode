@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 
 from voidcode.sdk.provider import StreamableTurnProvider, TurnProvider
 
+from ..registry import PROVIDER_TABLE_BY_ID
 from .config import (
     OpenAICompatibleProviderConfig,
     ProviderEndpointConfig,
@@ -13,7 +14,6 @@ from .config import (
 from .model_routing import IMPLEMENTED_API_ROUTES, RoutedTurnProvider, WireRouting
 from .openai_native import OpenAIChatCompletionsProvider
 from .opencode import OpenCodeZenModelProvider
-from .provider_table import PROVIDER_TABLE_BY_ID
 
 # These gateways reject the OpenAI ``tool`` role, so completed tool results are
 # replayed as a synthetic user message instead.

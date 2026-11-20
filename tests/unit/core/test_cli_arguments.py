@@ -6,11 +6,13 @@ SQLite fixture: no core, no config, no runtime, no provider.
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
 import pytest
 
+from voidcode.bootstrap import state_directory
 from voidcode.cli import main
 from voidcode.core.storage.store import SqliteStore
 
@@ -49,6 +51,54 @@ def test_bare_client_flag_before_a_command_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as refused:
         main(["--session-id", "bare-client-session", "show", "other", "--workspace", str(workspace.resolve()), "--state-dir", str(state)])
     assert refused.value.code == 2
+
+
+def test_show_accepts_inline_root_options(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    workspace, state = tmp_path / "workspace", tmp_path / "state"
+    revision_id = _show_fixture(workspace, state, "boundary-session")
+    assert main(["show", "boundary-session", f"--workspace={workspace.resolve()}", f"--state-dir={state}"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["session_id"] == "boundary-session" and payload["revision_id"] == revision_id
+
+
+def test_root_value_after_the_command_named_like_a_command_is_never_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    revision_id = _show_fixture(tmp_path / "serve", tmp_path / "state", "boundary-session")
+    assert main(["show", "boundary-session", "--state-dir", str(tmp_path / "state"), "--workspace", "serve"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["session_id"] == "boundary-session" and payload["revision_id"] == revision_id
+
+
+def test_double_dash_prompt_is_not_read_as_a_root_option(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode import cli
+
+    seen: dict[str, object] = {}
+
+    class _FakeCore:
+        def __enter__(self) -> _FakeCore:
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def fake_open_core(workspace: Path, *, state_dir: Path | None = None) -> _FakeCore:
+        seen["workspace"] = workspace
+        seen["state_dir"] = state_dir
+        return _FakeCore()
+
+    def fake_dispatch(core: object, args: argparse.Namespace) -> int:
+        seen["prompt"] = args.prompt
+        return 0
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "open_core", fake_open_core)
+    monkeypatch.setattr(cli, "_dispatch", fake_dispatch)
+    assert main(["run", "--", "--workspace"]) == 0
+    assert seen["prompt"] == "--workspace"
+    assert seen["workspace"] == tmp_path.resolve()
+    assert seen["state_dir"] == state_directory(tmp_path.resolve())
 
 
 def test_removed_tui_command_is_rejected(tmp_path: Path) -> None:

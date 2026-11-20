@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from .capabilities.providers.registry import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 from .sdk.json_values import own_json_object
 from .sdk.views import StyleColor
 
@@ -214,8 +215,6 @@ def parse_config(payload: object) -> Config:
 
 def resolve_providers(config: Config, *, use_environment: bool = True, discover: bool = True) -> dict[str, object]:
     """Resolve live credentials once; recorded admissions never read the environment."""
-    from .capabilities.providers.native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
-
     credentials: dict[str, str] = {}
     if use_environment:
         for row in PROVIDER_TABLE:

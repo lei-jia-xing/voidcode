@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 
 from voidcode.sdk.provider import StreamableTurnProvider, TurnProvider
 
+from ..registry import PROVIDER_TABLE_BY_ID
 from .anthropic_native import AnthropicMessagesProvider
 from .config import (
     AnthropicProviderConfig,
@@ -16,7 +17,6 @@ from .google_native import GoogleGenAIProvider
 from .model_routing import IMPLEMENTED_API_ROUTES, RoutedTurnProvider, WireRouting
 from .openai_native import OpenAIChatCompletionsProvider
 from .provider_config import vendor_endpoint_config
-from .provider_table import PROVIDER_TABLE_BY_ID
 
 _OPENCODE_ZEN = PROVIDER_TABLE_BY_ID["opencode-zen"]
 

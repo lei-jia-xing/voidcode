@@ -49,61 +49,16 @@ def _check_wait_timeout(value: object) -> float:
     return float(value)
 
 
-_COMMANDS = frozenset(
-    {
-        "run",
-        "resume",
-        "show",
-        "create-session",
-        "sessions",
-        "catalog",
-        "invoke",
-        "confirm",
-        "views",
-        "drain",
-        "usage",
-        "serve",
-    }
-)
-_ROOT_VALUE_OPTIONS = frozenset({"--workspace", "--state-dir"})
-#: Every value option the command scan skips, so a session named e.g. ``run`` never reads as a subcommand.
-_COMMAND_SCAN_VALUE_OPTIONS = _ROOT_VALUE_OPTIONS | frozenset({"--server", "--token", "--session-id", "--footer"})
-
-
-def _normalized_argv(argv: Sequence[str]) -> list[str]:
-    """Accept root options before *or* after the subcommand."""
-    tokens = list(argv)
-    command_at: int | None = None
-    scan = 0
-    while scan < len(tokens):
-        name, separator, _inline = tokens[scan].partition("=")
-        if name in _COMMAND_SCAN_VALUE_OPTIONS and not separator:
-            scan += 2
-            continue
-        if tokens[scan] in _COMMANDS:
-            command_at = scan
-            break
-        scan += 1
-    if command_at is None:
-        return tokens
-    head, rest = tokens[:command_at], tokens[command_at:]
-    tail: list[str] = []
-    index = 1
-    while index < len(rest):
-        name, separator, _inline = rest[index].partition("=")
-        if name in _ROOT_VALUE_OPTIONS:
-            if separator or index + 1 >= len(rest):
-                head.append(rest[index])
-            else:
-                head.extend((rest[index], rest[index + 1]))
-                index += 1
-        else:
-            tail.append(rest[index])
-        index += 1
-    return [*head, rest[0], *tail]
+def _root_parser() -> argparse.ArgumentParser:
+    """Root options are accepted before or after the subcommand."""
+    parser = argparse.ArgumentParser(prog="voidcode", add_help=False)
+    parser.add_argument("--workspace", type=Path, default=None, metavar="PATH")
+    parser.add_argument("--state-dir", type=Path, default=None, metavar="PATH")
+    return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    root_args, remaining = _root_parser().parse_known_args(argv if argv is not None else sys.argv[1:])
     parser = argparse.ArgumentParser(
         prog="voidcode",
         usage="voidcode [OPTIONS] [COMMAND]",
@@ -142,9 +97,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     roots = parser.add_argument_group("workspace options")
     roots.add_argument(
-        "--workspace", type=Path, default=Path.cwd(), metavar="PATH", help="Workspace directory holding voidcode.json (default: current directory)"
+        "--workspace",
+        type=Path,
+        default=argparse.SUPPRESS,
+        metavar="PATH",
+        help="Workspace directory holding voidcode.json (default: current directory)",
     )
-    roots.add_argument("--state-dir", type=Path, default=None, metavar="PATH", help="State directory (default: derived from the workspace)")
+    roots.add_argument(
+        "--state-dir", type=Path, default=argparse.SUPPRESS, metavar="PATH", help="State directory (default: derived from the workspace)"
+    )
     roots.add_argument("--version", action="version", version=__version__, help="Print the version and exit")
     commands = parser.add_subparsers(prog="voidcode", dest="command", metavar="COMMAND", title="commands")
     agents = commands.add_parser(
@@ -260,8 +221,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve.add_argument("--port", type=int, default=8000, metavar="PORT", help="Port, 0 for an ephemeral one (default: 8000)")
     serve.add_argument("--bearer-token", default=None, metavar="TOKEN", help="API bearer token, generated when absent")
     serve.add_argument("--open", dest="open_browser", action="store_true", help="Open the served web client in a browser")
-    normalized = _normalized_argv(argv if argv is not None else sys.argv[1:])
-    args = parser.parse_args(normalized)
+    args = parser.parse_args(remaining)
     bare_client = (
         args.server is not None
         or args.token is not None
@@ -273,8 +233,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command is not None and bare_client:
         parser.error("--server/--token/--session-id/--no-border/--footer/--show-session are bare-client options, not subcommand flags")
     try:
-        workspace = args.workspace.resolve(strict=True)
-        bare_directory = args.state_dir if args.state_dir is not None else state_directory(workspace)
+        workspace_option = root_args.workspace if root_args.workspace is not None else getattr(args, "workspace", None)
+        state_dir_option = root_args.state_dir if root_args.state_dir is not None else getattr(args, "state_dir", None)
+        workspace = (workspace_option or Path.cwd()).resolve(strict=True)
+        bare_directory = state_dir_option if state_dir_option is not None else state_directory(workspace)
         if args.command is None:
             from .tui import run_tui
 

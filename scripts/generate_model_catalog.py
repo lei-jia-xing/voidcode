@@ -21,8 +21,8 @@ from typing import Final
 
 import httpx
 
-from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 from voidcode.capabilities.providers.native.reasoning_effort import CANONICAL_EFFORTS
+from voidcode.capabilities.providers.registry import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 
 CATALOG_URL = "https://models.dev/api.json"
 _PROVIDER_PLUGIN = Path(__file__).resolve().parent.parent / "src" / "voidcode" / "capabilities" / "providers" / "native"

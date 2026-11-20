@@ -7,12 +7,12 @@ from typing import Annotated, Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, ValidationError
 from pydantic.functional_validators import BeforeValidator
 
+from ..registry import PROVIDER_TABLE_BY_ID
 from .naming import (
     BUILTIN_PROVIDER_IDS,
     UnknownProviderIdError,
     canonical_provider_id,
 )
-from .provider_table import PROVIDER_TABLE_BY_ID
 
 type GoogleAuthMethod = Literal["api_key", "oauth", "service_account"]
 type CopilotAuthMethod = Literal["token", "oauth"]

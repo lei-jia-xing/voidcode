@@ -170,7 +170,7 @@ def test_tui_prefs_cause_zero_revision_churn(tmp_path) -> None:
 
 def test_environment_keys_admit_builtin_providers_without_explicit_entries(tmp_path, monkeypatch) -> None:
     from voidcode.bootstrap import admit_live, bundled_sources
-    from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
+    from voidcode.capabilities.providers.registry import PROVIDER_TABLE
 
     for row in PROVIDER_TABLE:
         for variable in row.env_vars:

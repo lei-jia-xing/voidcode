@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from tests.fixtures.core_factory import register_core
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.reload_plugin import DEACTIVATE_TOOL, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -31,19 +29,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
         message={"role": "assistant", "content": output, "reasoning_content": "revision loopback reasoning", "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
     )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _configure(
@@ -130,7 +115,7 @@ def test_same_session_reload_switches_generation_and_preserves_state(tmp_path: P
         _turn(_call("probe-2", PROBE_TOOL)),
         _turn(output="v2 wrote"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         session = core.create_session("sess-reload")
@@ -185,7 +170,7 @@ def test_failed_candidate_keeps_the_old_generation(tmp_path: Path, defect: str) 
         _turn(_call("probe-2", PROBE_TOOL)),
         _turn(output="still v1"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         session = core.create_session("sess-bad-candidate")
@@ -221,7 +206,7 @@ def test_activation_is_blocked_by_a_waiting_session(tmp_path: Path) -> None:
         _turn(output="resumed"),
         _turn(output="idle chat"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source, approval_mode="ask")
         core = _open(tmp_path)
         parked = core.create_session("sess-parked")
@@ -267,7 +252,7 @@ def test_disable_pauses_owner_state_and_reenable_restores_the_paused_copy(tmp_pa
         _turn(_call("note-1", DEACTIVATE_TOOL)),
         _turn(output="read back"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         session = core.create_session("sess-lifecycle")
@@ -321,7 +306,7 @@ def test_restart_restores_the_persisted_generation_until_an_explicit_reload(tmp_
         _turn(_call("probe-3", PROBE_TOOL)),
         _turn(output="restart 3"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
         session = core.create_session("sess-restart")
@@ -369,7 +354,7 @@ def test_new_observer_subscription_never_receives_old_facts(tmp_path: Path) -> N
         _turn(_call("probe-2", PROBE_TOOL)),
         _turn(output="v2 done"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(
             tmp_path / "workspace",
             server,
@@ -414,7 +399,7 @@ def test_failed_cold_start_adopts_nothing_and_retries_after_the_source_is_fixed(
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", factory_error=True)
     database = tmp_path / "state" / "voidcode.db"
-    with _server([_turn(_call("probe-1", PROBE_TOOL)), _turn(output="recovered")]) as server:
+    with loopback_server([_turn(_call("probe-1", PROBE_TOOL)), _turn(output="recovered")]) as server:
         _configure(tmp_path / "workspace", server, source)
         with pytest.raises(ValueError, match="factory failed"):
             _open(tmp_path)
@@ -436,7 +421,7 @@ def test_failed_cold_start_adopts_nothing_and_retries_after_the_source_is_fixed(
 def test_provider_selection_must_be_a_registered_name(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1")
-    with _server([_turn(output="unused")]) as server:
+    with loopback_server([_turn(output="unused")]) as server:
         _configure(tmp_path / "workspace", server, source)
         config_path = tmp_path / "workspace" / "voidcode.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -463,7 +448,7 @@ def test_prepared_approval_target_ignores_later_source_edits(tmp_path: Path) -> 
         _turn(_call("reload-1", "core_reload", reason="approved upgrade")),
         _turn(output="activated"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source, approval_mode="ask")
         core = _open(tmp_path)
         session = core.create_session("sess-approval-target")
@@ -483,7 +468,7 @@ def test_prepared_approval_target_ignores_later_source_edits(tmp_path: Path) -> 
 
 def test_environment_provider_discovery_requires_reload_not_restart(tmp_path, monkeypatch) -> None:
     from voidcode.bootstrap import bundled_sources
-    from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE
+    from voidcode.capabilities.providers.registry import PROVIDER_TABLE
 
     for row in PROVIDER_TABLE:
         for variable in row.env_vars:
@@ -492,7 +477,7 @@ def test_environment_provider_discovery_requires_reload_not_restart(tmp_path, mo
     monkeypatch.setenv("OPENROUTER_API_KEY", "router-environment-key")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    with _server([_turn(output="before"), _turn(output="restarted"), _turn(output="reloaded")]) as server:
+    with loopback_server([_turn(output="before"), _turn(output="restarted"), _turn(output="reloaded")]) as server:
         (workspace / "voidcode.json").write_text(
             json.dumps(
                 {

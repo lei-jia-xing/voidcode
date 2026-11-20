@@ -15,8 +15,8 @@ from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, StrictBool, TypeAdapter
 from pydantic.dataclasses import dataclass
 
+from ..registry import require_provider_id
 from ._resources import load_json
-from .provider_table import require_provider_id
 
 type ThinkingMode = Literal["effort", "binary", "budget", "google-level"]
 

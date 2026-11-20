@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Final
 
-from .provider_table import PROVIDER_TABLE
+from ..registry import PROVIDER_TABLE
 
 PROVIDER_LABELS: Final[Mapping[str, str]] = {row.id: row.label for row in PROVIDER_TABLE}
 

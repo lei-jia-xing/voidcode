@@ -13,16 +13,18 @@ adding a *host* or an ``<ID>_API_KEY`` spelling is only a row.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final, Literal, TypeIs, cast
-
-from ._resources import load_json
 
 type ProviderWire = Literal["openai-completions", "anthropic-messages", "google-generative-ai"]
 
 
 _WIRES: Final[tuple[ProviderWire, ...]] = ("openai-completions", "anthropic-messages", "google-generative-ai")
+
+_TABLE_PATH: Final[Path] = Path(__file__).resolve().parent / "provider_table.json"
 
 
 def _is_wire(value: object) -> TypeIs[ProviderWire]:
@@ -94,7 +96,7 @@ def _rows_from_payload(payload: object) -> tuple[ProviderTableRow, ...]:
     return rows
 
 
-PROVIDER_TABLE: Final[tuple[ProviderTableRow, ...]] = _rows_from_payload(load_json("provider_table.json"))
+PROVIDER_TABLE: Final[tuple[ProviderTableRow, ...]] = _rows_from_payload(json.loads(_TABLE_PATH.read_text(encoding="utf-8")))
 
 PROVIDER_TABLE_BY_ID: Final[Mapping[str, ProviderTableRow]] = {row.id: row for row in PROVIDER_TABLE}
 

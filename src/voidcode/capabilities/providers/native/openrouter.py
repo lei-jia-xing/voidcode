@@ -4,10 +4,10 @@ from dataclasses import dataclass
 
 from voidcode.sdk.provider import TurnProvider
 
+from ..registry import PROVIDER_TABLE_BY_ID
 from .config import ProviderEndpointConfig
 from .openai_native import OpenAIChatCompletionsProvider
 from .provider_config import vendor_endpoint_config
-from .provider_table import PROVIDER_TABLE_BY_ID
 
 _OPENROUTER = PROVIDER_TABLE_BY_ID["openrouter"]
 

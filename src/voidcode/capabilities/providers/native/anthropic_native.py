@@ -27,6 +27,7 @@ from voidcode.sdk.provider import (
 )
 from voidcode.sdk.tools import ToolCall
 
+from ..registry import PROVIDER_TABLE_BY_ID
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
@@ -58,7 +59,6 @@ from .errors import (
 )
 from .model_catalog import catalog_model_limits, static_catalog_metadata
 from .provider_config import anthropic_wire_default_base_url
-from .provider_table import PROVIDER_TABLE_BY_ID
 from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_effort
 from .thinking_rules import ThinkingRule, thinking_rule_for
 from .trace import write_provider_trace

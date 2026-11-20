@@ -3,12 +3,12 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 
+from ..registry import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 from .config import (
     PROVIDER_WIRES,
     CopilotProviderConfig,
     ProviderEndpointConfig,
 )
-from .provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 
 # Vendor defaults for the providers whose wire is the OpenAI chat protocol, read
 # from the provider table: OpenAI itself, Copilot, and every shared

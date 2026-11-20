@@ -55,7 +55,7 @@ def test_unimplemented_token_refresh_configuration_is_rejected(field):
 
 def test_copilot_environment_token_resolves_without_an_ambiguous_reference():
     from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
-    from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE_BY_ID
+    from voidcode.capabilities.providers.registry import PROVIDER_TABLE_BY_ID
 
     name = PROVIDER_TABLE_BY_ID["github-copilot"].env_vars[0]
     configs = parse_provider_configs_payload({"github-copilot": {"auth": {"method": "token"}}}, source="test", env={name: "test-token"})
@@ -96,7 +96,7 @@ def test_provider_config_does_not_coerce_strings_or_booleans(field, value):
 )
 def test_google_non_key_auth_ignores_ambient_api_key(auth):
     from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
-    from voidcode.capabilities.providers.native.provider_table import PROVIDER_TABLE_BY_ID
+    from voidcode.capabilities.providers.registry import PROVIDER_TABLE_BY_ID
 
     name = PROVIDER_TABLE_BY_ID["google"].env_vars[0]
     configs = parse_provider_configs_payload({"google": {"auth": auth}}, source="test", env={name: "ambient-key"})
