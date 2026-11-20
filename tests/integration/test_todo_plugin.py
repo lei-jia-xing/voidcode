@@ -6,12 +6,9 @@ Smoke test verifying model tool invocation, plan context injection, and state pe
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
-import pytest
-
-from tests.fixtures.core_factory import loopback_server
+from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -19,16 +16,6 @@ from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.commands import CommandResult
 
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
-
-
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
 
 
 def _core(tmp_path: Path, server: OpenAILoopbackServer, *, todo_enabled: bool, state_dir: Path | None = None) -> Core:
@@ -54,8 +41,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, todo_enabled: bool, s
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    core = open_core(workspace, state_dir=resolved_state)
-    _CREATED_CORES.append(core)
+    core = register_core(open_core(workspace, state_dir=resolved_state))
     return core
 
 
@@ -149,7 +135,7 @@ def test_todo_tool_call_writes_plan_context_and_survives_restart(tmp_path: Path)
 
         # Restart the core on the same state directory: the plan is still there.
         core.close()
-        _CREATED_CORES.remove(core)
+        discard_core(core)
         reopened = _core(tmp_path, server, todo_enabled=True)
         after_restart = _invoke(reopened, session_id, "todo", {})
         assert after_restart.status == "ok"

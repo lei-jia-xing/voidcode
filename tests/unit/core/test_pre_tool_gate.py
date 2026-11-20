@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
 from tests.fixtures.core_factory import register_core
@@ -26,19 +25,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
         message={"role": "assistant", "content": output, "reasoning_content": "gate reasoning", "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
     )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _run_with_gate(tmp_path: Path, gate: str) -> tuple[Core, list[Mapping[str, object]]]:

@@ -15,8 +15,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import discard_core, register_core
 from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -58,16 +57,6 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
         server.server_close()
 
 
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def _configure(tmp_path: Path, server: OpenAILoopbackServer) -> Path:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -89,9 +78,7 @@ def _configure(tmp_path: Path, server: OpenAILoopbackServer) -> Path:
 
 
 def _open(workspace: Path, state_dir: Path) -> Core:
-    core = open_core(workspace, state_dir=state_dir)
-    _CREATED.append(core)
-    return core
+    return register_core(open_core(workspace, state_dir=state_dir))
 
 
 def _nodes(core: Core, session: str, run_id: str) -> dict[str, dict[str, object]]:
@@ -175,7 +162,7 @@ def test_workflow_resume_after_restart_reuses_both_children(tmp_path: Path) -> N
         requests_before_close = len(server.requests)
         assert requests_before_close == 3, "first turn, first resume, second turn"
         core_a.close()
-        _CREATED.remove(core_a)
+        discard_core(core_a)
 
         # CoreB reopens the same database; the parked approval survives the restart.
         core_b = _open(workspace, state_dir)

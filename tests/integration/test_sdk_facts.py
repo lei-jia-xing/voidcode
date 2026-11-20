@@ -3,7 +3,8 @@
 import json
 from dataclasses import asdict
 
-from tests.unit.core.test_nested_tools import _call, _server, _turn
+from tests.fixtures.core_factory import loopback_server
+from tests.unit.core.test_nested_tools import _call, _turn
 from voidcode.bootstrap import open_core
 from voidcode.core.storage.store import EventDraft
 from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, RequestWindow
@@ -62,7 +63,13 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     state_dir = tmp_path / "state"
-    with _server([_turn(_call("call", "replace_any_name", targets=[{"path": "c.py"}])), _turn(output="done"), _turn(output="done")]) as server:
+    with loopback_server(
+        [
+            _turn(_call("call", "replace_any_name", targets=[{"path": "c.py"}])),
+            _turn(output="done"),
+            _turn(output="done"),
+        ]
+    ) as server:
         (workspace / "voidcode.json").write_text(
             json.dumps(
                 {

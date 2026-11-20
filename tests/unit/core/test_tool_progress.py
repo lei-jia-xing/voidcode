@@ -11,15 +11,16 @@ from pathlib import Path
 
 import uvicorn
 
+from tests.fixtures.core_factory import loopback_server
 from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL
-from tests.unit.core.test_nested_tools import _call, _configure, _server, _turn
+from tests.unit.core.test_nested_tools import _call, _configure, _turn
 from voidcode.sdk.client import EventFrame, HeadFrame, RunResult, RunSpec, StreamEvent
 from voidcode.transport.http import create_core_app
 from voidcode.tui.client import CoreRpcClient
 
 
 def test_live_tool_progress_uses_existing_session_sse_stream(tmp_path: Path) -> None:
-    with _server(
+    with loopback_server(
         [
             _turn(_call("progress", PROBE_TOOL, action="progress")),
             _turn(output="complete"),

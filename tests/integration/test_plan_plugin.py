@@ -8,12 +8,9 @@ restores writes while a user-frozen read-only policy stays in force.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
-import pytest
-
-from tests.fixtures.core_factory import loopback_server
+from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -44,14 +41,6 @@ class NotesWriteTool:
 def create_plugin(config):
     return Plugin(tools=(NotesWriteTool(),))
 '''
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
 
 
 def _write_tool_plugin(workspace: Path) -> Path:
@@ -90,8 +79,7 @@ def _core(
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    core = open_core(workspace, state_dir=resolved_state)
-    _CREATED_CORES.append(core)
+    core = register_core(open_core(workspace, state_dir=resolved_state))
     return core
 
 
@@ -153,7 +141,7 @@ def test_plan_mode_hides_and_denies_write_tools_until_plan_off(tmp_path: Path) -
 
         # The overlay survives a restart: still hidden, still instructed.
         core.close()
-        _CREATED_CORES.remove(core)
+        discard_core(core)
         reopened = _core(tmp_path, server, state_dir=tmp_path / "state")
         assert _invoke(reopened, session_id, "plan.status", {}).output == "Mode: plan"
         assert reopened.run("still planning", session_id=session_id).status == "completed"

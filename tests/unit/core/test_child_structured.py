@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.delegation import DelegationManager
@@ -63,19 +62,6 @@ def _turn(output: str | None) -> dict[str, object]:
     return openai_response(message={"role": "assistant", "content": output}, finish="stop")
 
 
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
 def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -113,7 +99,7 @@ def _request_texts(server: OpenAILoopbackServer) -> str:
 
 
 def test_undeclared_keyed_respawn_stays_accepted(tmp_path: Path) -> None:
-    with _server([_turn("plain answer")]) as server:
+    with loopback_server([_turn("plain answer")]) as server:
         core = _open(tmp_path, server)
         try:
             first = core.spawn_child("root", "plain work", owner="probe", idempotency_key="k-plain")
@@ -126,7 +112,7 @@ def test_undeclared_keyed_respawn_stays_accepted(tmp_path: Path) -> None:
 
 
 def test_schema_mismatch_refuses_keyed_retry_both_directions(tmp_path: Path) -> None:
-    with _server([_turn("shaped answer"), _turn("other answer")]) as server:
+    with loopback_server([_turn("shaped answer"), _turn("other answer")]) as server:
         core = _open(tmp_path, server)
         try:
             shaped = core.spawn_child("root", "shaped work", owner="probe", idempotency_key="k-shaped", result_schema=dict(_SCHEMA))
@@ -143,7 +129,7 @@ def test_schema_mismatch_refuses_keyed_retry_both_directions(tmp_path: Path) -> 
 
 def test_spawn_carries_schema_and_hints_prompt_without_touching_facts(tmp_path: Path) -> None:
     replies = [_turn('{"files": ["a"], "ok": true}'), _turn("plain answer")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         try:
             shaped = core.spawn_child("root", "shaped work MARK-HINT", owner="probe", idempotency_key="k-hint", result_schema=dict(_SCHEMA))
@@ -174,7 +160,7 @@ def test_spawn_carries_schema_and_hints_prompt_without_touching_facts(tmp_path: 
 
 
 def test_invalid_schema_fails_before_any_spawn(tmp_path: Path) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         core = _open(tmp_path, server)
         try:
             with pytest.raises(ValueError, match="not a valid JSON schema"):

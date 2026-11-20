@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import json
-import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
-from tests.fixtures.core_factory import register_core
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.reload_plugin import PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -26,19 +23,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
         message={"role": "assistant", "content": output, "reasoning_content": "lifecycle reasoning", "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
     )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _open(tmp_path: Path) -> Core:
@@ -81,7 +65,7 @@ def test_lifecycle_hooks_fire_once_per_run_with_durable_notes(tmp_path: Path) ->
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", lifecycle_hooks=True)
     replies = [_turn(_call("probe-1", PROBE_TOOL)), _turn(output="done"), _turn(output="second run")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         workspace = tmp_path / "workspace"
         _configure(workspace, server, source)
         core = _open(tmp_path)
@@ -106,7 +90,7 @@ def test_lifecycle_hooks_do_not_duplicate_on_resume(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", lifecycle_hooks=True)
     replies = [_turn(_call("probe-1", PROBE_TOOL)), _turn(output="stopped"), _turn(output="next answer")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         workspace = tmp_path / "workspace"
         _configure(workspace, server, source)
         core = _open(tmp_path)

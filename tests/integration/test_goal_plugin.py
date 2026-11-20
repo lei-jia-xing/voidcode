@@ -12,8 +12,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import discard_core, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -33,17 +32,6 @@ def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbac
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
-
-
-_CREATED_CORES: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_created_cores() -> Iterator[None]:
-    """Close every core this test opened, also when the body raises."""
-    yield
-    while _CREATED_CORES:
-        _CREATED_CORES.pop().close()
 
 
 def _core_with_loopback(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
@@ -69,8 +57,7 @@ def _core_with_loopback(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    core = open_core(workspace, state_dir=state_dir)
-    _CREATED_CORES.append(core)
+    core = register_core(open_core(workspace, state_dir=state_dir))
     return core
 
 
@@ -190,7 +177,7 @@ def test_goal_autonomous_execution_and_completion(tmp_path: Path) -> None:
 
         # Restart the core on the same state directory: goal state survives
         core.close()
-        _CREATED_CORES.remove(core)
+        discard_core(core)
         reopened = _core_with_loopback(tmp_path, server)
         res_after = _invoke(reopened, session_id, "goal", {})
         assert res_after.data["goal"] is not None
@@ -286,7 +273,7 @@ def test_long_model_goal_round_trips_after_restart_without_workspace_writes(tmp_
         assert not (workspace / ".voidcode").exists()
 
         core.close()
-        _CREATED_CORES.remove(core)
+        discard_core(core)
         reopened = _core_with_loopback(tmp_path, server)
         loaded = _invoke(reopened, session, "goal.load_objective", {})
         assert loaded.status == "ok", loaded.error

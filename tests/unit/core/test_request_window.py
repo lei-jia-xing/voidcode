@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
-from tests.fixtures.core_factory import register_core
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.reload_plugin import PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -29,19 +27,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
 
 def _call(identity: str, name: str, **arguments: object) -> dict[str, object]:
     return {"id": identity, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
@@ -74,7 +59,7 @@ def test_window_measures_the_literal_messages_of_each_dispatch(tmp_path: Path) -
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1")
     replies = [_turn(_call("probe-1", PROBE_TOOL)), _turn(output="done")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
         register_core(core)

@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server
 from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -191,19 +189,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
     return openai_response(message={"role": "assistant", "content": output, "tool_calls": list(calls)}, finish="tool_calls" if calls else "stop")
 
 
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
 def _configure(tmp_path: Path, server: OpenAILoopbackServer, *, approval: str = "yolo", plugin_code: str = _PLUGIN_CODE) -> Path:
     source = tmp_path / "plugin"
     source.mkdir(parents=True, exist_ok=True)
@@ -249,7 +234,7 @@ def _completions(core: Core, session_id: str) -> list[Any]:
 
 
 def test_ask_park_answer_adopts_typed_body_and_continues(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one")), output=None), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one")), output=None), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -286,7 +271,7 @@ def test_ask_park_answer_adopts_typed_body_and_continues(tmp_path: Path) -> None
 
 
 def test_ask_cancel_adopts_failure_and_continues(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -304,7 +289,7 @@ def test_ask_cancel_adopts_failure_and_continues(tmp_path: Path) -> None:
 
 
 def test_ask_double_answer_refused(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -319,7 +304,7 @@ def test_ask_double_answer_refused(tmp_path: Path) -> None:
 
 
 def test_ask_unknown_request_refused(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -334,7 +319,7 @@ def test_ask_unknown_request_refused(tmp_path: Path) -> None:
 
 
 def test_ask_validation_failure_keeps_park(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -349,7 +334,7 @@ def test_ask_validation_failure_keeps_park(tmp_path: Path) -> None:
 
 
 def test_ask_expiry_sweep_settles_typed_failure(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"), timeout_ms=50)), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"), timeout_ms=50)), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -371,7 +356,7 @@ def test_ask_expiry_sweep_settles_typed_failure(tmp_path: Path) -> None:
 
 
 def test_ask_late_answer_enforces_expiry(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"), timeout_ms=50)), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"), timeout_ms=50)), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -386,7 +371,7 @@ def test_ask_late_answer_enforces_expiry(tmp_path: Path) -> None:
 
 
 def test_ask_unattended_refused_no_park(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -401,7 +386,7 @@ def test_ask_unattended_refused_no_park(tmp_path: Path) -> None:
 
 
 def test_approval_unattended_refused_run_continues(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "write_probe")), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "write_probe")), _turn(output="done")]) as server:
         _configure(tmp_path, server, approval="ask")
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -415,7 +400,7 @@ def test_approval_unattended_refused_run_continues(tmp_path: Path) -> None:
 
 
 def test_resume_interaction_overrides_mode(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "write_probe"), _call("c2", "write_probe")), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "write_probe"), _call("c2", "write_probe")), _turn(output="done")]) as server:
         _configure(tmp_path, server, approval="ask")
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -441,7 +426,7 @@ def test_resume_interaction_overrides_mode(tmp_path: Path) -> None:
 
 
 def test_ask_sequential_parks_resolve_in_order(tmp_path: Path) -> None:
-    with _server(
+    with loopback_server(
         [
             _turn(
                 _call("c1", "ask_probe", title="First", questions=_questions("one")),
@@ -469,7 +454,7 @@ def test_ask_sequential_parks_resolve_in_order(tmp_path: Path) -> None:
 
 
 def test_ask_second_suspend_while_parked_refused(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         workspace = _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -496,7 +481,7 @@ def test_ask_second_suspend_while_parked_refused(tmp_path: Path) -> None:
 
 
 def test_ask_second_stage_on_lease_refused(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_twice", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_twice", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -510,7 +495,7 @@ def test_ask_second_stage_on_lease_refused(tmp_path: Path) -> None:
 
 
 def test_ask_swallowed_suspend_fails_visibly(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "swallow_ask", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "swallow_ask", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -524,7 +509,7 @@ def test_ask_swallowed_suspend_fails_visibly(tmp_path: Path) -> None:
 
 
 def test_composition_suspend_stub_visible(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "compose_probe")), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "compose_probe")), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -537,7 +522,7 @@ def test_composition_suspend_stub_visible(tmp_path: Path) -> None:
 
 
 def test_ask_suspend_outside_tool_refused(tmp_path: Path) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -559,7 +544,7 @@ def test_ask_suspend_outside_tool_refused(tmp_path: Path) -> None:
 
 
 def test_ask_suspend_from_hook_refused(tmp_path: Path) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         _configure(tmp_path, server, plugin_code=_HOOK_PLUGIN_CODE)
         with _open(tmp_path) as core:
             with pytest.raises(RuntimeError, match="tool-callback lease"):
@@ -567,7 +552,7 @@ def test_ask_suspend_from_hook_refused(tmp_path: Path) -> None:
 
 
 def test_ask_session_cancel_while_parked_settles_interrupted(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -584,7 +569,7 @@ def test_ask_session_cancel_while_parked_settles_interrupted(tmp_path: Path) -> 
 
 
 def test_ask_reconnect_rerenders_request(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")
@@ -602,7 +587,7 @@ def test_ask_reconnect_rerenders_request(tmp_path: Path) -> None:
 
 
 def test_resume_refuses_ask_parked_session(tmp_path: Path) -> None:
-    with _server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
+    with loopback_server([_turn(_call("c1", "ask_probe", title="Pick", questions=_questions("one"))), _turn(output="done")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("s")

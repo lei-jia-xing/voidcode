@@ -23,9 +23,9 @@ _CREATED: list[Core] = []
 
 
 @contextmanager
-def loopback_server(replies: list[dict[str, object]]) -> Generator[OpenAILoopbackServer]:
+def loopback_server(replies: list[dict[str, object]] | None = None) -> Generator[OpenAILoopbackServer]:
     """Serve ``replies`` on a daemon thread and stop it on exit."""
-    server = OpenAILoopbackServer(replies)
+    server = OpenAILoopbackServer(replies if replies is not None else [])
     worker = Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:

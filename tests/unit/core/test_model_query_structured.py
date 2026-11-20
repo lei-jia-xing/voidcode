@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from tests.fixtures.core_factory import register_core
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -28,19 +26,6 @@ _STRUCTURED_SUFFIX = "Reply with exactly one JSON object and nothing else."
 
 def _turn(output: str | None) -> dict[str, object]:
     return openai_response(message={"role": "assistant", "content": output}, finish="stop")
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
@@ -76,7 +61,7 @@ def _request_messages(server: OpenAILoopbackServer, index: int) -> list[Mapping[
 
 
 def test_structured_extraction_returns_validated_data(tmp_path: Path) -> None:
-    with _server([_turn('{"path": "a.py", "line": 3}')]) as server:
+    with loopback_server([_turn('{"path": "a.py", "line": 3}')]) as server:
         core = _open(tmp_path, server)
         result = core.governed_model_query_structured("sess-structured", "extract", dict(_SCHEMA))
     assert result.data is not None and dict(result.data) == {"path": "a.py", "line": 3}
@@ -92,7 +77,7 @@ def test_structured_extraction_returns_validated_data(tmp_path: Path) -> None:
 
 
 def test_unparseable_reply_is_callable_failure(tmp_path: Path) -> None:
-    with _server([_turn("I cannot answer that.")]) as server:
+    with loopback_server([_turn("I cannot answer that.")]) as server:
         core = _open(tmp_path, server)
         result = core.governed_model_query_structured("sess-structured", "extract", dict(_SCHEMA))
     assert result.data is None
@@ -104,7 +89,7 @@ def test_unparseable_reply_is_callable_failure(tmp_path: Path) -> None:
 
 
 def test_schema_violation_reports_location(tmp_path: Path) -> None:
-    with _server([_turn('{"path": "a.py"}')]) as server:
+    with loopback_server([_turn('{"path": "a.py"}')]) as server:
         core = _open(tmp_path, server)
         result = core.governed_model_query_structured("sess-structured", "extract", dict(_SCHEMA))
     assert result.data is None
@@ -115,7 +100,7 @@ def test_schema_violation_reports_location(tmp_path: Path) -> None:
 
 
 def test_non_object_and_empty_replies_never_pose(tmp_path: Path) -> None:
-    with _server([_turn("[1, 2]"), _turn(""), _turn(None)]) as server:
+    with loopback_server([_turn("[1, 2]"), _turn(""), _turn(None)]) as server:
         core = _open(tmp_path, server)
         array = core.governed_model_query_structured("sess-structured", "extract", dict(_SCHEMA))
         empty = core.governed_model_query_structured("sess-structured", "extract", dict(_SCHEMA))
@@ -128,7 +113,7 @@ def test_non_object_and_empty_replies_never_pose(tmp_path: Path) -> None:
 
 def test_provider_error_propagates_exactly_like_bare(tmp_path: Path) -> None:
     malformed = {"choices": []}
-    with _server([dict(malformed), dict(malformed)]) as server:
+    with loopback_server([dict(malformed), dict(malformed)]) as server:
         core = _open(tmp_path, server)
         with pytest.raises(ProviderExecutionError):
             core.governed_model_query("sess-structured", "bare")
@@ -138,7 +123,7 @@ def test_provider_error_propagates_exactly_like_bare(tmp_path: Path) -> None:
 
 
 def test_batch_locates_the_failing_item(tmp_path: Path) -> None:
-    with _server([_turn('{"path": "a.py", "line": 1}'), _turn("nope"), _turn('{"path": "b.py", "line": 2}')]) as server:
+    with loopback_server([_turn('{"path": "a.py", "line": 1}'), _turn("nope"), _turn('{"path": "b.py", "line": 2}')]) as server:
         core = _open(tmp_path, server)
         results = [core.governed_model_query_structured("sess-structured", f"extract {index}", dict(_SCHEMA)) for index in range(3)]
     assert results[0].data is not None and results[2].data is not None
@@ -147,7 +132,7 @@ def test_batch_locates_the_failing_item(tmp_path: Path) -> None:
 
 
 def test_invalid_result_schema_fails_before_dispatch(tmp_path: Path) -> None:
-    with _server([_turn('{"path": "a.py", "line": 1}')]) as server:
+    with loopback_server([_turn('{"path": "a.py", "line": 1}')]) as server:
         core = _open(tmp_path, server)
         with pytest.raises(ValueError, match="not a valid JSON schema"):
             core.governed_model_query_structured("sess-structured", "extract", {"type": 42})  # type: ignore[dict-item]

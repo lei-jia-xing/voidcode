@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
-from tests.fixtures.core_factory import register_core
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core, _Cursor, _Execution
@@ -71,19 +69,6 @@ def _call(identity: str, name: str, **arguments: object) -> dict[str, object]:
     return {"id": identity, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
 
 
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     (source / "__init__.py").write_text(PLUGIN_CODE, encoding="utf-8")
@@ -119,7 +104,7 @@ def test_tool_success_steering_context_appears_next_dispatch_only(tmp_path: Path
         _turn(output="acknowledged"),
         _turn(output="done next run"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         session_id = "sess-steering-success"
@@ -175,7 +160,7 @@ def test_tool_failure_steering_context_appears_next_dispatch_only(tmp_path: Path
         _turn(output="handled failure"),
         _turn(output="done subsequent"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         session_id = "sess-steering-failure"
@@ -217,7 +202,7 @@ def test_tool_failure_steering_context_appears_next_dispatch_only(tmp_path: Path
 def test_ephemeral_steering_multiple_tools_and_cleared_after_messages(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     source.mkdir(parents=True, exist_ok=True)
-    with _server([]) as server:
+    with loopback_server([]) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         session_id = "sess-steering-unit"

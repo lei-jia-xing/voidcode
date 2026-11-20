@@ -12,11 +12,10 @@ import sqlite3
 import stat
 import subprocess
 import sys
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
+from tests.fixtures.core_factory import loopback_server
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import bundled_sources, config_from_snapshot
 from voidcode.core.activation import load_private_snapshot, snapshot_path
@@ -121,19 +120,6 @@ def _write_bystander_plugin(root: Path) -> Path:
     return _write_source(root, body=_BYSTANDER_MODULE)
 
 
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
 def _turn(output: str) -> dict[str, object]:
     return openai_response(message={"role": "assistant", "content": output}, finish="stop")
 
@@ -186,7 +172,7 @@ def test_vendor_fields_reach_only_the_declaring_plugin(tmp_path: Path) -> None:
 
     # One reply per expected provider turn: any extra dispatch fails loudly instead of being
     # absorbed by an elastic reply list.
-    with _server([_turn("first"), _turn("after restart")]) as server:
+    with loopback_server([_turn("first"), _turn("after restart")]) as server:
         base_url = f"http://127.0.0.1:{server.server_port}"
         config = {
             "schema_version": 1,

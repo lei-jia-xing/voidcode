@@ -7,12 +7,11 @@ import hashlib
 import json
 import threading
 import time
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server
 from tests.fixtures.reload_plugin import BLOCK_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -32,19 +31,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
         message={"role": "assistant", "content": output, "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
     )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Generator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _setup_core(tmp_path: Path, server: OpenAILoopbackServer) -> tuple[Core, Path]:
@@ -94,7 +80,7 @@ def test_queued_followup_images_spill_to_references_under_bound(tmp_path: Path) 
     assert inline_size > MAX_CONTINUATION_PAYLOAD_BYTES, inline_size
 
     replies = [_turn(_call("block-1", BLOCK_TOOL)), _turn(output="turn 1 done")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _setup_core(tmp_path, server)
         core.auto_drain = False
         try:
@@ -147,7 +133,7 @@ def test_claim_rehydrates_byte_identical_to_direct(tmp_path: Path) -> None:
         _turn(output="turn 2 done"),
         _turn(output="direct done"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _setup_core(tmp_path, server)
         try:
             session_id = core.create_session("sess-rehydrate").session_id
@@ -189,7 +175,7 @@ def test_claim_rehydrates_byte_identical_to_direct(tmp_path: Path) -> None:
 def test_text_only_followup_payload_unchanged(tmp_path: Path) -> None:
     """Text-only follow-ups keep byte-identical payloads (no images key, same canonical bytes)."""
     replies = [_turn(_call("block-1", BLOCK_TOOL)), _turn(output="turn 1 done"), _turn(output="turn 2 done")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _setup_core(tmp_path, server)
         core.auto_drain = False
         try:
@@ -219,7 +205,7 @@ def test_text_only_followup_payload_unchanged(tmp_path: Path) -> None:
 
 def test_missing_artifact_bytes_fail_visibly(tmp_path: Path) -> None:
     """A dangling image reference fails the claim visibly, never delivering text-only."""
-    with _server([]) as server:
+    with loopback_server([]) as server:
         core, _workspace = _setup_core(tmp_path, server)
         try:
             session_id = core.create_session("sess-missing-bytes").session_id
@@ -251,7 +237,7 @@ def test_missing_artifact_bytes_fail_visibly(tmp_path: Path) -> None:
 
 def test_legacy_inline_entry_fails_visibly(tmp_path: Path) -> None:
     """Inline `data` entries are no longer decoded: the missing reference fails the claim."""
-    with _server([]) as server:
+    with loopback_server([]) as server:
         core, _workspace = _setup_core(tmp_path, server)
         try:
             session_id = core.create_session("sess-inline").session_id

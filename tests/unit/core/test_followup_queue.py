@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
+from tests.fixtures.core_factory import loopback_server
 from tests.fixtures.reload_plugin import BLOCK_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -26,19 +25,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
         message={"role": "assistant", "content": output, "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
     )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _setup_core(tmp_path: Path, server: OpenAILoopbackServer) -> tuple[Core, Path]:
@@ -64,7 +50,7 @@ def test_submitting_prompt_while_run_active_queues_without_altering_context(tmp_
         _turn(output="turn 1 done"),
         _turn(output="turn 2 done"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _setup_core(tmp_path, server)
         session = core.create_session("sess-queue")
         session_id = session.session_id
@@ -133,7 +119,7 @@ def test_interrupting_active_run_cancels_queued_followup(tmp_path: Path) -> None
     replies = [
         _turn(_call("block-1", BLOCK_TOOL)),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core, workspace = _setup_core(tmp_path, server)
         session = core.create_session("sess-interrupt")
         session_id = session.session_id

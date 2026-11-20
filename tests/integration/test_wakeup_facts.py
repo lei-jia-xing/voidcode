@@ -3,7 +3,8 @@
 import json
 import time
 
-from tests.unit.core.test_nested_tools import _server, _turn
+from tests.fixtures.core_factory import loopback_server
+from tests.unit.core.test_nested_tools import _turn
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.sdk.hooks import WakeupFiredFact
 
@@ -54,7 +55,7 @@ def test_claim_fact_is_live_before_dispatch_and_recovery_delivers_it_once(tmp_pa
     workspace.mkdir()
     state = tmp_path / "state"
     due = int(time.time() * 1000) + 600_000
-    with _server([_turn(output="awake")]) as server:
+    with loopback_server([_turn(output="awake")]) as server:
         plugins = {name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS}
         plugins["providers"] = {"enabled": True}
         plugins["probe"] = {"path": str(source)}

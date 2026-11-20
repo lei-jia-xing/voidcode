@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -22,19 +20,6 @@ def _call(identity: str, tool_name: str, **arguments: object) -> dict[str, objec
 
 def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, object]:
     return openai_response(message={"role": "assistant", "content": output, "tool_calls": list(calls)}, finish="tool_calls" if calls else "stop")
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _configure(tmp_path: Path, server: OpenAILoopbackServer) -> Path:
@@ -60,7 +45,7 @@ def _open(tmp_path: Path) -> Core:
 
 
 def test_streamed_turn_aggregates_to_propose_shape_with_progress(tmp_path: Path) -> None:
-    with _server([_turn(output="streamed answer")]) as server:
+    with loopback_server([_turn(output="streamed answer")]) as server:
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             result = core.run("Stream me an answer.")

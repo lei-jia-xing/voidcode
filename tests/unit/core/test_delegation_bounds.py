@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from tests.fixtures.core_factory import register_core
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.reload_plugin import DELEGATE_TOOL, OVERLAY_COMMAND, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -30,19 +28,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
         message={"role": "assistant", "content": output, "reasoning_content": "delegation reasoning", "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
     )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
@@ -86,7 +71,7 @@ def test_child_prompt_bound_is_a_guard_not_a_product_budget(tmp_path: Path) -> N
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1")
     replies = [_turn(output="child answered")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess-parent")
@@ -108,7 +93,7 @@ def test_child_birth_label_bound_is_measured_in_utf8_bytes(tmp_path: Path) -> No
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1")
     replies = [_turn(output="child answered")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess-parent")
@@ -139,7 +124,7 @@ def test_read_only_stance_may_only_delegate_read_only_work(tmp_path: Path) -> No
         _turn(output="child finished"),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess-plan-parent")

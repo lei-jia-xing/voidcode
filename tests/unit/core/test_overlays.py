@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import json
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
-import pytest
-
+from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.fixtures.reload_plugin import OVERLAY_COMMAND, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -29,29 +26,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
     )
 
 
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path, *, read_only: bool = False) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     config = {
@@ -65,9 +39,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path, *, r
 
 
 def _open(tmp_path: Path) -> Core:
-    core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
-    _CREATED.append(core)
-    return core
+    return register_core(open_core(tmp_path / "workspace", state_dir=tmp_path / "state"))
 
 
 def _advertised(request: Mapping[str, object]) -> set[str]:
@@ -94,7 +66,7 @@ def test_overlay_denies_mutation_and_hides_write_tools(tmp_path: Path) -> None:
         _turn(_call("probe-1", PROBE_TOOL)),
         _turn(output="no mutation attempted"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess-plan")
@@ -117,7 +89,7 @@ def test_overlay_clear_restores_mutation_but_never_clears_a_frozen_policy(tmp_pa
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", overlay_command=True)
     replies = [_turn(_call("probe-1", PROBE_TOOL)), _turn(output="wrote"), _turn(output="still restricted")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess-plan")
@@ -129,11 +101,10 @@ def test_overlay_clear_restores_mutation_but_never_clears_a_frozen_policy(tmp_pa
         state = {row.owner: row for row in core.store.plugin_state_rows("session", "sess-plan")}
         assert state[PLUGIN_ID].payload.get("note") == "v1"
 
-    with _server([_turn(_call("probe-2", PROBE_TOOL)), _turn(output="denied")]) as frozen_server:
+    with loopback_server([_turn(_call("probe-2", PROBE_TOOL)), _turn(output="denied")]) as frozen_server:
         frozen = tmp_path / "frozen"
         _configure(frozen / "workspace", frozen_server, source, read_only=True)
-        core = open_core(frozen / "workspace", state_dir=frozen / "state")
-        _CREATED.append(core)
+        core = register_core(open_core(frozen / "workspace", state_dir=frozen / "state"))
         core.create_session("sess-frozen")
         assert core.invoke_command("sess-frozen", OVERLAY_COMMAND, {"action": "on"}, expected_revision=core.revision_id).status == "ok"
         assert core.invoke_command("sess-frozen", OVERLAY_COMMAND, {"action": "off"}, expected_revision=core.revision_id).status == "ok"
@@ -148,7 +119,7 @@ def test_overlay_survives_a_capability_reload(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", overlay_command=True)
     replies = [_turn(output="handled"), _turn(output="v2 denied")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess-reload-plan")
@@ -166,7 +137,7 @@ def test_deactivating_the_owner_revokes_its_overlay_in_the_switch(tmp_path: Path
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", overlay_command=True)
     replies = [_turn(output="handled")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess-disable")
@@ -270,8 +241,7 @@ def test_confirmed_session_command_under_read_only_stages_state_but_cannot_touch
         ),
         encoding="utf-8",
     )
-    core = open_core(workspace, state_dir=tmp_path / "state")
-    _CREATED.append(core)
+    core = register_core(open_core(workspace, state_dir=tmp_path / "state"))
     try:
         core.create_session("sess-ro-confirm")
         revision = core.revision_id
@@ -286,7 +256,7 @@ def test_confirmed_session_command_under_read_only_stages_state_but_cannot_touch
         assert not (workspace / "ro-probe-confirm-marker.txt").exists()
     finally:
         core.close()
-        _CREATED.remove(core)
+        discard_core(core)
 
 
 def test_session_command_under_read_only_stages_state_but_cannot_touch_the_machine(tmp_path: Path) -> None:
@@ -305,8 +275,7 @@ def test_session_command_under_read_only_stages_state_but_cannot_touch_the_machi
         ),
         encoding="utf-8",
     )
-    core = open_core(workspace, state_dir=tmp_path / "state")
-    _CREATED.append(core)
+    core = register_core(open_core(workspace, state_dir=tmp_path / "state"))
     try:
         core.create_session("sess-ro-probe")
         result = core.invoke_command("sess-ro-probe", "session_probe", {}, expected_revision=core.revision_id)
@@ -319,4 +288,4 @@ def test_session_command_under_read_only_stages_state_but_cannot_touch_the_machi
         assert not (workspace / "ro-probe-marker.txt").exists()
     finally:
         core.close()
-        _CREATED.remove(core)
+        discard_core(core)

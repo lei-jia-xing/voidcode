@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.fixtures.polling import wait_for
 from tests.fixtures.s5_plugin import PLUGIN_ID as S5_PLUGIN_ID
 from tests.fixtures.s5_plugin import PROBE_TOOL as S5_PROBE_TOOL
@@ -172,29 +173,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
     )
 
 
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-_CREATED: list[Core] = []
-
-
-@pytest.fixture(autouse=True)
-def _close_cores() -> Iterator[None]:
-    yield
-    while _CREATED:
-        _CREATED.pop().close()
-
-
 def _open(
     tmp_path: Path,
     server: OpenAILoopbackServer,
@@ -215,9 +193,7 @@ def _open(
             "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
         }
         config_path.write_text(json.dumps(config), encoding="utf-8")
-    core = open_core(workspace, state_dir=tmp_path / "state")
-    _CREATED.append(core)
-    return core
+    return register_core(open_core(workspace, state_dir=tmp_path / "state"))
 
 
 _wait_for = partial(wait_for, timeout=15.0)
@@ -297,7 +273,7 @@ def _last_message_role(request: Mapping[str, object]) -> str | None:
 
 
 def test_wait_receipts_bind_exact_pause_then_resume_and_survive_failed_consumers_and_reopen(tmp_path: Path) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_holder: dict[str, str] = {}
 
         def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
@@ -399,7 +375,7 @@ def test_wait_receipts_bind_exact_pause_then_resume_and_survive_failed_consumers
 
 
 def test_pause_receipt_commits_for_old_event_after_resume_and_restop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_holder: dict[str, str] = {}
         child_turns = 0
 
@@ -514,7 +490,7 @@ def test_pause_receipt_commits_for_old_event_after_resume_and_restop(tmp_path: P
 
 
 def test_wait_rescans_completion_committed_after_parent_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_holder: dict[str, str] = {}
         child_started = threading.Event()
         release_child = threading.Event()
@@ -620,7 +596,7 @@ def test_wait_rescans_completion_committed_after_parent_snapshot(tmp_path: Path,
 
 
 def test_wait_binds_reserved_run_after_child_event_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_holder: dict[str, str] = {}
         driver_entered = threading.Event()
         release_driver = threading.Event()
@@ -741,7 +717,7 @@ def test_wait_binds_reserved_run_after_child_event_snapshot(tmp_path: Path, monk
 
 
 def test_core_cancel_wakes_waiting_sdk_child_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_holder: dict[str, str] = {}
         child_started = threading.Event()
         release_child = threading.Event()
@@ -814,7 +790,7 @@ def test_core_cancel_wakes_waiting_sdk_child_wait(tmp_path: Path, monkeypatch: p
 
 
 def test_wait_refuses_foreign_child_before_result_leak(tmp_path: Path) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_holder: dict[str, str] = {}
 
         def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
@@ -869,7 +845,7 @@ def test_wait_refuses_foreign_child_before_result_leak(tmp_path: Path) -> None:
 
 
 def test_user_steering_wins_over_racing_child_completion_without_consuming_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_holder: dict[str, str] = {}
         child_started = threading.Event()
         release_child = threading.Event()
@@ -959,7 +935,7 @@ def test_user_steering_wins_over_racing_child_completion_without_consuming_it(tm
 
 
 def test_core_shutdown_wakes_blocked_sdk_child_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_holder: dict[str, str] = {}
         child_started = threading.Event()
         release_child = threading.Event()
@@ -1052,7 +1028,7 @@ def test_core_shutdown_wakes_blocked_sdk_child_wait(tmp_path: Path, monkeypatch:
 
 
 def test_wait_delivers_failed_child_run_once(tmp_path: Path) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_holder: dict[str, str] = {}
 
         def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
@@ -1106,7 +1082,7 @@ def test_wait_delivers_failed_child_run_once(tmp_path: Path) -> None:
 
 
 def test_approval_parked_child_stays_pending_until_authorized_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_holder: dict[str, str] = {}
         condition_waiting = threading.Event()
 
@@ -1228,7 +1204,7 @@ def test_join_answers_for_the_current_run_not_an_older_fact(tmp_path: Path) -> N
         # The follow-up run asks for a write under approval mode ask: it parks, not completes.
         _turn(_call("probe-1", PROBE_TOOL)),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server, approval_mode="ask")
         core.create_session("parent")
         child = core.spawn_child("parent", "first task")
@@ -1254,7 +1230,7 @@ def test_completion_notice_is_acked_with_the_tool_result_that_consumed_it(tmp_pa
         _turn(output="child answer"),
         _turn(output="parent done"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -1289,7 +1265,7 @@ def test_restart_republishes_an_uncommitted_child_fact_once_without_rerunning(
         _turn(output="recovered output"),
         _turn(output="notice consumed"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -1304,7 +1280,7 @@ def test_restart_republishes_an_uncommitted_child_fact_once_without_rerunning(
         assert joined.run_id == run_id
         assert _child_facts(core, parent) == []
         core.close()
-        _CREATED.remove(core)
+        discard_core(core)
 
         reopened = _open(tmp_path, server)
         _wait_for(lambda: bool(_child_facts(reopened, parent)), what="recovered child publication")
@@ -1338,7 +1314,7 @@ def test_child_without_captured_root_fails_publication_visibly(
 ) -> None:
     """A missing birth/root fails publication loudly: no fact-without-notice fallback."""
     replies = [_turn(output="legacy output")]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -1369,7 +1345,7 @@ def test_send_authorization_follows_the_current_stance(tmp_path: Path) -> None:
         _turn(output="child one done"),
         _turn(output="child two done"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         other = core.create_session("other").session_id
@@ -1414,9 +1390,7 @@ def _open_bundled(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
         ),
         encoding="utf-8",
     )
-    core = open_core(workspace, state_dir=tmp_path / "state")
-    _CREATED.append(core)
-    return core
+    return register_core(open_core(workspace, state_dir=tmp_path / "state"))
 
 
 def _completions(core: Core, session_id: str, tool: str) -> list[dict[str, object]]:
@@ -1536,7 +1510,7 @@ def test_concurrent_child_publication_does_not_duplicate_the_parent_prefix(tmp_p
         _cron_turn("cron-1"),
         _turn(output="parent done"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open_bundled(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -1600,7 +1574,7 @@ def test_child_fact_between_batches_does_not_leave_a_merge_hole(tmp_path: Path) 
         _cron_turn("cron-1"),
         _turn(output="parent done"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open_bundled(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -1657,7 +1631,7 @@ def test_provider_intent_survives_a_concurrent_child_fact_commit(tmp_path: Path)
         _cron_turn("cron-1"),
         _turn(output="parent done"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open_bundled(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -1704,7 +1678,7 @@ def test_provider_intent_survives_a_concurrent_child_fact_commit(tmp_path: Path)
 def test_genuine_root_budget_exhaustion_still_reports_limit_reached(tmp_path: Path) -> None:
     """The recursive fixture spends the whole root chain: the stop is limit_reached, not a race."""
     source = write_s5_plugin(tmp_path / "source")
-    with _server([_turn(_call("recurse", S5_PROBE_TOOL, action="recurse"))]) as server:
+    with loopback_server([_turn(_call("recurse", S5_PROBE_TOOL, action="recurse"))]) as server:
         workspace = tmp_path / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / "voidcode.json").write_text(
@@ -1724,8 +1698,7 @@ def test_genuine_root_budget_exhaustion_still_reports_limit_reached(tmp_path: Pa
             ),
             encoding="utf-8",
         )
-        core = open_core(workspace, state_dir=tmp_path / "state")
-        _CREATED.append(core)
+        core = register_core(open_core(workspace, state_dir=tmp_path / "state"))
         parent = core.create_session("parent").session_id
 
         result = core.run("recurse until the root gives out", session_id=parent, root_action_budget=4)
@@ -1745,7 +1718,7 @@ def test_child_budget_stop_is_typed_from_exact_event_across_reopen_and_resume(tm
         _turn(output="parent action completed"),
         _turn(output="child completed after the budget extension"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         parent_run = core.run("establish a finite root", session_id=parent, root_action_budget=1)
@@ -1787,7 +1760,7 @@ def test_child_budget_stop_is_typed_from_exact_event_across_reopen_and_resume(tm
 
         run_id = stopped.run_id
         core.close()
-        _CREATED.remove(core)
+        discard_core(core)
 
         reopened = _open(tmp_path, server)
         recovered = reopened.join_child(parent, child, timeout_seconds=0)
@@ -1818,7 +1791,7 @@ def test_join_during_publication_waits_and_never_returns_an_empty_completed(tmp_
     replies = [
         _turn(output="child answer"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -1841,7 +1814,7 @@ def test_join_during_publication_waits_and_never_returns_an_empty_completed(tmp_
 
 def test_join_returns_promptly_when_child_completes_mid_timeout(tmp_path: Path) -> None:
     """A completion wake ends the join; it never sleeps out the deadline."""
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_started = threading.Event()
         release_child = threading.Event()
 
@@ -1874,7 +1847,7 @@ def test_join_returns_promptly_when_child_completes_mid_timeout(tmp_path: Path) 
 
 def test_join_timeout_returns_the_live_running_outcome(tmp_path: Path) -> None:
     """An unfinished child at the deadline reports running with its live run, never an error."""
-    with _server([]) as server:
+    with loopback_server([]) as server:
         child_started = threading.Event()
         release_child = threading.Event()
 
@@ -1916,7 +1889,7 @@ def test_join_after_restart_returns_the_durable_outcome_without_rerunning(tmp_pa
     replies = [
         _turn(output="only answer"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         child = core.spawn_child(parent, "single child task", notify_on_completion=False)
@@ -1926,7 +1899,7 @@ def test_join_after_restart_returns_the_durable_outcome_without_rerunning(tmp_pa
         requests_before = len(server.requests)
         assert requests_before == 1
         core.close()
-        _CREATED.remove(core)
+        discard_core(core)
 
         reopened = _open(tmp_path, server)
         recovered = reopened.join_child(parent, child, timeout_seconds=15)
@@ -1951,7 +1924,7 @@ def test_late_same_run_control_event_does_not_extend_the_history_snapshot(tmp_pa
         _turn(output="A answer"),
         _turn(output="LATE DESCENDANT OUTPUT MARKER"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -1991,7 +1964,7 @@ def test_delayed_publication_keeps_each_run_history_at_its_terminal_prefix(tmp_p
         _turn(output="A answer"),
         _turn(output="B answer"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -2032,7 +2005,7 @@ def test_restart_with_out_of_order_facts_publishes_nothing_twice(tmp_path: Path)
         _turn(output="parent after restart"),
         _turn(output="parent second notice"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -2052,7 +2025,7 @@ def test_restart_with_out_of_order_facts_publishes_nothing_twice(tmp_path: Path)
         facts_before = _child_facts(core, parent)
         run_ids = {str(fact["run_id"]) for fact in facts_before}
         core.close()
-        _CREATED.remove(core)
+        discard_core(core)
 
         reopened = _open(tmp_path, server)
         _wait_for(lambda: len(_child_facts(reopened, parent)) == 2, what="restart recovery to settle")
@@ -2081,7 +2054,7 @@ def test_concurrent_sends_to_a_finished_child_start_exactly_one_run(tmp_path: Pa
         _turn(output="initial answer"),
         _turn(output="merged answer TOKEN-ALPHA TOKEN-BETA"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         child = core.spawn_child(parent, "initial child task", notify_on_completion=False)
@@ -2146,7 +2119,7 @@ def test_concurrent_spawns_at_budget_accept_exactly_one_child(tmp_path: Path) ->
         _turn(output="child done"),
         _turn(output="child done"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         assert core.config.max_root_children == 4
@@ -2211,7 +2184,7 @@ def test_cancelled_child_accepts_a_later_explicit_followup_with_clean_attributio
         _turn(_call("probe-1", PROBE_TOOL)),
         _turn(output="followup answer"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server, approval_mode="ask")
         parent = core.create_session("parent").session_id
         child = core.spawn_child(parent, "first task", notify_on_completion=False)
@@ -2251,7 +2224,7 @@ def test_send_overlapping_cancel_linearizes_with_observed_run_attribution(tmp_pa
         _turn(output="first answer"),
         _turn(output="overlap answer"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
         child = core.spawn_child(parent, "first task", notify_on_completion=False)
@@ -2301,7 +2274,7 @@ def test_restart_recovers_an_older_missing_fact_beside_a_newer_run_without_repla
         _turn(output="A answer"),
         _turn(output="B answer"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         core = _open(tmp_path, server)
         parent = core.create_session("parent").session_id
 
@@ -2323,7 +2296,7 @@ def test_restart_recovers_an_older_missing_fact_beside_a_newer_run_without_repla
                 # is asserted on the closed durable state before recovery runs below.
                 assert {str(fact["run_id"]) for fact in _child_facts(core, parent)} == {receipt.run_id}
                 core.close()
-                _CREATED.remove(core)
+                discard_core(core)
             finally:
                 # Free the parked publisher only after close, so it observes the closed
                 # core instead of committing A.

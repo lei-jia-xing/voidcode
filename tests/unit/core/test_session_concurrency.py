@@ -5,13 +5,11 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
-from tests.fixtures.core_factory import register_core
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.reload_plugin import BLOCK_TOOL, OVERLAY_COMMAND, write_reload_plugin
-from tests.provider_loopback import OpenAILoopbackServer, openai_response
+from tests.provider_loopback import openai_response
 from voidcode.bootstrap import open_core
 
 PLUGIN_ID = "reload-fixture"
@@ -28,19 +26,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
     )
 
 
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
 def test_a_blocked_session_does_not_serialize_another_session(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", blocking=True, overlay_command=True)
@@ -49,7 +34,7 @@ def test_a_blocked_session_does_not_serialize_another_session(tmp_path: Path) ->
         _turn(output="session B ran while A was blocked"),
         _turn(output="session A released"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         # The loopback endpoint must be bound before the core opens its provider.
         config = {
             "schema_version": 1,
