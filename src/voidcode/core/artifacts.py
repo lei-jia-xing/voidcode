@@ -132,13 +132,20 @@ class ArtifactStore:
         if not media_type:
             return
         sidecar = self.root / f"{digest}.media"
+        temp = self.root / f".media-{uuid.uuid4().hex}"
         try:
-            with sidecar.open("x", encoding="utf-8") as handle:
+            descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _MODE)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 handle.write(media_type)
-            os.chmod(sidecar, _MODE)
-        except FileExistsError:
-            # Another producer already stored these bytes with a type: the first claim stands.
-            pass
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temp, sidecar)
+            except FileExistsError:
+                # Another producer already stored these bytes with a type: the first claim stands.
+                pass
+        finally:
+            temp.unlink(missing_ok=True)
 
     def _sync_directory(self) -> None:
         """Make the new name durable before any fact that references it may commit."""

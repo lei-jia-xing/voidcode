@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
 
 from tests.fixtures.core_factory import loopback_server, open_core_for_test, write_loopback_config
 from tests.fixtures.reload_plugin import SERVICES_READ_TOOL, SERVICES_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
+from voidcode.core.artifacts import ArtifactStore
 
 PLUGIN_ID = "reload-fixture"
 EMPTY_SHA = hashlib.sha256(b"").hexdigest()
@@ -164,6 +166,36 @@ def test_the_media_type_survives_the_reference(tmp_path: Path) -> None:
         assert page["artifact"]["media_type"] == "image/png"
         assert page["bytes"] == len(payload)
         assert (tmp_path / "state" / "artifacts" / f"{sha}.media").read_text(encoding="utf-8") == "image/png"
+
+
+def test_media_type_is_fsynced_before_the_sidecar_is_published(tmp_path: Path, monkeypatch) -> None:
+    store = ArtifactStore(tmp_path / "artifacts")
+    payload = b"durable png"
+    spill_id, spill = store.start_spill("image/png", owner="fsync-test")
+    spill.append(payload)
+    sha = hashlib.sha256(payload).hexdigest()
+    sidecar = store.root / f"{sha}.media"
+    observed: list[tuple[str, str, bool]] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        try:
+            path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+            content = path.read_text(encoding="utf-8") if path.is_file() else ""
+        except OSError:
+            path, content = Path(), ""
+        observed.append((path.name, content, sidecar.exists()))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    assert store.finish(spill_id) == (sha, len(payload), "image/png")
+
+    # The sidecar's temp content is fsynced while the published name still does not exist.
+    assert any(name.startswith(".media-") and content == "image/png" and sidecar_exists is False for name, content, sidecar_exists in observed)
+    # The one directory fsync runs after the link, making the published name durable.
+    assert observed[-1] == (store.root.name, "", True)
+    assert sidecar.read_text(encoding="utf-8") == "image/png"
+    assert sidecar.stat().st_mode & 0o777 == 0o600
 
 
 def test_empty_payloads_are_stored_and_read_back(tmp_path: Path) -> None:
