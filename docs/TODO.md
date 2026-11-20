@@ -76,16 +76,16 @@ OMP 自己也有 request budget 与 preview 阈值；它们不自动构成 VoidC
 
 ### 清算结果（2026-11-19，以上各表详单已逐项核验落点）
 - Schema/JSON/兼容：三项全落（`kernel_identity` 删除、`wakeups`/`checkpoints` 建列、`background_actions` 独立成表、`json_extract` 清零、v1/v5 兼容分支删除）。用户可见：旧库拒绝不迁移（`ForeignDatabaseError`）。
-- Core 上帝对象：`ChildOutcome` 直传、`activation.py` 抽出、`store.py` 拆为 facade + records/sessions/state/continuations/writes、索引 + `events_by_types` + `payload_bytes`、watcher/轮询/`sleep` 同步、线程池收敛、`child_history` 删除全部落地；`per-turn rebuild` 的全量拉取属模型所需而保留。未动：`PluginRuntime` 双处构造、`LeaseContext` 拆分、`artifacts` `.media` fsync。
+- Core 上帝对象：`ChildOutcome` 直传、`activation.py` 抽出、`store.py` 拆为 facade + records/sessions/state/continuations/writes、索引 + `events_by_types` + `payload_bytes`、watcher/轮询/`sleep` 同步、线程池收敛、`child_history` 删除全部落地；`per-turn rebuild` 的全量拉取属模型所需而保留。2026-11-21 补齐：`PluginRuntime` 单 builder、`LeaseIdentity`/`LeaseStaging` 拆分、background execution 抽出、artifact `.media` fsync。
 - SDK：悬空契约走闭环保留；`validate_json` 保留（`validate_python(strict)` 已证伪）；兼容分支、双 Wire 定义、`ObservedChange`、碎片模块、`sdk`→`tui` 的 gates 迁移、`PluginServices` 拆分全部落地；`icons.py` 与快捷键归一化保留。
 - 插件：tokenizer 整套删除；四巨石各自修剪（共享状态 helper 未动）；`cron`/`compaction`、`review` pager、`background` 就绪轮询（命名常量）保留；`grep`/`glob` 已共用唯一 ignore 表；`files/` 三引擎未收敛。
-- Outer/TUI/Web：死参数、手拼 openapi、dict 往返、轮询流、30fps 空转、Win32 后端、`views` if-chain、`CoreApp.tsx` 上帝组件全部落地；逐操作裸线程改 `WorkGroup`、TUI 配置写入走 `config.update_model_section`、typed event pump 与 `catalog`/`operations`/`rendering` 拆分落地；`snapshot`/`payload` 双字典（凭据边界）、composer 宽度引擎、`/tui` 双系统保留。剩余：`_handle_stream_event` 拆分、`cli` argv 扫描。
+- Outer/TUI/Web：死参数、手拼 openapi、dict 往返、轮询流、30fps 空转、Win32 后端、`views` if-chain、`CoreApp.tsx` 上帝组件全部落地；逐操作裸线程改 `WorkGroup`、TUI 配置写入走 `config.update_model_section`、typed event pump 与 `catalog`/`operations`/`rendering` 拆分落地；`_handle_stream_event` 已拆到 `tui/stream_handlers.py`（306 行），`cli` root 选项已改标准 argparse。`snapshot`/`payload` 双字典（凭据边界）、composer 宽度引擎、`/tui` 双系统保留。
 
 ### 2026-11-20 TUI Help/命令发现复核
 - 已落地：`CommandDescriptor`/`CommandDefinition` 增加可选 `usage`/`examples`/`group` 并贯通 payload 与插件 catalog；新增 `sdk/command_help.py` 统一 `client_syntax`→public path、schema→usage、group 排序；core `/help` 输出和 TUI `/tui help` 都改为该投影；新增 `tui/help_view.py`，`/tui` 控制、补全、help 共用一张表；`/help` receipt 由 TUI 从其 catalog `data` 渲染；`!` 前缀按 catalog `client_syntax` 路由。详见 [TUI TODO](../src/voidcode/tui/TODO.md)。
 - 跨模块剩余（不重复下方维护性清点）：core `/help`、CLI `invoke help` 与 TUI help 现已共用 `sdk/command_help.py`；`HealthModel.context_window` 与 web `client_syntax` 派生仍分别归属 SDK/Web，详见本文件“维护性清点”与 [TUI TODO](../src/voidcode/tui/TODO.md)。
 
-## 维护性清点（2026-11-20，当前树复核）
+## 维护性清点（2026-11-21，当前树复核）
 
 口径：行数为当前工作树 `wc -l` 实测；`ruff check .`、`ruff format --check .`、`ty check src` 全绿。旧审计的方法数、类区间与 `row[N]` 计数已不再沿用。
 
@@ -93,24 +93,26 @@ OMP 自己也有 request budget 与 preview 阈值；它们不自动构成 VoidC
 
 | 模块 | 行数 | 职责 |
 |---|---|---|
-| `core/engine.py` | 6,697 | `Core`：生命周期、run/resume、ask/approval、命令 invoke/confirm、事件结算/observer；activation/usage/projection/cancellation/background registry 已抽为协作者 |
-| `core/services.py` | 1,498 | `RuntimeServices`：state/event/continuation/child/artifact/process/background 服务 |
+| `core/engine.py` | 6,058 | `Core`：生命周期、run/resume、ask/approval、命令 invoke/confirm、事件结算/observer；activation/usage/projection/cancellation/background registry/background execution 已抽为协作者 |
+| `core/background_execution.py` | 767 | `BackgroundExecution`：background driver invoke、tool wait 收支、lost-wait reconcile 与 deferred drain |
+| `core/services.py` | 1,502 | `RuntimeServices`：state/event/continuation/child/artifact/process/background 服务 |
 | `core/delegation.py` | 2,099 | `DelegationManager`：spawn/join/send/cancel、父子 facts、notice |
-| `core/plugins.py` | 1,894 | `PluginRuntime`：导入/catalog/lease/dispatch/hook/view/resource/query |
+| `core/plugins.py` | 1,910 | `PluginRuntime`：导入/catalog/lease/dispatch/hook/view/resource/query；lease 由 `LeaseIdentity` + `LeaseStaging` 组成 |
 | `core/storage/store.py` | 205 | facade：连接/生命周期/re-export |
 | `core/storage/records.py` | 1,025 | typed row decoders 与 SELECT 行类型 |
 | `core/storage/sessions.py` | 1,125 | sessions/events/checkpoints |
 | `core/storage/state.py` | 1,103 | revision/activation/adoption/owner state/confirmation/budget/overlay/projection |
 | `core/storage/continuations.py` | 1,370 | wakeup/continuation/background action/root budget/child-message claim |
 | `core/storage/writes.py` | 132 | 跨域写 helper |
-| `tui/terminal_app.py` | 2,437 | `CoreTuiApp` 状态所有者；事件泵/事件处理/catalog/operations/rendering 已拆到同级模块 |
-| `tui/event_pump.py` | 539 | 输入/stream/queue 泵与 frame→`_handle_stream_event` 桥 |
+| `tui/terminal_app.py` | 2,225 | `CoreTuiApp` 状态所有者；事件泵/stream handler/catalog/operations/rendering 已拆到同级模块 |
+| `tui/event_pump.py` | 540 | 输入/stream/queue 泵；stream frame 调用 `stream_handlers.handle_stream_event` |
+| `tui/stream_handlers.py` | 306 | 按事件族拆分的 stream 处理（session/cursor 守卫、transcript、tool、provider、gates、run notice） |
 | `tui/events.py` | 327 | typed frame 与事件投影 |
 | `tui/catalog.py` | 72 | catalog 生命周期 |
 | `tui/operations.py` | 149 | sessions/create/views/model reload/command input 请求与响应 |
 | `tui/rendering.py` | 338 | transcript/frame/footer/border 渲染 |
 | `tui/term.py` | 1,269 | 终端控制、宽度/裁剪、`render_lines`、`wrap_plain` |
-| `tui/composer.py` | 1,213 | 编辑器状态机、布局、粘贴块、自有折行 |
+| `tui/composer.py` | 1,210 | 编辑器状态机、布局、粘贴块、自有折行 |
 | `tui/views.py` | 1,062 | 纯渲染器 + 交互视图；`render_tool_result(result: ToolResult, ...)` 直接消费 typed 结果 |
 | `plugins/workflows/workflows_plugin.py` | 2,327 | 脚本加载/执行、节点账本、上下文、命令/视图 |
 | `plugins/subagents/subagents_plugin.py` | 1,855 | child 投影、task/batch/wait、状态与监控 |
@@ -123,6 +125,11 @@ OMP 自己也有 request budget 与 preview 阈值；它们不自动构成 VoidC
 
 ### 已落地（当前证据）
 
+计划与验收记录见 [Maintainability cleanup plan](plans/2026-11-20-maintainability-cleanup.md)。
+
+- **C1–C5（2026-11-21）**：`PluginRuntime` 由唯一 `Core._build_runtime` 构造；`LeaseContext` 拆为不可变 `LeaseIdentity` + `LeaseStaging`；background driver invoke 与 tool wait 移入 `core/background_execution.py`（767 行），`engine.py` 6,697→6,058。剩余：`_commit_tool_wait_events` 仍留在 `Core`，因为 `cancel_background_tool_requests` 与 tool wait 共用同一条 commit/notify 路径。
+- **T1–T2（2026-11-21）**：stream 事件族移入 `tui/stream_handlers.py`（306 行），`terminal_app.py` 2,437→2,225；`test_idle_render` 改用共享 `wait_for`。
+- **M1–M5（2026-11-21）**：provider 行迁到 `capabilities/providers/registry.py`（122 行）+ `provider_table.json`（499 行），删除 `native/provider_table.py`；CLI root 选项改标准 argparse 两段式（`cli.py` 519 行）；artifact `.media` 临时文件先 `fsync` 再 hard-link；共享 loopback/Core registry 继续覆盖剩余测试套件。
 - **Typed store rows**：`storage/records.py:633/651/686` 单点解码 session/info/event；`ChildOutcome` 与 spawn/ack/send 结果已强类型直传。残留 `row[N]` 仅 6 处（`continuations.py` 4、`records.py` 1、`state.py` 1），不再是全量逐字段解包。
 - **`render_tool_result` typed**：`tui/views.py:263` 直接收 `ToolResult`；`terminal_app` 不再经 `encode_tool_result`→dict→`isinstance` 还原；TUI view dispatch 也是 typed union。
 - **Config ingress**：`cli._tui_prefs` 走 `config.load_config(..., allow_missing=True)`；`bootstrap.config_from_snapshot` 只保留“5 个 section 必须存在”后交给单一 `parse_config`；TUI 配置写入唯一入口为 `config.update_model_section`，`grep "capabilities\." src/voidcode/tui` 为空。
@@ -177,10 +184,5 @@ OMP 自己也有 request budget 与 preview 阈值；它们不自动构成 VoidC
 
 ### 剩余（open）
 
-1. `engine.py` 6,697 行；background invocation/tool-wait 仍在 `Core`（`_invoke_background_action`/`_wait_background_actions` 路径）。
-2. `PluginRuntime` 仍有两处构造（`engine.py:671`、`:3091`），未收敛为单一 builder。
-3. `LeaseContext`（`core/plugins.py:147`）未拆为 `LeaseIdentity` + `StagingBuffer`。
-4. `terminal_app.py:572-729` `_handle_stream_event` 仍约 158 行。
-5. `config.py:217` `resolve_providers` 仍延迟 import `capabilities.providers.native.provider_table`；provider 行应归中性 registry。
-6. 测试 fixture 残留：`test_overlays`；7 个特殊 registry 文件（`test_overlays`、`test_workflows_restart`、`test_background_actions`、`test_collaboration`、`test_goal_plugin`、`test_plan_plugin`、`test_todo_plugin`）；21 个 unit `_server` 副本；`test_idle_render` 的 5s/无 `what` wait helper。
-7. Artifact `.media` sidecar 未 fsync（`core/artifacts.py:_write_media_type`）；内容命名持久性仍依赖目录 fsync/后续流程。
+1. `_commit_tool_wait_events` 仍在 `Core`（`core/engine.py:3322`）：`cancel_background_tool_requests` 与 background tool wait 共用同一条 commit/notify 路径；抽出它会复制取消结算的原子提交顺序，故保留并记录为已知共享点。其余 background driver invoke/tool-wait 收支已在 `core/background_execution.py`。
+2. 测试 fixture 例外：9 个本地 loopback context manager 仍在（C 自有 `test_background_actions.py`、`test_background_tool_wait.py`、`test_process_lease.py`；integration `test_child_structured_e2e.py`、`test_core_activation.py`、`test_core_vertical.py`、`test_goal_plugin.py`、`test_subagents_monitor.py`、`test_workflows_restart.py`）。共享 `loopback_server` 已接受 `replies=None`；这些文件按 workstream 边界保留本地副本，行为与共享实现一致。`test_background_actions.py` 也保留本地 `_CREATED` registry，因为测试中途 close/reopen 需要显式 `_CREATED.remove`。

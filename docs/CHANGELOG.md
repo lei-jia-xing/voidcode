@@ -4,6 +4,15 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Maintainability cleanup: background/TUI splits, provider registry, CLI parsing, durable media sidecars
+- Core: `core/background_execution.py` (767 lines) now owns background driver invoke and tool-wait accounting; `Core._build_runtime` is the single cold/hot runtime builder; `LeaseContext` is composed from frozen `LeaseIdentity` + `LeaseStaging`. `engine.py` is 6,058 lines. Remaining shared point: `_commit_tool_wait_events` stays in `Core` because cancellation settlement and tool wait share its atomic commit/notify path.
+- TUI: stream event families move to `tui/stream_handlers.py` (306 lines); `terminal_app.py` is 2,225 lines. The idle-render test uses the shared `wait_for`, and no event-ordering or scrollback-commit behavior changes.
+- CLI (user-visible): root `--workspace`/`--state-dir` are parsed by a standard argparse pre-parser and remain accepted before or after the subcommand, including `--opt=value`; `--` still ends option parsing for prompts. The hand-rolled argv scanner is gone, so option/value knowledge lives only in argparse.
+- Durability (user-visible): artifact `.media` sidecars are written to a temporary file, flushed and fsynced, hard-linked into place (first claim wins), then the directory is fsynced. A crash can no longer publish a referenced artifact with an empty media type; content addressing and `ArtifactReference` are unchanged.
+- Providers (internal import surface): the provider row module/data moved from `capabilities/providers/native/` to `capabilities/providers/registry.py` + `provider_table.json`. The private `voidcode.capabilities.providers.native.provider_table` import path is deleted; configuration and provider behavior are unchanged. Out-of-tree code importing that private path must switch to the registry.
+- Tests (internal): `mise run test`, `test:coverage`, and CI run pytest serially (no xdist); shared `loopback_server`/`wait_for`/`register_core` cover the remaining suites, with the remaining local fixture exceptions recorded in `docs/TODO.md`.
+- Verification (2026-11-21): serial `uv run python -m pytest -q` = **2470 passed in 25:05**; `ruff check .`, `ruff format --check .` (475 files), `ty check src`, `frontend:api:check`, `frontend:lint`, `frontend:typecheck`, and `frontend:test` (90 passed) all green. After hook-required formatting-only edits, the five touched test files re-ran **48 passed**.
+
 ### Runtime ownership literals: kernel → core (BREAKING for old state)
 - Event `source`/`actor`, artifact `owner`, session overlay owner, continuation owner (including SQL predicates), and the terminal StopCause/status are now the literal `"core"` / `"core_lost"`. Tests and current docs/contracts were updated with them.
 - No read-normalization or compatibility shim: rows/events written by older builds with `"kernel"` or `"kernel_lost"` are not mapped. Under the existing zero-backward-compatibility policy, old-database bookkeeping rows/statuses are no longer recognized; start from a fresh state directory when crossing this change.
