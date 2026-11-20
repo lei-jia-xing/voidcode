@@ -259,3 +259,50 @@ def load_config(workspace: Path, *, allow_missing: bool = False) -> Config:
     if path.stat().st_size > 256 * 1024:
         raise ValueError("configuration file too large")
     return parse_config(json.loads(path.read_text(encoding="utf-8")))
+
+
+type ModelField = Literal["model", "reasoning_effort"]
+
+
+def update_model_section(workspace: Path, field: ModelField, value: object) -> Config:
+    """Validate and atomically rewrite one ``model`` field in ``voidcode.json``.
+
+    The whole payload is revalidated before the compare-and-swap replace, so an
+    invalid value or an unknown/ill-typed section leaves the file untouched.
+    ``value`` is validated by the product schema (named effort levels or a
+    non-negative integer budget); callers never normalize it themselves.
+    """
+    if field not in ("model", "reasoning_effort"):
+        raise ValueError(f"unsupported model field: {field}")
+    path = workspace / CONFIG_FILE_NAME
+    payload: dict[str, object]
+    if path.exists():
+        if not path.is_file():
+            raise ValueError(f"not a regular file: {path.name}")
+        if path.stat().st_size > 256 * 1024:
+            raise ValueError("configuration file too large")
+        expected: bytes | None = path.read_bytes()
+        try:
+            payload = json.loads(expected.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid configuration JSON: {error}") from error
+        if not isinstance(payload, dict):
+            raise ValueError("config must be an object")
+    else:
+        expected = None
+        payload = {"schema_version": CONFIG_SCHEMA_VERSION}
+    raw_section = payload.get("model")
+    if raw_section is None:
+        section: dict[str, object] = {}
+    elif isinstance(raw_section, dict):
+        section = dict(raw_section)
+    else:
+        raise ValueError("model section must be an object")
+    section[field] = value
+    payload["model"] = section
+    config = parse_config(payload)
+    content = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    from .sdk.atomic_file import replace_file
+
+    replace_file(path, content, expected_content=expected)
+    return config

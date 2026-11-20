@@ -15,6 +15,20 @@ from rich.text import Text
 
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.json_values import json_wire_value
+from voidcode.sdk.tools import (
+    AttachmentOutput,
+    CompositeOutput,
+    ContentPart,
+    EmptyOutput,
+    JsonPart,
+    MediaPart,
+    TablePart,
+    TextOutput,
+    TextPart,
+    ToolBody,
+    ToolFailure,
+    ToolResult,
+)
 from voidcode.sdk.views import (
     ChoiceOption,
     ChoicesViewData,
@@ -35,6 +49,7 @@ from voidcode.sdk.views import (
 )
 from voidcode.tui.gates import ApprovalGate
 
+from .formatting import tone_prefix, tone_slot
 from .keys import Key
 from .styles import Styles, markdown_theme, render_icon, resolve_component, syntax_theme
 from .term import clamp_row, escape_terminal_controls, grapheme_spans, render_lines, visible_width
@@ -51,9 +66,9 @@ class UnsupportedViewError(ValueError):
 
 def render_notice(data: NoticeViewData, width: int, styles: Styles | None = None) -> list[str]:
     resolved = _styles_arg(styles)
-    fg, bg, tone_slot = resolve_component(data.style, level=data.level)
-    prefix = {"warning": "Warning: ", "error": "Error: "}.get(data.level, "")
-    slot = tone_slot or {"info": "accent", "warning": "warning", "error": "error"}.get(data.level, "accent")
+    fg, bg, component_slot = resolve_component(data.style, level=data.level)
+    prefix = tone_prefix(data.level)
+    slot = component_slot or tone_slot(data.level)
     message_slot = "text" if prefix or slot not in ("warning", "error", "success") else slot
     content = Text.assemble(
         (prefix, resolved.style(slot, color=fg, background=bg, bold=True)),
@@ -172,85 +187,39 @@ def render_active_tools_summary(
     return [lines[0]] if lines else []
 
 
-def _artifact_ref_uri(value: object) -> str | None:
-    """A wire artifact reference's URI, or None when the value is not a typed reference."""
-    if not isinstance(value, Mapping):
-        return value if isinstance(value, str) and value.startswith("artifact://") else None
-    digest = value.get("sha256")
-    if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-        return None
-    return f"artifact://{digest}"
-
-
-def _artifact_ref_bytes(value: object) -> str:
-    """A wire artifact reference's byte count, or an explicit unknown marker."""
-    if isinstance(value, Mapping):
-        total = value.get("bytes")
-        if type(total) is int and total >= 0:
-            return str(total)
-    return "unknown"
-
-
-def _composite_part_text(part: Mapping[str, Any]) -> str:
-    """One composite part's ordered readable text from its wire dict.
-
-    The renderer never raises: unknown kinds and malformed fields render as
-    explicit markers naming the problem, so scrollback always stays readable.
-    """
-    kind = part.get("kind")
-    if kind == "text":
-        text = part.get("text")
-        body = text if isinstance(text, str) else ""
-        uri = _artifact_ref_uri(part.get("reference"))
-        if uri is not None:
-            suffix = f"[full text: {uri}]"
-            return f"{body}\n{suffix}" if body else suffix
-        return body
-    if kind == "media":
-        mime = part.get("mime")
-        mime_text = mime if isinstance(mime, str) and mime else "unknown"
-        alt = part.get("presentation")
-        alt_text = alt if isinstance(alt, str) and alt else "(missing presentation)"
-        reference = part.get("reference")
-        uri = _artifact_ref_uri(reference)
+def _content_part_text(part: ContentPart) -> str:
+    """One typed composite part's ordered readable text with reference URIs."""
+    if isinstance(part, TextPart):
+        if part.reference is not None:
+            suffix = f"[full text: {part.reference.uri}]"
+            return f"{part.text}\n{suffix}" if part.text else suffix
+        return part.text
+    if isinstance(part, MediaPart):
+        mime_text = part.mime
         label = "Image" if mime_text.startswith("image/") else "Audio" if mime_text.startswith("audio/") else "Media"
-        return f"[{label}: {mime_text}, {_artifact_ref_bytes(reference)} bytes, {uri if uri is not None else 'missing-uri'}] {alt_text}"
-    if kind == "table":
-        raw_columns = part.get("columns")
-        columns = [column for column in raw_columns if isinstance(column, str)] if isinstance(raw_columns, list) else []
-        if not columns:
-            return "[table: missing columns]"
-        raw_rows = part.get("rows")
-        lines = ["\t".join(columns)]
-        shown = 0
-        if isinstance(raw_rows, list):
-            for row in raw_rows:
-                if not isinstance(row, list):
-                    continue
-                lines.append("\t".join(cell if isinstance(cell, str) else "" for cell in row))
-                shown += 1
-        caption = part.get("presentation")
-        if isinstance(caption, str) and caption:
-            lines.insert(0, caption)
-        total = part.get("total_rows")
-        if type(total) is int and total > shown:
-            uri = _artifact_ref_uri(part.get("reference"))
-            note = f"[showing {shown}/{total} rows" + (f"; full table: {uri}]" if uri is not None else "]")
-            lines.append(note)
+        return f"[{label}: {mime_text}, {part.reference.bytes} bytes, {part.reference.uri}] {part.presentation}"
+    if isinstance(part, TablePart):
+        lines = ["\t".join(part.columns)]
+        lines.extend("\t".join(row) for row in part.rows)
+        if part.presentation:
+            lines.insert(0, part.presentation)
+        if part.total_rows is not None and part.total_rows > len(part.rows):
+            if part.reference is None:  # rejected by TablePart.__post_init__
+                raise ValueError("truncated table requires a reference")
+            lines.append(f"[showing {len(part.rows)}/{part.total_rows} rows; full table: {part.reference.uri}]")
         return "\n".join(lines)
-    if kind == "json":
-        preview = part.get("preview")
-        preview_text = preview if isinstance(preview, str) and preview else "(missing preview)"
-        uri = _artifact_ref_uri(part.get("reference"))
-        return f"{preview_text}\n[full JSON: {uri if uri is not None else 'missing-uri'}]"
-    return f"[unknown part kind: {kind!r}]"
+    if isinstance(part, JsonPart):
+        return f"{part.preview}\n[full JSON: {part.reference.uri}]"
+    raise ValueError(f"unsupported composite part: {type(part).__name__}")
 
 
-def _composite_part_has_reference(part: object) -> bool:
-    return isinstance(part, Mapping) and _artifact_ref_uri(part.get("reference")) is not None
+def _content_part_has_reference(part: ContentPart) -> bool:
+    if isinstance(part, (MediaPart, JsonPart)):
+        return True
+    return isinstance(part, (TextPart, TablePart)) and part.reference is not None
 
 
-def _render_diff_body(body: object, width: int, styles: Styles) -> list[str] | None:
+def _render_diff_body(body: ToolBody | None, width: int, styles: Styles) -> list[str] | None:
     """Single-file edit semantics as a diff card, or None without complete shape.
 
     Shape dispatch only (path/diff/additions/deletions with strict types): no
@@ -260,12 +229,13 @@ def _render_diff_body(body: object, width: int, styles: Styles) -> list[str] | N
     None so output-only rendering is preserved; diff text is escaped so
     scrollback stays readable.
     """
-    if not isinstance(body, Mapping):
+    if body is None:
         return None
-    path = body.get("path")
-    diff_text = body.get("diff")
-    additions = body.get("additions")
-    deletions = body.get("deletions")
+    payload = body.as_payload()
+    path = payload.get("path")
+    diff_text = payload.get("diff")
+    additions = payload.get("additions")
+    deletions = payload.get("deletions")
     if not isinstance(path, str) or not path:
         return None
     if not isinstance(diff_text, str) or not diff_text:
@@ -291,7 +261,7 @@ def _render_diff_body(body: object, width: int, styles: Styles) -> list[str] | N
 
 
 def render_tool_result(
-    result: Mapping[str, Any],
+    result: ToolResult,
     width: int,
     styles: Styles | None = None,
     *,
@@ -299,40 +269,33 @@ def render_tool_result(
 ) -> list[str]:
     """Preserve selected inline output; immutable source paging is a separate action."""
     resolved = _styles_arg(styles)
-    failed = interrupted or result.get("status") == "error"
+    failed = interrupted or isinstance(result, ToolFailure)
     rows: list[str] = []
-    output = result.get("output")
+    output = result.output
     bodies: list[str] = []
     suffix = ""
-    artifact_available = result.get("result_reference") is not None
-    if isinstance(output, Mapping):
-        output_type = str(output.get("type", ""))
-        if output_type == "text":
-            presentation = output.get("presentation")
-            bodies.append(str(presentation) if isinstance(presentation, str) and presentation else str(output.get("text", "")))
-        elif output_type == "attachment":
-            bodies.append(f"[{output.get('mime') or 'attachment'}]")
-        elif output_type == "empty":
-            presentation = output.get("presentation")
-            bodies.append(presentation if isinstance(presentation, str) else "")
-        elif output_type == "composite":
-            parts = output.get("parts")
-            if isinstance(parts, list):
-                for part in parts:
-                    if isinstance(part, Mapping):
-                        bodies.append(_composite_part_text(part))
-                        artifact_available = artifact_available or _composite_part_has_reference(part)
-        bounds = output.get("bounds")
-        if isinstance(bounds, Mapping):
-            flags = [key for key in ("truncated", "partial") if bounds.get(key) is True]
-            artifact_available = artifact_available or bounds.get("reference") is not None
-            source = bounds.get("source")
-            note = ", ".join([*flags, str(source)] if isinstance(source, str) and source else flags)
-            if note:
-                suffix = f"[{note}]"
+    artifact_available = result.result_reference is not None
+    if isinstance(output, TextOutput):
+        bodies.append(output.presentation if output.presentation else output.text)
+    elif isinstance(output, AttachmentOutput):
+        bodies.append(f"[{output.mime}]")
+    elif isinstance(output, EmptyOutput):
+        bodies.append(output.presentation or "")
+    elif isinstance(output, CompositeOutput):
+        for part in output.parts:
+            bodies.append(_content_part_text(part))
+            artifact_available = artifact_available or _content_part_has_reference(part)
+    else:
+        raise ValueError(f"unsupported tool output: {type(output).__name__}")
+    bounds = output.bounds
+    flags = [name for name, value in (("truncated", bounds.truncated), ("partial", bounds.partial)) if value]
+    artifact_available = artifact_available or bounds.reference is not None
+    note = ", ".join([*flags, bounds.source] if bounds.source else flags)
+    if note:
+        suffix = f"[{note}]"
     body = "\n\n".join(block for block in bodies if block)
     if failed:
-        if body and isinstance(output, Mapping) and str(output.get("type", "")) == "composite":
+        if body and isinstance(output, CompositeOutput):
             rows.extend(
                 render_lines(
                     Text(escape_terminal_controls(body, preserve_newlines=True, preserve_tabs=True), style=resolved.style("dim")),
@@ -341,7 +304,10 @@ def render_tool_result(
                     color_system=resolved.color_system,
                 )
             )
-        error = result.get("error")
+        if isinstance(result, ToolFailure):
+            error = result.error
+        else:
+            error = "interrupted"
         label = "Interrupted" if interrupted else "Error"
         detail = escape_terminal_controls(str(error or body or "interrupted"), preserve_newlines=True)
         rows.extend(
@@ -361,7 +327,7 @@ def render_tool_result(
         )
         rows.extend(preview)
     if not failed:
-        diff_rows = _render_diff_body(result.get("body"), width, resolved)
+        diff_rows = _render_diff_body(result.body, width, resolved)
         if diff_rows:
             rows.extend(diff_rows)
     if artifact_available:

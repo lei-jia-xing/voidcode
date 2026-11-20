@@ -6,6 +6,7 @@ import threading
 import time
 from typing import Any
 
+from voidcode.tui.events import WakeEvent
 from voidcode.tui.terminal_app import CoreTuiApp
 
 
@@ -80,7 +81,7 @@ def test_queued_frame_renders_while_idle() -> None:
     try:
         _wait_for(lambda: len(terminal.frames) >= 1)
         settled = len(terminal.frames)
-        app.event_queue.put({"kind": "wake"})
+        app.event_queue.put(WakeEvent())
         _wait_for(lambda: len(terminal.frames) >= settled + 1)
         assert len(terminal.frames) == settled + 1
     finally:

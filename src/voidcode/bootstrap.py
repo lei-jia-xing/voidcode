@@ -227,23 +227,18 @@ def admit_live(
 
 
 def config_from_snapshot(snapshot: Mapping[str, object]) -> Config:
-    """Rebuild the effective configuration a stored revision was admitted with."""
+    """Rebuild the effective configuration a stored revision was admitted with.
+
+    ``snapshot`` is the private, digest-verified record written at admission time, so
+    credentials are read from it and never from the live file or the environment. Every
+    section must be present explicitly: ``Config`` gives a live file defaults, but a
+    recorded revision without a section is malformed. Section shapes are then validated
+    once by ``parse_config``; the snapshot loader already froze the payload to JSON.
+    """
     missing = [name for name in ("providers", "model", "policy", "plugins", "sandbox") if name not in snapshot]
     if missing:
         raise ValueError("private configuration snapshot is missing " + ", ".join(missing))
-    sections: dict[str, object] = {}
-    for name in ("model", "policy", "providers", "plugins"):
-        section = snapshot[name]
-        if not isinstance(section, Mapping):
-            raise ValueError(f"private configuration snapshot section {name!r} must be an object")
-        sections[name] = json_wire_object(section)
-    sandbox = snapshot["sandbox"]
-    if sandbox is None:
-        sections["sandbox"] = None
-    else:
-        if not isinstance(sandbox, Mapping):
-            raise ValueError("private configuration snapshot section 'sandbox' must be an object or null")
-        sections["sandbox"] = json_wire_object(sandbox)
+    sections = {name: snapshot[name] for name in ("model", "policy", "providers", "plugins", "sandbox")}
     return parse_config({"schema_version": 1, **sections})
 
 

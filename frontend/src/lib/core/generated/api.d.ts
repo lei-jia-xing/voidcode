@@ -258,6 +258,16 @@ export interface components {
              */
             effects?: components["schemas"]["ToolEffect"][];
             /**
+             * Examples
+             * @default []
+             */
+            examples?: string[];
+            /**
+             * Group
+             * @default null
+             */
+            group?: string | null;
+            /**
              * Has Input
              * @default false
              */
@@ -276,6 +286,11 @@ export interface components {
              * @default null
              */
             text_argument?: string | null;
+            /**
+             * Usage
+             * @default null
+             */
+            usage?: string | null;
         };
         /** CommandInputRequest */
         CommandInputRequest: {
@@ -701,6 +716,11 @@ export interface components {
          * @description Admitted model identity plus supported thinking levels for the footer.
          */
         HealthModel: {
+            /**
+             * Context Window
+             * @default null
+             */
+            context_window?: number | null;
             /** Model */
             model: string | null;
             /** Provider */

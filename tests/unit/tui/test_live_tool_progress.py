@@ -10,6 +10,7 @@ from voidcode.sdk.codec import encode_tool_call
 from voidcode.sdk.commands import CommandCatalog
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolSuccess
 from voidcode.sdk.transcript import TranscriptEntry, TranscriptTool
+from voidcode.tui import rendering
 from voidcode.tui.terminal_app import CoreTuiApp
 
 
@@ -61,14 +62,14 @@ def _event(
 ) -> StreamEvent:
     entry: TranscriptEntry | None = None
     if content is not None:
-        entry = TranscriptEntry(sequence, run_id, revision_id, "kernel", content)
+        entry = TranscriptEntry(sequence, run_id, revision_id, "core", content)
     return StreamEvent(
         session_id=session_id,
         sequence=sequence,
         type=event_type,
         run_id=run_id,
         revision_id=revision_id,
-        source="kernel",
+        source="core",
         actor="user",
         payload=dict(payload),
         transcript=entry,
@@ -388,5 +389,5 @@ def test_run_termination_clears_matching_run_tools_and_spinner_stays_active_for_
     assert "inv-2" in app._active_tools
 
     # Spinner and border status remain ACTIVE because inv-2 is still running
-    status = app._border_status()
+    status = rendering.border_status(app)
     assert "tool_run_2" in status

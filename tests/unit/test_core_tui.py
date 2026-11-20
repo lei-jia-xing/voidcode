@@ -36,6 +36,14 @@ from voidcode.sdk.views import (
     PluginViewDescriptor,
     ViewsSnapshot,
 )
+from voidcode.tui import rendering
+from voidcode.tui.events import (
+    CommandDoneEvent,
+    CommandPresentationEvent,
+    GateAcceptedEvent,
+    RunStatusEvent,
+    StreamEventEvent,
+)
 from voidcode.tui.gates import ApprovalGate
 from voidcode.tui.keys import Key
 from voidcode.tui.views import (
@@ -89,14 +97,14 @@ def _event(
 ) -> StreamEvent:
     entry: TranscriptEntry | None = None
     if content is not None:
-        entry = TranscriptEntry(sequence, run_id, revision_id, "kernel", content)
+        entry = TranscriptEntry(sequence, run_id, revision_id, "core", content)
     return StreamEvent(
         session_id=session_id,
         sequence=sequence,
         type=event_type,
         run_id=run_id,
         revision_id=revision_id,
-        source="kernel",
+        source="core",
         actor="user",
         payload=dict(payload),
         transcript=entry,
@@ -505,6 +513,7 @@ class _StubTerminal:
     """Commit sink only: records settled rows, never touches a real terminal."""
 
     width = 100
+    content_width = 100
     eof = False
     color_system = None
 
@@ -670,6 +679,19 @@ def _drain_until(app: Any, terminal: Any, marker: str, *, timeout: float = 5.0) 
     raise AssertionError(f"settled row never appeared: {marker!r} in {terminal.committed!r}")
 
 
+def _settle_async(app: Any, *, timeout: float = 5.0) -> None:
+    """Pump until every app-owned operation and queued frame has settled."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app._drain_events()
+        if app._work.pending == 0 and app.event_queue.empty():
+            return
+        time.sleep(0.005)
+    raise AssertionError("app background work never settled")
+
+
 def _refresh_connection(app: Any, *, timeout: float = 5.0) -> None:
     """Run one real automatic reconnect refresh and wait for it to apply."""
     import time
@@ -773,27 +795,23 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     # A NEW approval parks while the old gate is still mounted; a late
     # acceptance envelope for the OLD id must not close the new gate.
     app.pending_approval = InteractiveApproval(_approval_gate("appr-2"))
-    app.event_queue.put(
-        {"kind": "approval_accepted", "request_id": "appr-1", "decision": "allow", "status": "completed", "generation": 0, "session_id": "s1"}
-    )
+    app.event_queue.put(GateAcceptedEvent(request_id="appr-1", generation=0, session_id="s1"))
     app._drain_events()
     assert app.pending_approval is not None and app.pending_approval.request_id == "appr-2"
     # The canonical decided facts close each gate exactly once.
     app.event_queue.put(
-        {
-            "kind": "stream_event",
-            "frame": EventFrame(session_id="s1", event=_event(11, "core.approval_decided", decision="allow", request_id="appr-2")),
-            "generation": 0,
-            "session_id": "s1",
-        }
+        StreamEventEvent(
+            frame=EventFrame(session_id="s1", event=_event(11, "core.approval_decided", decision="allow", request_id="appr-2")),
+            generation=0,
+            session_id="s1",
+        )
     )
     app.event_queue.put(
-        {
-            "kind": "stream_event",
-            "frame": EventFrame(session_id="s1", event=_event(12, "core.confirmation_decided", request_id="conf-9")),
-            "generation": 0,
-            "session_id": "s1",
-        }
+        StreamEventEvent(
+            frame=EventFrame(session_id="s1", event=_event(12, "core.confirmation_decided", request_id="conf-9")),
+            generation=0,
+            session_id="s1",
+        )
     )
     app._drain_events()
     assert app.pending_approval is None
@@ -801,12 +819,11 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     assert app.active_overlay is None
     # Replayed decided facts never resurrect either gate.
     app.event_queue.put(
-        {
-            "kind": "stream_event",
-            "frame": EventFrame(session_id="s1", event=_event(12, "core.confirmation_decided", request_id="conf-9")),
-            "generation": 0,
-            "session_id": "s1",
-        }
+        StreamEventEvent(
+            frame=EventFrame(session_id="s1", event=_event(12, "core.confirmation_decided", request_id="conf-9")),
+            generation=0,
+            session_id="s1",
+        )
     )
     app._drain_events()
     assert app.active_overlay is None
@@ -842,6 +859,7 @@ def test_automatic_refresh_is_silent_until_views_are_explicitly_requested() -> N
     assert app.composer.value == "x"
 
     app._show_views()
+    _settle_async(app)
     app._render_frame()
     assert isinstance(app.active_overlay, InteractiveForm)
     assert any("No active goal" in row for row in terminal.committed)
@@ -954,6 +972,72 @@ def test_core_help_receipt_renders_multiline_and_clears_dispatching() -> None:
     assert [entry[1] for entry in client.invoked] == ["help"]
 
 
+def test_core_help_receipt_renders_catalog_help_screen() -> None:
+    """A real help receipt carries the catalog; the TUI renders grouped usage, not its text."""
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    commands = [
+        CommandDescriptor(
+            name="help",
+            owner="core",
+            description="Show available commands and documentation",
+            argument_schema={"type": "object", "properties": {}},
+            effects=(ToolEffect.READ,),
+        ),
+        CommandDescriptor(
+            name="status",
+            owner="core",
+            description="Show workspace status",
+            argument_schema={"type": "object", "properties": {}},
+            effects=(ToolEffect.READ,),
+        ),
+        CommandDescriptor(
+            name="goal.set",
+            owner="goal",
+            description="Create or replace the goal",
+            argument_schema={
+                "type": "object",
+                "properties": {"objective": {"type": "string"}, "token_budget": {"type": "integer"}},
+                "required": ["objective"],
+            },
+        ),
+        CommandDescriptor(
+            name="monitor",
+            owner="subagents",
+            description="Open the subagent monitor",
+            has_input=True,
+            slash_visible=False,
+            default_shortcut="alt+a",
+        ),
+    ]
+    catalog = CommandCatalog(revision_id="rev-12345678", commands=tuple(commands))
+    client = _CommandClient(
+        catalog=commands,
+        results={"help": CommandResult(status="ok", output="legacy text", data=catalog.as_payload())},
+    )
+    terminal = _StubTerminal()
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+
+    app._dispatch_slash_command("/help")
+    _drain_until(app, terminal, "VoidCode commands")
+    import re
+
+    text = "\n".join(re.sub(r"\x1b\[[0-9;]*m", "", row) for row in terminal.committed)
+    assert "Core" in text and "goal" in text
+    assert "/goal set <objective> [token_budget]" in text
+    assert "alt+a" in text
+    assert "/monitor" not in text
+    assert "legacy text" not in text
+
+    from voidcode.tui.term import visible_width
+
+    for width in (40, 80, 120):
+        terminal.width = terminal.content_width = width
+        rows = app._help_receipt_rows(CommandResult(status="ok", output="legacy text", data=catalog.as_payload()))
+        assert rows is not None
+        assert all(visible_width(row) <= width for row in rows), (width, [(row, visible_width(row)) for row in rows if visible_width(row) > width])
+
+
 def test_core_data_receipt_preserves_empty_mapping_and_falsy_values() -> None:
     """A data-only core receipt falls back to JSON without truthiness loss."""
     from voidcode.tui.terminal_app import CoreTuiApp
@@ -996,15 +1080,14 @@ def test_long_settled_command_result_wraps_without_losing_content() -> None:
         app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
         app._stream_ready = True
         app.event_queue.put(
-            {
-                "kind": "stream_event",
-                "frame": EventFrame(
+            StreamEventEvent(
+                frame=EventFrame(
                     session_id="s1",
                     event=_event(1, "core.command_completed", name="providers", result={"status": "ok", "output": payload}),
                 ),
-                "session_id": "s1",
-                "generation": 0,
-            }
+                session_id="s1",
+                generation=0,
+            )
         )
         app._drain_events()
         terminal.close()
@@ -1027,9 +1110,8 @@ def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> 
     app._stream_ready = True
 
     app.event_queue.put(
-        {
-            "kind": "stream_event",
-            "frame": EventFrame(
+        StreamEventEvent(
+            frame=EventFrame(
                 session_id="s1",
                 event=_event(
                     1,
@@ -1038,9 +1120,9 @@ def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> 
                     result={"status": "ok", "output": "turns: 0\ninput tokens: 0"},
                 ),
             ),
-            "session_id": "s1",
-            "generation": 0,
-        }
+            session_id="s1",
+            generation=0,
+        )
     )
     app._drain_events()
     assert any("turns: 0" in row for row in terminal.committed), terminal.committed
@@ -1048,9 +1130,8 @@ def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> 
     assert all("\\x0a" not in row for row in terminal.committed), terminal.committed
 
     app.event_queue.put(
-        {
-            "kind": "stream_event",
-            "frame": EventFrame(
+        StreamEventEvent(
+            frame=EventFrame(
                 session_id="s1",
                 event=_event(
                     2,
@@ -1059,9 +1140,9 @@ def test_plugin_command_event_renders_multiple_lines_with_error_precedence() -> 
                     result={"status": "error", "error": "boom", "output": "partial"},
                 ),
             ),
-            "session_id": "s1",
-            "generation": 0,
-        }
+            session_id="s1",
+            generation=0,
+        )
     )
     app._drain_events()
     assert any("boom" in row for row in terminal.committed), terminal.committed
@@ -1077,16 +1158,7 @@ def test_late_completion_does_not_overwrite_gate_or_fence_status() -> None:
 
     app.pending_approval = InteractiveApproval(_approval_gate("appr-1"))
     app.status_line = "Tool approval required: write"
-    app.event_queue.put(
-        {
-            "kind": "command_done",
-            "name": "status",
-            "status": "ok",
-            "result": None,
-            "session_id": "s1",
-            "generation": 0,
-        }
-    )
+    app.event_queue.put(CommandDoneEvent(name="status", status="ok", result=None, session_id="s1", generation=0))
     app._drain_events()
     assert app.status_line == "Tool approval required: write"
 
@@ -1094,16 +1166,7 @@ def test_late_completion_does_not_overwrite_gate_or_fence_status() -> None:
     app.active_overlay = None
     app.upgrade = _health(fenced=True)
     app.status_line = "Core upgrade in progress: dispatch paused"
-    app.event_queue.put(
-        {
-            "kind": "command_done",
-            "name": "status",
-            "status": "ok",
-            "result": None,
-            "session_id": "s1",
-            "generation": 0,
-        }
-    )
+    app.event_queue.put(CommandDoneEvent(name="status", status="ok", result=None, session_id="s1", generation=0))
     app._drain_events()
     assert app.status_line == "Core upgrade in progress: dispatch paused"
 
@@ -1126,12 +1189,11 @@ def test_run_failure_is_rendered_once_from_the_durable_event() -> None:
     assert terminal.committed == []
 
     app.event_queue.put(
-        {
-            "kind": "stream_event",
-            "frame": EventFrame(session_id="s1", event=_event(1, "core.run_failed", error="boom", logical_turn="turn-1")),
-            "session_id": "s1",
-            "generation": 0,
-        }
+        StreamEventEvent(
+            frame=EventFrame(session_id="s1", event=_event(1, "core.run_failed", error="boom", logical_turn="turn-1")),
+            session_id="s1",
+            generation=0,
+        )
     )
     app._drain_events()
     assert sum("boom" in row for row in terminal.committed) == 1, terminal.committed
@@ -1487,8 +1549,8 @@ def test_run_failure_receipt_and_event_share_one_notice(event_first: bool) -> No
     terminal = _StubTerminal()
     app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)
     app._stream_ready = True
-    receipt = {"kind": "run_status", "status": "failed", "error": "boom", "run_id": "run-1"}
-    event = {"kind": "stream_event", "frame": EventFrame(session_id="s1", event=_event(1, "core.run_failed", error="boom"))}
+    receipt = RunStatusEvent(status="failed", error="boom", run_id="run-1")
+    event = StreamEventEvent(frame=EventFrame(session_id="s1", event=_event(1, "core.run_failed", error="boom")))
     for frame in [event, receipt] if event_first else [receipt, event]:
         app.event_queue.put(frame)
         app._drain_events()
@@ -1869,6 +1931,15 @@ def test_shell_syntax_stays_reachable_as_slash_and_help_lists_spaced_names() -> 
         time.sleep(0.01)
     assert [(name, args) for _, name, args, _ in client.invoked] == [("shell", {"command": "echo hi"})]
 
+    from voidcode.tui.composer import ComposerAction, ComposerOutcome
+
+    client.invoked.clear()
+    app._outcome(ComposerOutcome(ComposerAction.SUBMIT, "!echo bang"))
+    deadline = time.monotonic() + 5
+    while not client.invoked and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [(name, args) for _, name, args, _ in client.invoked] == [("shell", {"command": "echo bang"})]
+
     terminal.committed.clear()
     app._dispatch_slash_command("/tui help")
     assert any("/goal set" in row for row in terminal.committed), terminal.committed
@@ -2044,7 +2115,7 @@ def test_late_command_reply_never_closes_or_reopens_an_editor_after_cancel() -> 
     while True:
         frame = app.event_queue.get(timeout=3)
         frames.append(frame)
-        if frame["kind"] == "command_presentation":
+        if isinstance(frame, CommandPresentationEvent):
             break
     for frame in frames:
         app.event_queue.put(frame)
@@ -2131,6 +2202,7 @@ def test_tui_sessions_selector_mount_and_switch(monkeypatch: pytest.MonkeyPatch)
 
     # 1. /tui sessions mounts InteractiveChoices with sessions list
     app._dispatch_slash_command("/tui sessions")
+    _settle_async(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
     assert app.active_overlay.title == "Active Sessions"
     assert app.active_overlay.action == "tui.switch_session"
@@ -2147,6 +2219,7 @@ def test_tui_sessions_selector_mount_and_switch(monkeypatch: pytest.MonkeyPatch)
 
     # 3. Selecting the current session dismisses overlay without switching
     app._dispatch_slash_command("/tui sessions")
+    _settle_async(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
     assert app.active_overlay.selected_index == 0
     app._handle_overlay_key(Key("enter"))
@@ -2155,6 +2228,7 @@ def test_tui_sessions_selector_mount_and_switch(monkeypatch: pytest.MonkeyPatch)
 
     # 4. Selecting a different session calls _switch_session
     app._dispatch_slash_command("/tui sessions")
+    _settle_async(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
     app._handle_overlay_key(Key("down"))
     assert app.active_overlay.selected_index == 1
@@ -2165,13 +2239,14 @@ def test_tui_sessions_selector_mount_and_switch(monkeypatch: pytest.MonkeyPatch)
     # 5. Empty session list commits warning without overlay
     empty_app = CoreTuiApp(_SessionsClient([]), session_id="s1", terminal=_StubTerminal())  # type: ignore[arg-type]
     empty_app._dispatch_slash_command("/tui sessions")
+    _settle_async(empty_app)
     assert empty_app.active_overlay is None
     assert any("No active sessions." in row for row in empty_app.terminal.committed)
 
 
 def test_footer_row_degrade_order() -> None:
+    from voidcode.tui.formatting import footer_row as _footer_row
     from voidcode.tui.term import visible_width
-    from voidcode.tui.terminal_app import _footer_row
 
     # 1. Full fits at wide width
     full = _footer_row("/srv/ws", "openai/gpt-5.2", "xhigh", "5.2k/200k", "12.5k total", width=100, compact=False)
@@ -2234,40 +2309,40 @@ def test_model_turn_updates_footer_context() -> None:
     assert app.latest_input_tokens is None
     assert app.cumulative_input_tokens == 0
     assert app.cumulative_output_tokens == 0
-    initial_ctx = app._footer_context(width=100)
+    initial_ctx = rendering.footer_context(app, 100)
     assert initial_ctx == "/tmp/ws · openai/gpt-5.2 · xhigh"
     assert "session-secret" not in initial_ctx
 
     # Turn 1: 5200 in, 1500 out
     turn1 = ProviderTurnResult(usage=ProviderTokenUsage(input_tokens=5200, output_tokens=1500))
     ev1 = _event(1, "core.model_turn", content=turn1, result=encode_provider_result(turn1), session_id="session-secret-123")
-    app.event_queue.put({"kind": "stream_event", "frame": EventFrame(session_id="session-secret-123", event=ev1)})
+    app.event_queue.put(StreamEventEvent(frame=EventFrame(session_id="session-secret-123", event=ev1)))
     app._drain_events()
 
     assert app.latest_input_tokens == 5200
     assert app.cumulative_input_tokens == 5200
     assert app.cumulative_output_tokens == 1500
-    ctx1 = app._footer_context(width=100)
+    ctx1 = rendering.footer_context(app, 100)
     assert ctx1 == "/tmp/ws · openai/gpt-5.2 · xhigh · 5.2k/200k · 6.7k total"
     assert "session-secret" not in ctx1
 
     # Turn 2: 8100 in, 2000 out (context tracks latest dispatch, total accumulates)
     turn2 = ProviderTurnResult(usage=ProviderTokenUsage(input_tokens=8100, output_tokens=2000))
     ev2 = _event(2, "core.model_turn", content=turn2, result=encode_provider_result(turn2), session_id="session-secret-123")
-    app.event_queue.put({"kind": "stream_event", "frame": EventFrame(session_id="session-secret-123", event=ev2)})
+    app.event_queue.put(StreamEventEvent(frame=EventFrame(session_id="session-secret-123", event=ev2)))
     app._drain_events()
 
     assert app.latest_input_tokens == 8100
     assert app.cumulative_input_tokens == 13300
     assert app.cumulative_output_tokens == 3500
-    ctx2 = app._footer_context(width=100)
+    ctx2 = rendering.footer_context(app, 100)
     assert ctx2 == "/tmp/ws · openai/gpt-5.2 · xhigh · 8.1k/200k · 16.8k total"
 
     # When context_window is unknown, displays "X.Xk ctx"
     app.upgrade.model.context_window = None  # type: ignore[attr-defined]
     app.upgrade.model.provider = "custom"  # type: ignore[attr-defined]
     app.upgrade.model.model = "custom-llm"  # type: ignore[attr-defined]
-    ctx_no_win = app._footer_context(width=100)
+    ctx_no_win = rendering.footer_context(app, 100)
     assert "8.1k ctx" in ctx_no_win
     assert "/200k" not in ctx_no_win and "/400k" not in ctx_no_win
 
@@ -2276,7 +2351,7 @@ def test_model_turn_updates_footer_context() -> None:
     assert app.latest_input_tokens is None
     assert app.cumulative_input_tokens == 0
     assert app.cumulative_output_tokens == 0
-    reset_ctx = app._footer_context(width=100)
+    reset_ctx = rendering.footer_context(app, 100)
     assert "total" not in reset_ctx
     assert "ctx" not in reset_ctx
     assert "session" not in reset_ctx

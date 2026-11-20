@@ -96,3 +96,35 @@ def test_health_rejects_unknown_model_keys() -> None:
                 "model": {"raw": None, "bogus": 1},
             }
         )
+
+
+def test_model_payload_reports_catalog_context_window() -> None:
+    section = model_payload(raw="openai/gpt-5.2", configured_effort=None)
+    assert section["context_window"] == 400000
+    assert model_payload(raw=None, configured_effort=None)["context_window"] is None
+
+
+def test_health_rejects_nonpositive_context_window() -> None:
+    with pytest.raises(ValueError):
+        HealthStatus.from_payload(
+            {
+                "status": "ok",
+                "stage": "serving",
+                "pid": 1,
+                "workspace": "w",
+                "revision_id": "r",
+                "launch_protocol": 1,
+                "core_version": "v",
+                "web_bundle": None,
+                "generation": 1,
+                "active_upgrade": None,
+                "model": {
+                    "raw": "openai/gpt-5.2",
+                    "provider": "openai",
+                    "model": "gpt-5.2",
+                    "reasoning_effort": None,
+                    "reasoning_levels": [],
+                    "context_window": 0,
+                },
+            }
+        )

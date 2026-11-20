@@ -96,6 +96,16 @@ class ConfirmationRequest:
         return _decode_command(_CONFIRMATION_REQUEST_ADAPTER, payload, "confirmation request")
 
 
+def _validate_help_metadata(usage: str | None, examples: tuple[str, ...], group: str | None) -> None:
+    """Reject malformed help metadata at the declaration/ingress boundary."""
+    if usage is not None and (not isinstance(usage, str) or not usage.strip()):
+        raise ValueError("command usage must be a non-empty string or None")
+    if group is not None and (not isinstance(group, str) or not group.strip()):
+        raise ValueError("command group must be a non-empty string or None")
+    if not isinstance(examples, (tuple, list)) or not all(isinstance(example, str) and example.strip() for example in examples):
+        raise ValueError("command examples must be a sequence of non-empty strings")
+
+
 @dataclass(frozen=True, slots=True)
 class CommandDescriptor:
     """Catalog entry describing a plugin command or reserved core command."""
@@ -113,11 +123,19 @@ class CommandDescriptor:
     text_argument: str | None = None
     #: Canonical default key chord clients may bind (None means no default).
     default_shortcut: str | None = None
+    #: Full client-facing usage line; derived from the syntax and schema when absent.
+    usage: str | None = None
+    #: Short client-facing invocation examples, shown verbatim by help renderers.
+    examples: tuple[str, ...] = ()
+    #: Help group label; defaults to the owner (``core`` renders as ``Core``).
+    group: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
         if self.default_shortcut is not None:
             object.__setattr__(self, "default_shortcut", normalize_default_shortcut(self.default_shortcut))
+        _validate_help_metadata(self.usage, self.examples, self.group)
+        object.__setattr__(self, "examples", tuple(self.examples))
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -132,6 +150,9 @@ class CommandDescriptor:
             "slash_visible": self.slash_visible,
             "text_argument": self.text_argument,
             "default_shortcut": self.default_shortcut,
+            "usage": self.usage,
+            "examples": list(self.examples),
+            "group": self.group,
         }
 
     @staticmethod
@@ -295,6 +316,12 @@ class CommandDefinition:
     slash_visible: bool = True
     #: Canonical default key chord (e.g. "alt+a"); clients bind it unless reserved or conflicting.
     default_shortcut: str | None = None
+    #: Full client-facing usage line; clients derive one from the schema when absent.
+    usage: str | None = None
+    #: Short client-facing invocation examples, shown verbatim by help renderers.
+    examples: tuple[str, ...] = ()
+    #: Help group label; defaults to the owning plugin id.
+    group: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
@@ -302,6 +329,8 @@ class CommandDefinition:
             object.__setattr__(self, "effects", frozenset(self.effects))
         if self.default_shortcut is not None:
             object.__setattr__(self, "default_shortcut", normalize_default_shortcut(self.default_shortcut))
+        _validate_help_metadata(self.usage, self.examples, self.group)
+        object.__setattr__(self, "examples", tuple(self.examples))
 
 
 @runtime_checkable

@@ -7,12 +7,14 @@ from typing import Any
 
 from voidcode.sdk.client import CommandCatalog
 from voidcode.sdk.commands import CommandDescriptor
+from voidcode.tui import catalog
 from voidcode.tui.keys import Key
 from voidcode.tui.terminal_app import CoreTuiApp, _shortcut_bindings
 
 
 class _StubTerminal:
     width = 100
+    content_width = 100
     eof = False
     color_system = None
 
@@ -50,7 +52,7 @@ def _app(descriptors: tuple[CommandDescriptor, ...]) -> tuple[CoreTuiApp, _StubT
     terminal = _StubTerminal()
     client = _StubClient(descriptors)
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
-    app._cache_catalog(descriptors, "rev-1")
+    catalog.cache(app, descriptors, "rev-1")
     return app, terminal, client
 
 
@@ -136,10 +138,26 @@ def test_help_hides_non_slash_commands_and_lists_shortcuts() -> None:
     assert "Monitor" in text
 
 
+def test_help_catalog_failure_renders_local_controls_without_raising() -> None:
+    class _BrokenClient(_StubClient):
+        def command_catalog(self) -> CommandCatalog:
+            raise RuntimeError("server unavailable")
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_BrokenClient(), session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    app._show_help()
+    text = _plain(terminal.committed)
+    assert "Catalog unavailable:" in text
+    assert "(retry)" in text
+    assert "server unavailable" in text
+    assert "/tui help" in text
+
+
 def test_bindings_rebuild_and_conflicts_show_in_help() -> None:
     app, terminal, _ = _app((CommandDescriptor(name="monitor", owner="p", description="Monitor", default_shortcut="alt+a"),))
     assert set(app._shortcut_bindings) == {"alt+a"}
-    app._cache_catalog(
+    catalog.cache(
+        app,
         (
             CommandDescriptor(name="one", owner="p", description="One", default_shortcut="alt+a"),
             CommandDescriptor(name="two", owner="p", description="Two", default_shortcut="alt+a"),

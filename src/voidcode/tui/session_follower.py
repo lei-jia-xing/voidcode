@@ -35,24 +35,13 @@ import logging
 import queue
 import threading
 from collections.abc import Callable
-from typing import Any
 
 from voidcode.sdk.client import CoreClientError, ErrorFrame, EventFrame, HeadFrame, RestartFrame, SessionClient, StreamCancellation
 
+from .events import AbortToken, HealthEvent, ReconciledEvent, ServerRestartEvent, StreamErrorEvent, StreamEventEvent, StreamHeadEvent, TuiFrame
+from .work import WorkGroup
+
 logger = logging.getLogger(__name__)
-
-
-class AbortToken:
-    """Single-flight invalidation for one async producer round."""
-
-    __slots__ = ("aborted",)
-
-    def __init__(self) -> None:
-        self.aborted = False
-
-    def abort(self) -> None:
-        """Supersede this round; frames carrying the token must be dropped."""
-        self.aborted = True
 
 
 class SessionFollower:
@@ -67,16 +56,18 @@ class SessionFollower:
         self,
         *,
         client: SessionClient,
-        queue: queue.Queue[dict[str, Any]],
+        queue: queue.Queue[TuiFrame],
         stop_event: threading.Event,
         cursors: dict[str, int],
         on_reconnect: Callable[[], None],
+        work: WorkGroup,
     ) -> None:
         self._client = client
         self._queue = queue
         self._stop_event = stop_event
         self._cursors = cursors
         self._on_reconnect = on_reconnect
+        self._work = work
         self._epoch = 0
         self._interaction_token = AbortToken()
         self._live_token = AbortToken()
@@ -161,21 +152,14 @@ class SessionFollower:
                             if self._stop_event.is_set() or epoch != self._epoch:
                                 return
                             if isinstance(frame, HeadFrame):
-                                self._queue.put(
-                                    {
-                                        "kind": "stream_head",
-                                        "frame": frame,
-                                        "session_id": session_id,
-                                        "generation": epoch,
-                                    }
-                                )
+                                self._queue.put(StreamHeadEvent(frame=frame, session_id=session_id, generation=epoch))
                             elif isinstance(frame, EventFrame):
-                                self._queue.put({"kind": "stream_event", "frame": frame, "session_id": session_id, "generation": epoch})
+                                self._queue.put(StreamEventEvent(frame=frame, session_id=session_id, generation=epoch))
                             elif isinstance(frame, RestartFrame):
-                                self._queue.put({"kind": "server_restart", "session_id": session_id, "generation": epoch})
+                                self._queue.put(ServerRestartEvent(session_id=session_id, generation=epoch))
                                 break
                             elif isinstance(frame, ErrorFrame):
-                                self._queue.put({"kind": "error", "error": frame.error, "session_id": session_id, "generation": epoch})
+                                self._queue.put(StreamErrorEvent(error=frame.error, session_id=session_id, generation=epoch))
                                 return
                 except asyncio.CancelledError:
                     return
@@ -183,7 +167,7 @@ class SessionFollower:
                     if self._stop_event.is_set() or epoch != self._epoch:
                         return
                     if isinstance(exc, CoreClientError) and exc.status_code in {400, 401, 403, 404}:
-                        self._queue.put({"kind": "error", "error": str(exc), "session_id": session_id, "generation": epoch})
+                        self._queue.put(StreamErrorEvent(error=str(exc), session_id=session_id, generation=epoch))
                         return
                     logger.debug("session event stream reconnecting after: %s", exc)
                     await asyncio.sleep(1.0)
@@ -191,8 +175,7 @@ class SessionFollower:
         def run_worker() -> None:
             asyncio.run(stream_worker())
 
-        self._thread = threading.Thread(target=run_worker, daemon=True, name=f"CoreTuiStream{epoch}")
-        self._thread.start()
+        self._thread = self._work.start("Stream", run_worker)
 
     def refresh_health(self, session_id: str, generation: int) -> None:
         """Refresh server identity/liveness off the UI thread; stale replies are dropped."""
@@ -203,17 +186,9 @@ class SessionFollower:
                 snapshot = self._client.health()
             except Exception:
                 return  # unreachable during a handoff gap is expected; keep last known
-            self._queue.put(
-                {
-                    "kind": "health",
-                    "health": snapshot,
-                    "token": token,
-                    "session_id": session_id,
-                    "generation": generation,
-                }
-            )
+            self._queue.put(HealthEvent(health=snapshot, token=token, session_id=session_id, generation=generation))
 
-        threading.Thread(target=worker, daemon=True, name="CoreHealth").start()
+        self._work.submit("Health", worker)
 
     def reconcile_connection(self, session_id: str) -> None:
         """ONE connection-established reconciliation path, entirely off the UI thread.
@@ -241,25 +216,16 @@ class SessionFollower:
             except Exception as exc:
                 session_status = ""
                 failures.append(f"session status ({exc})")
+            self._queue.put(HealthEvent(health=health, token=token, session_id=session_id, generation=generation))
             self._queue.put(
-                {
-                    "kind": "health",
-                    "health": health,
-                    "token": token,
-                    "session_id": session_id,
-                    "generation": generation,
-                }
-            )
-            self._queue.put(
-                {
-                    "kind": "reconciled",
-                    "catalog": catalog,
-                    "session_status": session_status,
-                    "failures": failures,
-                    "token": token,
-                    "session_id": session_id,
-                    "generation": generation,
-                }
+                ReconciledEvent(
+                    catalog=catalog,
+                    session_status=session_status,
+                    failures=tuple(failures),
+                    token=token,
+                    session_id=session_id,
+                    generation=generation,
+                )
             )
 
-        threading.Thread(target=worker, daemon=True, name="CoreReconcile").start()
+        self._work.submit("Reconcile", worker)

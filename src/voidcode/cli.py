@@ -399,28 +399,25 @@ def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) ->
 
 
 def _tui_prefs(args: argparse.Namespace, *, workspace: Path) -> dict[str, object]:
-    """Per-field precedence CLI > file > defaults; remote reads the LOCAL cwd file best-effort."""
-    from .config import CONFIG_FILE_NAME, parse_config
+    """Per-field precedence CLI > file > defaults.
 
-    file_tui: dict[str, object] = {}
-    # Embedded: the workspace file. Remote: the server owns its own file, so
-    # the client's LOCAL cwd file is the only honest source; a malformed or
-    # missing file degrades to defaults (display prefs must never refuse launch).
-    candidate = workspace / CONFIG_FILE_NAME if args.server is None else Path.cwd() / CONFIG_FILE_NAME
+    Embedded reads the workspace file; remote reads the caller's LOCAL cwd file because
+    the server owns its own. A missing file falls back to defaults, while a malformed or
+    unreadable file fails visibly instead of silently dropping the user's preferences.
+    """
+    from .config import CONFIG_FILE_NAME, load_config
+
+    source = workspace if args.server is None else Path.cwd()
     try:
-        raw = candidate.read_text(encoding="utf-8") if candidate.is_file() else ""
-        if raw:
-            parsed = parse_config(json.loads(raw))
-            file_tui = {
-                "border": parsed.tui.border,
-                "footer": parsed.tui.footer,
-                "show_session": parsed.tui.show_session,
-                "banner": parsed.tui.banner,
-            }
-    except Exception:
-        file_tui = {}
-    prefs: dict[str, object] = {"border": "lines", "footer": "full", "show_session": False, "banner": BannerConfig()}
-    prefs.update(file_tui)
+        parsed = load_config(source, allow_missing=True)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read TUI preferences from {source / CONFIG_FILE_NAME}: {exc}") from exc
+    prefs: dict[str, object] = {
+        "border": parsed.tui.border,
+        "footer": parsed.tui.footer,
+        "show_session": parsed.tui.show_session,
+        "banner": parsed.tui.banner,
+    }
     if args.no_border:
         prefs["border"] = "borderless"
     if args.footer is not None:

@@ -12,11 +12,9 @@ import threading
 import time
 import webbrowser
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from voidcode.capabilities.providers.native.reasoning_effort import normalize_reasoning_effort
 from voidcode.config import BannerConfig
 from voidcode.core.events import EventType
 from voidcode.sdk.client import (
@@ -25,37 +23,33 @@ from voidcode.sdk.client import (
     CommandCatalog,
     CommandResult,
     CoreClientError,
-    EventFrame,
-    HeadFrame,
     HealthStatus,
     ResumeSpec,
     RunSpec,
     SessionClient,
+    SessionRow,
     StreamCancellation,
     StreamEvent,
 )
 from voidcode.sdk.codec import decode_tool_call, encode_tool_result
+from voidcode.sdk.command_help import command_argument_hints
 from voidcode.sdk.commands import CommandDescriptor, ConfirmationRequest
 from voidcode.sdk.icons import Icon
-from voidcode.sdk.provider import ProviderMessage, ProviderTokenUsage, ProviderTurnResult
-from voidcode.sdk.services import ArtifactPage
+from voidcode.sdk.provider import ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.tools import (
     ToolEffect,
 )
 from voidcode.sdk.transcript import (
-    TranscriptChild,
-    TranscriptContent,
-    TranscriptDispatch,
-    TranscriptInterrupted,
-    TranscriptRun,
     TranscriptTool,
 )
 from voidcode.sdk.views import (
     ChoiceOption,
     ChoicesViewData,
     ConfirmationViewData,
+    FormViewData,
     MarkdownViewData,
     PluginViewDescriptor,
+    ViewsSnapshot,
     is_read_only_load,
     parse_view_data,
 )
@@ -72,28 +66,55 @@ from voidcode.tui.gates import (
     reduce_gates,
 )
 
+from . import catalog, events, operations
 from .artifact_viewer import ArtifactSource, InteractiveArtifactViewer, artifact_sources, png_dimensions, read_artifact_bytes
 from .composer import Composer, ComposerAction
+from .event_pump import drain_events
+from .formatting import (
+    command_result_rows as _command_result_rows,
+)
+from .formatting import (
+    levels_text as _levels_text,
+)
+from .formatting import (
+    model_segment as _model_segment,
+)
+from .formatting import (
+    normalize_chord as _normalize_chord,
+)
+from .formatting import (
+    prefixed_rows as _prefixed_rows,
+)
+from .formatting import (
+    safe as _safe,
+)
+from .formatting import (
+    shortcut_bindings as _shortcut_bindings,
+)
+from .formatting import (
+    slash_display as _slash_display,
+)
+from .formatting import (
+    slash_public_path as _slash_public_path,
+)
+from .help_view import TUI_CONTROLS, TUI_CONTROLS_BY_NAME, render_help
 from .keys import Key, KeyDecoder
-from .region import TuiFrame
-from .session_follower import AbortToken, SessionFollower
-from .styles import SPINNER_FRAMES, Styles
-from .term import Terminal, TerminalCapabilityError, clamp_row, copy_to_clipboard, crop_row_right, escape_terminal_controls, visible_width
+from .rendering import ActiveToolProgress, render_frame
+from .rendering import banner_rows as _banner_rows
+from .rendering import content_rows as _content_rows
+from .session_follower import SessionFollower
+from .styles import Styles
+from .term import Terminal, TerminalCapabilityError, copy_to_clipboard
 from .views import (
     InteractiveApproval,
     InteractiveChoices,
     InteractiveConfirmation,
     InteractiveForm,
     InteractiveMarkdown,
-    render_active_tool,
-    render_active_tools_summary,
     render_assistant_markdown,
     render_plugin_view,
-    render_thinking,
-    render_tool_call,
-    render_tool_result,
-    render_user_message,
 )
+from .work import WorkGroup
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +126,9 @@ logger = logging.getLogger(__name__)
 #: follows: the decoder buffers it, and the loop resolves it after this window.
 #: Matches the 50 ms window the pre-cutover client used.
 _ESCAPE_FLUSH_SECONDS = 0.05
+
+#: Second Ctrl+C inside this window quits; help text uses the same value.
+_QUIT_ARM_SECONDS = 1.5
 
 #: Spinner/live cadence while animations run; matches the pre-cutover 30 fps render loop.
 _SPINNER_TICK_SECONDS = 1 / 30
@@ -132,299 +156,6 @@ _BUILTIN_BANNER = (
 
 #: Immutable ctor/entry default: None at the boundary always means disabled.
 _DEFAULT_BANNER = BannerConfig()
-
-
-@dataclass
-class ActiveToolProgress:
-    invocation_id: str
-    tool_name: str
-    icon: Icon | None
-    start_time: float
-    session_id: str
-    run_id: str
-    revision_id: str
-    generation: int
-    lines: list[str] = field(default_factory=list)
-    pending_fragment: str = ""
-    last_stream: str | None = None
-
-    def append_chunk(self, stream_name: str, chunk: str, *, cols: int, rows: int) -> None:
-        """Incrementally append a text chunk, respecting stream changes and viewport capacity."""
-        if self.last_stream is not None and self.last_stream != stream_name and self.pending_fragment:
-            self.lines.append(self.pending_fragment)
-            self.pending_fragment = ""
-        self.last_stream = stream_name
-
-        text = self.pending_fragment + chunk
-        parts = text.split("\n")
-        cell_capacity = max(cols, cols * rows)
-
-        for line in parts[:-1]:
-            cleaned = line[:-1] if line.endswith("\r") else line
-            if len(cleaned) > cell_capacity:
-                cleaned = cleaned[-cell_capacity:]
-            self.lines.append(cleaned)
-
-        last = parts[-1]
-        if len(last) > cell_capacity:
-            last = last[-cell_capacity:]
-        self.pending_fragment = last
-
-        max_lines = max(1, rows)
-        if len(self.lines) > max_lines:
-            self.lines = self.lines[-max_lines:]
-
-    def visible_tail(self, count: int) -> list[str]:
-        """Return the last `count` lines including any pending partial line."""
-        if count <= 0:
-            return []
-        items = list(self.lines)
-        if self.pending_fragment:
-            items.append(self.pending_fragment)
-        return items[-count:]
-
-
-def _banner_rows(banner: BannerConfig | None, styles: Styles, *, width: int) -> list[str]:
-    """Centered welcome mark rows, or nothing when disabled/widthless."""
-    if banner is None or width <= 0:
-        return []
-    raw = _BUILTIN_BANNER if banner.text is None else tuple(banner.text.split("\n"))
-    cleaned = [escape_terminal_controls(line.rstrip(), preserve_tabs=False) for line in raw]
-    if not any(line.strip() for line in cleaned):
-        return []
-    colors = banner.colors
-    content_width = min(width, max(visible_width(line) for line in cleaned))
-    pad = " " * ((width - content_width) // 2)
-    rows: list[str] = []
-    for index, line in enumerate(cleaned):
-        clipped = clamp_row(line, width)
-        color = colors[index * (len(colors) - 1) // max(1, len(cleaned) - 1)]
-        rows.append(pad + styles.fg("accent", clipped, color=color))
-    return rows
-
-
-def _safe(value: object) -> str:
-    """One-line, control-free rendering of any plugin- or model-provided value."""
-    if value is None:
-        return ""
-    text = value if isinstance(value, str) else str(value)
-    return escape_terminal_controls(text, preserve_tabs=False)
-
-
-def json_safe(value: object) -> object:
-    """Round-trip unknown payload pieces through JSON so anything is serializable."""
-    from voidcode.sdk.json_values import json_wire_value
-
-    try:
-        return json.loads(json.dumps(json_wire_value(value), ensure_ascii=False, allow_nan=False, default=str))
-    except TypeError, ValueError:
-        return str(value)
-
-
-def _prefixed_rows(prefix: str, text: str, styles: Styles, *, slot: str) -> list[str]:
-    """Prefix sanitized multiline text, one row per explicit line.
-
-    Terminal owns physical width wrapping, so this helper never clips content.
-    """
-    label = f"{styles.render(slot, prefix, bold=True)} "
-    clean = escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True)
-    rows: list[str] = []
-    for index, line in enumerate(clean.split("\n")):
-        head = label if index == 0 else " " * len(prefix) + " "
-        rows.append(f"{head}{line}")
-    return rows or [label]
-
-
-def _command_result_text(result: CommandResult) -> str:
-    """One command result's human text: error, then output, then pretty data.
-
-    ``CommandResult`` carries both human text (``output``) and machine data
-    (``data``). The TUI renders the human text when present and falls back to
-    JSON for data-only receipts (for example the core ``show`` command). The
-    fallback preserves an empty mapping and nested falsy values because it
-    serializes the value itself, never a truthiness test.
-    """
-    if result.status == "error" and isinstance(result.error, str) and result.error:
-        return result.error
-    if isinstance(result.output, str) and result.output:
-        return result.output
-    if result.data is not None:
-        return json.dumps(json_safe(result.data), indent=2, ensure_ascii=False)
-    return ""
-
-
-def _slash_public_path(descriptor: CommandDescriptor) -> str:
-    """One public slash path per catalog entry: preferred slash syntax, else dots-to-spaces."""
-    syntax = descriptor.client_syntax
-    if isinstance(syntax, str) and syntax.startswith("/"):
-        path = syntax[1:].strip().replace(".", " ")
-        if path:
-            return path
-    return descriptor.name.replace(".", " ")
-
-
-def _slash_display(name: str) -> str:
-    """Human slash spelling for a machine command id (result rows, notices, status)."""
-    return name.replace(".", " ")
-
-
-def _command_result_rows(name: str, result: CommandResult, styles: Styles, width: int = 80) -> list[str]:
-    """Render direct receipts and durable command results consistently."""
-    label = _safe(_slash_display(name) or "command")
-    text = _command_result_text(result)
-    if result.status == "error":
-        return _prefixed_rows(f"Error: /{label}:", text or "Command failed", styles, slot="error")
-    if result.status == "pending_confirmation":
-        return [styles.fg("warning", f"Confirmation required: /{label}")]
-    if result.status == "ok":
-        presentation = result.presentation
-        if presentation is not None and presentation.view_type not in ("choices", "form"):
-            return render_plugin_view(
-                PluginViewDescriptor(owner="command", name=name, title=presentation.title, view_type=presentation.view_type, data=presentation.data),
-                width,
-                styles,
-            )
-        return escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True).split("\n") if text else []
-    return _prefixed_rows(f"Warning: /{label} ({result.status or 'unknown'}):", text, styles, slot="warning")
-
-
-#: App/editor keys a catalog shortcut may never claim; the client keeps them.
-#: Compared case-insensitively: catalog chords are lowercase (``alt+pageup``)
-#: while the decoder names keys like ``pageUp``.
-_RESERVED_SHORTCUTS: frozenset[str] = frozenset(
-    {
-        "escape",
-        "esc",
-        "enter",
-        "tab",
-        "shift+tab",
-        "space",
-        "backspace",
-        "delete",
-        "up",
-        "down",
-        "left",
-        "right",
-        "home",
-        "end",
-        "pageup",
-        "pagedown",
-        "ctrl+o",
-        "ctrl+c",
-        "ctrl+d",
-        "ctrl+s",
-        "ctrl+enter",
-        "shift+enter",
-        "ctrl+j",
-        "alt+enter",
-        "alt+left",
-        "alt+right",
-        "alt+b",
-        "alt+f",
-        "ctrl+left",
-        "ctrl+right",
-        "ctrl+w",
-        "alt+backspace",
-        "ctrl+backspace",
-        "alt+delete",
-        "alt+d",
-        "alt+e",
-        "alt+shift+e",
-        "alt+c",
-        "alt+shift+c",
-        "alt+x",
-        "alt+shift+x",
-    }
-)
-
-
-def _normalize_chord(name: str) -> str:
-    """Case-insensitive chord form so ``alt+pageUp`` matches ``alt+pageup``."""
-    return name.strip().lower()
-
-
-def _shortcut_bindings(descriptors: tuple[CommandDescriptor, ...]) -> tuple[dict[str, CommandDescriptor], dict[str, tuple[str, ...]]]:
-    """Map one chord to one descriptor; a chord with 2+ claimants binds nobody.
-
-    Reserved app/editor keys never bind. Returns ``(bindings, conflicts)`` where
-    conflicts names every claimant so the client can say so explicitly.
-    """
-    claimants: dict[str, list[CommandDescriptor]] = {}
-    for descriptor in descriptors:
-        chord = descriptor.default_shortcut
-        if not chord:
-            continue
-        normalized = _normalize_chord(chord)
-        if normalized in _RESERVED_SHORTCUTS:
-            continue
-        claimants.setdefault(normalized, []).append(descriptor)
-    bindings: dict[str, CommandDescriptor] = {}
-    conflicts: dict[str, tuple[str, ...]] = {}
-    for chord, entries in claimants.items():
-        if len(entries) == 1:
-            bindings[chord] = entries[0]
-        else:
-            conflicts[chord] = tuple(entry.name for entry in entries)
-    return bindings, conflicts
-
-
-def _content_rows(
-    content: TranscriptContent,
-    width: int,
-    styles: Styles,
-    *,
-    include_tool_header: bool = True,
-) -> list[str]:
-    """Render one typed transcript content into settled rows."""
-    if isinstance(content, ProviderMessage):
-        if content.role == "user":
-            rows: list[str] = []
-            if content.images:
-                badges = " ".join(styles.fg("accent", f"[Image: {img.media_type}]") for img in content.images)
-                rows.append(badges)
-            if content.content and content.content.strip():
-                rows.extend(render_user_message(content.content, width, styles))
-            return rows
-        if content.role == "system":
-            return []
-        rows: list[str] = []
-        if content.content:
-            rows.extend(render_assistant_markdown(content.content, width, styles))
-        return rows
-    if isinstance(content, ProviderTurnResult):
-        rows = []
-        if isinstance(content.reasoning, str) and content.reasoning:
-            rows.extend(render_thinking(content.reasoning, width, styles))
-        if isinstance(content.output, str) and content.output:
-            rows.extend(render_assistant_markdown(content.output, width, styles))
-        return rows
-    if isinstance(content, TranscriptTool):
-        rows = []
-        if include_tool_header:
-            rows.extend(
-                render_tool_call(
-                    _safe(content.call.tool_name or "tool"),
-                    json_safe(content.call.arguments),
-                    width,
-                    styles,
-                    icon=content.icon,
-                )
-            )
-        rows.extend(render_tool_result(encode_tool_result(content.result), width, styles, interrupted=content.interrupted))
-        return rows
-    if isinstance(content, TranscriptRun):
-        if content.status == "failed":
-            return [styles.fg("error", "Error: Run failed")]
-        if content.status == "interrupted":
-            return [styles.fg("dim", "Interrupted")]
-        return []
-    if isinstance(content, TranscriptInterrupted):
-        return []  # The terminal run event owns the human outcome; /usage keeps accounting.
-    if isinstance(content, TranscriptChild):
-        return []
-    if isinstance(content, TranscriptDispatch):
-        return []
-    raise ValueError(f"unknown transcript content: {type(content).__name__}")
 
 
 def _approval_gate_from_payload(payload: Mapping[str, object], *, run_id: str, revision_id: str) -> ApprovalGate:
@@ -485,101 +216,6 @@ def _tool_icon(raw: object) -> Icon | None:
     return Icon(glyph=glyph)
 
 
-def _notice_row(text: object, tone: str, styles: Styles) -> str:
-    slot = {"ok": "success", "warning": "warning", "error": "error"}.get(tone, "dim")
-    prefix = {"warning": "Warning: ", "error": "Error: "}.get(tone, "")
-    return styles.fg(slot, f"{prefix}{_safe(text)}")
-
-
-def _model_segment(model: object) -> str:
-    """`provider/model`, elif raw, else `no model` — from the frozen health.model DTO only."""
-    if model is None:
-        return "no model"
-    raw = getattr(model, "raw", None)
-    provider = getattr(model, "provider", None)
-    name = getattr(model, "model", None)
-    if isinstance(provider, str) and provider and isinstance(name, str) and name:
-        return f"{provider}/{name}"
-    if isinstance(raw, str) and raw:
-        return raw
-    return "no model"
-
-
-def _effort_segment(model: object) -> str | None:
-    """reasoning_effort verbatim; None hides the segment (no marker)."""
-    effort = getattr(model, "reasoning_effort", None)
-    return effort if isinstance(effort, str) and effort else None
-
-
-def _levels_text(model: object) -> str:
-    """Supported levels verbatim, generic over the DTO; empty/unknown stays honest."""
-    levels = getattr(model, "reasoning_levels", None)
-    if isinstance(levels, (list, tuple)) and levels and all(isinstance(entry, str) for entry in levels):
-        return ", ".join(levels)
-    return "unknown"
-
-
-def _short_workspace(path: str, *, local: bool) -> str:
-    """`~`-shorten only when the path is known local; server paths stay full (crop handles width)."""
-    if not local:
-        return path
-    home = os.path.expanduser("~")
-    if home and home != "~" and (path == home or path.startswith(home + os.sep)):
-        return "~" + path[len(home) :]
-    return path
-
-
-def _footer_row(
-    workspace: str,
-    model: str,
-    effort: str | None,
-    context: str | None = None,
-    usage: str | None = None,
-    *,
-    width: int,
-    compact: bool,
-) -> str:
-    """Context row with width degrade: drop usage → crop workspace → drop workspace → drop context → model."""
-    sep = " · "
-    if compact:
-        return clamp_row(sep.join([s for s in (model, effort) if s]), width)
-
-    # 1. Full: workspace · model · effort · context · usage
-    full_segments = [s for s in (workspace, model, effort, context, usage) if s]
-    text = sep.join(full_segments)
-    if visible_width(text) <= width:
-        return text
-
-    # 2. If too wide, drop usage: workspace · model · effort · context
-    if usage:
-        segments = [s for s in (workspace, model, effort, context) if s]
-        text = sep.join(segments)
-        if visible_width(text) <= width:
-            return text
-
-    # 3. If too wide, crop workspace or drop workspace: model · effort · context
-    tail_with_ctx = [s for s in (model, effort, context) if s]
-    rest = sep.join(tail_with_ctx)
-    if workspace:
-        rest_w = visible_width(sep + rest) if rest else 0
-        room = max(0, width - rest_w)
-        if room >= 8 and visible_width(workspace) > room:
-            return crop_row_right(workspace, room) + (sep + rest if rest else "")
-
-    text = sep.join(tail_with_ctx)
-    if visible_width(text) <= width:
-        return text
-
-    # 4. If too wide, drop context: model · effort
-    tail = [s for s in (model, effort) if s]
-    text = sep.join(tail)
-    if visible_width(text) <= width:
-        return text
-
-    # 5. If too wide (40 cols), 保底: model (clamped)
-    return clamp_row(model, width)
-
-
 _IGNORED_PATH_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".codegraph"}
 
 
@@ -618,7 +254,7 @@ class CoreTuiApp:
         )
         self.key_decoder = KeyDecoder()
         self._escape_flush_at = 0.0
-        self.event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self.event_queue: queue.Queue[events.TuiFrame] = queue.Queue()
         self._session_cursors: dict[str, int] = {}
         #: Active tools in flight, keyed by invocation id (displayed in Live region).
         self._active_tools: dict[str, ActiveToolProgress] = {}
@@ -668,22 +304,25 @@ class CoreTuiApp:
         #: The capability revision the displayed catalog came from; slash dispatch
         #: echoes it verbatim. Rendered overlays carry their own captured revision.
         self.catalog_revision: str = ""
+        #: Last catalog acquisition failure; visible until a reload succeeds.
+        self._catalog_error: str | None = None
         self.status_line = "Connecting to server..."
         self._stop_event = threading.Event()
+        #: Every background operation and lifecycle thread is owned here.
+        self._work = WorkGroup()
         self._follower = SessionFollower(
             client=client,
             queue=self.event_queue,
             stop_event=self._stop_event,
             cursors=self._session_cursors,
             on_reconnect=self._note_stream_reconnect,
+            work=self._work,
         )
         self._input_stop = threading.Event()
         #: Serializes terminal input-fd reads: the input thread's slices vs kitty
         #: probe/upload queries. Concurrent readers would split reply bytes.
         self._terminal_read_lock = threading.Lock()
         self._input_thread: threading.Thread | None = None
-        #: Footer context-window cache: (catalog_revision, provider, name, window).
-        self._footer_window_cache: tuple[str, str | None, str | None, int | None] | None = None
         #: Sessions whose welcome mark already committed; each empty visit shows it once.
         self._welcomed_sessions: set[str] = set()
         self._path_replacements: dict[str, str] = {}
@@ -724,27 +363,27 @@ class CoreTuiApp:
             # for __init__ order (running is assigned before the queue exists).
             pending = getattr(self, "event_queue", None)
             if pending is not None:
-                pending.put_nowait({"kind": "wake"})
+                pending.put_nowait(events.WakeEvent())
 
     def run(self) -> int:
         self.running = True
         try:
             self._init_session()
-            self._load_catalog()
+            catalog.load(self)
             self._maybe_welcome()
             self._start_event_stream()
             return self._main_loop()
         finally:
             self.running = False
             self._stop_event.set()
-            # Cancel the stream before joining the worker: an idle follow stream is
-            # waiting on async network events, and task cancellation wakes it immediately.
+            self._input_stop.set()
+            # Cancel the stream before shutdown joins its worker: an idle follow
+            # stream is waiting on async network events, and cancellation wakes it.
             try:
                 if self._stream_cancel is not None:
                     self._stream_cancel.close()
             finally:
-                if self._stream_thread and self._stream_thread.is_alive():
-                    self._stream_thread.join(timeout=1.0)
+                self._work.shutdown()
                 self._artifact_exports.cleanup()
                 if self.owns_terminal:
                     self.terminal.close()
@@ -789,25 +428,6 @@ class CoreTuiApp:
         if rows:
             self.terminal.commit_rows(rows)
 
-    def _cache_catalog(self, commands: tuple[CommandDescriptor, ...], revision: str) -> None:
-        """Store one catalog revision and rebuild its cached shortcut bindings."""
-        self.catalog_cache = commands
-        self.catalog_revision = revision
-        self._shortcut_bindings, self._shortcut_conflicts = _shortcut_bindings(commands)
-        if self.composer.completion:
-            self._sync_slash_completion()
-
-    def _load_catalog(self) -> None:
-        try:
-            catalog = self.client.command_catalog()
-            self._cache_catalog(catalog.commands, catalog.revision_id)
-        except Exception as exc:
-            self.catalog_cache = ()
-            self.catalog_revision = ""
-            self._shortcut_bindings, self._shortcut_conflicts = {}, {}
-            self.status_line = f"Catalog load failed: {_safe(exc)}"
-            raise RuntimeError(f"Failed to fetch command catalog from server: {exc}") from exc
-
     def _start_event_stream(self) -> None:
         """Begin following the current session; the follower owns thread + cancel lifecycle."""
         self._follower.start_stream(self.session_id)
@@ -851,17 +471,18 @@ class CoreTuiApp:
                     if self._input_stop.is_set():
                         return
                     if self.terminal.eof:
-                        self.event_queue.put({"kind": "input_eof"})
+                        self.event_queue.put(events.InputEofEvent())
                         return
                     time.sleep(_INPUT_RETRY_SECONDS)
                     continue
                 if chunk:
-                    self.event_queue.put({"kind": "input", "chunk": chunk, "t": time.monotonic()})
+                    self.event_queue.put(events.InputEvent(chunk=chunk, arrived_at=time.monotonic()))
                 for reply in replies:
-                    self.event_queue.put({"kind": "kitty_reply", "reply": reply})
+                    self.event_queue.put(events.KittyReplyEvent(reply=reply))
 
-        self._input_thread = threading.Thread(target=worker, daemon=True, name="CoreTuiInput")
-        self._input_thread.start()
+        self._input_thread = self._work.start("Input", worker)
+        if self._input_thread is None:
+            raise RuntimeError("TUI work group is already shut down")
 
     def _animations_live(self) -> bool:
         return bool(self._run_active or self._stream_dispatch is not None or self._active_tools)
@@ -892,7 +513,7 @@ class CoreTuiApp:
         if self._artifact_ack_deadline is not None:
             consider(self._artifact_ack_deadline[2])
         if self._quit_armed_at != float("-inf"):
-            consider(self._quit_armed_at + 1.5)
+            consider(self._quit_armed_at + _QUIT_ARM_SECONDS)
         if self._animations_live():
             consider(now + _SPINNER_TICK_SECONDS)
         # Fully idle: a long liveness snooze, not a spin. Real events, input,
@@ -910,7 +531,7 @@ class CoreTuiApp:
         if self.terminal.resize_pending():
             # A native resize arrived mid-park: force the render that consumes it.
             fired = True
-        if self._quit_armed_at != float("-inf") and now >= self._quit_armed_at + 1.5:
+        if self._quit_armed_at != float("-inf") and now >= self._quit_armed_at + _QUIT_ARM_SECONDS:
             self._quit_armed_at = float("-inf")
             fired = True
         deadline = self._artifact_ack_deadline
@@ -944,408 +565,9 @@ class CoreTuiApp:
             return []
         return render_assistant_markdown(text, width, self.styles)
 
-    @staticmethod
-    def _lookup_footer_window(provider: str, name: str) -> int | None:
-        try:
-            from voidcode.capabilities.providers.native.model_catalog import static_catalog_metadata
-
-            meta = static_catalog_metadata(provider, name)
-            meta_win = meta.context_window if meta is not None else None
-            if not isinstance(meta_win, bool) and isinstance(meta_win, int) and meta_win > 0:
-                return meta_win
-        except Exception:
-            pass
-        return None
-
-    def _footer_context(self, width: int) -> str:
-        """Context row from health DTO and turn usage: workspace · model · effort · context · usage."""
-        if self.footer_mode == "off":
-            return ""
-        from voidcode.tui.local_client import CoreLocalClient
-
-        model = getattr(self.upgrade, "model", None)
-        local = isinstance(self.client, CoreLocalClient)
-        workspace = _short_workspace(self.upgrade.workspace, local=local) if self.upgrade is not None and self.upgrade.workspace else ""
-
-        context_segment: str | None = None
-        if self.latest_input_tokens is not None:
-            used_k = self.latest_input_tokens / 1000.0
-            used_str = f"{used_k:.1f}k"
-            window = getattr(model, "context_window", None)
-            if not (not isinstance(window, bool) and isinstance(window, int) and window > 0) and model is not None:
-                provider = getattr(model, "provider", None)
-                name = getattr(model, "model", None)
-                if isinstance(provider, str) and isinstance(name, str):
-                    key = (self.catalog_revision, provider, name)
-                    cached = self._footer_window_cache
-                    if cached is None or cached[:3] != key:
-                        cached = (*key, self._lookup_footer_window(provider, name))
-                        self._footer_window_cache = cached
-                    if not isinstance(cached[3], bool) and isinstance(cached[3], int) and cached[3] > 0:
-                        window = cached[3]
-            if not isinstance(window, bool) and isinstance(window, int) and window > 0:
-                win_str = f"{window / 1000.0:.0f}k"
-                context_segment = f"{used_str}/{win_str}"
-            else:
-                context_segment = f"{used_str} ctx"
-
-        usage_segment: str | None = None
-        total = self.cumulative_input_tokens + self.cumulative_output_tokens
-        if total > 0:
-            usage_segment = f"{total / 1000.0:.1f}k total"
-
-        return _footer_row(
-            workspace,
-            _model_segment(model),
-            _effort_segment(model),
-            context_segment,
-            usage_segment,
-            width=width,
-            compact=self.footer_mode == "compact",
-        )
-
-    def _border_status(self) -> str:
-        """`<spinner> working` while a run or active tool is running; idle borders stay clean."""
-        if not self._run_active and not self._active_tools:
-            return ""
-        spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
-        if self._active_tools:
-            first_tool = next(iter(self._active_tools.values()))
-            label = f"running {first_tool.tool_name}" if len(self._active_tools) == 1 else f"running {len(self._active_tools)} tools"
-            if self._cancel_pending:
-                label = f"cancelling {first_tool.tool_name}"
-            else:
-                label += " · Esc to interrupt"
-        else:
-            label = "cancelling" if self._cancel_pending else "working · Esc to interrupt"
-        return f"{spinner} {label}" if spinner else label
-
     def _drain_events(self, timeout: float | None = None) -> int:
-        """Drain available frames; with timeout, block for the first. Returns frames dequeued."""
-        rows_to_commit: list[str] = []
-        processed = 0
-        wait = timeout
-        while True:
-            try:
-                if wait is None:
-                    frame = self.event_queue.get_nowait()
-                else:
-                    frame = self.event_queue.get(timeout=max(0.0, wait))
-                    wait = None
-            except queue.Empty:
-                break
-            processed += 1
-
-            frame_generation = frame.get("generation")
-            frame_session = frame.get("session_id")
-            if isinstance(frame_generation, int) and frame_generation != self._generation:
-                continue  # a worker from a previous session: never touch this UI
-            if isinstance(frame_session, str) and frame_session != self.session_id:
-                continue  # a result for another session can never commit rows here
-
-            kind = frame.get("kind")
-            if isinstance(kind, str) and kind.startswith("artifact_"):
-                self._handle_artifact_event(frame)
-                continue
-            if not self._stream_ready and kind in ("stream_head", "stream_event", "server_restart", "error"):
-                # A frame on a not-ready stream means a (re)connection was just
-                # established: run the one reconciliation path. The worker
-                # rearms the flag on every reconnect, so announced restarts and
-                # silent drops share this code path — no per-frame re-trigger.
-                self._stream_ready = True
-                self._reconcile_connection_async()
-            if kind == "stream_head":
-                head = frame.get("frame")
-                if isinstance(head, HeadFrame):
-                    if head.events:
-                        self._welcomed_sessions.add(self.session_id)
-                    for event in head.events:
-                        self._handle_stream_event(event, rows_to_commit)
-            elif kind == "stream_event":
-                head = frame.get("frame")
-                if isinstance(head, EventFrame):
-                    self._welcomed_sessions.add(self.session_id)
-                    self._handle_stream_event(head.event, rows_to_commit)
-            elif kind == "notice":
-                rows_to_commit.append(_notice_row(frame.get("text"), str(frame.get("tone", "info")), self.styles))
-            elif kind == "command_done":
-                raw_name = str(frame.get("name") or "command")
-                status = str(frame.get("status", ""))
-                # A real pending gate and a fenced core own the status line.
-                # Never replace "approval required"/"confirmation required"/
-                # "upgrade in progress" with a late completion notice.
-                fenced = self.upgrade is not None and self.upgrade.fenced
-                gate_open = self.pending_approval is not None or isinstance(self.active_overlay, InteractiveConfirmation)
-                if status in ("ok", "error") and not fenced and not gate_open:
-                    self.status_line = ""
-                receipt = frame.get("result")
-                if isinstance(receipt, CommandResult):
-                    rows_to_commit.extend(_command_result_rows(raw_name, receipt, self.styles, self.terminal.width))
-            elif kind == "command_input_ready":
-                token = frame.get("token")
-                if (not isinstance(token, AbortToken) or token.aborted) or frame.get("revision_id") != self.catalog_revision:
-                    continue
-                if self.status_line.startswith("Loading "):
-                    self.status_line = ""
-                # The composer draft is intentionally retained under an input
-                # view (Alt+A never clears it); the token already invalidates a
-                # later edit, so only a gate/overlay blocks the mount.
-                if self.active_overlay is not None or self.pending_approval is not None:
-                    continue
-                if self.upgrade is not None and self.upgrade.fenced:
-                    continue
-                error = frame.get("error")
-                view = frame.get("view")
-                if error:
-                    self._live_input = None
-                    self._live_refresh_at = 0.0
-                    rows_to_commit.append(self.styles.fg("error", f"Command input unavailable: {_safe(error)}"))
-                elif isinstance(view, PluginViewDescriptor):
-                    refresh_after_ms = frame.get("refresh_after_ms")
-                    if not isinstance(refresh_after_ms, int):
-                        refresh_after_ms = None
-                    if refresh_after_ms is not None:
-                        action = str(frame.get("action", "")) or view.name
-                        arguments = frame.get("arguments")
-                        if not self._mount_live_view(
-                            view,
-                            self.catalog_revision,
-                            name=action,
-                            arguments=arguments if isinstance(arguments, dict) else {},
-                            refresh_after_ms=refresh_after_ms,
-                        ):
-                            self._close_live_input()
-                            rows_to_commit.append(
-                                self.styles.fg("warning", f"Live view {action or 'unavailable'} returned an unsupported type; refresh paused")
-                            )
-                    elif not self._mount_interactive_view(view, self.catalog_revision):
-                        rows_to_commit.extend(render_plugin_view(view, self.terminal.width, self.styles))
-            elif kind == "live_input_ready":
-                token = frame.get("token")
-                if not isinstance(token, AbortToken) or token.aborted:
-                    continue
-                live = self._live_input
-                if live is None or not isinstance(self.active_overlay, (InteractiveChoices, InteractiveMarkdown)):
-                    continue
-                if live.get("source") is not self.active_overlay:
-                    continue
-                same_action = str(frame.get("action", "")) == str(live.get("name", ""))
-                same_args = dict(frame.get("arguments") or {}) == dict(live.get("arguments") or {})
-                if not (same_action and same_args):
-                    continue
-                revision = str(frame.get("revision_id", ""))
-                if revision != self.catalog_revision or revision != str(live.get("revision", "")):
-                    continue
-                error = frame.get("error")
-                view = frame.get("view")
-                refresh_after_ms = frame.get("refresh_after_ms")
-                if not isinstance(refresh_after_ms, int):
-                    refresh_after_ms = None
-                cadence = live.get("refresh_after_ms")
-                if not isinstance(cadence, int):
-                    cadence = refresh_after_ms
-                if error or not isinstance(view, PluginViewDescriptor):
-                    self.status_line = f"Refresh failed: {_safe(error or 'unavailable')} · reopen to retry"
-                    if isinstance(cadence, int):
-                        self._live_refresh_at = time.monotonic() + cadence / 1000.0
-                    continue
-                try:
-                    data = parse_view_data(view.view_type, view.data)
-                except Exception as exc:
-                    self.status_line = f"Refresh failed: {_safe(exc)} · reopen to retry"
-                    if isinstance(cadence, int):
-                        self._live_refresh_at = time.monotonic() + cadence / 1000.0
-                    continue
-                if view.view_type == "choices" and isinstance(self.active_overlay, InteractiveChoices):
-                    from voidcode.sdk.views import ChoicesViewData
-
-                    if not isinstance(data, ChoicesViewData):
-                        continue
-                    self.active_overlay.update_view(data)
-                    self.active_overlay.revision_id = revision
-                    self.active_overlay.title = view.title
-                elif view.view_type == "markdown" and isinstance(self.active_overlay, InteractiveMarkdown):
-                    if not isinstance(data, MarkdownViewData):
-                        continue
-                    previous_scroll = self.active_overlay.scroll
-                    self.active_overlay.view = data
-                    self.active_overlay.revision_id = revision
-                    self.active_overlay.title = view.title
-                    self.active_overlay.selected_index = min(self.active_overlay.selected_index, max(0, len(data.actions) - 1))
-                    self.active_overlay.scroll = previous_scroll
-                else:
-                    rows_to_commit.append(self.styles.fg("warning", f"Live view returned {view.view_type}; refresh paused until reopened"))
-                    self._close_live_input()
-                    continue
-                self._arm_live_input(
-                    name=str(live.get("name", "")),
-                    arguments=dict(live.get("arguments") or {}),
-                    revision=revision,
-                    refresh_after_ms=refresh_after_ms if refresh_after_ms is not None else cadence,
-                    source=self.active_overlay,
-                )
-            elif kind == "command_presentation":
-                token = frame.get("token")
-                if not isinstance(token, AbortToken) or token.aborted:
-                    continue
-                view = frame.get("view")
-                revision = str(frame.get("revision_id", ""))
-                if isinstance(view, PluginViewDescriptor) and revision == self.catalog_revision:
-                    if self.pending_approval is None and self.active_overlay is None:
-                        self._mount_interactive_view(view, revision)
-            elif kind == "approval_accepted":
-                # The server accepted this exact request: close the gate it
-                # matches, or nothing when a newer request already replaced it.
-                accepted = str(frame.get("request_id", ""))
-                self._in_flight.discard(accepted)
-                if accepted:
-                    self._apply_gate_change(GateDecided(accepted))
-                self.status_line = ""
-            elif kind == "decision_done":
-                # A failed submission releases its in-flight marker so the user
-                # can retry; the gate/overlay itself stays mounted.
-                self._in_flight.discard(str(frame.get("request_id", "")))
-            elif kind == "run_status":
-                status = str(frame.get("status", ""))
-                # Returned runs have durable terminal events; only failures without
-                # a run id need local rows. This preserves transcript order.
-                if status in ("failed", "interrupted") and not frame.get("run_id"):
-                    self._render_run_notice(status, frame.get("error"), rows_to_commit)
-                if status in ("completed", "failed", "interrupted"):
-                    self._run_active = False
-                    self._cancel_pending = False
-                    self.status_line = ""
-                elif status == "queued":
-                    self.status_line = "Follow-up queued for when run yields · Esc to interrupt"
-                elif status in ("running", "waiting"):
-                    self._run_active = True
-                    self.status_line = ""
-            elif kind == "cancel_done":
-                self._cancel_pending = False
-                self.status_line = ""
-            elif kind == "followup_queued":
-                self.status_line = "Follow-up queued for when run yields · Esc to interrupt"
-            elif kind == "followup_failed":
-                if not self.composer.value.strip():
-                    self.composer.set_text(str(frame.get("prompt") or ""))
-                self.status_line = f"Error: {frame.get('error')}"
-            elif kind == "run_rejected":
-                self._run_active = False
-                self._cancel_pending = False
-                if not self.composer.value:
-                    self.composer.set_text(str(frame.get("prompt") or ""))
-            elif kind == "run_waiting":
-                gate = frame.get("gate")
-                if isinstance(gate, ApprovalGate):
-                    self._apply_gate_change(ApprovalRequested(gate))
-            elif kind == "confirmation":
-                confirmation = frame.get("confirmation")
-                if isinstance(confirmation, ConfirmationRequest):
-                    # Bound to the revision the client invoked under, never to
-                    # whatever happens to be current when the user decides.
-                    gate = ConfirmationGate.from_request(confirmation, revision_id=str(frame.get("revision_id", "")))
-                    self._apply_gate_change(ConfirmationRequested(gate))
-            elif kind == "confirmation_accepted":
-                # The server accepted this exact request: close the overlay it
-                # matches, or nothing when a newer request already replaced it.
-                # A decided id never resurrects: the durable decided fact (or
-                # the reducer tombstone) already closed it permanently.
-                accepted = str(frame.get("request_id", ""))
-                self._in_flight.discard(accepted)
-                if accepted:
-                    self._apply_gate_change(GateDecided(accepted))
-                self.status_line = ""
-            elif kind == "invoke_accepted":
-                # The server accepted the submitting overlay's action: close it,
-                # but only when it is still the overlay that submitted (same
-                # action + same displayed revision). A 503 never emits this, so
-                # the draft survives a fenced refusal untouched.
-                submit_key = str(frame.get("request_id", ""))
-                self._in_flight.discard(submit_key)
-                overlay = self.active_overlay
-                action = str(frame.get("action", ""))
-                revision = str(frame.get("revision_id", ""))
-                if (
-                    submit_key
-                    and isinstance(overlay, (InteractiveChoices, InteractiveForm, InteractiveMarkdown))
-                    and submit_key == f"invoke:{action}@{revision}"
-                    and overlay.revision_id == revision
-                    and overlay is frame.get("overlay")
-                ):
-                    self._close_live_input()
-                    self.active_overlay = None
-                    self._present_queued_confirmation()
-            elif kind == "form_load":
-                form = frame.get("form")
-                if isinstance(form, InteractiveForm) and form is self.active_overlay:
-                    data = frame.get("data")
-                    if isinstance(data, dict):
-                        form.populate_from_load_action(data)
-                    error = frame.get("error")
-                    if error:
-                        form.load_error = str(error)
-            elif kind == "health":
-                snapshot = frame.get("health")
-                token = frame.get("token")
-                if not isinstance(snapshot, HealthStatus) or not isinstance(token, AbortToken) or token.aborted:
-                    continue
-                self.upgrade = snapshot
-                # A cosmetic refresh never overwrites a live gate prompt: the
-                # approval/confirmation text owns the notice row until decided.
-                gate_open = self.pending_approval is not None or isinstance(self.active_overlay, InteractiveConfirmation)
-                if snapshot.fenced:
-                    self.status_line = "Core upgrade in progress: dispatch paused"
-                elif not gate_open:
-                    self.status_line = ""
-            elif kind == "reconciled":
-                token = frame.get("token")
-                if not isinstance(token, AbortToken) or token.aborted:
-                    continue
-                # Catalog and session status from the same round as the
-                # health read above: applied together or not at all.
-                # Optional views are not part of this round; only the
-                # explicit /tui views control fetches them. Failures are
-                # surfaced, never swallowed into None: unknown stays
-                # visible while last-known state is preserved.
-                catalog = frame.get("catalog")
-                failures = frame.get("failures")
-                if isinstance(catalog, CommandCatalog):
-                    self._cache_catalog(catalog.commands, catalog.revision_id)
-                status = frame.get("session_status")
-                if isinstance(status, str) and status:
-                    self.status_line = f"Run {status}" if status in ("running", "waiting") else self.status_line
-                if isinstance(failures, list) and failures:
-                    rows_to_commit.append(self.styles.fg("warning", f"[Reconnect refresh incomplete: {', '.join(str(f) for f in failures)}]"))
-            elif kind == "server_restart":
-                # Watermark only (contract §8.2/§6): the worker already broke
-                # its iterator and is reconnecting from our applied cursor.
-                # Never set _session_cursors from the frame: queued but
-                # uncommitted events would be dropped. Reconciliation runs on
-                # the reconnected stream (first-frame trigger above), so an
-                # announced restart and a silent drop share one path — and no
-                # blocking request ever runs on this UI thread.
-                self.status_line = "Reconnecting…"
-                if isinstance(self.active_overlay, InteractiveArtifactViewer):
-                    self.active_overlay.connection_notice = "Core restarted/reconnecting; immutable source identity retained."
-            elif kind == "error":
-                rows_to_commit.extend(_prefixed_rows("Error: event stream:", str(frame.get("error") or "Stream stopped"), self.styles, slot="error"))
-                if isinstance(self.active_overlay, InteractiveArtifactViewer):
-                    self.active_overlay.connection_notice = f"Core connection error: {frame.get('error') or 'stream stopped'}"
-            elif kind == "input":
-                chunk = frame.get("chunk")
-                if isinstance(chunk, bytes):
-                    arrived = frame.get("t")
-                    self._handle_input_bytes(chunk, arrived_at=arrived if isinstance(arrived, float) else None)
-            elif kind == "input_eof":
-                self.running = False
-            elif kind == "kitty_reply":
-                reply = frame.get("reply")
-                if reply is not None:
-                    self._apply_kitty_reply(reply)
-
-        if rows_to_commit:
-            self.terminal.commit_rows(rows_to_commit)
-        return processed
+        """Drain typed frames through the one pump/router in ``event_pump``."""
+        return drain_events(self, timeout)
 
     def _handle_stream_event(self, event: StreamEvent, rows: list[str]) -> None:
         if event.session_id != self.session_id:
@@ -1458,7 +680,7 @@ class CoreTuiApp:
             raw_result = payload.get("result")
             raw_name = str(payload.get("name") or "command")
             if isinstance(raw_result, Mapping):
-                rows.extend(_command_result_rows(raw_name, CommandResult.from_payload(raw_result), self.styles, self.terminal.width))
+                rows.extend(self._command_receipt_rows(raw_name, CommandResult.from_payload(raw_result)))
         elif etype == EventType.ACTIVATION_COMMITTED:
             # The displayed generation changed: the command catalog is
             # refetched and anything captured under the previous revision is
@@ -1475,7 +697,7 @@ class CoreTuiApp:
                 self._close_live_input()
                 self.active_overlay = None
             self._apply_gate_change(ActivationCommitted(to_revision_id))
-            self._load_catalog()
+            catalog.load(self)
             self._refresh_health_async()
             self._present_queued_confirmation()
             if dropped:
@@ -1541,35 +763,6 @@ class CoreTuiApp:
         if out_tok is not None:
             self.cumulative_output_tokens += out_tok
 
-    def _handle_artifact_event(self, frame: Mapping[str, Any]) -> None:
-        viewer = self.active_overlay
-        if not isinstance(viewer, InteractiveArtifactViewer) or frame.get("viewer") != viewer.identity:
-            return
-        kind, request_id = frame.get("kind"), frame.get("request_id")
-        if not isinstance(request_id, int) or isinstance(request_id, bool):
-            return
-        if kind == "artifact_page":
-            page = frame.get("page")
-            if isinstance(page, ArtifactPage) and viewer.accept_page(request_id, page) and viewer.page is not None:
-                self._load_artifact_image(viewer)
-        elif kind == "artifact_error":
-            viewer.reject_page(request_id, str(frame.get("error") or "artifact page request failed"))
-        elif kind == "artifact_open":
-            viewer.finish_open(request_id, str(frame.get("message") or "external open failed"))
-        elif request_id == viewer.image_request_id and frame.get("sha256") == viewer.source.sha256:
-            sha256 = viewer.source.sha256
-            if kind == "artifact_image_progress":
-                viewer.update_image_progress(request_id, sha256, frame["received"])
-            elif kind == "artifact_image":
-                viewer.accept_image(request_id, sha256, frame["data"])
-                cached = self.terminal.cached_kitty_image(sha256)
-                if cached is not None:
-                    viewer.mark_image_cached(sha256, cached)
-            elif kind == "artifact_image_error":
-                viewer.fail_image(sha256, str(frame.get("error") or "image load failed"))
-            elif kind == "artifact_transmitted" and viewer.image_status == "transferring":
-                self._artifact_ack_deadline = (viewer.identity, sha256, time.monotonic() + 5.0)
-
     def _record_tool_artifact(self, target: Any) -> None:
         if isinstance(target, TranscriptTool):
             tool_name = target.call.tool_name or "tool"
@@ -1599,12 +792,12 @@ class CoreTuiApp:
         title, sources = self._latest_tool_artifacts
         self._close_live_input()
         viewer = InteractiveArtifactViewer(
-            sources, revision_id=self._displayed_revision(), session_id=self.session_id, title=f"Tool artifacts: {title}"
+            sources, revision_id=catalog.displayed_revision(self), session_id=self.session_id, title=f"Tool artifacts: {title}"
         )
         self.active_overlay = viewer
         self._load_artifact_page(viewer, 0)
 
-    def _artifact_context(self, viewer: InteractiveArtifactViewer) -> dict[str, object]:
+    def _artifact_context(self, viewer: InteractiveArtifactViewer) -> dict[str, Any]:
         return {"viewer": viewer.identity, "session_id": self.session_id, "generation": self._generation}
 
     def _artifact_cancelled(self, viewer: InteractiveArtifactViewer, sha256: str) -> bool:
@@ -1620,11 +813,11 @@ class CoreTuiApp:
         def worker() -> None:
             try:
                 page = self.client.read_artifact(sha256, offset=offset)
-                self.event_queue.put({**context, "kind": "artifact_page", "request_id": request_id, "page": page})
+                self.event_queue.put(events.ArtifactPageEvent(**context, request_id=request_id, page=page))
             except Exception as exc:
-                self.event_queue.put({**context, "kind": "artifact_error", "request_id": request_id, "error": str(exc)})
+                self.event_queue.put(events.ArtifactErrorEvent(**context, request_id=request_id, error=str(exc)))
 
-        threading.Thread(target=worker, daemon=True, name="ArtifactPage").start()
+        self._work.submit("ArtifactPage", worker)
 
     def _load_artifact_image(self, viewer: InteractiveArtifactViewer) -> None:
         if not viewer.is_png or viewer.image_status != "unavailable":
@@ -1651,20 +844,14 @@ class CoreTuiApp:
                     self.client,
                     sha256,
                     progress=lambda received: self.event_queue.put(
-                        {
-                            **context,
-                            "kind": "artifact_image_progress",
-                            "request_id": request_id,
-                            "sha256": sha256,
-                            "received": received,
-                        }
+                        events.ArtifactImageProgressEvent(**context, request_id=request_id, sha256=sha256, received=received)
                     ),
                     cancelled=lambda: self._artifact_cancelled(viewer, sha256),
                 )
                 dimensions = png_dimensions(data)
                 if dimensions is None:
                     raise ValueError("PNG artifact has no valid IHDR geometry")
-                self.event_queue.put({**context, "kind": "artifact_image", "request_id": request_id, "sha256": sha256, "data": data})
+                self.event_queue.put(events.ArtifactImageEvent(**context, request_id=request_id, sha256=sha256, data=data))
                 if self._artifact_cancelled(viewer, sha256):
                     return
                 # Probe under the lock (it reads the reply); transmit outside it:
@@ -1674,13 +861,13 @@ class CoreTuiApp:
                 if not supported:
                     raise TerminalCapabilityError("Kitty Graphics is not supported by the active terminal")
                 self.terminal.upload_kitty_png(sha256, data, dimensions)
-                self.event_queue.put({**context, "kind": "artifact_transmitted", "request_id": request_id, "sha256": sha256})
+                self.event_queue.put(events.ArtifactTransmittedEvent(**context, request_id=request_id, sha256=sha256))
             except InterruptedError:
                 return
             except Exception as exc:
-                self.event_queue.put({**context, "kind": "artifact_image_error", "request_id": request_id, "sha256": sha256, "error": str(exc)})
+                self.event_queue.put(events.ArtifactImageErrorEvent(**context, request_id=request_id, sha256=sha256, error=str(exc)))
 
-        threading.Thread(target=worker, daemon=True, name="ArtifactImage").start()
+        self._work.submit("ArtifactImage", worker)
 
     def _open_artifact(self, viewer: InteractiveArtifactViewer) -> None:
         request_id = viewer.begin_open()
@@ -1709,9 +896,9 @@ class CoreTuiApp:
                 if path is not None:
                     path.unlink(missing_ok=True)
                 message = f"External open failed: {exc}; source remains artifact://{sha256}"
-            self.event_queue.put({**context, "kind": "artifact_open", "request_id": request_id, "message": message})
+            self.event_queue.put(events.ArtifactOpenEvent(**context, request_id=request_id, message=message))
 
-        threading.Thread(target=worker, daemon=True, name="ArtifactOpen").start()
+        self._work.submit("ArtifactOpen", worker)
 
     def _render_run_notice(self, status: str, detail: object, rows: list[str], *, stop_cause: object = None) -> None:
         if status == "failed":
@@ -1924,7 +1111,7 @@ class CoreTuiApp:
                 key = Key("esc")
             if key.name == "ctrl+c":
                 now = time.monotonic()
-                if now - self._quit_armed_at < 1.5:
+                if now - self._quit_armed_at < _QUIT_ARM_SECONDS:
                     self.running = False
                     return True
                 self._quit_armed_at = now
@@ -1953,12 +1140,12 @@ class CoreTuiApp:
             try:
                 res = self.client.cancel(session_id)
                 if not res.cancellation_requested:
-                    self.event_queue.put({"kind": "cancel_done", "session_id": session_id, "generation": generation})
+                    self.event_queue.put(events.CancelDoneEvent(session_id=session_id, generation=generation))
             except Exception as exc:
                 self._queue_notice(f"Cancel error: {exc}", tone="error", session_id=session_id, generation=generation)
-                self.event_queue.put({"kind": "cancel_done", "session_id": session_id, "generation": generation})
+                self.event_queue.put(events.CancelDoneEvent(session_id=session_id, generation=generation))
 
-        threading.Thread(target=worker, daemon=True, name="CoreCancel").start()
+        self._work.submit("CoreCancel", worker)
 
     def _handle_approval_key(self, key: Any) -> None:
         """Native approval gate: scroll the preview, a=allow, d/Esc=deny; both hit /resume."""
@@ -1991,7 +1178,7 @@ class CoreTuiApp:
 
         def worker() -> None:
             try:
-                res = self.client.resume(session_id, ResumeSpec(approval_request_id=request_id, decision=decision))
+                self.client.resume(session_id, ResumeSpec(approval_request_id=request_id, decision=decision))
             except CoreClientError as exc:
                 if exc.code == "upgrade_pending":
                     # Still armed with the same request id: no auto-resend, the
@@ -1999,25 +1186,15 @@ class CoreTuiApp:
                     self._upgrade_pending_notice(f"approval {decision}", session_id=session_id, generation=generation)
                 else:
                     self._queue_notice(f"Approval {decision} failed: {exc}", tone="error", session_id=session_id, generation=generation)
-                self.event_queue.put({"kind": "decision_done", "request_id": request_id, "session_id": session_id, "generation": generation})
+                self.event_queue.put(events.DecisionDoneEvent(request_id=request_id, session_id=session_id, generation=generation))
                 return
             except Exception as exc:
                 self._queue_notice(f"Approval {decision} failed: {exc}", tone="error", session_id=session_id, generation=generation)
-                self.event_queue.put({"kind": "decision_done", "request_id": request_id, "session_id": session_id, "generation": generation})
+                self.event_queue.put(events.DecisionDoneEvent(request_id=request_id, session_id=session_id, generation=generation))
                 return
-            status = res.status
-            self.event_queue.put(
-                {
-                    "kind": "approval_accepted",
-                    "request_id": request_id,
-                    "decision": decision,
-                    "status": status,
-                    "session_id": session_id,
-                    "generation": generation,
-                }
-            )
+            self.event_queue.put(events.GateAcceptedEvent(request_id=request_id, session_id=session_id, generation=generation))
 
-        threading.Thread(target=worker, daemon=True, name="CoreApproval").start()
+        self._work.submit("CoreApproval", worker)
 
     def _handle_overlay_key(self, key: Any) -> None:
         assert self.active_overlay is not None
@@ -2053,7 +1230,11 @@ class CoreTuiApp:
                 return
             revision = self.active_overlay.revision_id
             if outcome.get("prepare_input"):
-                descriptor = next((item for item in self._catalog() if item.name == action), None)
+                descriptors = catalog.get(self, retry=True)
+                if not self.catalog_revision:
+                    catalog.unavailable(self)
+                    return
+                descriptor = next((item for item in descriptors if item.name == action), None)
                 if revision != self.catalog_revision or descriptor is None or not descriptor.has_input:
                     self.status_line = "Command input unavailable; refresh the catalog"
                     return
@@ -2096,7 +1277,7 @@ class CoreTuiApp:
 
         def worker() -> None:
             try:
-                res = self.client.confirm(
+                self.client.confirm(
                     session_id,
                     request_id,
                     decision,
@@ -2109,25 +1290,15 @@ class CoreTuiApp:
                     self._upgrade_pending_notice(f"confirmation {decision}", session_id=session_id, generation=generation)
                 else:
                     self._queue_notice(f"Confirmation {decision} failed: {exc}", tone="error", session_id=session_id, generation=generation)
-                self.event_queue.put({"kind": "decision_done", "request_id": request_id, "session_id": session_id, "generation": generation})
+                self.event_queue.put(events.DecisionDoneEvent(request_id=request_id, session_id=session_id, generation=generation))
                 return
             except Exception as exc:
                 self._queue_notice(f"Confirmation {decision} failed: {exc}", tone="error", session_id=session_id, generation=generation)
-                self.event_queue.put({"kind": "decision_done", "request_id": request_id, "session_id": session_id, "generation": generation})
+                self.event_queue.put(events.DecisionDoneEvent(request_id=request_id, session_id=session_id, generation=generation))
                 return
-            status = res.status
-            self.event_queue.put(
-                {
-                    "kind": "confirmation_accepted",
-                    "request_id": request_id,
-                    "decision": decision,
-                    "status": status,
-                    "session_id": session_id,
-                    "generation": generation,
-                }
-            )
+            self.event_queue.put(events.GateAcceptedEvent(request_id=request_id, session_id=session_id, generation=generation))
 
-        threading.Thread(target=worker, daemon=True, name="CoreConfirm").start()
+        self._work.submit("CoreConfirm", worker)
 
     def _invoke_async(
         self,
@@ -2154,16 +1325,7 @@ class CoreTuiApp:
 
         def finish(status: str, result: CommandResult | None = None) -> None:
             """Hand this command's captured completion to the UI thread once."""
-            self.event_queue.put(
-                {
-                    "kind": "command_done",
-                    "name": name,
-                    "status": status,
-                    "result": result,
-                    "session_id": session_id,
-                    "generation": generation,
-                }
-            )
+            self.event_queue.put(events.CommandDoneEvent(name=name, status=status, result=result, session_id=session_id, generation=generation))
 
         def worker() -> None:
             try:
@@ -2180,26 +1342,20 @@ class CoreTuiApp:
                     self._queue_notice(f"/{shown} failed: {exc}", tone="error", session_id=session_id, generation=generation)
                     finish("error")
                 if submit_key is not None:
-                    self.event_queue.put({"kind": "decision_done", "request_id": submit_key, "session_id": session_id, "generation": generation})
+                    self.event_queue.put(events.DecisionDoneEvent(request_id=submit_key, session_id=session_id, generation=generation))
                 return
             except Exception as exc:
                 self._queue_notice(f"/{shown} failed: {exc}", tone="error", session_id=session_id, generation=generation)
                 finish("error")
                 if submit_key is not None:
-                    self.event_queue.put({"kind": "decision_done", "request_id": submit_key, "session_id": session_id, "generation": generation})
+                    self.event_queue.put(events.DecisionDoneEvent(request_id=submit_key, session_id=session_id, generation=generation))
                 return
             status = res.status
             if status == "pending_confirmation":
                 confirmation = res.confirmation
                 if confirmation is not None:
                     self.event_queue.put(
-                        {
-                            "kind": "confirmation",
-                            "confirmation": confirmation,
-                            "revision_id": revision,
-                            "session_id": session_id,
-                            "generation": generation,
-                        }
+                        events.ConfirmationEvent(confirmation=confirmation, revision_id=revision, session_id=session_id, generation=generation)
                     )
             elif status == "error":
                 self._queue_notice(
@@ -2216,34 +1372,35 @@ class CoreTuiApp:
             # Failed validation leaves the editor and draft mounted for correction.
             # Only an accepted action may close the overlay that submitted it.
             if submit_key is not None:
-                self.event_queue.put(
-                    {
-                        "kind": "decision_done" if status == "error" else "invoke_accepted",
-                        "overlay": submitted_overlay,
-                        "request_id": submit_key,
-                        "action": name,
-                        "revision_id": revision,
-                        "session_id": session_id,
-                        "generation": generation,
-                    }
-                )
+                if status == "error":
+                    self.event_queue.put(events.DecisionDoneEvent(request_id=submit_key, session_id=session_id, generation=generation))
+                else:
+                    self.event_queue.put(
+                        events.InvokeAcceptedEvent(
+                            request_id=submit_key,
+                            action=name,
+                            revision_id=revision,
+                            overlay=submitted_overlay,
+                            session_id=session_id,
+                            generation=generation,
+                        )
+                    )
 
             if res.status == "ok" and res.presentation is not None:
                 presentation = res.presentation
                 self.event_queue.put(
-                    {
-                        "kind": "command_presentation",
-                        "token": token,
-                        "view": PluginViewDescriptor(
+                    events.CommandPresentationEvent(
+                        token=token,
+                        view=PluginViewDescriptor(
                             owner="command", name=name, title=presentation.title, view_type=presentation.view_type, data=presentation.data
                         ),
-                        "revision_id": revision,
-                        "session_id": session_id,
-                        "generation": generation,
-                    }
+                        revision_id=revision,
+                        session_id=session_id,
+                        generation=generation,
+                    )
                 )
 
-        threading.Thread(target=worker, daemon=True, name="CoreInvoke").start()
+        self._work.submit("CoreInvoke", worker)
 
     def _queue_notice(
         self,
@@ -2255,13 +1412,12 @@ class CoreTuiApp:
     ) -> None:
         """Hand worker-side text to the UI thread; only the main loop commits rows."""
         self.event_queue.put(
-            {
-                "kind": "notice",
-                "text": text,
-                "tone": tone,
-                "session_id": self.session_id if session_id is None else session_id,
-                "generation": self._generation if generation is None else generation,
-            }
+            events.NoticeEvent(
+                text=text,
+                tone=tone,
+                session_id=self.session_id if session_id is None else session_id,
+                generation=self._generation if generation is None else generation,
+            )
         )
 
     def _upgrade_pending_notice(self, action: str, *, session_id: str, generation: int) -> None:
@@ -2308,6 +1464,11 @@ class CoreTuiApp:
             claimants = ", ".join(f"/{_slash_display(entry)}" for entry in self._shortcut_conflicts[chord])
             self.terminal.commit_rows([self.styles.fg("warning", f"Shortcut {name} is claimed by {claimants}; no action bound")])
             return
+        if not self.catalog_revision and "+" in chord and chord != "ctrl+o" and not self.composer.owns_key(chord):
+            # A modified chord the composer does not own can only be a catalog
+            # shortcut; with no catalog it must say so instead of doing nothing.
+            catalog.get(self, retry=True)
+            return
         if chord == "ctrl+o":
             self._show_truncated_output()
             return
@@ -2330,10 +1491,7 @@ class CoreTuiApp:
                 self._sync_slash_completion()
                 return
             paths = [f"/{_slash_public_path(entry)}" for entry in self.catalog_cache if entry.slash_visible]
-            paths.extend(
-                f"/tui {control}"
-                for control in ("help", "output", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit")
-            )
+            paths.extend(f"/tui {control.name}" for control in TUI_CONTROLS)
             is_group = selected not in paths
             if is_group or (name == "tab" and any(path.startswith(selected + " ") for path in paths)):
                 self.composer.accept_completion_with(selected + " ")
@@ -2371,9 +1529,32 @@ class CoreTuiApp:
             if not line:
                 return
             if line.startswith("/"):
-                self._dispatch_slash_command(line)
-            else:
-                self._dispatch_user_prompt(line)
+                if self._dispatch_slash_command(line) is False:
+                    self.composer.set_text(outcome.text)
+                return
+            catalog.get(self, retry=True)
+            if not self.catalog_revision:
+                catalog.unavailable(self)
+                self.composer.set_text(outcome.text)
+                return
+            client_syntax = self._client_syntax_command(line)
+            if client_syntax is not None:
+                descriptor, argument = client_syntax
+                self._dispatch_catalog_command(descriptor, argument)
+                return
+            self._dispatch_user_prompt(line)
+
+    def _client_syntax_command(self, line: str) -> tuple[CommandDescriptor, str] | None:
+        """Match a non-slash catalog prefix (``!`` for shell), never a client table."""
+        descriptors = catalog.get(self)
+        if not self.catalog_revision:
+            catalog.unavailable(self)
+            return None
+        for descriptor in descriptors:
+            syntax = descriptor.client_syntax
+            if syntax and not syntax.startswith("/") and line.startswith(syntax):
+                return descriptor, line[len(syntax) :].lstrip()
+        return None
 
     @property
     def _workspace_root(self) -> Path:
@@ -2484,11 +1665,7 @@ class CoreTuiApp:
             descriptions: dict[str, str] = {}
             for entry in self.catalog_cache:
                 path = f"/{_slash_public_path(entry)}"
-                properties = entry.argument_schema.get("properties", {})
-                required = entry.argument_schema.get("required", ())
-                properties = properties if isinstance(properties, Mapping) else {}
-                required = required if isinstance(required, (tuple, list)) else ()
-                hints = " ".join(f"<{name}>" if name in required else f"[{name}]" for name in properties)
+                hints = " ".join(command_argument_hints(entry))
                 descriptions[path] = f"{hints} — {entry.description}" if hints else entry.description
             self.composer.completion_descriptions = descriptions
             self.composer.completion_groups = {
@@ -2547,10 +1724,14 @@ class CoreTuiApp:
         while token_end < len(text) and (text[token_end].isalnum() or text[token_end] in "_-"):
             token_end += 1
 
+        if not self.catalog_revision:
+            # Completion is the first visible hint that commands are unavailable;
+            # report once (no forced retry) and keep the typed draft untouched.
+            catalog.get(self)
+            if not self.catalog_revision:
+                catalog.unavailable(self)
         names = [_slash_public_path(entry) for entry in self.catalog_cache if entry.slash_visible]
-        names.extend(
-            f"tui {control}" for control in ("help", "output", "sessions", "session", "new", "views", "model", "thinking", "cancel", "quit", "exit")
-        )
+        names.extend(f"tui {control.name}" for control in TUI_CONTROLS)
         parent, _, partial = prefix.rpartition(" ")
         base = f"{parent} " if parent else ""
         candidates = {base + name[len(base) :].split(" ", 1)[0] for name in names if name.startswith(base) and name[len(base) :].startswith(partial)}
@@ -2578,46 +1759,23 @@ class CoreTuiApp:
                 try:
                     res = self.client.run(session_id, RunSpec(prompt))
                     if res.status == "queued":
-                        self.event_queue.put(
-                            {
-                                "kind": "followup_queued",
-                                "session_id": session_id,
-                                "generation": generation,
-                            }
-                        )
+                        self.event_queue.put(events.FollowupQueuedEvent(session_id=session_id, generation=generation))
                     elif res.status in ("failed", "interrupted") and res.error:
-                        self.event_queue.put(
-                            {
-                                "kind": "followup_failed",
-                                "prompt": prompt,
-                                "error": res.error,
-                                "session_id": session_id,
-                                "generation": generation,
-                            }
-                        )
+                        self.event_queue.put(events.FollowupFailedEvent(prompt=prompt, error=res.error, session_id=session_id, generation=generation))
                     else:
                         self.event_queue.put(
-                            {
-                                "kind": "run_status",
-                                "status": res.status,
-                                "error": res.error,
-                                "run_id": res.run_id,
-                                "session_id": session_id,
-                                "generation": generation,
-                            }
+                            events.RunStatusEvent(
+                                status=res.status,
+                                error=res.error,
+                                run_id=res.run_id,
+                                session_id=session_id,
+                                generation=generation,
+                            )
                         )
                 except Exception as exc:
-                    self.event_queue.put(
-                        {
-                            "kind": "followup_failed",
-                            "prompt": prompt,
-                            "error": str(exc),
-                            "session_id": session_id,
-                            "generation": generation,
-                        }
-                    )
+                    self.event_queue.put(events.FollowupFailedEvent(prompt=prompt, error=str(exc), session_id=session_id, generation=generation))
 
-            threading.Thread(target=followup_worker, daemon=True, name="CoreFollowup").start()
+            self._work.submit("CoreFollowup", followup_worker)
             return
         self.status_line = ""
         self._run_active = True
@@ -2628,14 +1786,13 @@ class CoreTuiApp:
                 res = self.client.run(session_id, RunSpec(prompt))
                 status = res.status
                 self.event_queue.put(
-                    {
-                        "kind": "run_status",
-                        "status": status,
-                        "error": res.error,
-                        "run_id": res.run_id,
-                        "session_id": session_id,
-                        "generation": generation,
-                    }
+                    events.RunStatusEvent(
+                        status=status,
+                        error=res.error,
+                        run_id=res.run_id,
+                        session_id=session_id,
+                        generation=generation,
+                    )
                 )
                 if status == "waiting" and res.pending_approval is not None:
                     try:
@@ -2643,45 +1800,23 @@ class CoreTuiApp:
                     except ValueError as exc:
                         self._queue_notice(f"Approval receipt malformed: {exc}", tone="error", session_id=session_id, generation=generation)
                     else:
-                        self.event_queue.put(
-                            {
-                                "kind": "run_waiting",
-                                "gate": gate,
-                                "session_id": session_id,
-                                "generation": generation,
-                            }
-                        )
+                        self.event_queue.put(events.RunWaitingEvent(gate=gate, session_id=session_id, generation=generation))
             except CoreClientError as exc:
                 if exc.code == "upgrade_pending":
-                    self.event_queue.put({"kind": "run_rejected", "prompt": prompt, "session_id": session_id, "generation": generation})
+                    self.event_queue.put(events.RunRejectedEvent(prompt=prompt, session_id=session_id, generation=generation))
                     self._upgrade_pending_notice("the prompt", session_id=session_id, generation=generation)
                 else:
-                    self.event_queue.put(
-                        {
-                            "kind": "run_status",
-                            "status": "failed",
-                            "error": str(exc),
-                            "session_id": session_id,
-                            "generation": generation,
-                        }
-                    )
+                    self.event_queue.put(events.RunStatusEvent(status="failed", error=str(exc), session_id=session_id, generation=generation))
             except Exception as exc:
-                self.event_queue.put(
-                    {
-                        "kind": "run_status",
-                        "status": "failed",
-                        "error": str(exc),
-                        "session_id": session_id,
-                        "generation": generation,
-                    }
-                )
+                self.event_queue.put(events.RunStatusEvent(status="failed", error=str(exc), session_id=session_id, generation=generation))
 
-        threading.Thread(target=run_worker, daemon=True, name="CoreRun").start()
+        self._work.submit("CoreRun", run_worker)
 
-    def _dispatch_slash_command(self, line: str) -> None:
+    def _dispatch_slash_command(self, line: str) -> bool:
+        """Dispatch one slash line; False means the draft must be restored."""
         rest = line[1:].strip()
         if not rest:
-            return
+            return True
         head, _, arg_str = rest.partition(" ")
 
         # "/tui <control>" always reaches the client's own controls, so a plugin
@@ -2690,13 +1825,16 @@ class CoreTuiApp:
             local, _, local_args = arg_str.strip().partition(" ")
             if not local:
                 self._show_help()
-                return
+                return True
             if self._run_local_control(local, local_args.strip()):
-                return
+                return True
             self.terminal.commit_rows([self.styles.fg("error", f"Unknown TUI control: /tui {_safe(local)}")])
-            return
+            return True
 
-        descriptors = self._catalog()
+        descriptors = catalog.get(self, retry=True)
+        if not self.catalog_revision:
+            catalog.unavailable(self)
+            return False
         tokens = rest.split()
         ranked = sorted(
             (
@@ -2711,62 +1849,54 @@ class CoreTuiApp:
             width, _, entry = ranked[0]
             tail = rest.split(maxsplit=width)[width] if len(tokens) > width else ""
             self._dispatch_catalog_command(entry, tail)
-            return
+            return True
         if ranked:
             self.terminal.commit_rows([f"{self.styles.fg('error', f'Unknown command: /{_safe(rest)}')} (try /help)"])
-            return
+            return True
 
         # A bare name is a local control only when no admitted command owns it.
         if head not in {c.name for c in descriptors} and self._run_local_control(head, arg_str):
-            return
+            return True
         self._dispatch_catalog_command(None, rest)
+        return True
 
     def _run_local_control(self, cmd: str, arg_str: str) -> bool:
         """Run one client-local control; False when the name is not a control."""
-        if cmd in ("help", "?"):
+        control = TUI_CONTROLS_BY_NAME.get(cmd)
+        if control is None:
+            return False
+        name = control.name
+        if name == "help":
             self._show_help()
-            return True
-        if cmd in ("output", "artifact"):
+        elif name == "output":
             self._show_truncated_output()
-            return True
-        if cmd == "sessions":
+        elif name == "sessions":
             self._show_sessions()
-            return True
-        if cmd == "session":
+        elif name == "session":
             if arg_str:
                 self._switch_session(arg_str.strip())
-            return True
-        if cmd == "new":
+        elif name == "new":
             self._create_session()
-            return True
-        if cmd == "cancel":
+        elif name == "cancel":
             self._cancel_active_run()
-            return True
-        if cmd == "views":
+        elif name == "views":
             self._show_views(arg_str)
-            return True
-        if cmd == "model":
+        elif name == "model":
             self._tui_model(arg_str.strip())
-            return True
-        if cmd == "thinking":
+        elif name == "thinking":
             self._tui_thinking(arg_str.strip())
-            return True
-        if cmd in ("quit", "exit"):
+        elif name == "quit":
             self.running = False
-            return True
-        return False
+        return True
 
     def _action_schema(self, name: str) -> Mapping[str, Any] | None:
         """The target command's declared argument schema, the form's field authority."""
-        for descriptor in self._catalog():
+        for descriptor in catalog.get(self, retry=True):
             if descriptor.name == name:
                 return descriptor.argument_schema
+        if not self.catalog_revision:
+            catalog.unavailable(self)
         return None
-
-    def _catalog(self) -> tuple[CommandDescriptor, ...]:
-        if not self.catalog_cache:
-            self._load_catalog()
-        return self.catalog_cache
 
     def _switch_session(self, session_id: str) -> None:
         """Rebind the follower to another session.
@@ -2801,51 +1931,56 @@ class CoreTuiApp:
         self._maybe_welcome()
         self._start_event_stream()
 
-    def _create_session(self) -> None:
+    def _command_receipt_rows(self, name: str, result: CommandResult) -> list[str]:
+        """Render one command receipt; core help uses the declarative help screen."""
+        if name == "help":
+            help_rows = self._help_receipt_rows(result)
+            if help_rows is not None:
+                return help_rows
+        return _command_result_rows(name, result, self.styles, self.terminal.width)
+
+    def _help_receipt_rows(self, result: CommandResult) -> list[str] | None:
+        """Render a core help receipt from its catalog data, or None to fall back.
+
+        The core ``help`` command is the only producer of a full catalog payload
+        in a receipt. The TUI never invents commands from ``output`` text; if an
+        older/foreign server sends only text, the generic receipt renderer wins.
+        """
+        if result.status != "ok" or result.data is None:
+            return None
         try:
-            res = self.client.create_session()
-            new_id = res.session_id
-        except Exception as exc:
-            self.terminal.commit_rows([self.styles.fg("error", f"Failed to create session: {_safe(exc)}")])
-            return
-        if new_id:
-            self._switch_session(new_id)
+            catalog = CommandCatalog.from_payload(result.data)
+        except ValueError:
+            return None
+        bindings, conflicts = _shortcut_bindings(catalog.commands)
+        return render_help(
+            catalog.commands,
+            revision=catalog.revision_id,
+            width=self.terminal.content_width,
+            styles=self.styles,
+            bindings=bindings,
+            conflicts=conflicts,
+            quit_arm_seconds=_QUIT_ARM_SECONDS,
+        )
 
     def _show_help(self) -> None:
-        heading = self.styles.render("accent", "=== VoidCode Terminal Controls ===")
-        lines = [
-            heading,
-            "  /tui help              Show this help (always available)",
-            "  /tui output            View latest truncated tool output (or Ctrl+O)",
-            "  /tui sessions          List available sessions",
-            "  /tui session <id>      Switch active session",
-            "  /tui new               Create new session",
-            "  /tui views [name]      Open plugin views/forms (for example goal)",
-            "  /tui model [provider/model]  Show or switch the model (embedded only)",
-            "  /tui thinking [level|off]  Show or set thinking level (embedded only)",
-            "  /tui cancel            Cancel active session run",
-            "  /tui quit              Exit TUI",
-            "  Esc                    Cancel a run, or close/deny a dialog",
-            "  Ctrl+C                 Clear input; press again within 1.5s to quit",
-            "  Ctrl+D                 Quit when input is empty",
-            "  (/views, /sessions, ... are local when no admitted command owns the name)",
-            self.styles.render("accent", "=== Admitted Commands ==="),
-        ]
-        if not self.catalog_cache:
-            self._load_catalog()
-        for c in self.catalog_cache:
-            if not c.slash_visible:
-                continue
-            lines.append(f"  /{_slash_public_path(c):<16} {c.description}")
-        if self._shortcut_bindings or self._shortcut_conflicts:
-            lines.append(self.styles.render("accent", "=== Shortcuts ==="))
-            for chord in sorted(self._shortcut_bindings):
-                descriptor = self._shortcut_bindings[chord]
-                lines.append(f"  {chord:<18} {_safe(descriptor.description)}")
-            for chord in sorted(self._shortcut_conflicts):
-                claimants = ", ".join(f"/{_slash_display(entry)}" for entry in self._shortcut_conflicts[chord])
-                lines.append(f"  {chord:<18} conflicts: {claimants} (unbound)")
-        self.terminal.commit_rows(lines)
+        """Commit the client help screen; catalog failure degrades to local controls."""
+        catalog.get(self)
+        catalog_error = self._catalog_error
+        if catalog_error is not None:
+            catalog.unavailable(self)
+        self.terminal.commit_rows(
+            render_help(
+                self.catalog_cache,
+                revision=self.catalog_revision,
+                width=self.terminal.content_width,
+                styles=self.styles,
+                bindings=self._shortcut_bindings,
+                conflicts=self._shortcut_conflicts,
+                quit_arm_seconds=_QUIT_ARM_SECONDS,
+                catalog_error=catalog_error,
+            )
+        )
 
     def _tui_model(self, arg: str) -> None:
         """Show the admitted model detail, or switch it (embedded, idle only)."""
@@ -2879,8 +2014,8 @@ class CoreTuiApp:
             return
         self._tui_switch_model("reasoning_effort", arg)
 
-    def _tui_switch_model(self, field: str, value: str) -> None:
-        """Rewrite the workspace model section and reload once; refusals stay visible."""
+    def _tui_switch_model(self, field: Literal["model", "reasoning_effort"], value: str) -> None:
+        """Rewrite the workspace model section and reload once, entirely off the UI thread."""
         from voidcode.tui.local_client import CoreLocalClient
 
         if not isinstance(self.client, CoreLocalClient):
@@ -2895,89 +2030,85 @@ class CoreTuiApp:
                 return
             new_value: str | int = value
         else:
-            try:
-                normalized = normalize_reasoning_effort(value)
-            except ValueError as exc:
-                self.terminal.commit_rows([self.styles.fg("error", f"Invalid effort: {_safe(exc)}")])
-                return
-            if normalized is None:
-                self.terminal.commit_rows([self.styles.fg("error", "Invalid effort: value is required")])
-                return
-            new_value = normalized
+            new_value = value
             levels = getattr(getattr(self.upgrade, "model", None), "reasoning_levels", None)
-            if isinstance(levels, (list, tuple)) and levels and isinstance(new_value, str) and new_value != "off" and new_value not in levels:
+            if isinstance(levels, (list, tuple)) and levels and new_value != "off" and new_value not in levels:
                 supported = _levels_text(getattr(self.upgrade, "model", None))
                 self.terminal.commit_rows([self.styles.fg("error", f"Unsupported level for this model: {_safe(new_value)} ({_safe(supported)})")])
                 return
         if self._workspace_dir is None:
             self.terminal.commit_rows([self.styles.fg("error", "No workspace: cannot rewrite configuration")])
             return
-        from pathlib import Path
+        if not self.catalog_revision:
+            catalog.get(self, retry=True)
+            if not self.catalog_revision:
+                catalog.unavailable(self)
+                return
+        workspace = Path(self._workspace_dir)
+        revision = self.catalog_revision
+        session_id, generation = self.session_id, self._generation
+        client = self.client
+        self.status_line = f"Switching {field}..."
+        kind = field
 
-        from voidcode.capabilities.files._replace import replace_file
-        from voidcode.config import CONFIG_FILE_NAME, parse_config
-
-        path = Path(self._workspace_dir) / CONFIG_FILE_NAME
-        try:
-            expected = path.read_bytes() if path.is_file() else None
-            payload: dict[str, object] = json.loads(expected.decode("utf-8")) if expected is not None else {"schema_version": 1}
-            if not isinstance(payload, dict):
-                raise ValueError("config must be an object")
-            raw_section = payload.get("model", {})
-            if not isinstance(raw_section, (dict, type(None))):
-                raise ValueError("model section must be an object")
-            section = dict(raw_section or {})
-            section[field] = new_value
-            payload["model"] = section
-            parse_config(payload)  # validate before writing
-            replace_file(path, (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8"), expected_content=expected)
-        except Exception as exc:
-            self.terminal.commit_rows([self.styles.fg("error", f"Config rewrite refused: {_safe(exc)}")])
-            return
-        revision = self.catalog_revision or self._displayed_revision()
-        try:
-            result = self.client.invoke_command(self.session_id, "core.reload", {}, expected_revision=revision)
-        except Exception as exc:
-            self.terminal.commit_rows([self.styles.fg("error", f"Reload failed: {_safe(exc)}")])
-            return
-        if result.status == "ok":
-            data = result.data if isinstance(result.data, Mapping) else {}
-            to_revision = str(data.get("to_revision_id", "")) if data else ""
-            self.terminal.commit_rows([self.styles.fg("success", f"[Model switched: revision {to_revision or revision} admitted]")])
-        else:
-            self.terminal.commit_rows([self.styles.fg("error", f"Reload {result.status}: {_safe(result.error)}")])
-        self._refresh_health_async()
-
-    def _displayed_revision(self) -> str:
-        if not self.catalog_cache:
-            self._load_catalog()
-        return self.catalog_revision
+        self._work.submit(
+            "ModelSwitch",
+            lambda: self.event_queue.put(
+                operations.switch_model(
+                    client,
+                    workspace=workspace,
+                    field=kind,
+                    value=new_value,
+                    revision=revision,
+                    session_id=session_id,
+                    generation=generation,
+                )
+            ),
+        )
 
     def _show_sessions(self) -> None:
-        try:
-            sess_list = self.client.list_sessions()
-            if not sess_list:
-                self.terminal.commit_rows([self.styles.fg("warning", "No active sessions.")])
-                return
-            options = tuple(
-                ChoiceOption(
-                    id=s.session_id,
-                    label=f"{s.session_id[:8]} (turn {s.turn}, {s.status})" + (" [current]" if s.session_id == self.session_id else ""),
-                )
-                for s in sess_list
+        """List sessions off the UI thread; stale results never replace a newer binding."""
+        session_id, generation = self.session_id, self._generation
+        self.status_line = "Loading sessions..."
+        client = self.client
+
+        self._work.submit(
+            "CoreSessions",
+            lambda: self.event_queue.put(operations.list_sessions(client, session_id=session_id, generation=generation)),
+        )
+
+    def _present_sessions(self, sessions: list[SessionRow]) -> None:
+        if not sessions:
+            self.terminal.commit_rows([self.styles.fg("warning", "No active sessions.")])
+            return
+        options = tuple(
+            ChoiceOption(
+                id=row.session_id,
+                label=f"{row.session_id[:8]} (turn {row.turn}, {row.status})" + (" [current]" if row.session_id == self.session_id else ""),
             )
-            data = ChoicesViewData(options=options, action="tui.switch_session", argument_name="session_id")
-            overlay = InteractiveChoices(data, revision_id=self._displayed_revision(), title="Active Sessions")
-            for idx, s in enumerate(sess_list):
-                if s.session_id == self.session_id:
-                    overlay.selected_index = idx
-                    break
-            self.active_overlay = overlay
-        except Exception as exc:
-            self.terminal.commit_rows([self.styles.fg("error", f"Failed to list sessions: {_safe(exc)}")])
+            for row in sessions
+        )
+        data = ChoicesViewData(options=options, action="tui.switch_session", argument_name="session_id")
+        overlay = InteractiveChoices(data, revision_id=catalog.displayed_revision(self), title="Active Sessions")
+        for idx, row in enumerate(sessions):
+            if row.session_id == self.session_id:
+                overlay.selected_index = idx
+                break
+        self.active_overlay = overlay
+
+    def _create_session(self) -> None:
+        """Create a session off the UI thread, then switch only if still on the same binding."""
+        session_id, generation = self.session_id, self._generation
+        self.status_line = "Creating session..."
+        client = self.client
+
+        self._work.submit(
+            "CoreCreateSession",
+            lambda: self.event_queue.put(operations.create_session(client, session_id=session_id, generation=generation)),
+        )
 
     def _show_views(self, name_filter: str = "") -> None:
-        """Render plugin views only when explicitly requested.
+        """Read plugin views off the UI thread; only explicit requests present them.
 
         Passive views are committed inline. Interactive choices/forms/view-
         confirmations are snapshots, not pending durable requests, so this is
@@ -2985,11 +2116,16 @@ class CoreTuiApp:
         are restored separately from their durable events.
         """
         self._follower.abort_interaction()
-        try:
-            snapshot = self.client.views(self.session_id)
-        except Exception as exc:
-            self.terminal.commit_rows([self.styles.fg("error", f"Failed to read views: {_safe(exc)}")])
-            return
+        session_id, generation = self.session_id, self._generation
+        self.status_line = "Loading views..."
+        client = self.client
+
+        self._work.submit(
+            "CoreViews",
+            lambda: self.event_queue.put(operations.load_views(client, session_id=session_id, generation=generation, name_filter=name_filter)),
+        )
+
+    def _present_views(self, snapshot: ViewsSnapshot, name_filter: str) -> None:
         views_revision = snapshot.revision_id
         descriptors: list[PluginViewDescriptor] = list(snapshot.views)
         if name_filter:
@@ -3008,22 +2144,17 @@ class CoreTuiApp:
     def _mount_interactive_view(self, view: PluginViewDescriptor, revision: str) -> bool:
         """Mount an explicitly requested view with its captured revision."""
         data = parse_view_data(view.view_type, view.data)
-        if isinstance(data, MarkdownViewData) and data.actions:
+        if isinstance(data, MarkdownViewData):
+            if not data.actions:
+                return False
             self.active_overlay = InteractiveMarkdown(data, revision_id=revision, title=view.title)
-        elif view.view_type == "choices":
-            from voidcode.sdk.views import ChoicesViewData
-
-            assert isinstance(data, ChoicesViewData)
+        elif isinstance(data, ChoicesViewData):
             self.active_overlay = InteractiveChoices(data, revision_id=revision, title=view.title)
-        elif view.view_type == "form":
-            from voidcode.sdk.views import FormViewData
-
-            assert isinstance(data, FormViewData)
+        elif isinstance(data, FormViewData):
             form = InteractiveForm(data, action_schema=self._action_schema(data.action), revision_id=revision, title=view.title)
             self._maybe_load_form_data(form)
             self.active_overlay = form
-        elif view.view_type == "confirmation":
-            assert isinstance(data, ConfirmationViewData)
+        elif isinstance(data, ConfirmationViewData):
             self.active_overlay = InteractiveConfirmation(data, revision_id=revision)
         else:
             return False
@@ -3034,8 +2165,13 @@ class CoreTuiApp:
         if not form.load_action:
             return
         load_action = str(form.load_action)
-        catalog = CommandCatalog(revision_id=self.catalog_revision or "rev-unknown", commands=self._catalog())
-        if not is_read_only_load(form.view, catalog):
+        commands = catalog.get(self, retry=True)
+        if not self.catalog_revision:
+            catalog.unavailable(self)
+            form.load_error = f"Catalog unavailable: {_safe(self._catalog_error or 'unknown error')} (retry)"
+            return
+        catalog_snapshot = CommandCatalog(revision_id=self.catalog_revision, commands=commands)
+        if not is_read_only_load(form.view, catalog_snapshot):
             form.load_error = f"load_action '{load_action}' must declare exactly the read effect"
             return
 
@@ -3043,28 +2179,23 @@ class CoreTuiApp:
         target = form
 
         def worker() -> None:
-            payload: dict[str, Any] = {
-                "kind": "form_load",
-                "form": target,
-                "session_id": session_id,
-                "generation": generation,
-            }
+            data: Mapping[str, object] | None = None
+            error: str | None = None
             try:
                 res = self.client.invoke_command(
                     session_id,
                     load_action,
                     expected_revision=target.revision_id,
                 )
-                data = res.data
-                if isinstance(data, Mapping):
-                    payload["data"] = data
+                if isinstance(res.data, Mapping):
+                    data = res.data
                 elif res.error:
-                    payload["error"] = str(res.error)
+                    error = str(res.error)
             except Exception as exc:
-                payload["error"] = str(exc)
-            self.event_queue.put(payload)
+                error = str(exc)
+            self.event_queue.put(events.FormLoadEvent(form=target, data=data, error=error, session_id=session_id, generation=generation))
 
-        threading.Thread(target=worker, daemon=True, name="CoreFormLoad").start()
+        self._work.submit("CoreFormLoad", worker)
 
     def _prepare_command_input_async(self, descriptor: CommandDescriptor, *, arguments: Mapping[str, Any] | None = None) -> None:
         """Read optional plugin input off the UI thread without invoking its action."""
@@ -3075,30 +2206,21 @@ class CoreTuiApp:
         # raw /dotted id a user could mistake for a slash command.
         self.status_line = f"Loading {_safe(descriptor.description) if not descriptor.slash_visible else '/' + _slash_public_path(descriptor)}..."
 
-        def worker() -> None:
-            frame: dict[str, Any] = {
-                "kind": "command_input_ready",
-                "token": token,
-                "revision_id": revision,
-                "session_id": session_id,
-                "generation": generation,
-                "action": descriptor.name,
-                "arguments": owned_arguments,
-            }
-            try:
-                snapshot = self.client.command_input(session_id, descriptor.name, revision, arguments=owned_arguments)
-                if snapshot.revision_id != revision:
-                    raise ValueError("command input revision changed; refresh the catalog")
-                presentation = snapshot.presentation
-                frame["view"] = PluginViewDescriptor(
-                    owner=descriptor.owner, name=descriptor.name, title=presentation.title, view_type=presentation.view_type, data=presentation.data
+        self._work.submit(
+            "CoreCommandInput",
+            lambda: self.event_queue.put(
+                operations.command_input(
+                    self.client,
+                    owner=descriptor.owner,
+                    name=descriptor.name,
+                    revision=revision,
+                    arguments=owned_arguments,
+                    token=token,
+                    session_id=session_id,
+                    generation=generation,
                 )
-                frame["refresh_after_ms"] = presentation.refresh_after_ms
-            except Exception as exc:
-                frame["error"] = str(exc)
-            self.event_queue.put(frame)
-
-        threading.Thread(target=worker, daemon=True, name="CoreCommandInput").start()
+            ),
+        )
 
     def _refresh_live_input_async(self) -> None:
         """Re-read the open live view's source once; stale replies never render."""
@@ -3110,34 +2232,21 @@ class CoreTuiApp:
         action = str(live.get("name", ""))
         revision = str(live.get("revision", ""))
         owned_arguments = dict(live.get("arguments") or {})
-        source = live.get("source")
 
-        def worker() -> None:
-            frame: dict[str, Any] = {
-                "kind": "live_input_ready",
-                "token": token,
-                "revision_id": revision,
-                "session_id": session_id,
-                "generation": generation,
-                "action": action,
-                "arguments": owned_arguments,
-            }
-            try:
-                snapshot = self.client.command_input(session_id, action, revision, arguments=owned_arguments)
-                if snapshot.revision_id != revision:
-                    raise ValueError("command input revision changed; refresh the catalog")
-                presentation = snapshot.presentation
-                frame["view"] = PluginViewDescriptor(
-                    owner="live", name=action, title=presentation.title, view_type=presentation.view_type, data=presentation.data
+        self._work.submit(
+            "CoreLiveInput",
+            lambda: self.event_queue.put(
+                operations.live_input(
+                    self.client,
+                    action=action,
+                    revision=revision,
+                    arguments=owned_arguments,
+                    token=token,
+                    session_id=session_id,
+                    generation=generation,
                 )
-                frame["refresh_after_ms"] = presentation.refresh_after_ms
-            except Exception as exc:
-                frame["error"] = str(exc)
-            if source is not None:
-                frame["source"] = source
-            self.event_queue.put(frame)
-
-        threading.Thread(target=worker, daemon=True, name="CoreLiveInput").start()
+            ),
+        )
 
     def _arm_live_input(self, *, name: str, arguments: Mapping[str, Any], revision: str, refresh_after_ms: int | None, source: Any) -> None:
         """Enable polling only from explicit refresh metadata on the open view."""
@@ -3189,25 +2298,39 @@ class CoreTuiApp:
         effects = frozenset(cmd_desc.effects)
         surface_result = cmd_desc.owner == "core" and effects <= {ToolEffect.READ}
 
-        schema = cmd_desc.argument_schema if isinstance(cmd_desc.argument_schema, Mapping) else {}
-        properties = schema.get("properties") if isinstance(schema.get("properties"), Mapping) else {}
-        required = schema.get("required") if isinstance(schema.get("required"), (list, tuple)) else ()
-        assert isinstance(properties, Mapping) and isinstance(required, (list, tuple))
+        schema = cmd_desc.argument_schema
+        raw_properties = schema.get("properties")
+        properties: dict[str, object] = (
+            {name: value for name, value in raw_properties.items() if isinstance(name, str)} if isinstance(raw_properties, Mapping) else {}
+        )
+        raw_required = schema.get("required")
+        required = tuple(name for name in raw_required if isinstance(name, str)) if isinstance(raw_required, (list, tuple)) else ()
+        single_required = properties.get(required[0]) if len(required) == 1 else None
 
         arguments: dict[str, Any]
         if not arg_str and required and properties:
             from voidcode.sdk.views import FormField, FormFieldType, FormViewData
 
             field_types: dict[str, FormFieldType] = {"string": "text", "integer": "integer", "number": "number", "boolean": "boolean"}
-            if all(isinstance(value, Mapping) and value.get("type") in field_types for value in properties.values()):
+            field_specs: list[tuple[str, Mapping[str, object], FormFieldType]] = []
+            for name, spec in properties.items():
+                if not isinstance(spec, Mapping):
+                    field_specs.clear()
+                    break
+                type_name = spec.get("type")
+                if not isinstance(type_name, str) or type_name not in field_types:
+                    field_specs.clear()
+                    break
+                field_specs.append((name, spec, field_types[type_name]))
+            if properties and len(field_specs) == len(properties):
                 fields = tuple(
                     FormField(
                         name=name,
                         label=str(spec.get("description") or name),
-                        field_type=field_types[spec["type"]],
+                        field_type=field_type,
                         required=name in required,
                     )
-                    for name, spec in properties.items()
+                    for name, spec, field_type in field_specs
                 )
                 self.active_overlay = InteractiveForm(
                     FormViewData(fields=fields, action=cmd_desc.name),
@@ -3224,15 +2347,15 @@ class CoreTuiApp:
             len(properties) == 1
             and len(required) == 1
             and required[0] in properties
-            and isinstance(properties[required[0]], Mapping)
-            and properties[required[0]].get("type") == "string"
+            and isinstance(single_required, Mapping)
+            and single_required.get("type") == "string"
         ):
             # A single required string schema maps slash trailing text generically.
             arguments = {required[0]: arg_str}
         else:
             try:
                 parsed = json.loads(arg_str)
-            except Exception:
+            except json.JSONDecodeError:
                 if len(properties) == 1:
                     arguments = {next(iter(properties)): arg_str}
                 else:
@@ -3248,139 +2371,7 @@ class CoreTuiApp:
         self._invoke_async(cmd_desc.name, arguments, revision, surface_result=surface_result, display_name=_slash_public_path(cmd_desc))
 
     def _render_frame(self) -> None:
-        width = self.terminal.width
-        if self._run_active or self._stream_dispatch is not None:
-            self._spinner_tick += 1
-        # Context row (server truth) plus a SEPARATE transient notice row.
-        # footer=off hides the context row only: gates/errors always show.
-        context = self._footer_context(width)
-        context_row = (self.styles.fg("text", context) if context else "",)
-        notice = self.styles.fg("dim", self.status_line) if self.status_line else ""
-        quit_hint = self.styles.fg("dim", "Press Ctrl+C again to exit") if time.monotonic() - self._quit_armed_at < 1.5 else ""
-        notice_rows = tuple(row for row in (notice, quit_hint) if row)
-        footer_rows = tuple(row for row in (*context_row, *notice_rows) if row)
-        if self.pending_approval is not None:
-            self.render_approval(width, footer_rows)
-        elif isinstance(self.active_overlay, InteractiveArtifactViewer):
-            self.render_artifact_viewer(width, footer_rows)
-        elif self.active_overlay is not None:
-            self.render_overlay(width, footer_rows)
-        else:
-            self.render_composer(width, footer_rows)
-
-    def render_approval(self, width: int, footer_rows: tuple[str, ...]) -> None:
-        """Paint the pending tool-approval gate with the shared footer."""
-        assert self.pending_approval is not None
-        rows = self.pending_approval.render_rows(width, self.styles)
-        frame = TuiFrame(transcript_rows=(), chrome_rows=(*rows, *footer_rows), cursor=None)
-        self.terminal.paint_frame(frame)
-
-    def render_artifact_viewer(self, width: int, footer_rows: tuple[str, ...]) -> None:
-        """Paint the artifact viewer; a past-due upload ack fails the image first."""
-        viewer = self.active_overlay
-        assert isinstance(viewer, InteractiveArtifactViewer)
-        deadline = self._artifact_ack_deadline
-        if (
-            deadline is not None
-            and deadline[:2] == (viewer.identity, viewer.source.sha256)
-            and viewer.image_status == "transferring"
-            and time.monotonic() >= deadline[2]
-        ):
-            viewer.fail_image(viewer.source.sha256, "Kitty upload acknowledgement timed out; no terminal image success was observed.")
-            self._artifact_ack_deadline = None
-        available = max(1, self.terminal.height - len(footer_rows))
-        rows = viewer.render_rows(width, self.styles, max_rows=available)
-        placement_id = self.terminal.kitty_placement_id(viewer.source.sha256)
-        placement = (
-            viewer.image_placement(
-                max_columns=width,
-                max_rows=max(0, available - viewer.image_row),
-                cell_pixels=self.terminal.cell_pixel_size,
-                placement_id=placement_id,
-            )
-            if placement_id is not None
-            else None
-        )
-        self.terminal.paint_frame(TuiFrame(chrome_rows=(*rows, *footer_rows), image=placement))
-
-    def render_overlay(self, width: int, footer_rows: tuple[str, ...]) -> None:
-        """Paint the mounted choices/form/confirmation/markdown overlay with the shared footer."""
-        overlay = self.active_overlay
-        assert overlay is not None
-        overlay_rows = (
-            overlay.render_rows(width, self.styles, max_rows=max(6, getattr(self.terminal, "height", 24) - len(footer_rows)))
-            if isinstance(overlay, (InteractiveMarkdown, InteractiveChoices))
-            else overlay.render_rows(width, self.styles)
-        )
-        frame = TuiFrame(transcript_rows=(), chrome_rows=(*overlay_rows, *footer_rows), cursor=None)
-        self.terminal.paint_frame(frame)
-
-    def render_composer(self, width: int, footer_rows: tuple[str, ...]) -> None:
-        """Paint live tools/stream, the completion popup, and the composer with the shared footer."""
-        self.composer.set_width(width)
-        height = getattr(self.terminal, "height", 24)
-        available = max(1, height - len(footer_rows))
-        self.composer.set_max_height(self.composer.input_height(available, status_visible=self.border == "borderless" and self._run_active))
-        composer_rows = self.composer.render(
-            self._border_status() if self.border == "borderless" else "",
-            border_status=self._border_status(),
-        )
-        cursor = self.composer.cursor_position
-        popup = list(self.composer.completion_rows(max_rows=max(1, min(6, available - len(composer_rows)))))
-        live_space = max(0, available - len(composer_rows) - len(popup))
-        live: list[str] = []
-        if live_space > 0:
-            tools = list(self._active_tools.values())
-            num_tools = len(tools)
-            if num_tools > 0:
-                spinner = SPINNER_FRAMES[self._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
-                if num_tools > live_space:
-                    tool_pairs = [(t.tool_name, max(0.0, time.monotonic() - t.start_time)) for t in tools]
-                    summary_rows = render_active_tools_summary(tool_pairs, width, self.styles, spinner=spinner)
-                    live.extend(summary_rows)
-                    remaining = max(0, live_space - len(live))
-                    tools_to_show = tools[-remaining:] if remaining > 0 else []
-                    for t in tools_to_show:
-                        elapsed = max(0.0, time.monotonic() - t.start_time)
-                        live.extend(
-                            render_active_tool(
-                                t.tool_name,
-                                elapsed,
-                                [],
-                                width,
-                                self.styles,
-                                icon=t.icon,
-                                spinner=spinner,
-                                max_tail_rows=0,
-                            )
-                        )
-                else:
-                    remaining_tail_space = live_space - num_tools
-                    for index, t in enumerate(tools):
-                        elapsed = max(0.0, time.monotonic() - t.start_time)
-                        is_latest = index == num_tools - 1
-                        tail_budget = remaining_tail_space if is_latest else 0
-                        live_tail = t.visible_tail(tail_budget) if tail_budget > 0 else []
-                        live.extend(
-                            render_active_tool(
-                                t.tool_name,
-                                elapsed,
-                                live_tail,
-                                width,
-                                self.styles,
-                                icon=t.icon,
-                                spinner=spinner,
-                                max_tail_rows=tail_budget,
-                            )
-                        )
-            else:
-                stream_rows = self._live_stream_rows(width)
-                live = stream_rows[-live_space:] if stream_rows else []
-        if cursor is not None and (live or popup):
-            row, column = cursor
-            cursor = (row + len(live) + len(popup), column)
-        frame = TuiFrame(transcript_rows=(), chrome_rows=(*live, *popup, *composer_rows, *footer_rows), cursor=cursor)
-        self.terminal.paint_frame(frame)
+        render_frame(self)
 
 
 def run_tui(

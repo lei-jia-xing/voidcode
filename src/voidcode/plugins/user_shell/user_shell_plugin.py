@@ -43,6 +43,9 @@ class ShellCommand:
         effects=frozenset({ToolEffect.EXECUTE}),
         busy_gate=False,
         client_syntax="!",
+        usage="/shell <command>  ·  !<command>",
+        examples=("/shell git status", "!git status"),
+        group="Shell",
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, Literal
 
+from .formatting import pad_visible_row
 from .keys import Key
 from .styles import Styles, symbol
 from .term import cell_len, clamp_row, escape_terminal_controls, grapheme_spans, visible_width
@@ -322,7 +323,6 @@ class Composer:
         self._clock = time.monotonic if clock is None else clock
         self._text = ""
         self._cursor = 0
-        self._enabled = True
         self._history: list[str] = []
         self._history_index: int | None = None
         self._draft = ""
@@ -417,9 +417,10 @@ class Composer:
         self._scroll = 0
         self.set_completion(())
 
-    def set_enabled(self, enabled: bool) -> None:
-        """While disabled the composer ignores every key (streaming/overlay)."""
-        self._enabled = enabled
+    @staticmethod
+    def owns_key(name: str) -> bool:
+        """Whether the composer itself consumes this key name (never a catalog chord)."""
+        return name in _KEYMAP
 
     @property
     def completion(self) -> tuple[str, ...]:
@@ -754,8 +755,6 @@ class Composer:
 
     def handle_key(self, key: Key) -> ComposerOutcome:
         """Fold one key into the composer; report what the app should do."""
-        if not self._enabled:
-            return ComposerOutcome()
         name = key.name
         if name == "escape" and self._text == "!":
             # Upstream bash mode: Esc exits the empty `!` mode instead of
@@ -1020,7 +1019,7 @@ class Composer:
     def _input_row(self, gutter: str, content: str, layout_width: int, width: int) -> str:
         frame = _FRAMES[self._style]
         vertical = symbol("boxRound.vertical")
-        pad = " " * max(0, layout_width - visible_width(content))
+        content = pad_visible_row(content, layout_width)
         parts = []
         if frame.sides or frame.sidebar:
             parts.append(self._styles.fg("border", vertical))
@@ -1030,7 +1029,7 @@ class Composer:
             parts.append(self._styles.fg("border", gutter))
         if frame.sidebar:
             parts.append(self._styles.fg("border", vertical))
-        parts.append(content + pad)
+        parts.append(content)
         if frame.sides:
             parts.append(self._styles.fg("border", vertical))
         return clamp_row("".join(parts), width)
@@ -1054,7 +1053,7 @@ class Composer:
         vertical = symbol("boxRound.vertical")
         row = clamp_row(status, width)
         if frame.status_dock == "band":
-            row += " " * max(0, width - visible_width(row))
+            row = pad_visible_row(row, width)
             row = vertical + row + vertical
             return clamp_row(row, self._width)
         if frame.sides:
@@ -1116,7 +1115,7 @@ class Composer:
         layout_width = max(2, width - gutter_width)
 
         if self._text == "":
-            self._cursor_position = (0, gutter_width) if self._enabled else None
+            self._cursor_position = (0, gutter_width)
             row = self._input_row(first_gutter, self._empty_content(layout_width), layout_width, self._width)
             return self._style_rows([row], status, border_status)
 
@@ -1155,9 +1154,7 @@ class Composer:
             gutter_text = first_gutter if visible_index == 0 else continuation
             rows.append(self._input_row(gutter_text, text, layout_width, self._width))
         visible_cursor = cursor_flat - self._scroll
-        self._cursor_position = (
-            (visible_cursor, min(width - 1, gutter_width + cursor_cell)) if self._enabled and 0 <= visible_cursor < len(rows) else None
-        )
+        self._cursor_position = (visible_cursor, min(width - 1, gutter_width + cursor_cell)) if 0 <= visible_cursor < len(rows) else None
         return self._style_rows(rows, status, border_status)
 
     def render(self, status: str = "", *, border_status: str = "") -> Sequence[str]:

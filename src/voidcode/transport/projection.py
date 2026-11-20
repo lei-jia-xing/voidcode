@@ -90,8 +90,11 @@ def model_payload(*, raw: str | None, configured_effort: str | int | None) -> di
             provider, model = provider_segment, model_segment
     levels: list[str] = []
     effort: str | None = None
+    context_window: int | None = None
     if provider is not None and model is not None:
         metadata = static_catalog_metadata(provider, model)
+        if metadata is not None:
+            context_window = metadata.context_window
         if metadata is not None and metadata.supports_reasoning is True:
             row_levels = metadata.supported_effort_levels
             if row_levels:
@@ -116,6 +119,7 @@ def model_payload(*, raw: str | None, configured_effort: str | int | None) -> di
         "model": model,
         "reasoning_effort": effort,
         "reasoning_levels": levels,
+        "context_window": context_window,
     }
 
 

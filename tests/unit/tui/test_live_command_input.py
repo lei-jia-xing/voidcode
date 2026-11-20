@@ -7,6 +7,8 @@ from typing import Any
 
 from voidcode.sdk.client import CommandCatalog
 from voidcode.sdk.commands import CommandDescriptor, CommandInputSnapshot, CommandPresentation
+from voidcode.tui import catalog
+from voidcode.tui.events import LiveInputReadyEvent
 from voidcode.tui.gates import ConfirmationGate, ConfirmationRequested
 from voidcode.tui.keys import Key
 from voidcode.tui.terminal_app import CoreTuiApp
@@ -81,9 +83,9 @@ def _drain(app: CoreTuiApp, timeout: float = 3.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         app._drain_events()
-        if app.event_queue.empty():
+        if app.event_queue.empty() and app._work.pending == 0:
             return
-        time.sleep(0.01)
+        time.sleep(0.005)
     raise AssertionError("event queue never drained")
 
 
@@ -95,7 +97,7 @@ def test_refresh_syncs_title_when_roster_gains_children() -> None:
         ]
     )
     app, _ = _app(client)
-    app._cache_catalog(client.command_catalog().commands, "rev-1")
+    catalog.cache(app, client.command_catalog().commands, "rev-1")
     app._handle_composer_key(Key("alt+a"))
     _drain(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
@@ -111,7 +113,7 @@ def test_refresh_syncs_title_when_roster_gains_children() -> None:
 def test_shortcut_mounts_live_view_and_refresh_updates_in_place() -> None:
     client = _LiveClient([_choices(["a", "b"]), _choices(["a", "b", "c"])])
     app, _ = _app(client)
-    app._cache_catalog(client.command_catalog().commands, "rev-1")
+    catalog.cache(app, client.command_catalog().commands, "rev-1")
     app.composer.set_text("abcd")
     app.composer._cursor = 2
     app._handle_composer_key(Key("alt+a"))
@@ -141,7 +143,7 @@ def test_shortcut_mounts_live_view_and_refresh_updates_in_place() -> None:
 def test_prepare_selection_threads_arguments_and_stays_live() -> None:
     client = _LiveClient([_choices(["a"]), _choices(["a"]), _choices(["a"])])
     app, _ = _app(client)
-    app._cache_catalog(client.command_catalog().commands, "rev-1")
+    catalog.cache(app, client.command_catalog().commands, "rev-1")
     app._handle_composer_key(Key("alt+a"))
     _drain(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
@@ -162,7 +164,7 @@ def test_prepare_selection_threads_arguments_and_stays_live() -> None:
 def test_close_stops_polling_and_stale_replies_never_remount() -> None:
     client = _LiveClient([_choices(["a"])])
     app, _ = _app(client)
-    app._cache_catalog(client.command_catalog().commands, "rev-1")
+    catalog.cache(app, client.command_catalog().commands, "rev-1")
     app._handle_composer_key(Key("alt+a"))
     _drain(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
@@ -172,17 +174,17 @@ def test_close_stops_polling_and_stale_replies_never_remount() -> None:
     stale_token = app._follower.begin_live()
     app._follower.begin_live()  # supersede the crafted token: the reply is now stale
     app.event_queue.put(
-        {
-            "kind": "live_input_ready",
-            "token": stale_token,
-            "revision_id": "rev-1",
-            "session_id": "s1",
-            "generation": app._generation,
-            "action": "monitor",
-            "arguments": {},
-            "view": None,
-            "refresh_after_ms": None,
-        }
+        LiveInputReadyEvent(
+            token=stale_token,
+            revision_id="rev-1",
+            session_id="s1",
+            generation=app._generation,
+            action="monitor",
+            arguments={},
+            view=None,
+            error=None,
+            refresh_after_ms=None,
+        )
     )
     app._drain_events()
     assert app.active_overlay is None
@@ -191,7 +193,7 @@ def test_close_stops_polling_and_stale_replies_never_remount() -> None:
 def test_confirmation_suspends_live_and_direct_decision_restores() -> None:
     client = _LiveClient([_choices(["a", "b"])])
     app, _ = _app(client)
-    app._cache_catalog(client.command_catalog().commands, "rev-1")
+    catalog.cache(app, client.command_catalog().commands, "rev-1")
     app._handle_composer_key(Key("alt+a"))
     _drain(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
@@ -213,17 +215,17 @@ def test_confirmation_suspends_live_and_direct_decision_restores() -> None:
     assert isinstance(app.active_overlay, InteractiveConfirmation)
     live_token = app._follower.begin_live()
     app.event_queue.put(
-        {
-            "kind": "live_input_ready",
-            "token": live_token,
-            "revision_id": "rev-1",
-            "session_id": "s1",
-            "generation": app._generation,
-            "action": "monitor",
-            "arguments": {},
-            "view": None,
-            "refresh_after_ms": 1000,
-        }
+        LiveInputReadyEvent(
+            token=live_token,
+            revision_id="rev-1",
+            session_id="s1",
+            generation=app._generation,
+            action="monitor",
+            arguments={},
+            view=None,
+            error=None,
+            refresh_after_ms=1000,
+        )
     )
     app._drain_events()
     assert isinstance(app.active_overlay, InteractiveConfirmation)
@@ -238,23 +240,24 @@ def test_confirmation_suspends_live_and_direct_decision_restores() -> None:
 def test_refresh_error_rearms_from_stored_cadence_and_stays_visible() -> None:
     client = _LiveClient([_choices(["a", "b"])])
     app, _ = _app(client)
-    app._cache_catalog(client.command_catalog().commands, "rev-1")
+    catalog.cache(app, client.command_catalog().commands, "rev-1")
     app._handle_composer_key(Key("alt+a"))
     _drain(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
     before = time.monotonic()
     token = app._follower.begin_live()
     app.event_queue.put(
-        {
-            "kind": "live_input_ready",
-            "token": token,
-            "revision_id": "rev-1",
-            "session_id": "s1",
-            "generation": app._generation,
-            "action": "monitor",
-            "arguments": {},
-            "error": "boom",
-        }
+        LiveInputReadyEvent(
+            token=token,
+            revision_id="rev-1",
+            session_id="s1",
+            generation=app._generation,
+            action="monitor",
+            arguments={},
+            view=None,
+            error="boom",
+            refresh_after_ms=None,
+        )
     )
     app._drain_events()
     assert "Refresh failed" in app.status_line
@@ -265,7 +268,7 @@ def test_refresh_error_rearms_from_stored_cadence_and_stays_visible() -> None:
 def test_stale_reply_never_touches_replaced_overlay() -> None:
     client = _LiveClient([_choices(["a"])])
     app, _ = _app(client)
-    app._cache_catalog(client.command_catalog().commands, "rev-1")
+    catalog.cache(app, client.command_catalog().commands, "rev-1")
     app._handle_composer_key(Key("alt+a"))
     _drain(app)
     assert isinstance(app.active_overlay, InteractiveChoices)
@@ -274,17 +277,17 @@ def test_stale_reply_never_touches_replaced_overlay() -> None:
     newer = InteractiveChoices(app.active_overlay.view, revision_id="rev-1")
     app.active_overlay = newer
     app.event_queue.put(
-        {
-            "kind": "live_input_ready",
-            "token": stale_token,
-            "revision_id": "rev-1",
-            "session_id": "s1",
-            "generation": app._generation,
-            "action": "monitor",
-            "arguments": {},
-            "view": None,
-            "refresh_after_ms": 1000,
-        }
+        LiveInputReadyEvent(
+            token=stale_token,
+            revision_id="rev-1",
+            session_id="s1",
+            generation=app._generation,
+            action="monitor",
+            arguments={},
+            view=None,
+            error=None,
+            refresh_after_ms=1000,
+        )
     )
     app._drain_events()
     assert app.active_overlay is newer
@@ -298,7 +301,7 @@ def test_queued_gates_present_before_suspended_monitor() -> None:
 
     client = _LiveClient([_choices(["a"])])
     app, _ = _app(client)
-    app._cache_catalog(client.command_catalog().commands, "rev-1")
+    catalog.cache(app, client.command_catalog().commands, "rev-1")
     app._handle_composer_key(Key("alt+a"))
     _drain(app)
     assert isinstance(app.active_overlay, InteractiveChoices)

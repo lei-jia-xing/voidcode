@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 
 from voidcode.sdk.ask import AskRequest
 from voidcode.sdk.commands import ConfirmationRequest
-from voidcode.sdk.hooks import ApprovalRequestedFact
 from voidcode.sdk.tools import ToolCall
 from voidcode.sdk.views import ConfirmationViewData, parse_view_data
 
@@ -45,13 +44,6 @@ class ApprovalGate:
     @property
     def arguments(self) -> object:
         return self.call.arguments
-
-    @staticmethod
-    def from_fact(fact: ApprovalRequestedFact, call: ToolCall) -> ApprovalGate:
-        """Build one gate from the public fact plus its decoded call."""
-        if not isinstance(fact, ApprovalRequestedFact):
-            raise ValueError("approval gate fact must be an ApprovalRequestedFact")
-        return ApprovalGate(call=call, request_id=fact.request_id, run_id=fact.run_id, revision_id=fact.revision_id)
 
 
 @dataclass(frozen=True, slots=True)

@@ -117,9 +117,12 @@ class HealthModel:
     model: str | None
     reasoning_effort: str | None
     reasoning_levels: tuple[str, ...]
+    context_window: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reasoning_levels", tuple(self.reasoning_levels))
+        if self.context_window is not None and (type(self.context_window) is not int or self.context_window <= 0):
+            raise ValueError("health model context_window must be a positive integer or null")
 
 
 @dataclass(frozen=True, slots=True)

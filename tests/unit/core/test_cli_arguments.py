@@ -95,3 +95,30 @@ def test_bad_wait_timeout_rejected_before_any_state_exists(tmp_path: Path, raw: 
         == 1
     )
     assert not state_dir.exists(), "a rejected timeout must not create state or run anything"
+
+
+def test_tui_prefs_read_the_workspace_file(tmp_path: Path) -> None:
+    from argparse import Namespace
+
+    from voidcode.cli import _tui_prefs
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "voidcode.json").write_text(
+        json.dumps({"schema_version": 1, "tui": {"border": "box", "footer": "compact", "show_session": True}}),
+        encoding="utf-8",
+    )
+    prefs = _tui_prefs(Namespace(server=None, no_border=False, footer=None, show_session=False), workspace=workspace)
+    assert (prefs["border"], prefs["footer"], prefs["show_session"]) == ("box", "compact", True)
+
+
+def test_tui_prefs_fail_visibly_on_a_malformed_file(tmp_path: Path) -> None:
+    from argparse import Namespace
+
+    from voidcode.cli import _tui_prefs
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "voidcode.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="cannot read TUI preferences"):
+        _tui_prefs(Namespace(server=None, no_border=False, footer=None, show_session=False), workspace=workspace)

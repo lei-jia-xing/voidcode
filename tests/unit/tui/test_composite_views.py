@@ -5,6 +5,16 @@ from __future__ import annotations
 import pytest
 
 from voidcode.sdk.services import ArtifactReference
+from voidcode.sdk.tools import (
+    CompositeOutput,
+    JsonPart,
+    MediaPart,
+    OutputBounds,
+    TablePart,
+    TextPart,
+    ToolFailure,
+    ToolSuccess,
+)
 from voidcode.sdk.views import JsonViewData, MediaViewData, PluginViewDescriptor, TableViewData
 from voidcode.tui.artifact_viewer import artifact_sources
 from voidcode.tui.styles import Styles
@@ -16,27 +26,29 @@ from voidcode.tui.views import (
     render_tool_result,
 )
 
-PNG_REF = {"sha256": "a" * 64, "bytes": 128, "media_type": "image/png"}
-JPG_REF = {"sha256": "b" * 64, "bytes": 256, "media_type": "image/jpeg"}
-JSON_REF = {"sha256": "c" * 64, "bytes": 12, "media_type": "application/json"}
+PNG_REF = ArtifactReference("a" * 64, 128, "image/png")
+JPG_REF = ArtifactReference("b" * 64, 256, "image/jpeg")
+JSON_REF = ArtifactReference("c" * 64, 12, "application/json")
 
 
-def _composite_result(status: str = "ok", **extra: object) -> dict[str, object]:
-    return {
-        "status": status,
-        "output": {
-            "type": "composite",
-            "parts": [
-                {"kind": "text", "text": "explanation here"},
-                {"kind": "table", "columns": ["a", "b"], "rows": [["1", "2"], ["3", "4"]]},
-                {"kind": "media", "reference": PNG_REF, "mime": "image/png", "presentation": "first chart"},
-                {"kind": "media", "reference": JPG_REF, "mime": "image/jpeg", "presentation": "second chart"},
-                {"kind": "json", "reference": JSON_REF, "preview": '{"ok": true}'},
-            ],
-            "bounds": {},
-        },
-        **extra,
-    }
+def _composite_output(bounds: OutputBounds | None = None) -> CompositeOutput:
+    return CompositeOutput(
+        parts=(
+            TextPart("explanation here"),
+            TablePart(columns=("a", "b"), rows=(("1", "2"), ("3", "4"))),
+            MediaPart(reference=PNG_REF, mime="image/png", presentation="first chart"),
+            MediaPart(reference=JPG_REF, mime="image/jpeg", presentation="second chart"),
+            JsonPart(reference=JSON_REF, preview='{"ok": true}'),
+        ),
+        bounds=bounds or OutputBounds(),
+    )
+
+
+def _composite_result(status: str = "ok", *, error: str | None = None, bounds: OutputBounds | None = None) -> ToolSuccess | ToolFailure:
+    output = _composite_output(bounds)
+    if status == "error":
+        return ToolFailure("capture", error=error or "", output=output)
+    return ToolSuccess("capture", output)
 
 
 def test_composite_renders_ordered_with_exact_degraded_strings() -> None:
@@ -61,10 +73,7 @@ def test_composite_failure_shows_parts_then_error() -> None:
 
 
 def test_cancelled_composite_partial_never_renders_as_success() -> None:
-    result = _composite_result("error", error="User aborted the command.")
-    output = result["output"]
-    assert isinstance(output, dict)
-    output["bounds"] = {"partial": True}
+    result = _composite_result("error", error="User aborted the command.", bounds=OutputBounds(partial=True))
     rows = render_tool_result(result, 120, Styles(None), interrupted=True)
     text = "\n".join(rows)
     assert "explanation here" in text
@@ -79,98 +88,88 @@ def test_composite_part_references_offer_artifact_paging() -> None:
 
 
 def test_audio_and_generic_media_labels_are_explicit() -> None:
-    result = {
-        "status": "ok",
-        "output": {
-            "type": "composite",
-            "parts": [
-                {
-                    "kind": "media",
-                    "reference": {"sha256": "d" * 64, "bytes": 10, "media_type": "audio/wav"},
-                    "mime": "audio/wav",
-                    "presentation": "clip",
-                },
-                {
-                    "kind": "media",
-                    "reference": {"sha256": "e" * 64, "bytes": 4, "media_type": "application/octet-stream"},
-                    "mime": "application/octet-stream",
-                    "presentation": "blob",
-                },
-            ],
-            "bounds": {},
-        },
-    }
-    text = "\n".join(render_tool_result(result, 200, Styles(None)))
+    output = CompositeOutput(
+        parts=(
+            MediaPart(reference=ArtifactReference("d" * 64, 10, "audio/wav"), mime="audio/wav", presentation="clip"),
+            MediaPart(reference=ArtifactReference("e" * 64, 4, "application/octet-stream"), mime="application/octet-stream", presentation="blob"),
+        )
+    )
+    text = "\n".join(render_tool_result(ToolSuccess("capture", output), 200, Styles(None)))
     assert "[Audio: audio/wav, 10 bytes, artifact://" + "d" * 64 + "] clip" in text
     assert "[Media: application/octet-stream, 4 bytes, artifact://" + "e" * 64 + "] blob" in text
 
 
 def test_table_caption_truncation_and_text_reference_notes() -> None:
-    result = {
-        "status": "ok",
-        "output": {
-            "type": "composite",
-            "parts": [
-                {
-                    "kind": "table",
-                    "columns": ["id"],
-                    "rows": [["1"]],
-                    "total_rows": 9,
-                    "reference": JSON_REF,
-                    "presentation": "Top rows",
-                },
-                {"kind": "text", "text": "prefix", "reference": JSON_REF},
-            ],
-            "bounds": {"truncated": True},
-        },
-    }
-    rows = render_tool_result(result, 120, Styles(None))
+    output = CompositeOutput(
+        parts=(
+            TablePart(columns=("id",), rows=(("1",),), total_rows=9, reference=JSON_REF, presentation="Top rows"),
+            TextPart("prefix", reference=JSON_REF),
+        ),
+        bounds=OutputBounds(truncated=True),
+    )
+    rows = render_tool_result(ToolSuccess("capture", output), 120, Styles(None))
     text = "\n".join(rows)
     assert "Top rows\nid\n1\n[showing 1/9 rows; full table: artifact://" + "c" * 64 + "]" in text
     assert "prefix\n[full text: artifact://" + "c" * 64 + "]" in text
     assert rows[-1] == "[truncated]"
 
 
-def test_malformed_parts_render_explicit_markers_without_crashing() -> None:
-    result = {
-        "status": "ok",
-        "output": {
-            "type": "composite",
-            "parts": [
-                {"kind": "mystery", "text": "x"},
-                {"kind": "media", "mime": "image/png"},
-                {"kind": "table", "columns": [], "rows": []},
-                {"kind": "json"},
-            ],
-            "bounds": {},
-        },
-    }
-    text = "\n".join(render_tool_result(result, 120, Styles(None)))
-    assert "[unknown part kind: 'mystery']" in text
-    assert "[Image: image/png, unknown bytes, missing-uri] (missing presentation)" in text
-    assert "[table: missing columns]" in text
-    assert "(missing preview)\n[full JSON: missing-uri]" in text
+def test_invalid_composite_parts_are_rejected_at_the_contract_boundary() -> None:
+    with pytest.raises(ValueError, match="text part text"):
+        TextPart(123)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="media part requires an artifact reference"):
+        MediaPart(reference="not-a-reference", mime="image/png", presentation="x")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="at least one column"):
+        TablePart(columns=(), rows=())
+    with pytest.raises(ValueError, match="json preview"):
+        JsonPart(reference=JSON_REF, preview="")
 
 
 def test_terminal_controls_in_parts_are_escaped() -> None:
-    result = {
-        "status": "ok",
-        "output": {
-            "type": "composite",
-            "parts": [
-                {"kind": "text", "text": "hi\x1b[2J"},
-                {"kind": "media", "reference": PNG_REF, "mime": "image/png", "presentation": "alt\x07"},
-            ],
-            "bounds": {},
-        },
-    }
-    text = "\n".join(render_tool_result(result, 120, Styles(None)))
+    output = CompositeOutput(
+        parts=(
+            TextPart("hi\x1b[2J"),
+            MediaPart(reference=PNG_REF, mime="image/png", presentation="alt\x07"),
+        )
+    )
+    text = "\n".join(render_tool_result(ToolSuccess("capture", output), 120, Styles(None)))
     assert "\x1b" not in text and "\x07" not in text
     assert "hi\\x1b[2J" in text
 
 
+def _composite_wire() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "output": {
+            "type": "composite",
+            "parts": [
+                {"kind": "text", "text": "explanation here"},
+                {"kind": "table", "columns": ["a", "b"], "rows": [["1", "2"], ["3", "4"]]},
+                {
+                    "kind": "media",
+                    "reference": {"sha256": PNG_REF.sha256, "bytes": PNG_REF.bytes, "media_type": PNG_REF.media_type},
+                    "mime": "image/png",
+                    "presentation": "first chart",
+                },
+                {
+                    "kind": "media",
+                    "reference": {"sha256": JPG_REF.sha256, "bytes": JPG_REF.bytes, "media_type": JPG_REF.media_type},
+                    "mime": "image/jpeg",
+                    "presentation": "second chart",
+                },
+                {
+                    "kind": "json",
+                    "reference": {"sha256": JSON_REF.sha256, "bytes": JSON_REF.bytes, "media_type": JSON_REF.media_type},
+                    "preview": '{"ok": true}',
+                },
+            ],
+            "bounds": {},
+        },
+    }
+
+
 def test_artifact_sources_discovers_part_references_in_order() -> None:
-    result = _composite_result()
+    result = _composite_wire()
     result["result_reference"] = {"sha256": "f" * 64, "bytes": 99, "media_type": "application/json"}
     sources = artifact_sources(result)
     assert [source.label for source in sources] == [
@@ -184,10 +183,10 @@ def test_artifact_sources_discovers_part_references_in_order() -> None:
 
 
 def test_artifact_sources_dedups_bounds_reference_before_parts() -> None:
-    result = _composite_result()
+    result = _composite_wire()
     output = result["output"]
     assert isinstance(output, dict)
-    output["bounds"] = {"reference": PNG_REF}
+    output["bounds"] = {"reference": {"sha256": PNG_REF.sha256, "bytes": PNG_REF.bytes, "media_type": PNG_REF.media_type}}
     sources = artifact_sources(result)
     assert sources[0].label == "Original output source"
     assert [source.sha256 for source in sources].count("a" * 64) == 1

@@ -8,6 +8,8 @@ from typing import Any
 from voidcode.sdk.client import CommandCatalog
 from voidcode.sdk.commands import CommandDescriptor
 from voidcode.tui.composer import Composer, ComposerAction
+from voidcode.tui.events import CommandPresentationEvent
+from voidcode.tui.help_view import TUI_CONTROLS
 from voidcode.tui.keys import Key
 from voidcode.tui.styles import Styles, symbol
 from voidcode.tui.terminal_app import CoreTuiApp
@@ -49,6 +51,7 @@ def _app() -> tuple[CoreTuiApp, _StubTerminal]:
     terminal = _StubTerminal()
     app = CoreTuiApp(_StubClient(), session_id="s1", terminal=terminal)  # type: ignore[arg-type]
     app.catalog_cache = _StubClient().command_catalog().commands
+    app.catalog_revision = "rev-1"
     return app, terminal
 
 
@@ -260,7 +263,7 @@ def test_tui_subcommand_filters_and_cjk_plain_text_safe() -> None:
     assert app.composer.completion == ()
     app.composer.clear()
     _type(app, "/tui ")
-    assert len(app.composer.completion) == 11
+    assert len(app.composer.completion) == len(TUI_CONTROLS)
     assert "/tui output" in app.composer.completion
     _type(app, "views ")
     assert app.composer.completion == ()
@@ -275,6 +278,7 @@ def test_live_catalog_refresh_updates_open_menu_and_submit_history_intact() -> N
     _type(app, "/sh")
     assert app.composer.completion == ("/shell", "/show")
     app.catalog_cache = (CommandDescriptor(name="show", owner="core", description="show"),)
+    app.catalog_revision = "rev-1"
     app._sync_slash_completion()
     assert app.composer.completion == ("/show",)
     app.composer.clear()
@@ -317,7 +321,7 @@ def test_root_groups_and_tab_enter_children_without_dispatch() -> None:
     app._sync_slash_completion()
     app._handle_composer_key(Key("enter"))
     assert app.composer.value == "/tui "
-    assert len(app.composer.completion) == 11
+    assert len(app.composer.completion) == len(TUI_CONTROLS)
     assert "/tui output" in app.composer.completion
 
 
@@ -375,10 +379,10 @@ def test_live_command_presentation_mounts_under_its_revision_only() -> None:
         data={"options": [{"id": "explore", "label": "Explore"}], "action": "test.show", "argument_name": "name"},
     )
     token = app._follower.begin_interaction()
-    app.event_queue.put({"kind": "command_presentation", "view": view, "revision_id": "rev-old", "token": token})
+    app.event_queue.put(CommandPresentationEvent(view=view, revision_id="rev-old", token=token))
     app._drain_events()
     assert app.active_overlay is None
-    app.event_queue.put({"kind": "command_presentation", "view": view, "revision_id": "rev-1", "token": token})
+    app.event_queue.put(CommandPresentationEvent(view=view, revision_id="rev-1", token=token))
     app._drain_events()
     assert isinstance(app.active_overlay, InteractiveChoices)
     assert app.active_overlay.revision_id == "rev-1"
@@ -479,6 +483,7 @@ def test_internal_command_helpers_do_not_create_discovery_namespaces() -> None:
         CommandDescriptor(name="help", owner="core", description="Help"),
         CommandDescriptor(name="internal.only", owner="plugin", description="Helper", slash_visible=False),
     )
+    app.catalog_revision = "rev-1"
     _type(app, "/")
     assert "/internal" not in app.composer.completion
     calls = []

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from voidcode.sdk.client import CommandCatalog
+from voidcode.sdk.client import CommandCatalog, HealthModel, HealthStatus
 from voidcode.tui.terminal_app import CoreTuiApp
 
 
@@ -33,20 +33,33 @@ class _StubClient:
         return CommandCatalog(revision_id="rev-1", commands=())
 
 
-def _health(workspace: str = "/srv/ws", model: Any = None) -> Any:
-    # Backend owns HealthStatus.model; until it lands, a stub carrying the
-    # frozen B DTO shape exercises the chrome's getattr-based degrade path.
-    from types import SimpleNamespace
+def _health(workspace: str = "/srv/ws", model: HealthModel | None = None) -> HealthStatus:
+    return HealthStatus(
+        status="ok",
+        stage="serving",
+        pid=1,
+        workspace=workspace,
+        revision_id="rev-1",
+        launch_protocol=1,
+        core_version="test",
+        web_bundle=None,
+        generation=1,
+        active_upgrade=None,
+        model=model,
+    )
 
-    return SimpleNamespace(status="ok", stage="serving", workspace=workspace, fenced=False, model=model)
 
-
-def _model(**fields: Any) -> Any:
-    from types import SimpleNamespace
-
-    base: dict[str, Any] = {"raw": None, "provider": None, "model": None, "reasoning_effort": None, "reasoning_levels": []}
+def _model(**fields: Any) -> HealthModel:
+    base: dict[str, Any] = {
+        "raw": None,
+        "provider": None,
+        "model": None,
+        "reasoning_effort": None,
+        "reasoning_levels": (),
+        "context_window": None,
+    }
     base.update(fields)
-    return SimpleNamespace(**base)
+    return HealthModel(**base)
 
 
 def _frame_text(terminal: _StubTerminal) -> str:
@@ -64,6 +77,22 @@ def test_footer_shows_server_workspace_model_effort_no_run_state() -> None:
     assert "/srv/ws · openai/gpt-5.2 · xhigh" in text
     assert "idle" not in text and "running" not in text
     assert "session-abcdef" not in text and "session-" not in text
+
+
+def test_footer_context_window_is_typed_and_unknown_stays_honest() -> None:
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_StubClient(), session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    app.upgrade = _health(model=_model(raw="openai/gpt-5.2", provider="openai", model="gpt-5.2", reasoning_effort="high", context_window=200000))
+    app.latest_input_tokens = 5200
+    app.status_line = ""
+    app._render_frame()
+    assert "5.2k/200k" in _frame_text(terminal)
+
+    app.upgrade = _health(model=_model(raw="openai/gpt-5.2", provider="openai", model="gpt-5.2", reasoning_effort="high"))
+    app._render_frame()
+    text = _frame_text(terminal)
+    assert "5.2k ctx" in text
+    assert "5.2k/" not in text
 
 
 def test_hidden_effort_and_no_model_degrade_honestly() -> None:

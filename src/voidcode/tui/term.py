@@ -82,6 +82,7 @@ __all__ = [
     "format_number",
     "render_lines",
     "visible_width",
+    "wrap_plain",
     "wrap_row",
     "grapheme_spans",
 ]
@@ -118,7 +119,6 @@ _READ_CHUNK = 4096
 #: ``width`` when both dimensions are set. Rows are never cropped by it.
 _RENDER_HEIGHT = 1000
 _PRIVATE_MODE_RESPONSE = regex.compile(rb"\x1b\[\?(\d+);([0-4])\$y")
-_CURSOR_STYLE_RESPONSE = regex.compile(rb"\x1bP1\$r(?:q)?([0-6]) q\x1b\\")
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +362,40 @@ def wrap_row(
     return render_lines(Text.from_ansi(text), width, theme=theme, color_system=color_system)
 
 
+def wrap_plain(text: str, width: int) -> list[str]:
+    """Word-wrap unstyled text to terminal cells, hard-breaking long runs.
+
+    Help/layout code wraps plain sanitized text before styling so continuation
+    rows can carry an explicit hanging indent. Wide graphemes stay whole; the
+    caller owns the indent (this function never adds one).
+    """
+    if width <= 0:
+        return []
+    remaining = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ").strip()
+    if not remaining:
+        return [""]
+    rows: list[str] = []
+    while visible_width(remaining) > width:
+        prefix = _prefix_cells(remaining, width)
+        if not prefix:
+            spans = grapheme_spans(remaining)
+            prefix = remaining[: spans[0][1]] if spans else remaining
+        split = prefix.rfind(" ")
+        if split > 0:
+            row = remaining[:split].rstrip()
+            remaining = remaining[split + 1 :].lstrip()
+        else:
+            row = prefix.rstrip()
+            remaining = remaining[len(prefix) :].lstrip()
+        if row:
+            rows.append(row)
+        if not remaining:
+            break
+    if remaining:
+        rows.append(remaining.rstrip())
+    return rows or [""]
+
+
 # ---------------------------------------------------------------------------
 # Number formatting
 # ---------------------------------------------------------------------------
@@ -511,9 +545,6 @@ class Terminal:
         self._keyboard_active = False
         self._enabled_private_modes: set[int] = set()
         self._unsupported_private_modes: set[int] = set()
-        self._original_cursor_style: int | None = None
-        self._current_cursor_style: int | None = None
-        self._cursor_style_changed = False
 
     # -- construction ------------------------------------------------------
 
@@ -554,6 +585,11 @@ class Terminal:
     def width(self) -> int:
         """Current terminal width in cells."""
         return self._size[0]
+
+    @property
+    def content_width(self) -> int:
+        """Widest row that ``commit_rows``/``paint_frame`` will accept unwrapped."""
+        return self._frame_row_width()
 
     @property
     def height(self) -> int:
@@ -645,41 +681,6 @@ class Terminal:
         """Whether an input descriptor exists to read from at all."""
         return self._input_fd is not None and not self._eof
 
-    def set_cursor_shape(self, shape: str, blink: bool | None = None) -> None:
-        """Set an explicit native cursor shape while retaining the session state."""
-        if shape == "terminal":
-            if self._cursor_style_changed and self._original_cursor_style is not None:
-                self._set_cursor_style(self._original_cursor_style)
-                self._cursor_style_changed = False
-            return
-        if not self._is_tty:
-            return
-        if shape not in {"bar", "block", "underline"}:
-            raise ValueError(f"unsupported cursor shape: {shape}")
-        if self._original_cursor_style is None:
-            original = self._query_cursor_style()
-            if original is None:
-                raise TerminalCapabilityError("terminal did not report its cursor style; explicit cursor shape is unavailable")
-            self._original_cursor_style = self._current_cursor_style = original
-        original = self._original_cursor_style
-        assert original is not None
-        blink_state = (original in (0, 1, 3, 5)) if blink is None else blink
-        base = {"block": 1, "underline": 3, "bar": 5}[shape]
-        desired = base if blink_state else base + 1
-        if desired != self._current_cursor_style:
-            self._set_cursor_style(desired)
-        self._cursor_style_changed = desired != original
-
-    def _set_cursor_style(self, style: int) -> None:
-        self._emit(f"\x1b[{style} q")
-        self._current_cursor_style = style
-
-    def _reapply_cursor_style(self) -> None:
-        style = self._current_cursor_style
-        if style is not None:
-            self._current_cursor_style = None
-            self._set_cursor_style(style)
-
     def _read_input_chunk(self, timeout: float | None) -> bytes | None:
         if self._input_fd is None:
             return b""
@@ -693,33 +694,6 @@ class Terminal:
             return os.read(self._input_fd, _READ_CHUNK)
         except OSError:
             return b""
-
-    def _query_cursor_style(self) -> int | None:
-        if self._input_fd is None:
-            return None
-        self._emit("\x1bP$q q\x1b\\")
-        received = bytearray()
-        deadline = time.monotonic() + 0.1
-        while time.monotonic() < deadline:
-            chunk = self._read_input_chunk(max(0.0, deadline - time.monotonic()))
-            if chunk is None:
-                break
-            if not chunk:
-                self._eof = True
-                break
-            received.extend(chunk)
-            match = _CURSOR_STYLE_RESPONSE.search(received)
-            if match is not None:
-                self._pending_input.extend(received[: match.start()])
-                self._pending_input.extend(received[match.end() :])
-                return int(match.group(1))
-        self._pending_input.extend(received)
-        return None
-
-    @property
-    def alt_screen(self) -> bool:
-        """Whether the alternate screen buffer is currently borrowed."""
-        return self._alt
 
     def resize_pending(self) -> bool:
         """Whether a native resize has arrived since the last frame."""
@@ -864,7 +838,6 @@ class Terminal:
         self._alt = True
         self._painted = []
         self._painted_cursor = None
-        self._reapply_cursor_style()
 
     def leave_alt_screen(self) -> None:
         """Return to the entry buffer and force a full repaint of the live region."""
@@ -878,7 +851,6 @@ class Terminal:
         cursor = self._private_modes.get(25)
         restore_cursor = SHOW_CURSOR if cursor is True else HIDE_CURSOR if cursor is False else ""
         self._emit(self._forget_painted_image() + ALTERNATE_SCREEN_OFF + restore_cursor)
-        self._reapply_cursor_style()
 
     def read_bytes(self, timeout: float | None = None) -> bytes:
         """Read available input while routing only correlated Kitty replies away."""
@@ -919,12 +891,8 @@ class Terminal:
             self._alt = False
             self._emit(ALTERNATE_SCREEN_OFF)
             self._painted_cursor = None
-            self._reapply_cursor_style()
         if self._is_tty:
             parts = []
-            if self._cursor_style_changed and self._original_cursor_style is not None:
-                self._set_cursor_style(self._original_cursor_style)
-                self._cursor_style_changed = False
             cleanup = "".join(delete_image(image_id).decode("ascii") for image_id in self._kitty_image_ids)
             parts.extend((self._paint_begin(), self._cursor_to_live_origin(), cleanup, ERASE_BELOW, self._paint_end(), RESET_STYLE))
             cursor = self._private_modes.get(25)
@@ -1132,14 +1100,6 @@ class Terminal:
         self._painted_cursor = None
         self._painted_width = self.width
 
-    def reset_live(self) -> None:
-        """Drop the terminal's live-paint cache; the next frame is emitted in full.
-
-        ``app.display.reset``: a repaint of a corrupted live region. Doesn't touch
-        scrollback (only committed rows live there).
-        """
-        self._reset_live()
-
     def _emit(self, text: str) -> None:
         with self._lock:
             data = text.encode("utf-8", "replace")
@@ -1244,8 +1204,6 @@ class Terminal:
         self._enter_raw_mode()
         self._capture_private_modes()
         self._enter_application_mode()
-        if self._cursor_style_changed:
-            self._reapply_cursor_style()
         self._resize = True
         if self._suspended_alt:
             self._suspended_alt = False
@@ -1259,8 +1217,6 @@ class Terminal:
             self._painted_cursor = None
         if self._is_tty:
             parts = []
-            if self._cursor_style_changed and self._original_cursor_style is not None:
-                parts.append(f"\x1b[{self._original_cursor_style} q")
             parts.extend((self._paint_begin(), self._cursor_to_live_origin(), ERASE_BELOW, self._paint_end(), RESET_STYLE))
             if 2004 in self._enabled_private_modes:
                 parts.append(BRACKETED_PASTE_OFF)
