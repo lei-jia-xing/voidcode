@@ -144,7 +144,27 @@ class PluginSource:
 
 
 @dataclass
-class LeaseContext:
+class LeaseStaging:
+    """Per-invocation scratch work, frozen together and committed as one atomic unit."""
+
+    state: dict[tuple[str, str], tuple[Mapping[str, object], int, int]] = field(default_factory=dict)
+    events: list[EventDraft] = field(default_factory=list)
+    continuations: list[StagedContinuationDraft] = field(default_factory=list)
+    cancellations: list[StagedCancellation] = field(default_factory=list)
+    observer_receipts: list[ObserverReceiptRecord] = field(default_factory=list)
+    budget: PluginBudget | None | Literal["clear"] = None
+    observations: list[Change] = field(default_factory=list)
+    #: Dedicated suspend-intent slot, never an EventDraft, so it is uncommittable by
+    #: construction. Set by the suspend services immediately before raising SuspendPark;
+    #: a normal return with this set is a swallowed suspension and fails visibly.
+    suspend: SuspendPark | None = None
+    op_counter: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class LeaseIdentity:
+    """The immutable authority one invocation runs under."""
+
     token: str
     owner: str
     session_id: str
@@ -167,28 +187,22 @@ class LeaseContext:
     #: True only for tool-callback leases opened by PluginRuntime.invoke; suspension
     #: services refuse every other lease (hooks, commands, views, background drivers).
     tool_callback: bool = False
-    staged_state: dict[tuple[str, str], tuple[Mapping[str, object], int, int]] = field(default_factory=dict)
-    staged_events: list[EventDraft] = field(default_factory=list)
-    staged_continuations: list[StagedContinuationDraft] = field(default_factory=list)
-    staged_cancellations: list[StagedCancellation] = field(default_factory=list)
-    staged_observer_receipts: list[ObserverReceiptRecord] = field(default_factory=list)
-    staged_budget: PluginBudget | None | Literal["clear"] = None
-    staged_observations: list[Change] = field(default_factory=list)
-    #: Dedicated suspend-intent slot, never an EventDraft, so it is uncommittable by
-    #: construction. Set by the suspend services immediately before raising SuspendPark;
-    #: a normal return with this set is a swallowed suspension and fails visibly.
-    staged_suspend: SuspendPark | None = None
-    revoked: bool = False
-    op_counter: int = 0
-    abort_signal: ProviderAbortSignal | None = None
-    #: Unregister handle for the abort-signal cancel mirror, cleared at revoke.
-    cancel_subscription: Callable[[], None] | None = None
-    opened_thread_id: int = field(default_factory=threading.get_ident, init=False, repr=False)
 
     @property
     def internal_restricted(self) -> bool:
         """Whether this lease refuses internal session work."""
         return self.readonly and not self.internal_work
+
+
+@dataclass
+class LeaseContext:
+    identity: LeaseIdentity
+    staging: LeaseStaging = field(default_factory=LeaseStaging)
+    revoked: bool = False
+    abort_signal: ProviderAbortSignal | None = None
+    #: Unregister handle for the abort-signal cancel mirror, cleared at revoke.
+    cancel_subscription: Callable[[], None] | None = None
+    opened_thread_id: int = field(default_factory=threading.get_ident, init=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -741,28 +755,30 @@ class PluginRuntime:
         abort_signal: ProviderAbortSignal | None = None,
     ) -> LeaseContext:
         lease = LeaseContext(
-            token=uuid4().hex,
-            owner=owner,
-            session_id=session_id,
-            workspace=self.workspace,
-            run_id=run_id,
-            revision_id=self.revision_id,
-            invocation_id=invocation_id,
-            readonly=readonly,
+            identity=LeaseIdentity(
+                token=uuid4().hex,
+                owner=owner,
+                session_id=session_id,
+                workspace=self.workspace,
+                run_id=run_id,
+                revision_id=self.revision_id,
+                invocation_id=invocation_id,
+                readonly=readonly,
+                root_action_id=root_action_id,
+                initial_root_budget=initial_root_budget,
+                origin_visible_tools=origin_visible_tools,
+                origin_readonly=origin_readonly,
+                background_action_id=background_action_id,
+                actor=actor,
+                hook=hook,
+                internal_work=internal_work,
+                invocation_depth=invocation_depth,
+                tool_callback=tool_callback,
+            ),
             abort_signal=abort_signal,
-            root_action_id=root_action_id,
-            initial_root_budget=initial_root_budget,
-            origin_visible_tools=origin_visible_tools,
-            origin_readonly=origin_readonly,
-            background_action_id=background_action_id,
-            actor=actor,
-            hook=hook,
-            internal_work=internal_work,
-            invocation_depth=invocation_depth,
-            tool_callback=tool_callback,
         )
         with self._lease_lock:
-            self._active_leases[lease.token] = lease
+            self._active_leases[lease.identity.token] = lease
         with _ACTIVE_LEASE_THREADS_LOCK:
             _ACTIVE_LEASE_THREADS[lease.opened_thread_id] = _ACTIVE_LEASE_THREADS.get(lease.opened_thread_id, 0) + 1
         signal = abort_signal
@@ -779,10 +795,10 @@ class PluginRuntime:
 
     def _revoke_lease(self, lease: LeaseContext) -> None:
         with self._lease_lock:
-            active = self._active_leases.pop(lease.token, None) is not None
+            active = self._active_leases.pop(lease.identity.token, None) is not None
             lease.revoked = True
-            self._cancel_events.pop(lease.token, None)
-            self._claimed_services.pop(lease.token, None)
+            self._cancel_events.pop(lease.identity.token, None)
+            self._claimed_services.pop(lease.identity.token, None)
             unsubscribe = lease.cancel_subscription
             lease.cancel_subscription = None
         if unsubscribe is not None:
@@ -795,14 +811,14 @@ class PluginRuntime:
                 else:
                     _ACTIVE_LEASE_THREADS[lease.opened_thread_id] = count - 1
             if self._artifacts is not None:
-                self._artifacts.discard_owner(lease.token)
+                self._artifacts.discard_owner(lease.identity.token)
 
     def _staged_changes(self, lease: LeaseContext) -> _Staged:
-        owner_schema_ver = self.state_schema_version(lease.owner)
+        owner_schema_ver = self.state_schema_version(lease.identity.owner)
         return (
             tuple(
                 StagedStateUpdate(
-                    owner=lease.owner,
+                    owner=lease.identity.owner,
                     scope=sc,
                     scope_key=sk,
                     payload=st,
@@ -810,22 +826,22 @@ class PluginRuntime:
                     schema_version=owner_schema_ver,
                     revision_id=self.revision_id,
                 )
-                for (sc, sk), (st, _local, baseline) in lease.staged_state.items()
+                for (sc, sk), (st, _local, baseline) in lease.staging.state.items()
             ),
-            tuple(lease.staged_events),
-            tuple(lease.staged_continuations),
-            tuple(lease.staged_cancellations),
-            tuple(lease.staged_observer_receipts),
-            lease.staged_budget,
+            tuple(lease.staging.events),
+            tuple(lease.staging.continuations),
+            tuple(lease.staging.cancellations),
+            tuple(lease.staging.observer_receipts),
+            lease.staging.budget,
         )
 
     def cancel_event_for(self, lease: LeaseContext) -> threading.Event:
         """The cancellation event bound to one lease's invocation."""
         with self._lease_lock:
-            event = self._cancel_events.get(lease.token)
+            event = self._cancel_events.get(lease.identity.token)
             if event is None:
                 event = threading.Event()
-                self._cancel_events[lease.token] = event
+                self._cancel_events[lease.identity.token] = event
             return event
 
     def admission_guard(self, lease: LeaseContext) -> Callable[[], bool]:
@@ -849,17 +865,17 @@ class PluginRuntime:
     def claim_service(self, lease: LeaseContext, process_id: str) -> None:
         """Bind one live *service* id to this invocation so cancellation stops its tree."""
         with self._lease_lock:
-            self._claimed_services.setdefault(lease.token, set()).add((process_id, lease.session_id))
+            self._claimed_services.setdefault(lease.identity.token, set()).add((process_id, lease.identity.session_id))
 
     def _cancel_claimed_services(self, lease: LeaseContext) -> None:
         with self._lease_lock:
-            claims = tuple(self._claimed_services.pop(lease.token, ()))
+            claims = tuple(self._claimed_services.pop(lease.identity.token, ()))
         for process_id, session_id in claims:
             # A live invocation's active services die with the cancellation: this is the same
             # cancellation a prompt plugin performs itself, just owned by the runtime so a reused
             # service cannot outlive the invocation that was using it.
             try:
-                self.processes.cancel(process_id, owner=lease.owner, session_id=session_id)
+                self.processes.cancel(process_id, owner=lease.identity.owner, session_id=session_id)
             except ValueError:
                 pass
 
@@ -872,7 +888,7 @@ class PluginRuntime:
         store = self.require_store()
         if not replacement.strip():
             raise ValueError("a window projection must carry non-empty replacement content")
-        events = store.events(lease.session_id)
+        events = store.events(lease.identity.session_id)
         if not events:
             raise ValueError("session has no events to project")
         last_sequence = events[-1].sequence
@@ -883,7 +899,7 @@ class PluginRuntime:
         covered = [event for event in events if event.sequence <= covered_to_sequence]
         # Integrity: the replaced prefix must be batch-complete, so every assistant tool call it
         # covers is answered inside it and the surviving tail still starts at a message boundary.
-        sizes = store.event_payload_bytes(lease.session_id, limit=covered_to_sequence)
+        sizes = store.event_payload_bytes(lease.identity.session_id, limit=covered_to_sequence)
         records = context_records(covered, sizes=sizes)
         if not records[-1].safe_boundary:
             raise ValueError("a window projection must cover whole native tool batches")
@@ -891,13 +907,13 @@ class PluginRuntime:
         replacement_bytes = len(replacement.encode("utf-8"))
         if replacement_bytes >= covered_bytes:
             raise ValueError("a window projection must be smaller than the window it replaces")
-        lease.staged_events.append(
+        lease.staging.events.append(
             EventDraft(
                 EventType.WINDOW_PROJECTED,
                 "core",
                 "plugin",
                 {
-                    "owner": lease.owner,
+                    "owner": lease.identity.owner,
                     "covered_from_sequence": covered_from_sequence,
                     "covered_to_sequence": covered_to_sequence,
                     "replacement": replacement,
@@ -1164,7 +1180,7 @@ class PluginRuntime:
             result = tool_instance.invoke(call, context=context, services=services)
             if not isinstance(result, (ToolSuccess, ToolFailure)):
                 raise TypeError(f"Tool {call.tool_name} returned an invalid ToolResult")
-            if lease.staged_suspend is not None:
+            if lease.staging.suspend is not None:
                 raise TypeError(
                     f"Tool {call.tool_name} staged a suspension but returned normally (SuspendPark was swallowed); staged intent discarded"
                 )
@@ -1200,7 +1216,7 @@ class PluginRuntime:
                 staged_cancellations=staged_cancels,
                 staged_observer_receipts=staged_receipts,
                 staged_budget=staged_budget,
-                staged_observations=tuple(lease.staged_observations),
+                staged_observations=tuple(lease.staging.observations),
             )
             self._revoke_lease(lease)
             raise ToolSuspension(park, frozen) from park
@@ -1221,7 +1237,7 @@ class PluginRuntime:
         elif tool_threw:
             # A thrown tool keeps no staged state — but supervisor observations are committed
             # truth about the world, not tool claims, so the prefix survives the throw.
-            staged = ToolInvocationOutcome(result=result, staged_observations=tuple(lease.staged_observations))
+            staged = ToolInvocationOutcome(result=result, staged_observations=tuple(lease.staging.observations))
         else:
             staged_state, staged_events, staged_conts, staged_cancels, staged_receipts, staged_budget = self._staged_changes(lease)
             staged = ToolInvocationOutcome(
@@ -1232,7 +1248,7 @@ class PluginRuntime:
                 staged_cancellations=staged_cancels,
                 staged_observer_receipts=staged_receipts,
                 staged_budget=staged_budget,
-                staged_observations=tuple(lease.staged_observations),
+                staged_observations=tuple(lease.staging.observations),
             )
         self._revoke_lease(lease)
         if return_outcome:
@@ -1369,7 +1385,7 @@ class PluginRuntime:
         else:
             staged = self._staged_changes(lease)
         self._revoke_lease(lease)
-        return CommandInvocationOutcome(result, *staged, staged_observations=tuple(lease.staged_observations), cancelled=cancelled)
+        return CommandInvocationOutcome(result, *staged, staged_observations=tuple(lease.staging.observations), cancelled=cancelled)
 
     def prepare_command_input(self, name: str, *, context: ToolContext, arguments: Mapping[str, object] | None = None) -> CommandPresentation:
         """Prepare input without invoking the command or granting mutation services."""
@@ -1457,7 +1473,7 @@ class PluginRuntime:
             workspace=self.workspace,
             session_id=session_id,
             run_id=run_id,
-            invocation_id=lease.invocation_id,
+            invocation_id=lease.identity.invocation_id,
             revision_id=self.revision_id,
             actor="plugin",
             logical_turn=logical_turn,
@@ -1498,7 +1514,7 @@ class PluginRuntime:
             workspace=self.workspace,
             session_id=session_id,
             run_id=run_id,
-            invocation_id=lease.invocation_id,
+            invocation_id=lease.identity.invocation_id,
             revision_id=self.revision_id,
             actor="plugin",
             logical_turn=logical_turn,
@@ -1554,7 +1570,7 @@ class PluginRuntime:
             workspace=self.workspace,
             session_id=session_id,
             run_id=run_id,
-            invocation_id=lease.invocation_id,
+            invocation_id=lease.identity.invocation_id,
             revision_id=self.revision_id,
             actor="plugin",
             logical_turn=logical_turn,
@@ -1591,7 +1607,7 @@ class PluginRuntime:
                 workspace=self.workspace,
                 session_id=session_id,
                 run_id=run_id,
-                invocation_id=lease.invocation_id,
+                invocation_id=lease.identity.invocation_id,
                 revision_id=self.revision_id,
                 actor="plugin",
                 logical_turn=logical_turn,
@@ -1652,7 +1668,7 @@ class PluginRuntime:
                 workspace=self.workspace,
                 session_id=session_id,
                 run_id=run_id,
-                invocation_id=lease.invocation_id,
+                invocation_id=lease.identity.invocation_id,
                 revision_id=revision_id,
                 actor="plugin",
                 logical_turn=str(fact.get("logical_turn", logical_turn)),
@@ -1670,10 +1686,10 @@ class PluginRuntime:
                         all_errors.append({"owner": plugin_id, "error": f"{type(exc).__name__}: {exc}"})
                         break
                 else:
-                    owner_schema_ver = self.state_schema_version(lease.owner)
+                    owner_schema_ver = self.state_schema_version(lease.identity.owner)
                     all_state_updates.extend(
                         StagedStateUpdate(
-                            owner=lease.owner,
+                            owner=lease.identity.owner,
                             scope=sc,
                             scope_key=sk,
                             payload=st,
@@ -1681,13 +1697,13 @@ class PluginRuntime:
                             schema_version=owner_schema_ver,
                             revision_id=self.revision_id,
                         )
-                        for (sc, sk), (st, _local, baseline) in lease.staged_state.items()
+                        for (sc, sk), (st, _local, baseline) in lease.staging.state.items()
                     )
-                    all_events.extend(lease.staged_events)
-                    all_conts.extend(lease.staged_continuations)
-                    all_cancels.extend(lease.staged_cancellations)
-                    if lease.staged_budget is not None:
-                        all_budgets.append((lease.owner, lease.staged_budget))
+                    all_events.extend(lease.staging.events)
+                    all_conts.extend(lease.staging.continuations)
+                    all_cancels.extend(lease.staging.cancellations)
+                    if lease.staging.budget is not None:
+                        all_budgets.append((lease.identity.owner, lease.staging.budget))
                     continue
             finally:
                 self._revoke_lease(lease)

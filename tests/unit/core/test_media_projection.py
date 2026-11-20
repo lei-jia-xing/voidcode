@@ -18,9 +18,10 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server
 from tests.fixtures.png import decode_rgb_png, rgb_png
 from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL, write_s5_plugin
-from tests.unit.core.test_nested_tools import _call, _server, _turn
+from tests.unit.core.test_nested_tools import _call, _turn
 from tests.unit.plugins.test_providers_auth_catalog import _JsonLoopback, _provider, _request
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.capabilities.files.read_tool import ReadTool
@@ -380,7 +381,7 @@ def test_real_native_sdks_send_valid_tool_result_image_blocks(name: str, model: 
 
 
 def test_real_core_openai_tool_image_uses_synthetic_without_silent_drop(tmp_path: Path) -> None:
-    with _server([_turn(_call("image", "read", path="screen.png")), _turn(output="image received")]) as server:
+    with loopback_server([_turn(_call("image", "read", path="screen.png")), _turn(output="image received")]) as server:
         workspace = _configure(tmp_path, provider="endpoint", base_url=f"http://127.0.0.1:{server.server_port}/v1")
         png = rgb_png()
         (workspace / "screen.png").write_bytes(png)
@@ -412,7 +413,7 @@ def test_real_core_selected_file_page_preserves_coverage_and_allows_edit(tmp_pat
     old = "line-0128 " + "x" * 90
     new = "line-0128 " + "y" * 90
     digest = hashlib.sha256(original.encode()).hexdigest()
-    with _server(
+    with loopback_server(
         [
             _turn(_call("selected-read", "read", path="document.txt")),
             _turn(_call("selected-edit", "edit", path="document.txt", oldString=old, newString=new, expectedHash=digest)),
@@ -441,10 +442,10 @@ def test_real_core_selected_file_page_preserves_coverage_and_allows_edit(tmp_pat
             assert "text_partial" not in projected
             reference = decode_tool_result(completed[0].payload["result"]).result_reference
             assert reference is not None and projected["result_uri"] == reference.uri
-            complete = json.loads(read_artifact_content(reference, core._artifact_page))
+            complete = json.loads(read_artifact_content(reference, core.artifact_page))
             assert complete["body"]["raw_content"] == original and len(complete["body"]["lines"]) == 256
         with open_core(workspace, state_dir=tmp_path / "state") as reopened:
-            assert json.loads(read_artifact_content(reference, reopened._artifact_page))["body"]["raw_content"] == original
+            assert json.loads(read_artifact_content(reference, reopened.artifact_page))["body"]["raw_content"] == original
             assert len(server.requests) == 3 and target.read_text() == original.replace(old, new, 1)
 
 
@@ -467,7 +468,7 @@ def test_real_core_projects_application_json_web_fetch_content(tmp_path: Path) -
     web_worker.start()
     url = f"http://127.0.0.1:{web.server_port}/result.json"
     try:
-        with _server(
+        with loopback_server(
             [
                 _turn(_call("json-page", "web_fetch", url=url)),
                 _turn(output="JSON response received"),
@@ -499,7 +500,7 @@ def test_real_shell_capture_larger_than_wire_frame_is_retrievable_but_not_duplic
     pattern = "captured π text\\t\\n\n"
     repeats = 300000
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(f'import sys; sys.stdout.write({pattern!r} * {repeats})')}"
-    with _server([_turn(_call("capture", "shell_exec", command=command)), _turn(output="capture received")]) as server:
+    with loopback_server([_turn(_call("capture", "shell_exec", command=command)), _turn(output="capture received")]) as server:
         workspace = _configure(tmp_path, provider="endpoint", base_url=f"http://127.0.0.1:{server.server_port}/v1")
         with open_core(workspace, state_dir=tmp_path / "state") as core:
             result = core.run("Capture the command output.")
@@ -509,7 +510,7 @@ def test_real_shell_capture_larger_than_wire_frame_is_retrievable_but_not_duplic
             assert len(json.dumps(json_wire_object(wire)).encode()) < 4096
             reference = ArtifactReference(**wire["body"]["stdout"])
             assert reference.bytes > 4 * 1024 * 1024
-            captured = read_artifact_content(reference, core._artifact_page).decode()
+            captured = read_artifact_content(reference, core.artifact_page).decode()
             assert captured == pattern * repeats
             projection = next(message["content"] for message in server.requests[-1]["messages"] if message.get("role") == "tool")
             assert len(projection.encode()) <= TOOL_OUTPUT_BYTES
@@ -581,7 +582,7 @@ def test_real_core_persists_canonical_original_before_compacting_large_result(tm
         "    return Plugin(tools=(Result(),))\n",
         encoding="utf-8",
     )
-    with _server([_turn(_call("large", "large_result")), _turn(output="recovery identity received")]) as server:
+    with loopback_server([_turn(_call("large", "large_result")), _turn(output="recovery identity received")]) as server:
         workspace = _configure(
             tmp_path,
             provider="endpoint",
@@ -598,7 +599,7 @@ def test_real_core_persists_canonical_original_before_compacting_large_result(tm
             assert not compact.output.bounds.partial
             reference = compact.result_reference
             assert reference is not None and reference.sha256 != "0" * 64
-            original_bytes = read_artifact_content(reference, core._artifact_page)
+            original_bytes = read_artifact_content(reference, core.artifact_page)
             original = json.loads(original_bytes)
             assert "result_reference" not in original
             assert original["body"]["tail"] == "ORIGINAL_BODY_END" and len(original["body"]["original"]) == 500000
@@ -608,7 +609,7 @@ def test_real_core_persists_canonical_original_before_compacting_large_result(tm
             provider_text = next(message["content"] for message in server.requests[-1]["messages"] if message.get("role") == "tool")
             assert reference.uri in provider_text and len(provider_text.encode()) <= TOOL_OUTPUT_BYTES
         with open_core(workspace, state_dir=tmp_path / "state") as reopened:
-            assert read_artifact_content(reference, reopened._artifact_page) == original_bytes
+            assert read_artifact_content(reference, reopened.artifact_page) == original_bytes
             assert len(server.requests) == 2
 
 

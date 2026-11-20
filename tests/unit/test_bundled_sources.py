@@ -89,7 +89,7 @@ def test_bundle_dispatches_one_tool_per_tool_plugin(tmp_path: Path) -> None:
             assert shell_body["exit_code"] == 0
             stdout = shell_body["stdout"]
             reference = ArtifactReference(sha256=str(stdout["sha256"]), bytes=int(stdout["bytes"]), media_type=str(stdout["media_type"]))
-            captured = read_artifact_content(reference, core._artifact_page).decode("utf-8")
+            captured = read_artifact_content(reference, core.artifact_page).decode("utf-8")
             assert "bundle-ok" in captured
 
             # Tool results reached model in message history

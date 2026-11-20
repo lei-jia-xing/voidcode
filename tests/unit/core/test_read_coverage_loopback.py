@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server
 from tests.fixtures.s5_plugin import PROBE_TOOL
-from tests.unit.core.test_nested_tools import _call, _configure, _open, _server, _turn
+from tests.unit.core.test_nested_tools import _call, _configure, _open, _turn
 from voidcode.core.coverage import read_artifact_content
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.hooks import InvocationFinishedFact
@@ -17,7 +18,7 @@ from voidcode.sdk.tools import TOOL_OUTPUT_BYTES
 
 @pytest.mark.parametrize("flags", [{"partial": True}, {"truncated": True}, {"clipped": True}, {"output_bytes": 52 * 1024}])
 def test_read_observations_preserve_output_bounds_in_public_facts(tmp_path: Path, flags: dict[str, object]) -> None:
-    with _server(
+    with loopback_server(
         [
             _turn(
                 _call("bounded", PROBE_TOOL, action="observe", path="document.txt", **flags),
@@ -50,5 +51,5 @@ def test_read_observations_preserve_output_bounds_in_public_facts(tmp_path: Path
                 completed = next(event for event in core.events_after(result.session_id) if event.event_type == "core.tool_completed")
                 reference = decode_tool_result(completed.payload["result"]).result_reference
                 assert reference is not None and document["result_uri"] == reference.uri
-                original = json.loads(read_artifact_content(reference, core._artifact_page))
+                original = json.loads(read_artifact_content(reference, core.artifact_page))
                 assert len(original["output"]["text"].encode()) == flags["output_bytes"]

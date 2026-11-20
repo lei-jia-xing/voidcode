@@ -224,7 +224,9 @@ def test_mid_read_cancellation_stops_shared_paging(harness, monkeypatch: pytest.
         calls.append(offset)
         if len(calls) >= 2:
             parent = next(
-                lease for lease in self._runtime._active_leases.values() if lease.owner == "files" and lease.invocation_id == "inv-cancel-mid"
+                lease
+                for lease in self._runtime._active_leases.values()
+                if lease.identity.owner == "files" and lease.identity.invocation_id == "inv-cancel-mid"
             )
             self._runtime.cancel_event_for(parent).set()
         return original_read_artifact(self, sha256, offset=offset, limit=limit)

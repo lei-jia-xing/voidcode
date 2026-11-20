@@ -58,15 +58,11 @@ from ..sdk.services import (
     SessionUsageReport,
     StructuredModelResult,
     StructuredQueryParseError,
-    ToolAwaitResult,
-    ToolInvocationReceipt,
 )
 from ..sdk.suspend import ParkRevisionError
 from ..sdk.tools import (
     TOOL_OUTPUT_BYTES,
     Change,
-    ConfirmedStop,
-    ExecutionObservation,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -84,7 +80,8 @@ from .activation import Admission, ExecutionConfig
 from .activation_coordinator import ActivationCoordinator, ActivationFenced, ActivationSnapshot, PreparedActivation
 from .artifacts import SHA256_PATTERN, ArtifactStore
 from .background_actions import BackgroundActionRegistry
-from .cancellation import Cancellation, _EventAbortSignal
+from .background_execution import BackgroundExecution
+from .cancellation import Cancellation
 from .child_contracts import ChildSpawnRequest
 from .coverage import (
     ProjectionAllocation,
@@ -132,72 +129,6 @@ from .storage.store import (
 from .usage import UsageProjector
 
 logger = logging.getLogger(__name__)
-
-
-class _BackgroundContext:
-    """The long-lived driver handle for one claimed background action.
-
-    The driver keeps only this object across its whole run. Each `invoke` opens a fresh
-    owner/revision-bound lease, runs the callback, and commits its staged work atomically —
-    so progress is durable invoke by invoke, never at the end of the run. Commits never
-    take the session run lock: the driver must not block (or be blocked by) model turns.
-    """
-
-    def __init__(
-        self,
-        core: Core,
-        *,
-        action_id: str,
-        owner: str,
-        session_id: str,
-        action: Mapping[str, object],
-        revision_id: str,
-        root_action_id: str,
-        initial_root_budget: int | None,
-        origin_visible_tools: tuple[str, ...] | None,
-        origin_readonly: bool | None,
-        abort: threading.Event,
-    ) -> None:
-        self._core = core
-        self._action_id = action_id
-        self._owner = owner
-        self._session_id = session_id
-        self._action = own_json_object(action)
-        self._revision_id = revision_id
-        self._root_action_id = root_action_id
-        self._initial_root_budget = initial_root_budget
-        self._origin_visible_tools = origin_visible_tools
-        self._origin_readonly = origin_readonly
-        self._abort = abort
-
-    @property
-    def action_id(self) -> str:
-        return self._action_id
-
-    @property
-    def payload(self) -> Mapping[str, object]:
-        return self._action
-
-    @property
-    def abort_signal(self) -> threading.Event:
-        return self._abort
-
-    def invoke[T](self, callback: Callable[[ToolContext, Any], T]) -> T:
-        return self._core._invoke_background_action(
-            self._owner,
-            self._session_id,
-            callback,
-            action_id=self._action_id,
-            revision_id=self._revision_id,
-            root_action_id=self._root_action_id,
-            initial_root_budget=self._initial_root_budget,
-            origin_visible_tools=self._origin_visible_tools,
-            origin_readonly=self._origin_readonly,
-            abort=self._abort,
-        )
-
-    def wait_tool(self, receipt: ToolInvocationReceipt) -> ToolAwaitResult:
-        return self._core._await_background_tool(self, receipt)
 
 
 class _UnboundRun:
@@ -633,6 +564,7 @@ class Core:
         # workspace flock (`another process owns this workspace`), so a claimed row this
         # process does not drive is necessarily stale, never a live foreign claim.
         self._background = BackgroundActionRegistry(self)
+        self._background_execution = BackgroundExecution(self, self._background)
         # Commit clock for event streams: bumped under this condition after every
         # committed session-events write (see notify_commit); waiters re-read cursors.
         self._commit_cond = threading.Condition()
@@ -668,45 +600,7 @@ class Core:
             self._usage = UsageProjector(self.store)
             self._projection = ResultProjector(self._artifacts)
             resources.callback(self.store.close)
-            runtime = PluginRuntime(
-                plugins,
-                workspace=self.workspace,
-                revision_id=revision_id,
-                store=self.store,
-                usage_callback=self._get_session_usage,
-                budget_callback=self._get_owner_budget,
-                spawn_child_callback=self._spawn_child_callback,
-                find_child_callback=self._delegation.find_keyed_child,
-                join_child_callback=lambda parent, child, timeout: self.join_child(parent, child, timeout_seconds=timeout),
-                wait_children_callback=lambda _owner, parent, children, guard: self._delegation.wait_children(
-                    parent, children, admission_guard=guard
-                ),
-                acknowledge_child_completion_callback=lambda _owner, parent, child, run: self._delegation.acknowledge_child_completion(
-                    parent, child, run
-                ),
-                send_child_callback=lambda parent, child, prompt, label, notify, guard: self.send_child(
-                    parent,
-                    child,
-                    prompt,
-                    label=label,
-                    notify_on_completion=notify,
-                    admission_guard=guard,
-                ),
-                cancel_child_callback=self.cancel_child,
-                list_descendants_callback=self.list_descendants,
-                read_child_snapshot_callback=self._delegation.read_child_snapshot,
-                cancel_subtree_callback=lambda bound, target, run, reason: self.cancel_descendant_subtree(
-                    bound, target, expected_run_id=run, reason=reason
-                ),
-                cancel_background_action_callback=self.cancel_background_action,
-                model_query_callback=self.governed_model_query,
-                model_query_structured_callback=self.governed_model_query_structured,
-                progress_callback=self._report_progress,
-                tool_definition_callback=self._visible_tool_definition,
-                artifacts_dir=self._state_dir / "artifacts",
-                sandbox_backend=sandbox_backend,
-                process_spool_dir=self._process_spool_dir(),
-            )
+            runtime = self._build_runtime(plugins, revision_id=revision_id, sandbox_backend=sandbox_backend)
             # A runtime whose registry cannot be published is closed here: nothing may outlive a
             # failed construction, and the late-bound cleanup callback is registered only after
             # the generation that owns this runtime is complete.
@@ -859,7 +753,7 @@ class Core:
             return self._commit_generation
 
     @contextmanager
-    def _dispatch(self, description: str) -> Generator[_Snapshot]:
+    def dispatch(self, description: str) -> Generator[_Snapshot]:
         """Capture the current generation and hold a call slot until the caller's result commits.
 
         The slot is what makes an activation safe: a switch is refused while any foreign
@@ -886,7 +780,7 @@ class Core:
                     self._active_dispatch_threads[thread_id] = dispatch_count - 1
                 self._calls_lock.notify_all()
 
-    def _assert_background_wait_unleased(self) -> None:
+    def assert_background_wait_unleased(self) -> None:
         """Refuse waits from any active plugin lease or Core dispatch on this thread."""
         thread_id = threading.get_ident()
         if PluginRuntime.current_thread_has_active_lease():
@@ -1038,7 +932,7 @@ class Core:
             raise ValueError(f"session {session.session_id!r} reports parked {session.status} work without its authentic run identity")
         return run_id
 
-    def _admits_fresh_work(self, session: SessionRecord) -> bool:
+    def admits_fresh_work(self, session: SessionRecord) -> bool:
         """Whether a session accepts a fresh user turn or auto-driven follow-up work.
 
         Idle, finished, and failed sessions are open, and so is a terminal
@@ -1157,9 +1051,9 @@ class Core:
                     if root_action_budget is not None:
                         raise ValueError("a queued follow-up cannot assign a new root action budget; resume with an explicit extension")
                     return self._queue_followup(session, prompt, max_steps, images=images)
-                if not self._admits_fresh_work(session):
+                if not self.admits_fresh_work(session):
                     raise ValueError("unfinished session requires explicit resume")
-                self._check_session(session)
+                self.check_session(session)
                 root_id = _root_id if _root_id is not None else uuid4().hex
                 if session.parent_session_id is not None:
                     if _root_id is None:
@@ -1295,7 +1189,7 @@ class Core:
             if type(size) is not int or size < 0:
                 raise StoreConflict(f"queued follow-up {continuation_id!r} image {index} has an invalid artifact size")
             try:
-                content = read_artifact_content(ArtifactReference(sha, size, media_type), self._artifact_page)
+                content = read_artifact_content(ArtifactReference(sha, size, media_type), self.artifact_page)
             except (ValueError, OSError) as exc:
                 raise StoreConflict(f"queued follow-up {continuation_id!r} image {index} references missing or unreadable artifact {sha}") from exc
             rehydrated.append(ImageAttachment(media_type, base64.b64encode(content).decode("ascii"), sha))
@@ -1383,10 +1277,10 @@ class Core:
                 self._session_aborts[session_id] = (run_abort_id, abort)
             try:
                 session = self.store.session(session_id)
-                if not self._admits_fresh_work(session):
+                if not self.admits_fresh_work(session):
                     self.store.complete_continuation(continuation_id, status="failed")
                     return CoreResult(session_id, "", self.revision_id, "failed", error="session does not admit fresh work")
-                self._check_session(session)
+                self.check_session(session)
                 root_state = self.store.root_budget_state(root_id)
                 if root_action_budget is None and root_state is not None:
                     self.store.complete_continuation(continuation_id, status="failed")
@@ -1489,7 +1383,7 @@ class Core:
             stopped_result: CoreResult | None = None
             try:
                 session = self.store.session(session_id)
-                self._check_session(session)
+                self.check_session(session)
                 checkpoint = self.store.checkpoint(session_id)
                 if checkpoint is None or checkpoint.kind == "terminal":
                     raise ValueError("session has no resumable checkpoint")
@@ -1591,7 +1485,7 @@ class Core:
                         definition = self._snapshot.definition_of(call.tool_name)
                         if definition is None:
                             raise ValueError("approved tool is not in the active capability revision")
-                        resume_read_only = self._session_read_only(execution.session.session_id) or cursor.deferred_origin_readonly is True
+                        resume_read_only = self.session_read_only(execution.session.session_id) or cursor.deferred_origin_readonly is True
                         visible = {tool.name for tool in self._visible_tools(execution, self._snapshot)}
                         denial = (
                             "tool is outside the current or captured origin scope"
@@ -1643,8 +1537,8 @@ class Core:
                     self._session_aborts.pop(session_id, None)
         if resumed_notice is not None:
             self._delegation._deliver_child_notice(*resumed_notice)
-        self._drain_deferred_requests(session_id)
-        self._drain_pending_background_tool_waits(session_id)
+        self.drain_deferred_requests(session_id)
+        self._background_execution.drain_pending(session_id)
         self._drive_pending(session_id)
         if session.parent_session_id is not None:
             self._delegation.notify_child_state_changed()
@@ -1730,7 +1624,7 @@ class Core:
         the abort; adoption plus _drive continue from here.
         """
         session = self.store.session(session_id)
-        self._check_session(session)
+        self.check_session(session)
         for ev in self.store.events(session_id):
             if ev.event_type == EventType.ASK_ANSWERED and ev.payload.get("request_id") == request_id:
                 raise AskError(f"ask {request_id!r} was already answered (status: {ev.payload.get('status')})")
@@ -1841,8 +1735,8 @@ class Core:
                     self._session_aborts.pop(session_id, None)
         if resumed_notice is not None:
             self._delegation._deliver_child_notice(*resumed_notice)
-        self._drain_deferred_requests(session_id)
-        self._drain_pending_background_tool_waits(session_id)
+        self.drain_deferred_requests(session_id)
+        self._background_execution.drain_pending(session_id)
         self._drive_pending(session_id)
         if session.parent_session_id is not None:
             self._delegation.notify_child_state_changed()
@@ -1901,8 +1795,8 @@ class Core:
                     self._session_aborts.pop(session_id, None)
         if resumed_notice is not None:
             self._delegation._deliver_child_notice(*resumed_notice)
-        self._drain_deferred_requests(session_id)
-        self._drain_pending_background_tool_waits(session_id)
+        self.drain_deferred_requests(session_id)
+        self._background_execution.drain_pending(session_id)
         self._drive_pending(session_id)
         if session.parent_session_id is not None:
             self._delegation.notify_child_state_changed()
@@ -1964,8 +1858,8 @@ class Core:
                 return
         if resumed_notice is not None:
             self._delegation._deliver_child_notice(*resumed_notice)
-        self._drain_deferred_requests(session_id)
-        self._drain_pending_background_tool_waits(session_id)
+        self.drain_deferred_requests(session_id)
+        self._background_execution.drain_pending(session_id)
         self._drive_pending(session_id)
         if session.parent_session_id is not None:
             self._delegation.notify_child_state_changed()
@@ -2031,7 +1925,7 @@ class Core:
             if results[-1].run_status not in ("completed", "idle"):
                 return
 
-    def _drain_deferred_requests(
+    def drain_deferred_requests(
         self,
         session_id: str,
         *,
@@ -2043,7 +1937,7 @@ class Core:
             while True:
                 self.ensure_open()
                 session = self.session(session_id)
-                if not self._admits_fresh_work(session):
+                if not self.admits_fresh_work(session):
                     return
                 events = list(self.store.events(session_id))
                 completed_sequences = {
@@ -2156,7 +2050,7 @@ class Core:
             data=res.as_payload(),
         )
 
-    def _owner_cancel_claimed_work(
+    def owner_cancel_claimed_work(
         self,
         session_id: str,
         cancellations: Sequence[StagedCancellation],
@@ -2347,7 +2241,7 @@ class Core:
         """Render optional plugin-owned input; never execute the command to discover values."""
         self.ensure_open()
         session = self.session(session_id)
-        with self._dispatch("command_input") as snapshot:
+        with self.dispatch("command_input") as snapshot:
             if expected_revision != snapshot.revision_id:
                 raise StaleRevision("displayed catalog revision is stale; refresh the catalog", expected_revision, snapshot.revision_id)
             context = ToolContext(
@@ -2453,8 +2347,8 @@ class Core:
             raise ValueError(f"Session {session_id} is busy and command '{name}' requires an idle session")
 
         # Core read-only policy check: external mutation only.
-        self._check_session(s)
-        if self._session_read_only(session_id) and denied_under_restriction(frozenset(cmd_desc.effects)):
+        self.check_session(s)
+        if self.session_read_only(session_id) and denied_under_restriction(frozenset(cmd_desc.effects)):
             return CommandResult(status="error", error="read-only policy denies command write effects")
 
         if cmd_desc.argument_schema:
@@ -2476,16 +2370,16 @@ class Core:
             logical_turn=uuid4().hex,
             root_action_id=root_action_id,
             initial_root_budget=initial_root_budget,
-            origin_visible_tools=self._visible_tool_names_for_session(session_id, self._snapshot),
-            origin_readonly=self._session_read_only(session_id),
+            origin_visible_tools=self.visible_tool_names_for_session(session_id, self._snapshot),
+            origin_readonly=self.session_read_only(session_id),
         )
-        with self._dispatch(f"command:{name}"), self._command_abort(context) as context:
+        with self.dispatch(f"command:{name}"), self._command_abort(context) as context:
             outcome = self.plugin_runtime.invoke_command(
                 session_id,
                 name,
                 arguments,
                 context=context,
-                readonly=self._session_read_only(session_id),
+                readonly=self.session_read_only(session_id),
             )
 
             cmd_result = outcome.result
@@ -2562,17 +2456,17 @@ class Core:
                 self.notify_commit()
                 if self.auto_drain and staged_continuations:
                     latest_sess = self.store.session(session_id)
-                    if self._admits_fresh_work(latest_sess):
+                    if self.admits_fresh_work(latest_sess):
                         self.drain_continuations(session_id)
                 if staged_cancellations:
-                    self._owner_cancel_claimed_work(
+                    self.owner_cancel_claimed_work(
                         session_id,
                         staged_cancellations,
                         f"owner {cmd_desc.owner} cancelled its durable work",
                     )
 
         if any(event.event_type == EventType.TOOL_DEFERRED for event in staged_events):
-            self._drain_deferred_requests(session_id)
+            self.drain_deferred_requests(session_id)
         return cmd_result
 
     def confirm_action(
@@ -2613,11 +2507,11 @@ class Core:
         if rec.owner != cmd_desc.owner:
             raise ValueError("Confirmation request owner does not match the admitted command owner")
 
-        self._check_session(s)
+        self.check_session(s)
         # The confirmation is provenance, not privilege: the command's declared effects are
         # re-checked against the session's CURRENT stance. A pending write approved after the
         # session moved to read-only (e.g. /plan) must not mutate anything.
-        if self._session_read_only(session_id) and denied_under_restriction(frozenset(cmd_desc.effects)):
+        if self.session_read_only(session_id) and denied_under_restriction(frozenset(cmd_desc.effects)):
             self.store.decide_confirmation(request_id, "stale")
             self._commit_confirmation_decision(session_id, request_id, rec.command_name, "stale")
             return CommandResult(status="error", error="read-only policy denies command write effects")
@@ -2635,17 +2529,17 @@ class Core:
             logical_turn=uuid4().hex,
             root_action_id=root_action_id,
             initial_root_budget=initial_root_budget,
-            origin_visible_tools=self._visible_tool_names_for_session(session_id, self._snapshot),
-            origin_readonly=self._session_read_only(session_id),
+            origin_visible_tools=self.visible_tool_names_for_session(session_id, self._snapshot),
+            origin_readonly=self.session_read_only(session_id),
         )
 
-        with self._dispatch(f"command:{rec.command_name}"), self._command_abort(context) as context:
+        with self.dispatch(f"command:{rec.command_name}"), self._command_abort(context) as context:
             outcome = self.plugin_runtime.invoke_command(
                 session_id,
                 rec.command_name,
                 rec.arguments,
                 context=context,
-                readonly=self._session_read_only(session_id),
+                readonly=self.session_read_only(session_id),
             )
 
             cmd_result = outcome.result
@@ -2693,17 +2587,17 @@ class Core:
                 self.notify_commit()
                 if self.auto_drain and staged_continuations:
                     latest_sess = self.store.session(session_id)
-                    if self._admits_fresh_work(latest_sess):
+                    if self.admits_fresh_work(latest_sess):
                         self.drain_continuations(session_id)
                 if staged_cancellations:
-                    self._owner_cancel_claimed_work(
+                    self.owner_cancel_claimed_work(
                         session_id,
                         staged_cancellations,
                         f"owner {cmd_desc.owner} cancelled its durable work",
                     )
 
         if any(event.event_type == EventType.TOOL_DEFERRED for event in staged_events):
-            self._drain_deferred_requests(session_id)
+            self.drain_deferred_requests(session_id)
         return cmd_result
 
     def _commit_confirmation_decision(self, session_id: str, request_id: str, command_name: str, decision: str) -> None:
@@ -2744,7 +2638,7 @@ class Core:
         """
         self.ensure_open()
         session = self.session(session_id)
-        with self._dispatch("views") as snapshot:
+        with self.dispatch("views") as snapshot:
             views: list[PluginViewDescriptor] = []
             for view_name in snapshot.plugin_runtime.views:
                 try:
@@ -3007,7 +2901,7 @@ class Core:
         if self._closed:
             raise RuntimeError("engine is closed")
 
-    def _check_session(self, session: SessionRecord) -> None:
+    def check_session(self, session: SessionRecord) -> None:
         if session.workspace != str(self.workspace) or session.active_revision_id != self.revision_id:
             raise ValueError("session workspace or revision mismatch")
 
@@ -3086,12 +2980,12 @@ class Core:
     def flush_old_generation_facts(self, deferred_to_candidate: frozenset[str]) -> None:
         self._replay_pending_observers(require_complete=True, defer_to_candidate=deferred_to_candidate)
 
-    def build_candidate_runtime(self, admission: Admission, target_revision_id: str) -> PluginRuntime:
-        """Assemble one candidate generation with every host callback bound to this core."""
+    def _build_runtime(self, sources: tuple[PluginSource, ...], *, revision_id: str, sandbox_backend: SandboxBackend | None) -> PluginRuntime:
+        """Assemble one runtime generation with every host callback bound to this core."""
         return PluginRuntime(
-            admission.plugins,
+            sources,
             workspace=self.workspace,
-            revision_id=target_revision_id,
+            revision_id=revision_id,
             store=self.store,
             usage_callback=self._get_session_usage,
             budget_callback=self._get_owner_budget,
@@ -3122,8 +3016,16 @@ class Core:
             progress_callback=self._report_progress,
             tool_definition_callback=self._visible_tool_definition,
             artifacts_dir=self._state_dir / "artifacts",
-            sandbox_backend=self._activation.candidate_sandbox_backend(admission),
+            sandbox_backend=sandbox_backend,
             process_spool_dir=self._process_spool_dir(),
+        )
+
+    def build_candidate_runtime(self, admission: Admission, target_revision_id: str) -> PluginRuntime:
+        """Assemble one candidate generation with every host callback bound to this core."""
+        return self._build_runtime(
+            admission.plugins,
+            revision_id=target_revision_id,
+            sandbox_backend=self._activation.candidate_sandbox_backend(admission),
         )
 
     def publish_activation(self, snapshot: ActivationSnapshot, prepared: PreparedActivation) -> None:
@@ -3414,200 +3316,8 @@ class Core:
     # --- Background actions: owner drivers outside any model turn ---
 
     def drive_background_action(self, claimed: ContinuationRecord, abort: threading.Event) -> None:
-        """Run one claimed action's owner driver, then settle the row terminally."""
-        action_id = claimed.continuation_id
-        terminal: Literal["completed", "failed", "cancelled"] = "completed"
-        failure: str | None = None
-        try:
-            if abort.is_set() or self._closed:
-                raise InterruptedError(f"background action {action_id!r} was cancelled before dispatch")
-            action = _wire_object(claimed.payload.get("action"), f"background action {action_id!r} envelope")
-            root_action_id = claimed.root_id
-            root_budget = claimed.payload.get("root_action_budget")
-            if not isinstance(root_action_id, str) or not root_action_id:
-                raise StoreConflict(f"background action {action_id!r} has no captured root authorization")
-            if root_budget is not None and (type(root_budget) is not int or root_budget < 0):
-                raise StoreConflict(f"background action {action_id!r} has an invalid captured root budget")
-            raw_authority = claimed.payload.get("tool_wait_authority")
-            origin_visible_tools: tuple[str, ...] | None = None
-            origin_readonly: bool | None = None
-            if isinstance(raw_authority, Mapping):
-                raw_tools = raw_authority.get("visible_tools")
-                raw_readonly = raw_authority.get("readonly")
-                if (
-                    not isinstance(raw_tools, (list, tuple))
-                    or not all(isinstance(name, str) and name for name in raw_tools)
-                    or type(raw_readonly) is not bool
-                    or raw_authority.get("revision_id") != claimed.revision_id
-                ):
-                    raise StoreConflict(f"background action {action_id!r} has malformed captured tool-wait authority")
-                origin_visible_tools = tuple(raw_tools)
-                origin_readonly = raw_readonly
-            elif raw_authority is not None:
-                raise StoreConflict(f"background action {action_id!r} has malformed captured tool-wait authority")
-            context = _BackgroundContext(
-                self,
-                action_id=action_id,
-                owner=claimed.owner,
-                session_id=claimed.session_id,
-                action=action,
-                revision_id=claimed.revision_id,
-                root_action_id=root_action_id,
-                initial_root_budget=root_budget,
-                origin_visible_tools=origin_visible_tools,
-                origin_readonly=origin_readonly,
-                abort=abort,
-            )
-            driver = self._snapshot.plugin_runtime.background_driver(claimed.owner)
-            if driver is None:
-                raise RuntimeError(f"owner {claimed.owner!r} registers no background driver")
-            driver(context)
-            terminal = "cancelled" if abort.is_set() else "completed"
-        except InterruptedError:
-            terminal = "cancelled"
-            failure = None
-        except BaseException as exc:
-            # Any driver exit — including SystemExit or an asyncio cancellation escaping
-            # the script — settles failed with its real type recorded. This runs on the
-            # worker thread only, so it can never swallow the main thread's Ctrl-C, and
-            # the live registries below always clear in `finally`.
-            terminal = "failed"
-            failure = f"{type(exc).__name__}: {exc}"
-        try:
-            self.store.complete_background_action(action_id, status=terminal, error=failure)
-        except StoreConflict:
-            # The only provable race: a concurrent cancel settled the row first, so the
-            # driver's outcome is moot against an already-terminal row. Anything else
-            # propagates visibly out of the worker; cleanup still runs in `finally`.
-            pass
-        finally:
-            self._background.settle_driver(action_id)
-            self._snapshot.plugin_runtime.background_live_actions.discard(action_id)
-
-    def _invoke_background_action[T](
-        self,
-        owner: str,
-        session_id: str,
-        callback: Callable[[ToolContext, Any], T],
-        *,
-        action_id: str,
-        revision_id: str,
-        root_action_id: str,
-        initial_root_budget: int | None,
-        origin_visible_tools: tuple[str, ...] | None,
-        origin_readonly: bool | None,
-        abort: threading.Event,
-    ) -> T:
-        """Run one driver callback under a fresh lease and commit its staged work atomically."""
-        from .services import RuntimeServices
-
-        if abort.is_set() or self._closed:
-            raise InterruptedError(f"background action {action_id!r} was cancelled")
-        staged_cancels: tuple[StagedCancellation, ...] = ()
-        staged_events: tuple[EventDraft, ...] = ()
-        with self._dispatch(f"background:{owner}") as snapshot:
-            if snapshot.revision_id != revision_id:
-                raise InterruptedError(f"background action {action_id!r} belongs to a retired revision")
-            runtime = snapshot.plugin_runtime
-            session = self.store.session(session_id)
-            self._check_session(session)
-            root_state = self.store.root_budget_state(root_action_id)
-            if not root_action_id or (initial_root_budget is not None and (root_state is None or root_state[0] < initial_root_budget)):
-                raise StoreConflict(f"background action {action_id!r} lost its captured finite root authorization")
-            if initial_root_budget is None and root_state is not None:
-                raise StoreConflict(f"background action {action_id!r} captured an uncapped root with a finite budget row")
-            effective_origin_tools = None
-            effective_origin_readonly = origin_readonly
-            if origin_visible_tools is not None and origin_readonly is not None:
-                current_visible = set(self._visible_tool_names_for_session(session_id, snapshot))
-                effective_origin_tools = tuple(name for name in origin_visible_tools if name in current_visible)
-                effective_origin_readonly = origin_readonly or self._session_read_only(session_id)
-            signal = _EventAbortSignal(abort)
-            context = ToolContext(
-                workspace=self.workspace,
-                session_id=session_id,
-                run_id=action_id,
-                invocation_id=uuid4().hex,
-                revision_id=snapshot.revision_id,
-                actor="plugin",
-                logical_turn=action_id,
-                root_action_id=root_action_id,
-                initial_root_budget=initial_root_budget,
-                origin_visible_tools=effective_origin_tools,
-                origin_readonly=effective_origin_readonly,
-                background_action_id=action_id,
-                abort_signal=signal,
-            )
-            lease = runtime._open_lease(  # noqa: SLF001 - the core owns lease lifecycles
-                owner=owner,
-                session_id=session_id,
-                run_id=action_id,
-                invocation_id=context.invocation_id,
-                readonly=self._session_read_only(session_id) or effective_origin_readonly is True,
-                actor="plugin",
-                internal_work=True,
-                root_action_id=root_action_id,
-                initial_root_budget=initial_root_budget,
-                origin_visible_tools=effective_origin_tools,
-                origin_readonly=effective_origin_readonly,
-                background_action_id=action_id,
-                abort_signal=signal,
-            )
-            services = RuntimeServices(runtime, lease)
-            try:
-                result = callback(context, services)
-            except BaseException:
-                runtime._revoke_lease(lease)  # noqa: SLF001 - the core owns lease lifecycles
-                raise
-            staged = runtime._staged_changes(lease)  # noqa: SLF001 - the core owns lease lifecycles
-            runtime._revoke_lease(lease)  # noqa: SLF001 - the core owns lease lifecycles
-            if abort.is_set() or self._closed:
-                raise InterruptedError(f"background action {action_id!r} was cancelled")
-            staged_state, staged_events, staged_conts, staged_cancels, staged_receipts, staged_budget = staged
-            staged_budget_updates: list[StagedBudgetUpdate] = []
-            if staged_budget == "clear":
-                staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
-            elif isinstance(staged_budget, PluginBudget):
-                staged_budget_updates.append(StagedBudgetUpdate(owner=staged_budget.owner, action="set", budget=staged_budget))
-            committed = False
-            for _attempt in range(8):
-                if abort.is_set() or self._closed:
-                    raise InterruptedError(f"background action {action_id!r} was cancelled")
-                latest = self.store.session(session_id)
-                try:
-                    self.store.commit_staged(
-                        session_id,
-                        expected_sequence=latest.last_event_sequence,
-                        expected_run_id=latest.run_id,
-                        run_id=latest.run_id or action_id,
-                        revision_id=snapshot.revision_id,
-                        events=tuple(staged_events),
-                        status=latest.status,
-                        checkpoint_kind=None,
-                        checkpoint_payload=None,
-                        staged_state=staged_state,
-                        staged_continuations=staged_conts,
-                        staged_cancellations=staged_cancels,
-                        observer_receipts=staged_receipts,
-                        staged_budgets=tuple(staged_budget_updates),
-                    )
-                    self.notify_commit()
-                except SequenceConflict:
-                    continue
-                committed = True
-                break
-            if not committed:
-                raise SequenceConflict(f"background action {action_id!r} could not commit its staged work")
-        self._background.notify_tool_waiters()
-        if staged_cancels:
-            self._owner_cancel_claimed_work(
-                session_id,
-                staged_cancels,
-                f"owner {owner} cancelled its durable work",
-            )
-        if any(event.event_type == EventType.TOOL_DEFERRED and event.payload.get("background_action_id") == action_id for event in staged_events):
-            self._drain_deferred_requests(session_id, background_action_id=action_id, action_abort=abort)
-        return result
+        """Delegate one claimed action to the background executor."""
+        self._background_execution.drive(claimed, abort)
 
     def _commit_tool_wait_events(
         self,
@@ -3634,31 +3344,6 @@ class Core:
         self.notify_commit()
         self._background.notify_tool_waiters()
 
-    @staticmethod
-    def _terminal_background_tool_request_ids(events: Sequence[StoredEvent]) -> set[str]:
-        stop_keys = {
-            (event.payload.get("background_action_id"), event.payload.get("deferred_request_id"))
-            for event in events
-            if event.event_type == EventType.RUN_INTERRUPTED
-        }
-        stop_causes = {"completed", "error", "user_stop", "owner_cancel", "limit_reached", "shutdown"}
-        terminal: set[str] = set()
-        for event in events:
-            request_id = event.payload.get("request_id")
-            if not isinstance(request_id, str):
-                continue
-            if event.event_type == EventType.TOOL_DEFERRED_CANCELLED:
-                terminal.add(request_id)
-            elif event.event_type == EventType.TOOL_COMPLETED and event.payload.get("deferred") is True:
-                terminal.add(request_id)
-            elif (
-                event.event_type == EventType.TOOL_INTERRUPTED
-                and event.payload.get("deferred") is True
-                and (event.payload.get("stop_cause") in stop_causes or (event.payload.get("background_action_id"), request_id) in stop_keys)
-            ):
-                terminal.add(request_id)
-        return terminal
-
     def cancel_background_tool_requests(
         self,
         session_id: str,
@@ -3671,7 +3356,7 @@ class Core:
         while True:
             expected_session = self.store.session(session_id)
             events = list(self.store.events(session_id))
-            terminal_request_ids = self._terminal_background_tool_request_ids(events)
+            terminal_request_ids = self._background_execution.terminal_request_ids(events)
             requests = [
                 event
                 for event in events
@@ -3782,333 +3467,9 @@ class Core:
             except SequenceConflict:
                 continue
 
-    def _reconcile_lost_background_tool_waits(self, session_id: str) -> None:
-        events = list(self.store.events(session_id))
-        terminal_ids = self._terminal_background_tool_request_ids(events)
-        action_ids = {
-            event.payload.get("background_action_id")
-            for event in events
-            if event.event_type == EventType.TOOL_DEFERRED
-            and event.payload.get("result_delivery") == "requester"
-            and event.payload.get("request_id") not in terminal_ids
-            and isinstance(event.payload.get("background_action_id"), str)
-        }
-        for raw_action_id in action_ids:
-            action_id = cast(str, raw_action_id)
-            record = self.store.background_action(action_id)
-            if record is not None and record.status == "pending":
-                continue
-            if record is not None and record.status == "claimed" and self._background.claim_live(record):
-                continue
-            if record is None or record.status in {"claimed", "interrupted"}:
-                status: Literal["cancelled", "interrupted", "core_lost", "budget_exhausted"] = "core_lost"
-                stop_cause: StopCause | None = None
-                reason = "background script was lost before its tool request reached a terminal result"
-            elif record.status == "cancelled":
-                status = "cancelled"
-                stop_cause = "owner_cancel"
-                reason = "background action was cancelled before its tool request completed"
-            elif record.status in {"failed", "completed"}:
-                status = "interrupted"
-                stop_cause = "error"
-                reason = "background driver settled before its tool request reached a terminal result"
-            else:
-                raise StoreConflict(f"background action {action_id!r} has unknown status {record.status!r}")
-            self.cancel_background_tool_requests(
-                session_id,
-                action_id,
-                status=status,
-                stop_cause=stop_cause,
-                reason=reason,
-            )
-
-    def _drain_pending_background_tool_waits(self, session_id: str) -> None:
-        while self._admits_fresh_work(self.store.session(session_id)):
-            events = list(self.store.events(session_id))
-            terminal_ids = self._terminal_background_tool_request_ids(events)
-            request = next(
-                (
-                    event
-                    for event in events
-                    if event.event_type == EventType.TOOL_DEFERRED
-                    and event.payload.get("result_delivery") == "requester"
-                    and event.payload.get("request_id") not in terminal_ids
-                    and isinstance(event.payload.get("background_action_id"), str)
-                ),
-                None,
-            )
-            if request is None:
-                return
-            action_id = cast(str, request.payload["background_action_id"])
-            record = self.store.background_action(action_id)
-            action_abort = self._background.abort_event(action_id)
-            live = self._background.is_live(action_id)
-            if record is None or record.status != "claimed" or not live:
-                self._reconcile_lost_background_tool_waits(session_id)
-                record = self.store.background_action(action_id)
-                action_abort = self._background.abort_event(action_id)
-                live = self._background.is_live(action_id)
-                if record is None or record.status != "claimed" or not live:
-                    return
-            if action_abort is None:
-                raise StoreConflict(f"live background action {action_id!r} has no cancellation binding")
-            before = self.store.session(session_id).last_event_sequence
-            self._drain_deferred_requests(session_id, background_action_id=action_id, action_abort=action_abort)
-            current = self.store.session(session_id)
-            if current.last_event_sequence <= before or not self._admits_fresh_work(current):
-                return
-
     def cancel_background_action(self, session_id: str, owner: str, action_id: str, reason: str = "owner cancellation") -> bool:
         """Cancel one owner action and only its own queued or in-flight tool requests."""
         return self._background.cancel_action(session_id, owner, action_id, reason)
-
-    def _await_background_tool(self, context: _BackgroundContext, receipt: ToolInvocationReceipt) -> ToolAwaitResult:
-        self._assert_background_wait_unleased()
-        if not isinstance(receipt, ToolInvocationReceipt):
-            raise TypeError("background tool wait requires a ToolInvocationReceipt")
-        events = self.store.events(context._session_id)
-        request = next(
-            (event for event in events if event.event_type == EventType.TOOL_DEFERRED and event.payload.get("request_id") == receipt.request_id),
-            None,
-        )
-        if request is None:
-            raise ValueError(f"tool request {receipt.request_id!r} was not committed by this background action")
-        call = decode_tool_call(_wire_object(request.payload["call"], "deferred tool call"))
-        if (
-            request.payload.get("background_action_id") != context.action_id
-            or request.payload.get("requester") != context._owner
-            or request.payload.get("expected_revision") != context._revision_id
-            or request.payload.get("result_delivery") != "requester"
-            or call.tool_call_id != receipt.request_id
-            or call.tool_name != receipt.tool_name
-            or request.payload.get("depth") != receipt.depth
-        ):
-            raise ValueError("tool request receipt does not match this background action's captured identity")
-        while True:
-            outcome = self._background_tool_outcome(context, request)
-            if outcome is not None:
-                return outcome
-            record = self.store.background_action(context.action_id)
-            if record is None:
-                raise ValueError(f"background action {context.action_id!r} no longer exists")
-            if record.owner != context._owner or record.session_id != context._session_id:
-                raise ValueError("background action identity changed while awaiting its tool request")
-            if self._closed:
-                self.cancel_background_tool_requests(
-                    context._session_id,
-                    context.action_id,
-                    status="interrupted",
-                    stop_cause="shutdown",
-                    reason="core shutdown interrupted the background tool wait",
-                )
-            elif context.abort_signal.is_set():
-                stop_cause = self._background.abort_cause(context.action_id)
-                status = "cancelled" if stop_cause == "owner_cancel" else "interrupted"
-                self.cancel_background_tool_requests(
-                    context._session_id,
-                    context.action_id,
-                    status=status,
-                    stop_cause=stop_cause,
-                    reason="background action stopped",
-                )
-            elif record.status == "interrupted":
-                self.cancel_background_tool_requests(
-                    context._session_id,
-                    context.action_id,
-                    status="core_lost",
-                    stop_cause=None,
-                    reason="background driver did not survive the previous core process",
-                )
-            elif record.status == "failed":
-                self.cancel_background_tool_requests(
-                    context._session_id,
-                    context.action_id,
-                    status="interrupted",
-                    stop_cause="error",
-                    reason="background driver failed before completing its deferred tool wait",
-                )
-            elif record.status == "cancelled":
-                self.cancel_background_tool_requests(
-                    context._session_id,
-                    context.action_id,
-                    status="cancelled",
-                    stop_cause="owner_cancel",
-                    reason="background action was cancelled",
-                )
-            elif record.status == "completed":
-                self.cancel_background_tool_requests(
-                    context._session_id,
-                    context.action_id,
-                    status="interrupted",
-                    stop_cause="error",
-                    reason="background driver completed without a terminal result for its tool request",
-                )
-            outcome = self._background.wait_for_tool_outcome(lambda: self._background_tool_outcome(context, request))
-            if outcome is not None:
-                return outcome
-
-    def _background_tool_outcome(self, context: _BackgroundContext, request: StoredEvent) -> ToolAwaitResult | None:
-        request_id = str(request.payload["request_id"])
-        request_call = decode_tool_call(_wire_object(request.payload["call"], "deferred tool call"))
-        events = self.store.events(context._session_id, after_sequence=request.sequence)
-        tool_event = next(
-            (
-                event
-                for event in events
-                if event.event_type in {EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED}
-                and event.payload.get("deferred") is True
-                and event.payload.get("request_id") == request_id
-                and event.payload.get("background_action_id") == context.action_id
-            ),
-            None,
-        )
-        cancellation = next(
-            (
-                event
-                for event in events
-                if event.event_type == EventType.TOOL_DEFERRED_CANCELLED
-                and event.payload.get("request_id") == request_id
-                and event.payload.get("background_action_id") == context.action_id
-            ),
-            None,
-        )
-        if (
-            tool_event is not None
-            and tool_event.event_type == EventType.TOOL_INTERRUPTED
-            and tool_event.payload.get("stop_cause") is None
-            and cancellation is not None
-            and not any(
-                event.event_type == EventType.RUN_INTERRUPTED
-                and event.payload.get("deferred_request_id") == request_id
-                and event.payload.get("background_action_id") == context.action_id
-                for event in events
-            )
-        ):
-            tool_event = None
-        if tool_event is not None:
-            if _wire_object(tool_event.payload["call"], "deferred result call") != _wire_object(request.payload["call"], "deferred request call"):
-                raise ValueError("deferred terminal result changed its request call")
-            if tool_event.event_type == EventType.TOOL_INTERRUPTED:
-                stop_event = next(
-                    (
-                        event
-                        for event in events
-                        if event.event_type == EventType.RUN_INTERRUPTED
-                        and event.payload.get("deferred_request_id") == request_id
-                        and event.payload.get("background_action_id") == context.action_id
-                    ),
-                    None,
-                )
-                stop_cause_value = tool_event.payload.get("stop_cause")
-                if stop_cause_value is not None:
-                    stop_cause = cast(StopCause | None, stop_cause_value)
-                elif stop_event is not None:
-                    stop_cause = cast(StopCause | None, stop_event.payload.get("stop_cause"))
-                else:
-                    return None
-                budget_value = tool_event.payload.get("budget_exhaustion")
-                if budget_value is None and stop_event is not None:
-                    budget_value = stop_event.payload.get("budget_exhaustion")
-                terminal_sequence = tool_event.sequence if stop_event is None else stop_event.sequence
-            else:
-                stop_cause = None
-                budget_value = None
-                terminal_sequence = tool_event.sequence
-            raw_result = _wire_object(tool_event.payload["result"], "deferred tool result")
-            result = decode_tool_result(raw_result)
-            if result.tool_name != request_call.tool_name:
-                raise ValueError("deferred terminal result changed its tool identity")
-            reference = result.result_reference
-            if reference is not None:
-                try:
-                    canonical = read_artifact_content(reference, self._artifact_page)
-                    complete = decode_tool_result(_wire_object(json.loads(canonical), "canonical tool result"))
-                    if complete.tool_name != request_call.tool_name:
-                        raise ValueError("canonical tool result changed tool identity")
-                    result = replace(complete, result_reference=reference)
-                except Exception as exc:
-                    raise RuntimeError(f"complete result for tool request {request_id!r} could not be hydrated: {exc}") from exc
-            budget = self._budget_exhaustion_from_payload(budget_value)
-            if tool_event.event_type == EventType.TOOL_COMPLETED:
-                status: Literal["completed", "interrupted", "cancelled", "core_lost", "budget_exhausted"] = "completed"
-            elif stop_cause == "limit_reached" and budget is not None:
-                status = "budget_exhausted"
-            elif stop_cause in {"user_stop", "owner_cancel"}:
-                status = "cancelled"
-            else:
-                status = "interrupted"
-            return ToolAwaitResult(
-                request_id=request_id,
-                owner=context._owner,
-                action_id=context.action_id,
-                session_id=context._session_id,
-                revision_id=context._revision_id,
-                tool_name=result.tool_name,
-                status=status,
-                result=result,
-                terminal_sequence=terminal_sequence,
-                stop_cause=stop_cause,
-                budget_exhaustion=budget,
-                execution=result.execution if isinstance(result, ToolFailure) else None,
-            )
-        if cancellation is None:
-            return None
-        payload = cancellation.payload
-        if (
-            payload.get("owner") != context._owner
-            or payload.get("revision_id") != context._revision_id
-            or payload.get("tool_name") != request_call.tool_name
-        ):
-            raise ValueError("background tool cancellation changed its owner, revision, or tool identity")
-        status_value = payload.get("status")
-        if status_value not in {"cancelled", "interrupted", "core_lost", "budget_exhausted"}:
-            raise ValueError("background tool cancellation event has an unknown terminal status")
-        status = cast(Literal["cancelled", "interrupted", "core_lost", "budget_exhausted"], status_value)
-        return ToolAwaitResult(
-            request_id=request_id,
-            owner=context._owner,
-            action_id=context.action_id,
-            session_id=context._session_id,
-            revision_id=context._revision_id,
-            tool_name=request_call.tool_name,
-            status=status,
-            result=None,
-            terminal_sequence=cancellation.sequence,
-            stop_cause=cast(StopCause | None, payload.get("stop_cause")),
-            budget_exhaustion=self._budget_exhaustion_from_payload(payload.get("budget_exhaustion")),
-            execution=self._execution_from_payload(payload.get("execution")),
-        )
-
-    @staticmethod
-    def _budget_exhaustion_from_payload(value: object) -> BudgetExhaustion | None:
-        if not isinstance(value, Mapping):
-            return None
-        try:
-            return BudgetExhaustion(
-                dimension=cast(Any, value["dimension"]),
-                source=cast(Any, value["source"]),
-                limit=cast(int, value["limit"]),
-                consumed=cast(int, value["consumed"]),
-                remaining=cast(int, value["remaining"]),
-                continue_with=cast(Any, value["continue_with"]),
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("tool wait contains a malformed budget exhaustion") from exc
-
-    @staticmethod
-    def _execution_from_payload(value: object) -> ExecutionObservation | None:
-        if not isinstance(value, Mapping):
-            return None
-        signalled = value.get("cancellation_signalled")
-        stopped = value.get("execution_stopped")
-        side_effect_state = value.get("side_effect_state")
-        if type(signalled) is not bool or type(stopped) is not bool:
-            raise ValueError("tool wait contains malformed execution metadata")
-        if side_effect_state == "settled" and stopped:
-            return ConfirmedStop(cancellation_signalled=signalled)
-        if side_effect_state == "unknown" and not stopped:
-            return UnconfirmedStop(cancellation_signalled=signalled)
-        raise ValueError("tool wait contains inconsistent execution metadata")
 
     def wait_background_actions(
         self, session_id: str, *, action_id: str | None = None, timeout_seconds: float = 300.0
@@ -4259,7 +3620,7 @@ class Core:
             metadata=metadata,
             abort_signal=self._abort,
         )
-        with self._dispatch("model-query") as snapshot:
+        with self.dispatch("model-query") as snapshot:
             turn = snapshot.plugin_runtime.propose_turn(request, provider=provider_name)
         if turn.tool_calls:
             raise RuntimeError("governed model query returned tool calls; none were offered")
@@ -4306,16 +3667,16 @@ class Core:
         if len(canonical_json(payload).encode("utf-8")) > 16 * 1024:
             raise ValueError("progress report exceeds the 16 KiB bound")
         self._commit_control_event(
-            lease.session_id,
+            lease.identity.session_id,
             EventDraft(
                 EventType.TOOL_PROGRESS,
-                f"plugin.{lease.owner}",
-                lease.actor,
+                f"plugin.{lease.identity.owner}",
+                lease.identity.actor,
                 {
-                    "invocation_id": lease.invocation_id,
-                    "owner": lease.owner,
-                    "run_id": lease.run_id,
-                    "revision_id": lease.revision_id,
+                    "invocation_id": lease.identity.invocation_id,
+                    "owner": lease.identity.owner,
+                    "run_id": lease.identity.run_id,
+                    "revision_id": lease.identity.revision_id,
                     "progress": json_wire_object(payload),
                 },
             ),
@@ -4589,7 +3950,7 @@ class Core:
             return
         fact_type, fact_payload = fact
         session_id = ev.session_id
-        with self._dispatch(f"observer:{fact_type}") as snapshot:
+        with self.dispatch(f"observer:{fact_type}") as snapshot:
             eligible = self._eligible_observers(ev)
             registered = snapshot.plugin_runtime.observer_owners.get(fact_type, ())
             missing = [owner for owner in eligible if owner not in registered and owner not in defer_to_candidate]
@@ -5097,7 +4458,7 @@ class Core:
         candidates = [hook for hook in snapshot.plugin_runtime.post_tool_hooks if call.tool_name in hook[1] or "*" in hook[1]]
         if not candidates:
             return result
-        restricted = self._session_read_only(execution.session.session_id)
+        restricted = self.session_read_only(execution.session.session_id)
         notes: list[str] = []
         for owner, _match, mutating in candidates:
             if mutating and restricted:
@@ -5235,7 +4596,7 @@ class Core:
                 return f"pre-tool gate {owner} denied the call: {reason}"
         return None
 
-    def _session_read_only(self, session_id: str) -> bool:
+    def session_read_only(self, session_id: str) -> bool:
         """Effective read-only for one session: the frozen core policy OR owner overlays."""
         if self.config.policy.read_only:
             return True
@@ -5250,17 +4611,17 @@ class Core:
         if execution.cursor.deferred_origin_tools is not None:
             allowed = set(execution.cursor.deferred_origin_tools)
             tools = tuple(tool for tool in tools if tool.name in allowed)
-        restrictive = self._session_read_only(execution.session.session_id) or execution.cursor.deferred_origin_readonly is True
+        restrictive = self.session_read_only(execution.session.session_id) or execution.cursor.deferred_origin_readonly is True
         if restrictive:
             tools = tuple(tool for tool in tools if not denied_under_restriction(tool.effects))
         return tools
 
-    def _visible_tool_names_for_session(self, session_id: str, snapshot: _Snapshot) -> tuple[str, ...]:
+    def visible_tool_names_for_session(self, session_id: str, snapshot: _Snapshot) -> tuple[str, ...]:
         session = self.store.session(session_id)
         tools = snapshot.tools
         if session.tool_allowlist is not None:
             tools = tuple(tool for tool in tools if tool.name in session.tool_allowlist)
-        if self._session_read_only(session_id):
+        if self.session_read_only(session_id):
             tools = tuple(tool for tool in tools if not denied_under_restriction(tool.effects))
         return tuple(tool.name for tool in tools)
 
@@ -5282,7 +4643,7 @@ class Core:
         scope = session.tool_allowlist
         if scope is not None and name not in scope:
             return None, "scope"
-        if self._session_read_only(session_id) and denied_under_restriction(definition.effects):
+        if self.session_read_only(session_id) and denied_under_restriction(definition.effects):
             return None, "read_only"
         return encode_tool_definition(definition), "visible"
 
@@ -5439,7 +4800,7 @@ class Core:
                 # approval checkpoint, or a token stream.
                 self._delegation._merge_child_messages(execution)
 
-                with self._dispatch("provider") as snapshot:
+                with self.dispatch("provider") as snapshot:
                     if not execution.lifecycle_started:
                         self._lifecycle_events(execution, snapshot, "session_start")
                         execution.lifecycle_started = True
@@ -5706,7 +5067,7 @@ class Core:
             if definition is None:
                 self._report(execution, call, ToolFailure(call.tool_name, "tool is not in the active capability revision"))
                 continue
-            effective_read_only = self._session_read_only(execution.session.session_id) or cursor.deferred_origin_readonly is True
+            effective_read_only = self.session_read_only(execution.session.session_id) or cursor.deferred_origin_readonly is True
             denial = self._denial(call, definition, read_only=effective_read_only)
             if denial is None:
                 denial = self._gate_denial(execution, snapshot, call, readonly=effective_read_only)
@@ -5750,7 +5111,7 @@ class Core:
                 return stopped
 
     def _invoke(self, execution: _Execution, call: ToolCall, definition: ToolDefinition) -> CoreResult | None:
-        with self._dispatch(f"tool:{call.tool_name}") as snapshot:
+        with self.dispatch(f"tool:{call.tool_name}") as snapshot:
             cursor = execution.cursor
             session_abort = None
             with self._aborts_lock:
@@ -5819,7 +5180,7 @@ class Core:
                     ),
                 )
                 return None
-            current_readonly = self._session_read_only(execution.session.session_id)
+            current_readonly = self.session_read_only(execution.session.session_id)
             origin_readonly = current_readonly or cursor.deferred_origin_readonly is True
             origin_visible_tools = tuple(tool.name for tool in self._visible_tools(execution, snapshot))
             context = ToolContext(
@@ -6014,7 +5375,7 @@ class Core:
         )
         return self._result(execution, pending_ask=envelope)
 
-    def _artifact_page(self, digest: str, offset: int, limit: int) -> ArtifactPage:
+    def artifact_page(self, digest: str, offset: int, limit: int) -> ArtifactPage:
         return self._projection.page(digest, offset, limit)
 
     def _report(
@@ -6308,7 +5669,7 @@ class Core:
                     if request.payload.get("result_delivery") == "requester":
                         continue
                     result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
-                    text, images, _clipped = project_tool_result(result, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page)
+                    text, images, _clipped = project_tool_result(result, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self.artifact_page)
                     label = (
                         f"[Untrusted deferred tool result: {result.tool_name}; "
                         f"invocation {event.payload.get('invocation_id', 'not-dispatched')}; "
@@ -6323,7 +5684,7 @@ class Core:
                 if _wire_object(event.payload["call"], "tool call") != json_wire_object(encode_tool_call(call)):
                     raise ValueError("reported tool result does not match the active batch call")
                 result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
-                text, images, _clipped = project_tool_result(result, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self._artifact_page)
+                text, images, _clipped = project_tool_result(result, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self.artifact_page)
                 messages.append(
                     ProviderMessage(
                         "tool",
@@ -6353,7 +5714,7 @@ class Core:
         # failure is never suppressed or re-wrapped here: the drive boundary
         # finishes the run failed before any provider charge.
         if not allow_pending:
-            with self._dispatch("context") as snapshot:
+            with self.dispatch("context") as snapshot:
                 contributions = snapshot.plugin_runtime.contribute_context(
                     execution.session.session_id,
                     run_id=execution.run_id,
@@ -6404,7 +5765,7 @@ class Core:
         limits = None
         rate: float | None = None
         if separator and model_name:
-            with self._dispatch("context") as snapshot:
+            with self.dispatch("context") as snapshot:
                 limits = snapshot.plugin_runtime.provider_model_limits(provider_name, model_name)
             rate = measured_tokens_per_character(execution.events, provider_name=provider_name, model_name=model_name)
         shrinkable_characters = 0
@@ -6427,7 +5788,7 @@ class Core:
         ineffective = 0
         for entry in shrinkable:
             try:
-                text, images, _clipped = project_tool_result(entry.result, max_bytes=budget, artifact_reader=self._artifact_page)
+                text, images, _clipped = project_tool_result(entry.result, max_bytes=budget, artifact_reader=self.artifact_page)
             except ValueError, OSError, RuntimeError:
                 # The ceiling rendering in hand is authoritative; a budget that
                 # cannot fit this tool's identities keeps it instead of failing.
@@ -6443,9 +5804,9 @@ class Core:
             for session in self.store.sessions(workspace=str(self.workspace)):
                 if self._closed:
                     return
-                self._reconcile_lost_background_tool_waits(session.session_id)
-                if self._admits_fresh_work(session):
-                    self._drain_deferred_requests(session.session_id)
+                self._background_execution.reconcile_lost(session.session_id)
+                if self.admits_fresh_work(session):
+                    self.drain_deferred_requests(session.session_id)
                 checkpoint = self.store.checkpoint(session.session_id)
                 if checkpoint is None or not isinstance(checkpoint.payload, Mapping):
                     continue
@@ -6475,7 +5836,7 @@ class Core:
         for session in self.store.sessions(workspace=str(self.workspace)):
             if self._closed:
                 return
-            if not self._admits_fresh_work(session):
+            if not self.admits_fresh_work(session):
                 continue
             for _ in range(8):
                 message = self._delegation._first_child_message(session.session_id)

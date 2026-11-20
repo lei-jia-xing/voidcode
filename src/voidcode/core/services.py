@@ -68,18 +68,18 @@ class RuntimeServices:
 
     @property
     def owner(self) -> str:
-        return self._active_lease().owner
+        return self._active_lease().identity.owner
 
     def _active_lease(self) -> LeaseContext:
         if self._lease.revoked or self._runtime.closed:
             raise PermissionError("Service lease was revoked")
-        if self._lease.hook:
+        if self._lease.identity.hook:
             # Checked per method below; this is the shared hook gate.
             pass
         return self._lease
 
     def _check_hook(self, method: str) -> None:
-        if self._lease.hook and method not in RuntimeServices._HOOK_METHODS:
+        if self._lease.identity.hook and method not in RuntimeServices._HOOK_METHODS:
             raise PermissionError(f"hook leases cannot call {method}: hooks observe, they do not stage state or start work")
 
     _HOOK_METHODS: frozenset[str] = frozenset(
@@ -104,7 +104,7 @@ class RuntimeServices:
     def _require_writable_stance(self, action: str) -> None:
         """Starting or stopping a process is machine work: a restrictive lease may not do it."""
         lease = self._active_lease()
-        if lease.hook or lease.readonly:
+        if lease.identity.hook or lease.identity.readonly:
             raise PermissionError(f"this lease may not {action}: read-only and hook leases do not touch the machine")
 
     def _stage_observations(self, lease: LeaseContext, effects: ObservedEffects | None) -> None:
@@ -118,7 +118,7 @@ class RuntimeServices:
         for change in effects.changes:
             if change.scratch:
                 continue
-            lease.staged_observations.append(change)
+            lease.staging.observations.append(change)
 
     def _spool_paths(
         self,
@@ -172,7 +172,7 @@ class RuntimeServices:
         on_output: Callable[[str, bytes], None] | None = None,
     ) -> ProcessResult:
         lease = self._active_lease()
-        if lease.hook or lease.readonly:
+        if lease.identity.hook or lease.identity.readonly:
             raise PermissionError("this lease may not run processes: read-only and hook leases do not touch the machine")
         resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
         if cwd is not None and not resolved_cwd.is_dir():
@@ -251,8 +251,8 @@ class RuntimeServices:
         )
         return self._runtime.processes.spawn(
             argv,
-            owner=lease.owner,
-            session_id=lease.session_id,
+            owner=lease.identity.owner,
+            session_id=lease.identity.session_id,
             cwd=resolved_cwd,
             env=env,
             stdin=bool(stdin),
@@ -287,8 +287,8 @@ class RuntimeServices:
         )
         handle = self._runtime.processes.spawn(
             argv,
-            owner=lease.owner,
-            session_id=lease.session_id,
+            owner=lease.identity.owner,
+            session_id=lease.identity.session_id,
             cwd=resolved_cwd,
             env=env,
             stdin=True,
@@ -309,7 +309,7 @@ class RuntimeServices:
         # Bind before the potentially blocking pipe write: a reused server that stops reading
         # stdin must already be cancellable by this invocation, or the cancellation cannot reach it.
         self._mark_active_process(str(process_id))
-        return self._runtime.processes.write(str(process_id), payload, owner=lease.owner, session_id=lease.session_id)
+        return self._runtime.processes.write(str(process_id), payload, owner=lease.identity.owner, session_id=lease.identity.session_id)
 
     def read_process_output(
         self,
@@ -328,15 +328,15 @@ class RuntimeServices:
             stream=stream,
             offset=int(offset),
             limit=int(limit),
-            owner=lease.owner,
-            session_id=lease.session_id,
+            owner=lease.identity.owner,
+            session_id=lease.identity.session_id,
         )
         # User jobs stage their current cumulative effects; service reads never stage
         # (long-lived helper noise is not tool-observed change).
-        if self._runtime.processes.service_entry(str(process_id), owner=lease.owner, session_id=lease.session_id) is None:
+        if self._runtime.processes.service_entry(str(process_id), owner=lease.identity.owner, session_id=lease.identity.session_id) is None:
             self._stage_observations(
                 lease,
-                self._runtime.processes.process_effects(str(process_id), owner=lease.owner, session_id=lease.session_id),
+                self._runtime.processes.process_effects(str(process_id), owner=lease.identity.owner, session_id=lease.identity.session_id),
             )
         return ProcessOutput(
             process_id=str(process_id),
@@ -352,26 +352,26 @@ class RuntimeServices:
         self._require_writable_stance("stop background processes")
         del reason  # the stop is by process group; a reason would only be a log line we do not own
         lease = self._active_lease()
-        gone = self._runtime.processes.cancel(str(process_id), owner=lease.owner, session_id=lease.session_id)
+        gone = self._runtime.processes.cancel(str(process_id), owner=lease.identity.owner, session_id=lease.identity.session_id)
         # Stopping a user job stages its final cumulative effects (the committed prefix).
         # Service stops never stage.
-        if self._runtime.processes.service_entry(str(process_id), owner=lease.owner, session_id=lease.session_id) is None:
+        if self._runtime.processes.service_entry(str(process_id), owner=lease.identity.owner, session_id=lease.identity.session_id) is None:
             self._stage_observations(
                 lease,
-                self._runtime.processes.process_effects(str(process_id), owner=lease.owner, session_id=lease.session_id),
+                self._runtime.processes.process_effects(str(process_id), owner=lease.identity.owner, session_id=lease.identity.session_id),
             )
         return gone
 
     def list_processes(self) -> tuple[ProcessHandle, ...]:
         lease = self._active_lease()
-        return self._runtime.processes.list_background(owner=lease.owner, session_id=lease.session_id)
+        return self._runtime.processes.list_background(owner=lease.identity.owner, session_id=lease.identity.session_id)
 
     def _list_resource_processes(self) -> tuple[ResourceProcessStatus, ...]:
         """Path-free process status for the current reader owner and caller session."""
         lease = self._active_lease()
         return tuple(
             ResourceProcessStatus(process_id=handle.process_id, running=handle.running, exit_code=handle.exit_code)
-            for handle in self._runtime.processes.list_background(owner=lease.owner, session_id=lease.session_id)
+            for handle in self._runtime.processes.list_background(owner=lease.identity.owner, session_id=lease.identity.session_id)
         )
 
     def _read_resource_process_output(
@@ -397,8 +397,8 @@ class RuntimeServices:
             stream=stream,
             offset=offset,
             limit=limit,
-            owner=lease.owner,
-            session_id=lease.session_id,
+            owner=lease.identity.owner,
+            session_id=lease.identity.session_id,
         )
         return ProcessOutput(
             process_id=process_id,
@@ -418,7 +418,7 @@ class RuntimeServices:
         callback = self._runtime.read_child_snapshot_callback
         if callback is None:
             raise RuntimeError("descendant snapshots are unavailable")
-        snapshot = callback(lease.session_id, child_session_id)
+        snapshot = callback(lease.identity.session_id, child_session_id)
         if snapshot is not None and snapshot.descendant.session_id != child_session_id:
             raise RuntimeError("runtime returned a malformed child session snapshot")
         return snapshot
@@ -430,7 +430,7 @@ class RuntimeServices:
         bound, so cancelling a log read cannot newly kill a user job.
         """
         lease = self._active_lease()
-        if self._runtime.processes.service_entry(str(process_id), owner=lease.owner, session_id=lease.session_id) is None:
+        if self._runtime.processes.service_entry(str(process_id), owner=lease.identity.owner, session_id=lease.identity.session_id) is None:
             return
         self._runtime.claim_service(lease, str(process_id))
 
@@ -446,10 +446,10 @@ class RuntimeServices:
         from .artifacts import normalize_media_type
 
         lease = self._active_lease()
-        if lease.hook:
+        if lease.identity.hook:
             raise PermissionError("hook leases cannot spill artifacts: hooks observe, they produce no result")
         store = self._runtime.require_artifacts()
-        spill_id, spill = store.start_spill(normalize_media_type(media_type), owner=lease.token)
+        spill_id, spill = store.start_spill(normalize_media_type(media_type), owner=lease.identity.token)
         try:
             for chunk in chunks:
                 self._active_lease()
@@ -497,16 +497,16 @@ class RuntimeServices:
         if scope not in ("session", "workspace"):
             raise ValueError(f"Invalid scope: {scope!r}")
         lease = self._active_lease()
-        return lease.session_id if scope == "session" else str(lease.workspace)
+        return lease.identity.session_id if scope == "session" else str(lease.identity.workspace)
 
     def get_state(self, scope: Literal["session", "workspace"] = "session") -> tuple[Mapping[str, object] | None, int]:
         lease = self._active_lease()
         key = self._scope_key(scope)
-        staged = lease.staged_state.get((scope, key))
+        staged = lease.staging.state.get((scope, key))
         if staged is not None:
             st, ver, _baseline = staged
             return (own_json_object(st) if isinstance(st, Mapping) else None, ver)
-        st, ver = self._runtime.require_store().plugin_state(lease.owner, scope, key)
+        st, ver = self._runtime.require_store().plugin_state(lease.identity.owner, scope, key)
         return (own_json_object(st) if isinstance(st, Mapping) else None, ver)
 
     def replace_state(
@@ -519,14 +519,14 @@ class RuntimeServices:
         self._check_hook("replace_state")
         key = self._scope_key(scope)
         with self._runtime.lease_lock:
-            if lease.internal_restricted:
+            if lease.identity.internal_restricted:
                 raise PermissionError("Cannot modify state from a read-only service lease")
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
             owned = own_json_object(state)
             if type(expected_version) is not int:
                 raise ValueError("expected_version must be an integer")
-            staged = lease.staged_state.get((scope, key))
+            staged = lease.staging.state.get((scope, key))
             if staged is not None:
                 # Exactly one future version per lease: the first write published
                 # it, later writes in the same lease must target that version.
@@ -534,12 +534,12 @@ class RuntimeServices:
                 if expected_version != local_version:
                     raise RuntimeError(f"state CAS conflict within lease: expected version {local_version}, got {expected_version}")
             else:
-                _, current = self._runtime.require_store().plugin_state(lease.owner, scope, key)
+                _, current = self._runtime.require_store().plugin_state(lease.identity.owner, scope, key)
                 if expected_version != current:
                     raise RuntimeError(f"state CAS conflict: expected version {expected_version}, got {current}")
                 baseline = current
             local_version = baseline + 1
-            lease.staged_state[(scope, key)] = (owned, local_version, baseline)
+            lease.staging.state[(scope, key)] = (owned, local_version, baseline)
         return local_version
 
     def stage_event(self, event_type: str, payload: Mapping[str, object]) -> None:
@@ -549,14 +549,14 @@ class RuntimeServices:
         self._check_hook("stage_event")
         owned = own_json_object(payload)
         with self._runtime.lease_lock:
-            if lease.internal_restricted:
+            if lease.identity.internal_restricted:
                 raise PermissionError("Cannot stage events from a read-only service lease")
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
-            lease.staged_events.append(
+            lease.staging.events.append(
                 EventDraft(
-                    event_type=f"plugin.{lease.owner}.{event_type}",
-                    source=f"plugin.{lease.owner}",
+                    event_type=f"plugin.{lease.identity.owner}.{event_type}",
+                    source=f"plugin.{lease.identity.owner}",
                     actor="plugin",
                     payload=owned,
                 )
@@ -572,24 +572,25 @@ class RuntimeServices:
         from .storage.store import MAX_CONTINUATION_PAYLOAD_BYTES, StagedContinuationDraft, canonical_json
 
         lease = self._active_lease()
+        identity = lease.identity
         self._check_hook("enqueue_continuation")
         owned = own_json_object(payload)
         if role not in ("system", "user"):
             raise ValueError("role must be 'system' or 'user'")
-        if lease.hook:
+        if lease.identity.hook:
             raise PermissionError("post-tool hooks cannot start nested governed work")
         key = str(idempotency_key) if idempotency_key is not None else None
         with self._runtime.lease_lock:
-            if lease.internal_restricted:
+            if lease.identity.internal_restricted:
                 raise PermissionError("Cannot enqueue continuations from a read-only service lease")
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
             existing = next(
-                (c.continuation_id for c in lease.staged_continuations if c.idempotency_key == key and key is not None),
+                (c.continuation_id for c in lease.staging.continuations if c.idempotency_key == key and key is not None),
                 None,
             )
             if existing is None and key is not None:
-                existing = self._runtime.require_store().continuation_id_for_idempotency(lease.session_id, lease.owner, key)
+                existing = self._runtime.require_store().continuation_id_for_idempotency(lease.identity.session_id, lease.identity.owner, key)
             if existing is not None:
                 return existing
             # After the dedupe return: a keyed retry names its existing row without staging anything new.
@@ -603,17 +604,17 @@ class RuntimeServices:
             # concurrent leases that both stage before either commits
             # return the SAME id: the store's key dedupe then keeps
             # exactly one durable row that every caller's id names.
-            cid = uuid4().hex if key is None else hashlib.sha256("\0".join((lease.session_id, lease.owner, key)).encode("utf-8")).hexdigest()
-            lease.op_counter += 1
-            lease.staged_continuations.append(
+            cid = uuid4().hex if key is None else hashlib.sha256("\0".join((identity.session_id, identity.owner, key)).encode("utf-8")).hexdigest()
+            lease.staging.op_counter += 1
+            lease.staging.continuations.append(
                 StagedContinuationDraft(
                     continuation_id=cid,
-                    owner=lease.owner,
-                    source=f"plugin.{lease.owner}",
+                    owner=lease.identity.owner,
+                    source=f"plugin.{lease.identity.owner}",
                     payload=owned,
                     idempotency_key=key,
-                    ordinal=lease.op_counter,
-                    root_id=lease.root_action_id,
+                    ordinal=lease.staging.op_counter,
+                    root_id=lease.identity.root_action_id,
                     role=role,
                 )
             )
@@ -625,16 +626,16 @@ class RuntimeServices:
         lease = self._active_lease()
         self._check_hook("cancel_continuations")
         with self._runtime.lease_lock:
-            if lease.internal_restricted:
+            if lease.identity.internal_restricted:
                 raise PermissionError("Cannot cancel continuations from a read-only service lease")
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
-            lease.op_counter += 1
-            lease.staged_cancellations.append(
+            lease.staging.op_counter += 1
+            lease.staging.cancellations.append(
                 StagedCancellation(
-                    owner=lease.owner,
+                    owner=lease.identity.owner,
                     continuation_id=str(continuation_id) if continuation_id is not None else None,
-                    ordinal=lease.op_counter,
+                    ordinal=lease.staging.op_counter,
                 )
             )
 
@@ -654,7 +655,7 @@ class RuntimeServices:
         self._check_hook("spawn_child")
         # A read-only owner may delegate read-only work (reviews under plan mode):
         # the child inherits the restrictive stance, so no privilege is created.
-        if lease.readonly and not readonly:
+        if lease.identity.readonly and not readonly:
             raise PermissionError("a read-only lease may only spawn child work that stays read-only")
         # Plugin-supplied arguments are validated once here, the ingress boundary.
         if tool_allowlist is not None:
@@ -667,7 +668,7 @@ class RuntimeServices:
             raise ValueError("result_schema must be an object or null")
         if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key):
             raise ValueError("idempotency_key must be a non-empty string or null")
-        root_action_id = lease.root_action_id
+        root_action_id = lease.identity.root_action_id
         if root_action_id is None:
             raise ValueError("child spawning requires a captured root action identity")
         callback = self._runtime.spawn_child_callback
@@ -675,17 +676,17 @@ class RuntimeServices:
             raise RuntimeError("child spawning is unavailable")
         return callback(
             ChildSpawnRequest(
-                parent_session_id=lease.session_id,
+                parent_session_id=lease.identity.session_id,
                 prompt=prompt,
                 label=label,
                 tool_allowlist=tool_allowlist,
                 max_steps=max_steps,
-                readonly=readonly or lease.readonly,
+                readonly=readonly or lease.identity.readonly,
                 notify_on_completion=notify_on_completion,
-                owner=lease.owner,
+                owner=lease.identity.owner,
                 idempotency_key=idempotency_key,
                 root_action_id=root_action_id,
-                initial_root_budget=lease.initial_root_budget,
+                initial_root_budget=lease.identity.initial_root_budget,
                 admission_guard=self._runtime.admission_guard(lease),
                 result_schema=result_schema,
             )
@@ -699,7 +700,7 @@ class RuntimeServices:
         callback = self._runtime.find_child_callback
         if callback is None:
             raise RuntimeError("child lookup is unavailable")
-        found = callback(lease.session_id, lease.owner, idempotency_key)
+        found = callback(lease.identity.session_id, lease.identity.owner, idempotency_key)
         return None if found is None else str(found)
 
     def send_child(
@@ -718,10 +719,10 @@ class RuntimeServices:
             raise ValueError("child message prompt must be a non-empty string")
         # A parent that is now read-only may not steer a child that is still writable:
         # the child may have been spawned before plan mode/read-only intent existed.
-        if lease.readonly:
+        if lease.identity.readonly:
             store = self._runtime.require_store()
             child_record = store.session(child_session_id)
-            if child_record.parent_session_id != lease.session_id:
+            if child_record.parent_session_id != lease.identity.session_id:
                 raise PermissionError("child session does not belong to this parent session")
             if "read-only" not in store.session_overlays(child_session_id):
                 raise PermissionError("a read-only parent cannot steer a child that is not durably read-only")
@@ -729,7 +730,7 @@ class RuntimeServices:
         if callback is None:
             raise RuntimeError("child messaging is unavailable")
         return callback(
-            lease.session_id,
+            lease.identity.session_id,
             child_session_id,
             prompt,
             label,
@@ -748,24 +749,24 @@ class RuntimeServices:
             raise ValueError("run_id must be a non-empty string")
         store = self._runtime.require_store()
         child_record = store.session(child_session_id)
-        if child_record.parent_session_id != lease.session_id:
+        if child_record.parent_session_id != lease.identity.session_id:
             raise PermissionError("child session does not belong to this parent session")
         callback = self._runtime.acknowledge_child_completion_callback
         if callback is None:
             raise RuntimeError("child completion acknowledgment is unavailable")
         with self._runtime.lease_lock:
-            if lease.internal_restricted:
+            if lease.identity.internal_restricted:
                 raise PermissionError("Cannot acknowledge child completions from a read-only service lease")
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
-        receipt = callback(lease.owner, lease.session_id, child_session_id, run_id)
+        receipt = callback(lease.identity.owner, lease.identity.session_id, child_session_id, run_id)
         if receipt is None:
             return
         with self._runtime.lease_lock:
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
-            lease.op_counter += 1
-            lease.staged_observer_receipts.append(
+            lease.staging.op_counter += 1
+            lease.staging.observer_receipts.append(
                 ObserverReceiptRecord(
                     session_id=receipt.source_session_id,
                     event_sequence=receipt.event_sequence,
@@ -773,11 +774,11 @@ class RuntimeServices:
                 )
             )
             if receipt.notice_id is not None:
-                lease.staged_cancellations.append(
+                lease.staging.cancellations.append(
                     StagedCancellation(
                         owner=CHILD_MESSAGE_OWNER,
                         continuation_id=receipt.notice_id,
-                        ordinal=lease.op_counter,
+                        ordinal=lease.staging.op_counter,
                         only_if_unstarted=True,
                     )
                 )
@@ -787,7 +788,7 @@ class RuntimeServices:
 
         lease = self._active_lease()
         self._check_hook("wait_children")
-        if lease.internal_restricted:
+        if lease.identity.internal_restricted:
             raise PermissionError("Cannot consume child outcomes from a read-only service lease")
         if isinstance(child_session_ids, (str, bytes)) or not isinstance(child_session_ids, Sequence):
             raise ValueError("child_session_ids must be a sequence of session ids")
@@ -800,35 +801,35 @@ class RuntimeServices:
             if child_session_id in seen_children:
                 continue
             child = store.session(child_session_id)
-            if child.parent_session_id != lease.session_id:
+            if child.parent_session_id != lease.identity.session_id:
                 raise PermissionError("child session does not belong to this parent session")
             seen_children.add(child_session_id)
             child_ids.append(child_session_id)
         callback = self._runtime.wait_children_callback
         if callback is None:
             raise RuntimeError("child outcome waiting is unavailable")
-        deliveries = callback(lease.owner, lease.session_id, tuple(child_ids), self._runtime.admission_guard(lease))
+        deliveries = callback(lease.identity.owner, lease.identity.session_id, tuple(child_ids), self._runtime.admission_guard(lease))
 
         with self._runtime.lease_lock:
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
             for delivery in deliveries:
-                lease.op_counter += 1
-                lease.staged_observer_receipts.append(
+                lease.staging.op_counter += 1
+                lease.staging.observer_receipts.append(
                     ObserverReceiptRecord(
                         session_id=delivery.source_session_id,
                         event_sequence=delivery.event_sequence,
                         owner=CHILD_OUTCOME_RECEIPT_OWNER,
-                        expected_run_id=delivery.outcome.run_id if delivery.source_session_id != lease.session_id else None,
-                        require_interruption_source=delivery.source_session_id != lease.session_id,
+                        expected_run_id=delivery.outcome.run_id if delivery.source_session_id != lease.identity.session_id else None,
+                        require_interruption_source=delivery.source_session_id != lease.identity.session_id,
                     )
                 )
                 if delivery.notice_id is not None:
-                    lease.staged_cancellations.append(
+                    lease.staging.cancellations.append(
                         StagedCancellation(
                             owner=CHILD_MESSAGE_OWNER,
                             continuation_id=delivery.notice_id,
-                            ordinal=lease.op_counter,
+                            ordinal=lease.staging.op_counter,
                             only_if_unstarted=True,
                         )
                     )
@@ -841,7 +842,7 @@ class RuntimeServices:
         if callback is None:
             raise RuntimeError("child joining is unavailable")
         timeout = float(timeout_seconds) if isinstance(timeout_seconds, (int, float)) and not isinstance(timeout_seconds, bool) else 300.0
-        return callback(lease.session_id, str(child_session_id), timeout)
+        return callback(lease.identity.session_id, str(child_session_id), timeout)
 
     def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
         lease = self._active_lease()
@@ -849,14 +850,14 @@ class RuntimeServices:
         callback = self._runtime.cancel_child_callback
         if callback is None:
             raise RuntimeError("child cancellation is unavailable")
-        return callback(lease.session_id, str(child_session_id), str(reason))
+        return callback(lease.identity.session_id, str(child_session_id), str(reason))
 
     def list_descendants(self) -> tuple[DescendantNode, ...]:
         lease = self._active_lease()
         callback = self._runtime.list_descendants_callback
         if callback is None:
             raise RuntimeError("descendant listing is unavailable")
-        rows = callback(lease.session_id)
+        rows = callback(lease.identity.session_id)
         return rows
 
     def cancel_descendant_subtree(
@@ -872,12 +873,12 @@ class RuntimeServices:
             raise ValueError("target_session_id must be a non-empty string")
         if expected_run_id is not None and (not isinstance(expected_run_id, str) or not expected_run_id):
             raise ValueError("expected_run_id must be a non-empty string or null")
-        if lease.internal_restricted:
+        if lease.identity.internal_restricted:
             raise PermissionError("Cannot cancel a descendant subtree from a read-only service lease")
         callback = self._runtime.cancel_subtree_callback
         if callback is None:
             raise RuntimeError("subtree cancellation is unavailable")
-        receipt = callback(lease.session_id, target_session_id, expected_run_id, str(reason))
+        receipt = callback(lease.identity.session_id, target_session_id, expected_run_id, str(reason))
         return receipt
 
     def enqueue_background_action(
@@ -889,40 +890,41 @@ class RuntimeServices:
         from .storage.store import BACKGROUND_ACTION_SOURCE, MAX_CONTINUATION_PAYLOAD_BYTES, StagedContinuationDraft, canonical_json
 
         lease = self._active_lease()
+        identity = lease.identity
         self._check_hook("enqueue_background_action")
         owned = own_json_object(payload)
         if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key):
             raise ValueError("idempotency_key must be a non-empty string or null")
         key = str(idempotency_key) if idempotency_key is not None else None
         with self._runtime.lease_lock:
-            if lease.internal_restricted:
+            if lease.identity.internal_restricted:
                 raise PermissionError("Cannot enqueue background actions from a read-only service lease")
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
             existing = next(
-                (c.continuation_id for c in lease.staged_continuations if c.idempotency_key == key and key is not None),
+                (c.continuation_id for c in lease.staging.continuations if c.idempotency_key == key and key is not None),
                 None,
             )
             if existing is None and key is not None:
-                existing = self._runtime.require_store().background_action_id_for_idempotency(lease.session_id, lease.owner, key)
+                existing = self._runtime.require_store().background_action_id_for_idempotency(lease.identity.session_id, lease.identity.owner, key)
             if existing is not None:
                 return existing
-            if not isinstance(lease.root_action_id, str) or not lease.root_action_id:
+            if not isinstance(lease.identity.root_action_id, str) or not lease.identity.root_action_id:
                 raise RuntimeError("background action requires a captured root action identity")
             # Same deterministic identity rule as continuations: two concurrent leases that
             # both stage before either commits return the SAME id, and the store keeps one row.
-            cid = uuid4().hex if key is None else hashlib.sha256("\0".join((lease.session_id, lease.owner, key)).encode("utf-8")).hexdigest()
-            lease.op_counter += 1
+            cid = uuid4().hex if key is None else hashlib.sha256("\0".join((identity.session_id, identity.owner, key)).encode("utf-8")).hexdigest()
+            lease.staging.op_counter += 1
             authority = None
-            if lease.origin_visible_tools is not None and lease.origin_readonly is not None:
+            if lease.identity.origin_visible_tools is not None and lease.identity.origin_readonly is not None:
                 authority = {
-                    "visible_tools": list(lease.origin_visible_tools),
-                    "readonly": lease.origin_readonly,
-                    "revision_id": lease.revision_id,
+                    "visible_tools": list(lease.identity.origin_visible_tools),
+                    "readonly": lease.identity.origin_readonly,
+                    "revision_id": lease.identity.revision_id,
                 }
             staged_payload = {
                 "action": owned,
-                "root_action_budget": lease.initial_root_budget,
+                "root_action_budget": lease.identity.initial_root_budget,
                 "tool_wait_authority": authority,
             }
             # The row stores the wrapped payload, so the bound measures the wrapper: an
@@ -933,15 +935,15 @@ class RuntimeServices:
                     f"continuation payload is {continuation_size} bytes, "
                     f"exceeding the {MAX_CONTINUATION_PAYLOAD_BYTES}-byte continuation-payload bound"
                 )
-            lease.staged_continuations.append(
+            lease.staging.continuations.append(
                 StagedContinuationDraft(
                     continuation_id=cid,
-                    owner=lease.owner,
+                    owner=lease.identity.owner,
                     source=BACKGROUND_ACTION_SOURCE,
                     payload=staged_payload,
                     idempotency_key=key,
-                    ordinal=lease.op_counter,
-                    root_id=lease.root_action_id,
+                    ordinal=lease.staging.op_counter,
+                    root_id=lease.identity.root_action_id,
                     role="system",
                 )
             )
@@ -956,7 +958,7 @@ class RuntimeServices:
         callback = self._runtime.cancel_background_action_callback
         if callback is None:
             raise RuntimeError("background action cancellation is unavailable")
-        return callback(lease.session_id, lease.owner, action_id, str(reason))
+        return callback(lease.identity.session_id, lease.identity.owner, action_id, str(reason))
 
     def background_action_status(self, action_id: str) -> BackgroundActionStatus | None:
         lease = self._active_lease()
@@ -964,14 +966,14 @@ class RuntimeServices:
         if not isinstance(action_id, str) or not action_id:
             raise ValueError("action_id must be a non-empty string")
         record = self._runtime.require_store().background_action(action_id)
-        if record is None or record.owner != lease.owner or record.session_id != lease.session_id:
+        if record is None or record.owner != lease.identity.owner or record.session_id != lease.identity.session_id:
             return None
         return self._runtime.background_action_status(record)
 
     def project_window(self, *, covered_from_sequence: int, covered_to_sequence: int, replacement: str) -> None:
         lease = self._active_lease()
         self._check_hook("project_window")
-        if lease.internal_restricted:
+        if lease.identity.internal_restricted:
             raise PermissionError("Cannot project a session window from a read-only service lease")
         if type(covered_from_sequence) is not int or type(covered_to_sequence) is not int:
             raise ValueError("projection boundaries must be integers")
@@ -979,21 +981,21 @@ class RuntimeServices:
 
     def window_projection(self) -> Mapping[str, object] | None:
         lease = self._active_lease()
-        for event in reversed(lease.staged_events):
+        for event in reversed(lease.staging.events):
             if event.event_type == EventType.WINDOW_PROJECTED:
                 return dict(event.payload)
-        record = self._runtime.require_store().window_projection(lease.session_id)
+        record = self._runtime.require_store().window_projection(lease.identity.session_id)
         return None if record is None else asdict(record)
 
     def set_overlay(self, tier: Literal["read-only"] = "read-only") -> None:
         lease = self._active_lease()
         self._check_hook("set_overlay")
-        self._runtime.require_store().set_session_overlay(lease.session_id, lease.owner, str(tier))
+        self._runtime.require_store().set_session_overlay(lease.identity.session_id, lease.identity.owner, str(tier))
 
     def clear_overlay(self) -> bool:
         lease = self._active_lease()
         self._check_hook("clear_overlay")
-        return self._runtime.require_store().clear_session_overlay(lease.session_id, lease.owner)
+        return self._runtime.require_store().clear_session_overlay(lease.identity.session_id, lease.identity.owner)
 
     def schedule_wakeup(
         self,
@@ -1007,7 +1009,7 @@ class RuntimeServices:
 
         lease = self._active_lease()
         self._check_hook("schedule_wakeup")
-        if lease.internal_restricted:
+        if lease.identity.internal_restricted:
             raise PermissionError("Cannot schedule wakeups from a read-only service lease")
         if type(due_at_ms) is not int or due_at_ms < 0:
             raise ValueError("due_at_ms must be >= 0")
@@ -1021,46 +1023,46 @@ class RuntimeServices:
         if key is None:
             wakeup_id = uuid4().hex
         else:
-            wakeup_id = hashlib.sha256("\0".join((lease.session_id, lease.owner, "wakeup", key)).encode("utf-8")).hexdigest()
-        if not isinstance(lease.root_action_id, str) or not lease.root_action_id:
+            wakeup_id = hashlib.sha256("\0".join((lease.identity.session_id, lease.identity.owner, "wakeup", key)).encode("utf-8")).hexdigest()
+        if not isinstance(lease.identity.root_action_id, str) or not lease.identity.root_action_id:
             raise RuntimeError("wakeup scheduling requires a captured root action identity")
         self._runtime.require_store().schedule_wakeup(
             wakeup_id,
-            lease.owner,
-            str(lease.workspace),
-            lease.session_id,
+            lease.identity.owner,
+            str(lease.identity.workspace),
+            lease.identity.session_id,
             owned,
             due_at_ms,
             str(role),
-            root_action_id=lease.root_action_id,
-            root_action_budget=lease.initial_root_budget,
+            root_action_id=lease.identity.root_action_id,
+            root_action_budget=lease.identity.initial_root_budget,
         )
         return wakeup_id
 
     def cancel_wakeup(self, wakeup_id: str) -> bool:
         lease = self._active_lease()
         self._check_hook("cancel_wakeup")
-        if lease.internal_restricted:
+        if lease.identity.internal_restricted:
             raise PermissionError("Cannot cancel wakeups from a read-only service lease")
-        return self._runtime.require_store().cancel_wakeup(str(wakeup_id), lease.owner)
+        return self._runtime.require_store().cancel_wakeup(str(wakeup_id), lease.identity.owner)
 
     def read_facts(self, *, after_sequence: int = 0, limit: int = 100) -> FactPage:
         lease = self._active_lease()
         if type(after_sequence) is not int or after_sequence < 0 or type(limit) is not int or not 1 <= limit <= 200:
             raise ValueError("after_sequence must be >= 0 and limit within 1..200")
-        return self._runtime.fact_page(lease.session_id, after_sequence, limit)
+        return self._runtime.fact_page(lease.identity.session_id, after_sequence, limit)
 
     def read_context_history(self, *, limit: int = 600) -> ContextHistory:
         lease = self._active_lease()
         if type(limit) is not int or not 1 <= limit <= 2000:
             raise ValueError("limit must be within 1..2000")
-        return self._runtime.context_history(lease.session_id, limit)
+        return self._runtime.context_history(lease.identity.session_id, limit)
 
     def read_transcript(self, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
         lease = self._active_lease()
         if type(after_sequence) is not int or after_sequence < 0 or type(limit) is not int or not 1 <= limit <= 200:
             raise ValueError("after_sequence must be >= 0 and limit within 1..200")
-        return self._runtime.transcript_page(lease.session_id, after_sequence, limit)
+        return self._runtime.transcript_page(lease.identity.session_id, after_sequence, limit)
 
     def latest_event(self, event_type: str, run_id: str | None = None) -> TranscriptEntry | None:
         lease = self._active_lease()
@@ -1068,7 +1070,7 @@ class RuntimeServices:
             raise ValueError("event_type must be a non-empty string")
         if run_id is not None and (not isinstance(run_id, str) or not run_id):
             raise ValueError("run_id must be a non-empty string or None")
-        stored = self._runtime.require_store().latest_event(lease.session_id, event_type, run_id)
+        stored = self._runtime.require_store().latest_event(lease.identity.session_id, event_type, run_id)
         if stored is None:
             return None
         return transcript_entry(stored)
@@ -1085,11 +1087,11 @@ class RuntimeServices:
             raise ValueError("after_sequence must be >= 0 and limit within 1..200")
         if type(include_payload) is not bool:
             raise ValueError("include_payload must be a boolean")
-        return self._runtime.event_views(lease.session_id, after_sequence, limit, include_payload)
+        return self._runtime.event_views(lease.identity.session_id, after_sequence, limit, include_payload)
 
     def session_info(self) -> SessionInfo:
         lease = self._active_lease()
-        return self._runtime.require_store().session_info(lease.session_id, lease.owner)
+        return self._runtime.require_store().session_info(lease.identity.session_id, lease.identity.owner)
 
     def read_child_history(
         self,
@@ -1100,7 +1102,7 @@ class RuntimeServices:
         limit: int = 100,
     ) -> HistoryPage:
         lease = self._active_lease()
-        if not isinstance(child_session_id, str) or not child_session_id or child_session_id == lease.session_id:
+        if not isinstance(child_session_id, str) or not child_session_id or child_session_id == lease.identity.session_id:
             raise ValueError("child_session_id must name another session")
         return self.read_session_history(child_session_id, after_sequence=after_sequence, offset=offset, limit=limit)
 
@@ -1122,8 +1124,8 @@ class RuntimeServices:
             raise ValueError(f"page_bytes must be an integer within 1..{PAGE_BYTES}")
         limit = max(1, min(limit, 200))
         store = self._runtime.require_store()
-        if session_id != lease.session_id:
-            caller = store.session(lease.session_id)
+        if session_id != lease.identity.session_id:
+            caller = store.session(lease.identity.session_id)
             target = store.session(session_id)
             if target.workspace != caller.workspace or not self._runtime.is_descendant(target, caller.session_id):
                 raise PermissionError("session history is readable only for this session or its own descendants")
@@ -1146,7 +1148,7 @@ class RuntimeServices:
             raise RuntimeError("tool definitions are unavailable")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("tool_definition requires a non-empty name")
-        definition, _reason = callback(lease.session_id, name.strip(), lease.revision_id)
+        definition, _reason = callback(lease.identity.session_id, name.strip(), lease.identity.revision_id)
         if definition is None:
             return None
         if isinstance(definition, Definition):
@@ -1158,8 +1160,10 @@ class RuntimeServices:
         return decode_tool_definition(definition)
 
     def query(self, name: str, arguments: Mapping[str, object] | None = None) -> Mapping[str, object] | None:
-        lease = self._active_lease()
-        return self._runtime.execute_query(str(name), own_json_object(dict(arguments or {})), session_id=lease.session_id, workspace=lease.workspace)
+        identity = self._active_lease().identity
+        return self._runtime.execute_query(
+            str(name), own_json_object(dict(arguments or {})), session_id=identity.session_id, workspace=identity.workspace
+        )
 
     def read_resource(self, request: ResourceReadRequest) -> ResourcePage | None:
         from voidcode.sdk.invocation import ToolContext
@@ -1168,13 +1172,13 @@ class RuntimeServices:
         self._check_hook("read_resource")
         abort_signal = self._abort_signal_for(lease)
         context = ToolContext(
-            workspace=lease.workspace,
-            session_id=lease.session_id,
-            run_id=lease.run_id,
-            invocation_id=lease.invocation_id,
-            revision_id=lease.revision_id,
-            actor=lease.actor,
-            invocation_depth=lease.invocation_depth,
+            workspace=lease.identity.workspace,
+            session_id=lease.identity.session_id,
+            run_id=lease.identity.run_id,
+            invocation_id=lease.identity.invocation_id,
+            revision_id=lease.identity.revision_id,
+            actor=lease.identity.actor,
+            invocation_depth=lease.identity.invocation_depth,
             abort_signal=abort_signal,
         )
         return self._runtime.read_resource(request, context=context)
@@ -1206,46 +1210,46 @@ class RuntimeServices:
             raise ValueError("invoke_tool expected_revision differs from the active revision")
         if not isinstance(arguments, Mapping) and arguments is not None:
             raise ValueError("invoke_tool arguments must be an object")
-        if lease.background_action_id is not None and (
-            lease.origin_visible_tools is None or lease.origin_readonly is None or not lease.root_action_id
+        if lease.identity.background_action_id is not None and (
+            lease.identity.origin_visible_tools is None or lease.identity.origin_readonly is None or not lease.identity.root_action_id
         ):
             raise PermissionError("background tool requests require captured origin tool, stance, and root authorization")
         request_id = uuid4().hex
-        depth = lease.invocation_depth + 1
+        depth = lease.identity.invocation_depth + 1
         call = ToolCall(name, own_json_object(dict(arguments or {})), tool_call_id=request_id)
-        root_id = lease.root_action_id or ""
+        root_id = lease.identity.root_action_id or ""
         payload: dict[str, object] = {
             "request_id": request_id,
             "call": encode_tool_call(call),
             "expected_revision": expected_revision,
-            "requester": lease.owner,
+            "requester": lease.identity.owner,
             "root_id": root_id,
-            "root_action_budget": lease.initial_root_budget,
-            "caller_invocation_id": lease.invocation_id,
+            "root_action_budget": lease.identity.initial_root_budget,
+            "caller_invocation_id": lease.identity.invocation_id,
             "depth": depth,
         }
-        if lease.origin_visible_tools is not None:
-            payload["origin_visible_tools"] = list(lease.origin_visible_tools)
-        if lease.origin_readonly is not None:
-            payload["origin_readonly"] = lease.origin_readonly
-        if lease.background_action_id is not None:
-            payload["background_action_id"] = lease.background_action_id
+        if lease.identity.origin_visible_tools is not None:
+            payload["origin_visible_tools"] = list(lease.identity.origin_visible_tools)
+        if lease.identity.origin_readonly is not None:
+            payload["origin_readonly"] = lease.identity.origin_readonly
+        if lease.identity.background_action_id is not None:
+            payload["background_action_id"] = lease.identity.background_action_id
             payload["result_delivery"] = "requester"
         with self._runtime.lease_lock:
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
-            lease.staged_events.append(EventDraft(EventType.TOOL_DEFERRED, "core", "plugin", payload))
+            lease.staging.events.append(EventDraft(EventType.TOOL_DEFERRED, "core", "plugin", payload))
         return ToolInvocationReceipt(request_id=request_id, tool_name=name, depth=depth)
 
     def _check_suspend_lease(self, lease: LeaseContext, method: str) -> None:
         """Refuse suspension from any lease that is not a tool callback's own."""
-        if lease.tool_callback and not lease.hook and lease.background_action_id is None:
+        if lease.identity.tool_callback and not lease.identity.hook and lease.identity.background_action_id is None:
             return
-        if lease.hook:
+        if lease.identity.hook:
             kind = "hook"
-        elif lease.background_action_id is not None:
+        elif lease.identity.background_action_id is not None:
             kind = "background"
-        elif lease.actor == "user":
+        elif lease.identity.actor == "user":
             kind = "command"
         else:
             kind = "non-tool"
@@ -1300,17 +1304,17 @@ class RuntimeServices:
                 or not reference.media_type
             ):
                 raise ValueError("ask media requires ArtifactReference entries with a lowercase sha256 digest, byte count, and media type")
-        if lease.staged_suspend is not None:
+        if lease.staging.suspend is not None:
             raise AskAlreadyParked("AskAlreadyParked: a suspension is already staged on this lease; refusing a second suspend")
-        live_request = self._live_parked_ask(lease.session_id)
+        live_request = self._live_parked_ask(lease.identity.session_id)
         if live_request is not None:
             raise AskAlreadyParked(
-                f"AskAlreadyParked: session {lease.session_id!r} already holds live ask {live_request!r}; refusing a second suspend"
+                f"AskAlreadyParked: session {lease.identity.session_id!r} already holds live ask {live_request!r}; refusing a second suspend"
             )
         with self._runtime.lease_lock:
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
-            lease.staged_suspend = park
+            lease.staging.suspend = park
         raise park
 
     def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
@@ -1325,7 +1329,7 @@ class RuntimeServices:
             raise ValueError("max_output_tokens must be an integer or null")
         if type(include_context) is not bool:
             raise ValueError("include_context must be a boolean")
-        return callback(lease.session_id, str(prompt), model, max_output_tokens, include_context)
+        return callback(lease.identity.session_id, str(prompt), model, max_output_tokens, include_context)
 
     def model_query_structured(
         self,
@@ -1349,7 +1353,7 @@ class RuntimeServices:
             raise ValueError("max_output_tokens must be an integer or null")
         if type(include_context) is not bool:
             raise ValueError("include_context must be a boolean")
-        return callback(lease.session_id, str(prompt), result_schema, model, max_output_tokens, include_context)
+        return callback(lease.identity.session_id, str(prompt), result_schema, model, max_output_tokens, include_context)
 
     def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
         lease = self._active_lease()
@@ -1360,12 +1364,12 @@ class RuntimeServices:
         callback = self._runtime.usage_callback
         if callback is None:
             raise RuntimeError("usage service is unavailable in this runtime")
-        return callback(lease.session_id, since_sequence, until_sequence)
+        return callback(lease.identity.session_id, since_sequence, until_sequence)
 
     def get_budget(self) -> PluginBudget | None:
         lease = self._active_lease()
         with self._runtime.lease_lock:
-            staged_budget = lease.staged_budget
+            staged_budget = lease.staging.budget
         if staged_budget == "clear":
             return None
         if staged_budget is not None:
@@ -1373,7 +1377,7 @@ class RuntimeServices:
         callback = self._runtime.budget_callback
         if callback is None:
             raise RuntimeError("budget service is unavailable in this runtime")
-        return callback(lease.session_id, lease.owner)
+        return callback(lease.identity.session_id, lease.identity.owner)
 
     def set_budget(
         self,
@@ -1390,7 +1394,7 @@ class RuntimeServices:
         if type(since_sequence) is not int:
             raise ValueError("since_sequence must be an integer")
         budget = PluginBudget(
-            owner=lease.owner,
+            owner=lease.identity.owner,
             since_sequence=since_sequence,
             max_input_tokens=max_input_tokens,
             max_output_tokens=max_output_tokens,
@@ -1399,21 +1403,21 @@ class RuntimeServices:
             max_elapsed_seconds=max_elapsed_seconds,
         )
         with self._runtime.lease_lock:
-            if lease.internal_restricted:
+            if lease.identity.internal_restricted:
                 raise PermissionError("Cannot set budget from a read-only service lease")
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
-            lease.staged_budget = budget
+            lease.staging.budget = budget
 
     def clear_budget(self) -> None:
         lease = self._active_lease()
         self._check_hook("clear_budget")
         with self._runtime.lease_lock:
-            if lease.internal_restricted:
+            if lease.identity.internal_restricted:
                 raise PermissionError("Cannot clear budget from a read-only service lease")
             if lease.revoked:
                 raise PermissionError("Service lease was revoked")
-            lease.staged_budget = "clear"
+            lease.staging.budget = "clear"
 
 
 class _LeaseAbortSignal:

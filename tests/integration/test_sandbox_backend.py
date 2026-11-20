@@ -20,7 +20,7 @@ from tests.fixtures.core_factory import register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import locate_sandbox_helper, open_core
 from voidcode.core.engine import Core
-from voidcode.core.plugins import LeaseContext
+from voidcode.core.plugins import LeaseContext, LeaseIdentity
 from voidcode.core.services import RuntimeServices
 from voidcode.sdk.json_values import json_wire_object
 
@@ -52,14 +52,16 @@ def _core(tmp_path: Path, *, sandbox: dict | None, extra: dict | None = None) ->
 def _services(core: Core) -> RuntimeServices:
     runtime = core._snapshot.plugin_runtime
     lease = LeaseContext(
-        token="test",
-        owner="test",
-        session_id="s",
-        workspace=core.workspace,
-        run_id="r",
-        revision_id=runtime.revision_id,
-        invocation_id="i",
-        readonly=False,
+        LeaseIdentity(
+            token="test",
+            owner="test",
+            session_id="s",
+            workspace=core.workspace,
+            run_id="r",
+            revision_id=runtime.revision_id,
+            invocation_id="i",
+            readonly=False,
+        )
     )
     return RuntimeServices(runtime, lease)
 

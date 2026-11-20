@@ -86,8 +86,8 @@ def test_enqueue_continuation_rejects_oversized_payload_before_staging(tmp_path:
     with _services(tmp_path) as (services, lease, _store):
         with pytest.raises(ValueError, match=f"{MAX_CONTINUATION_PAYLOAD_BYTES + 1} bytes.*{MAX_CONTINUATION_PAYLOAD_BYTES}-byte"):
             services.enqueue_continuation(payload)
-        assert lease.staged_continuations == []
-        assert lease.op_counter == 0
+        assert lease.staging.continuations == []
+        assert lease.staging.op_counter == 0
 
 
 def test_enqueue_continuation_accepts_payload_at_bound(tmp_path: Path) -> None:
@@ -96,7 +96,7 @@ def test_enqueue_continuation_accepts_payload_at_bound(tmp_path: Path) -> None:
     with _services(tmp_path) as (services, lease, _store):
         cid = services.enqueue_continuation(payload)
         assert cid
-        (draft,) = lease.staged_continuations
+        (draft,) = lease.staging.continuations
         assert draft.continuation_id == cid
         assert draft.payload == payload
 
@@ -107,7 +107,7 @@ def test_keyed_retry_names_existing_row_without_restaging(tmp_path: Path) -> Non
         first = services.enqueue_continuation({"note": "small"}, idempotency_key="k1")
         oversized = _payload_of_size(MAX_CONTINUATION_PAYLOAD_BYTES + 1)
         assert services.enqueue_continuation(oversized, idempotency_key="k1") == first
-        assert len(lease.staged_continuations) == 1
+        assert len(lease.staging.continuations) == 1
 
 
 def test_enqueue_background_action_rejects_oversized_action(tmp_path: Path) -> None:
@@ -118,7 +118,7 @@ def test_enqueue_background_action_rejects_oversized_action(tmp_path: Path) -> N
     with _services(tmp_path) as (services, lease, _store):
         with pytest.raises(ValueError, match=f"{outer_size} bytes.*{MAX_CONTINUATION_PAYLOAD_BYTES}-byte"):
             services.enqueue_background_action(inner)
-        assert lease.staged_continuations == []
+        assert lease.staging.continuations == []
 
 
 def test_enqueue_background_action_accepts_wrapped_payload_at_bound(tmp_path: Path) -> None:
@@ -129,7 +129,7 @@ def test_enqueue_background_action_accepts_wrapped_payload_at_bound(tmp_path: Pa
     assert len(canonical_json(outer).encode("utf-8")) == MAX_CONTINUATION_PAYLOAD_BYTES
     with _services(tmp_path) as (services, lease, _store):
         action_id = services.enqueue_background_action(inner)
-        (draft,) = lease.staged_continuations
+        (draft,) = lease.staging.continuations
         assert draft.continuation_id == action_id
         assert draft.source == BACKGROUND_ACTION_SOURCE
         assert len(canonical_json(draft.payload).encode("utf-8")) == MAX_CONTINUATION_PAYLOAD_BYTES

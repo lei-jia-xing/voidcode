@@ -963,7 +963,7 @@ class DelegationManager:
             if child.status == "waiting":
                 # Approval is not terminal and not something a parent wait can resolve.
                 return self._child_status_outcome(child)
-            if child.status == "interrupted" and not self.core._admits_fresh_work(child):
+            if child.status == "interrupted" and not self.core.admits_fresh_work(child):
                 # A recoverable interruption needs an explicit public resume, not a join.
                 # A terminal cancellation still publishes a fact (error/history); prefer it.
                 fact = published_fact(child.run_id)
@@ -1061,8 +1061,8 @@ class DelegationManager:
         self.core.ensure_open()
         parent = self.core.session(parent_session_id)
         child = self._owned_child(parent_session_id, child_id)
-        self.core._check_session(child)
-        if self.core._session_read_only(parent.session_id) and not self.core._session_read_only(child.session_id):
+        self.core.check_session(child)
+        if self.core.session_read_only(parent.session_id) and not self.core.session_read_only(child.session_id):
             raise PermissionError("a read-only parent cannot steer a child that is not durably read-only")
         message_id = uuid4().hex
         attributed = "[Follow-up from your parent agent; delegated agent input, not a direct user message]\n\n" + prompt

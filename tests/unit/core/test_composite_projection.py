@@ -191,11 +191,11 @@ def test_oversize_inline_table_compacts_to_reference_prefix_without_loss(tmp_pat
         assert part.total_rows == len(rows)
         assert compact.output.bounds.partial is True
         assert compact.result_reference is not None
-        full_payload = json.loads(read_artifact_content(part.reference, core._artifact_page).decode("utf-8"))
+        full_payload = json.loads(read_artifact_content(part.reference, core.artifact_page).decode("utf-8"))
         assert full_payload["columns"] == list(columns)
         assert full_payload["rows"] == [list(row) for row in rows]
         assert full_payload["total_rows"] == len(rows)
-        canonical = json.loads(read_artifact_content(compact.result_reference, core._artifact_page).decode("utf-8"))
+        canonical = json.loads(read_artifact_content(compact.result_reference, core.artifact_page).decode("utf-8"))
         canonical_rows = canonical["output"]["parts"][0]["rows"]
         assert canonical_rows == [list(row) for row in rows]
         compact_bytes = len(

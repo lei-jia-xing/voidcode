@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from tests.fixtures.core_factory import register_core
+from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL, WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
@@ -29,19 +27,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
         message={"role": "assistant", "content": output, "reasoning_content": "session read reasoning", "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
     )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
@@ -83,7 +68,7 @@ def _body(core: Core, session_id: str, tool_name: str, index: int = 0) -> dict[s
         # Oversized results commit body-less by design; the complete JSON waits at the reference.
         reference = decode_tool_result(result).result_reference
         assert reference is not None, result
-        body = json.loads(read_artifact_content(reference, core._artifact_page))["body"]
+        body = json.loads(read_artifact_content(reference, core.artifact_page))["body"]
     assert isinstance(body, Mapping), result
     return json_wire_object(body)
 
@@ -109,7 +94,7 @@ def test_session_info_reports_one_running_session_and_its_chain_budget(tmp_path:
         ),
         _turn(output="parent facts read"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess")
@@ -171,7 +156,7 @@ def test_child_event_reads_are_bounded_cursor_scoped_and_descendant_checked(tmp_
     source = write_s5_plugin(tmp_path / "plugin")
     big_prompt = "x" * 100_000
     replies: list[dict[str, object]] = []
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess")
@@ -256,7 +241,7 @@ def test_tool_actions_carry_json_bodies_and_failures_stay_failures(tmp_path: Pat
         ),
         _turn(output="surface exercised"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess")
@@ -278,7 +263,7 @@ def test_post_tool_hook_reads_the_session_row_under_a_hook_lease(tmp_path: Path)
         _turn(_call("echo-hooked", PROBE_TOOL, action="echo", text="hooked")),
         _turn(output="hook observed"),
     ]
-    with _server(replies) as server:
+    with loopback_server(replies) as server:
         _configure(tmp_path / "workspace", server, source)
         core = _open(tmp_path)
         core.create_session("sess")

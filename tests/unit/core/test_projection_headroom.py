@@ -525,10 +525,10 @@ def test_tight_window_dispatch_shrinks_tool_text_with_intact_identities(tmp_path
         completed = next(event for event in core.store.events(result.session_id) if event.event_type == "core.tool_completed")
         stored = decode_tool_result(completed.payload["result"])
         assert stored.result_reference is not None
-        ceiling, _, _ = project_tool_result(stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=core._artifact_page)
+        ceiling, _, _ = project_tool_result(stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=core.artifact_page)
         assert len(sent.encode("utf-8")) < len(ceiling.encode("utf-8")) <= TOOL_OUTPUT_BYTES
         # The complete result is untouched: all 60000 bytes recoverable through the committed reference.
-        original = json.loads(read_artifact_content(stored.result_reference, core._artifact_page).decode("utf-8"))
+        original = json.loads(read_artifact_content(stored.result_reference, core.artifact_page).decode("utf-8"))
         assert original["output"]["text"] == "B" * 60000
 
 
@@ -553,7 +553,7 @@ def test_unknown_usage_keeps_ceiling_bytes_exactly(tmp_path: Path) -> None:
         assert len(tool_messages) == 1
         completed = next(event for event in core.store.events(result.session_id) if event.event_type == "core.tool_completed")
         stored = decode_tool_result(completed.payload["result"])
-        ceiling, _, _ = project_tool_result(stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=core._artifact_page)
+        ceiling, _, _ = project_tool_result(stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=core.artifact_page)
         assert tool_messages[0]["content"] == ceiling
 
 
@@ -579,7 +579,7 @@ def test_unknown_limits_keeps_ceiling_bytes_exactly(tmp_path: Path) -> None:
         assert len(tool_messages) == 1
         completed = next(event for event in core.store.events(result.session_id) if event.event_type == "core.tool_completed")
         stored = decode_tool_result(completed.payload["result"])
-        ceiling, _, _ = project_tool_result(stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=core._artifact_page)
+        ceiling, _, _ = project_tool_result(stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=core.artifact_page)
         assert tool_messages[0]["content"] == ceiling
 
 
@@ -645,5 +645,5 @@ def test_budget_below_identity_minimum_keeps_ceiling_without_refusing_dispatch(t
         assert len(tool_messages) == 1
         completed = next(event for event in core.store.events(session_id) if event.event_type == "core.tool_completed")
         stored = decode_tool_result(completed.payload["result"])
-        ceiling, _, _ = project_tool_result(stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=core._artifact_page)
+        ceiling, _, _ = project_tool_result(stored, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=core.artifact_page)
         assert tool_messages[0]["content"] == ceiling

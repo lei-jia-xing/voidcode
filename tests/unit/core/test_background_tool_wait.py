@@ -755,7 +755,7 @@ def test_delayed_tool_request_keeps_original_root_budget(tmp_path: Path) -> None
                 root_id=original_root,
                 root_action_budget=1,
                 authority={
-                    "visible_tools": list(core._visible_tool_names_for_session("parent", core._snapshot)),
+                    "visible_tools": list(core.visible_tool_names_for_session("parent", core._snapshot)),
                     "readonly": False,
                     "revision_id": core.revision_id,
                 },
@@ -803,7 +803,7 @@ def test_hidden_stale_and_missing_wait_authority_are_refused(tmp_path: Path) -> 
         _configure(tmp_path, server)
         with _open(tmp_path) as core:
             core.create_session("parent")
-            visible = list(core._visible_tool_names_for_session("parent", core._snapshot))
+            visible = list(core.visible_tool_names_for_session("parent", core._snapshot))
             visible.remove("root_probe")
             core.store.enqueue_background_action(
                 "hidden-tool-wait",

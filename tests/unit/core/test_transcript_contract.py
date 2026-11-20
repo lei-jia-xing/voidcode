@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from voidcode.core.plugins import LeaseContext, PluginRuntime
+from voidcode.core.plugins import LeaseContext, LeaseIdentity, PluginRuntime
 from voidcode.core.services import RuntimeServices
 from voidcode.core.storage.store import StoredEvent, canonical_json
 from voidcode.core.transcript import transcript_entry
@@ -76,14 +76,14 @@ def test_malformed_conversation_is_an_error_instead_of_a_missing_message():
 
 @pytest.mark.parametrize("after,limit", [(-1, 1), (True, 1), (0, 0), (0, 201), (0, True)])
 def test_transcript_service_validates_ingress(tmp_path, after, limit):
-    lease = LeaseContext("token", "owner", "session", tmp_path, "run", "revision", "invoke", True)
+    lease = LeaseContext(LeaseIdentity("token", "owner", "session", tmp_path, "run", "revision", "invoke", True))
     services = RuntimeServices(_runtime(()), lease)
     with pytest.raises(ValueError):
         services.read_transcript(after_sequence=after, limit=limit)
 
 
 def test_transcript_service_is_session_scoped_readonly_and_revocable(tmp_path):
-    lease = LeaseContext("token", "owner", "session", tmp_path, "run", "revision", "invoke", True, hook=True)
+    lease = LeaseContext(LeaseIdentity("token", "owner", "session", tmp_path, "run", "revision", "invoke", True, hook=True))
     runtime = _runtime(())
     runtime.transcript_page = lambda session_id, after, limit: (session_id, after, limit)
     services = RuntimeServices(runtime, lease)
@@ -172,7 +172,7 @@ def test_deferred_outcome_does_not_answer_a_native_call_or_unbalance_a_completed
 
 @pytest.mark.parametrize("limit", [0, -1, 2001, True])
 def test_context_history_validates_source_limit(tmp_path, limit):
-    lease = LeaseContext("token", "owner", "session", tmp_path, "run", "revision", "invoke", True)
+    lease = LeaseContext(LeaseIdentity("token", "owner", "session", tmp_path, "run", "revision", "invoke", True))
     with pytest.raises(ValueError, match="limit"):
         RuntimeServices(_runtime(()), lease).read_context_history(limit=limit)
 
@@ -199,20 +199,20 @@ def test_projection_admission_rechecks_ids_and_accepts_completed_deferred_work(t
                 status="completed",
             )
             with PluginRuntime((), workspace=tmp_path, revision_id=revision, store=store) as runtime:
-                lease = LeaseContext("token", "compressor", "session", tmp_path, "run", revision, "invoke", False)
+                lease = LeaseContext(LeaseIdentity("token", "compressor", "session", tmp_path, "run", revision, "invoke", False))
                 if corrupt:
                     with pytest.raises(ValueError, match="whole native tool batches"):
                         runtime.store_window_projection(lease, 1, 5, "summary")
                 else:
                     runtime.store_window_projection(lease, 1, 5, "summary")
-                    assert len(lease.staged_events) == 1
+                    assert len(lease.staging.events) == 1
                     certified = runtime.context_history("session", 5)
                     assert certified.reached_end and certified.records[-1].safe_boundary
-                    assert lease.staged_events[0].payload["covered_bytes"] == sum(record.payload_bytes for record in certified.records)
+                    assert lease.staging.events[0].payload["covered_bytes"] == sum(record.payload_bytes for record in certified.records)
 
 
 def test_context_history_service_is_readonly_session_scoped_and_revocable(tmp_path):
-    lease = LeaseContext("token", "owner", "session", tmp_path, "run", "revision", "invoke", True, hook=True)
+    lease = LeaseContext(LeaseIdentity("token", "owner", "session", tmp_path, "run", "revision", "invoke", True, hook=True))
     runtime = _runtime(())
     runtime.context_history = lambda session_id, limit: (session_id, limit)
     services = RuntimeServices(runtime, lease)

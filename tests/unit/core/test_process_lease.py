@@ -25,7 +25,7 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.activation import SandboxPolicy
 from voidcode.core.engine import Core
-from voidcode.core.plugins import LeaseContext
+from voidcode.core.plugins import LeaseContext, LeaseIdentity
 from voidcode.core.processes import ProcessRegistry
 from voidcode.core.sandbox import SandboxBackend
 from voidcode.core.services import RuntimeServices
@@ -431,14 +431,16 @@ def test_read_only_lease_allows_run_query_process_and_hook_lease_rejects_both(tm
     runtime = core._snapshot.plugin_runtime
 
     ro_lease = LeaseContext(
-        token="ro-token",
-        owner="test-plugin",
-        session_id="sess-ro",
-        workspace=core.workspace,
-        run_id="run-ro",
-        revision_id=core._snapshot.admission.revision_id,
-        invocation_id="inv-ro",
-        readonly=True,
+        LeaseIdentity(
+            token="ro-token",
+            owner="test-plugin",
+            session_id="sess-ro",
+            workspace=core.workspace,
+            run_id="run-ro",
+            revision_id=core._snapshot.admission.revision_id,
+            invocation_id="inv-ro",
+            readonly=True,
+        )
     )
     ro_services = RuntimeServices(runtime, ro_lease)
 
@@ -448,19 +450,21 @@ def test_read_only_lease_allows_run_query_process_and_hook_lease_rejects_both(tm
     result = ro_services.run_query_process(_python("print('query ok')"))
     assert result.exit_code == 0
     assert result.stdout.strip() == "query ok"
-    assert len(ro_lease.staged_observations) == 0
+    assert len(ro_lease.staging.observations) == 0
 
     for ro in (True, False):
         hook_lease = LeaseContext(
-            token=f"hook-token-{ro}",
-            owner="test-plugin",
-            session_id=f"sess-hook-{ro}",
-            workspace=core.workspace,
-            run_id=f"run-hook-{ro}",
-            revision_id=core._snapshot.admission.revision_id,
-            invocation_id=f"inv-hook-{ro}",
-            readonly=ro,
-            hook=True,
+            LeaseIdentity(
+                token=f"hook-token-{ro}",
+                owner="test-plugin",
+                session_id=f"sess-hook-{ro}",
+                workspace=core.workspace,
+                run_id=f"run-hook-{ro}",
+                revision_id=core._snapshot.admission.revision_id,
+                invocation_id=f"inv-hook-{ro}",
+                readonly=ro,
+                hook=True,
+            )
         )
         hook_services = RuntimeServices(runtime, hook_lease)
         with pytest.raises(PermissionError):
@@ -473,14 +477,16 @@ def test_run_query_process_enforces_read_only_sandbox_profile(tmp_path: Path, mo
     core = _open(tmp_path)
     runtime = core._snapshot.plugin_runtime
     ro_lease = LeaseContext(
-        token="ro-token-sb",
-        owner="test-plugin",
-        session_id="sess-ro-sb",
-        workspace=core.workspace,
-        run_id="run-ro-sb",
-        revision_id=core._snapshot.admission.revision_id,
-        invocation_id="inv-ro-sb",
-        readonly=True,
+        LeaseIdentity(
+            token="ro-token-sb",
+            owner="test-plugin",
+            session_id="sess-ro-sb",
+            workspace=core.workspace,
+            run_id="run-ro-sb",
+            revision_id=core._snapshot.admission.revision_id,
+            invocation_id="inv-ro-sb",
+            readonly=True,
+        )
     )
     fake_backend = SandboxBackend(
         policy=SandboxPolicy(mode="workspace-write", writable_roots=("/tmp",)),

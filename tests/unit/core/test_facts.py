@@ -6,7 +6,7 @@ from sqlite3 import IntegrityError
 import pytest
 
 from voidcode.core.facts import fact_for_event
-from voidcode.core.plugins import LeaseContext, PluginRuntime
+from voidcode.core.plugins import LeaseContext, LeaseIdentity, PluginRuntime
 from voidcode.core.storage.store import EventDraft, SqliteStore
 from voidcode.sdk.codec import decode_tool_result, encode_tool_result
 from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, UsageFact
@@ -108,17 +108,17 @@ def test_resource_changes_roundtrip_and_failures_cannot_claim_successful_changes
 
 def test_projection_and_fact_commit_or_rollback_together(runtime):
     append(runtime, event("core.user_message", content="large input " * 100))
-    lease = LeaseContext("token", "compressor", "session", runtime.workspace, "run", runtime.revision_id, "inv", False)
+    lease = LeaseContext(LeaseIdentity("token", "compressor", "session", runtime.workspace, "run", runtime.revision_id, "inv", False))
     runtime.store_window_projection(lease, 1, 1, "summary")
     store = runtime.require_store()
     assert store.window_projection("session") is None
-    append(runtime, *lease.staged_events)
+    append(runtime, *lease.staging.events)
     projection = store.window_projection("session")
     assert projection is not None and projection.replacement == "summary"
     fact = runtime.fact_page("session", 1, 10).facts[0]
     assert isinstance(fact, ContextProjectedFact)
     assert fact.owner == "compressor" and fact.dropped_bytes == projection.dropped_bytes
-    bad = event("core.window_projected", **{**lease.staged_events[0].payload, "replacement": "different"})
+    bad = event("core.window_projected", **{**lease.staging.events[0].payload, "replacement": "different"})
     with pytest.raises(IntegrityError):
         # An invalid event insert rolls back the projection upsert in the same transaction.
         append(runtime, bad, EventDraft(None, "core", "core", {}))

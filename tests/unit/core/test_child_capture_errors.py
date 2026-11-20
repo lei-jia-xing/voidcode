@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from voidcode.core.child_contracts import ChildWaitDelivery
 from voidcode.core.delegation import DelegationManager
-from voidcode.core.plugins import LeaseContext
+from voidcode.core.plugins import LeaseContext, LeaseIdentity
 from voidcode.core.services import RuntimeServices
 from voidcode.sdk.services import ChildOutcome
 
@@ -18,7 +18,7 @@ def _manager() -> DelegationManager:
 
 
 def _lease() -> LeaseContext:
-    return LeaseContext("token", "owner", "parent", Path("/workspace"), "run", "rev", "invoke", False)
+    return LeaseContext(LeaseIdentity("token", "owner", "parent", Path("/workspace"), "run", "rev", "invoke", False))
 
 
 def test_child_outcome_maps_committed_capture_causes() -> None:
@@ -149,4 +149,4 @@ def test_wait_children_parser_keeps_exact_run_causes() -> None:
     assert outcomes[0].output_error == "RuntimeError: boom-output"
     assert outcomes[0].output_preview == "partial…"
     assert outcomes[1].output == "followup-ok" and outcomes[1].output_error is None
-    assert len(lease.staged_observer_receipts) == 2
+    assert len(lease.staging.observer_receipts) == 2
