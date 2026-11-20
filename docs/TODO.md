@@ -76,7 +76,111 @@ OMP 自己也有 request budget 与 preview 阈值；它们不自动构成 VoidC
 
 ### 清算结果（2026-11-19，以上各表详单已逐项核验落点）
 - Schema/JSON/兼容：三项全落（`kernel_identity` 删除、`wakeups`/`checkpoints` 建列、`background_actions` 独立成表、`json_extract` 清零、v1/v5 兼容分支删除）。用户可见：旧库拒绝不迁移（`ForeignDatabaseError`）。
-- Core 上帝对象：`ChildOutcome` 直传、`activation.py` 抽出、索引 + `events_by_types` + `payload_bytes`、watcher/轮询/`sleep` 同步、线程池收敛、`child_history` 删除全部落地；`per-turn rebuild` 的全量拉取属模型所需而保留。未动：`PluginRuntime` 双处构造、`LeaseContext`、`store.py` 单模块、`artifacts` fsync。
+- Core 上帝对象：`ChildOutcome` 直传、`activation.py` 抽出、`store.py` 拆为 facade + records/sessions/state/continuations/writes、索引 + `events_by_types` + `payload_bytes`、watcher/轮询/`sleep` 同步、线程池收敛、`child_history` 删除全部落地；`per-turn rebuild` 的全量拉取属模型所需而保留。未动：`PluginRuntime` 双处构造、`LeaseContext` 拆分、`artifacts` `.media` fsync。
 - SDK：悬空契约走闭环保留；`validate_json` 保留（`validate_python(strict)` 已证伪）；兼容分支、双 Wire 定义、`ObservedChange`、碎片模块、`sdk`→`tui` 的 gates 迁移、`PluginServices` 拆分全部落地；`icons.py` 与快捷键归一化保留。
-- 插件：tokenizer 整套删除；四巨石各自修剪（共享状态 helper 未动）；`cron`/`compaction`、`review` pager、`background` 就绪轮询（命名常量）、`grep`/`glob` ignore 表保留；`files/` 三引擎未收敛。
-- Outer/TUI/Web：死参数、手拼 openapi、dict 往返、轮询流、30fps 空转、Win32 后端、`views` if-chain、`CoreApp.tsx` 上帝组件全部落地；`snapshot`/`payload` 双字典（凭据边界）、composer 宽度引擎、`/tui` 双系统保留；`_drain_events` 链、每操作线程、TUI 写配置、`cli` argv 扫描未动。
+- 插件：tokenizer 整套删除；四巨石各自修剪（共享状态 helper 未动）；`cron`/`compaction`、`review` pager、`background` 就绪轮询（命名常量）保留；`grep`/`glob` 已共用唯一 ignore 表；`files/` 三引擎未收敛。
+- Outer/TUI/Web：死参数、手拼 openapi、dict 往返、轮询流、30fps 空转、Win32 后端、`views` if-chain、`CoreApp.tsx` 上帝组件全部落地；逐操作裸线程改 `WorkGroup`、TUI 配置写入走 `config.update_model_section`、typed event pump 与 `catalog`/`operations`/`rendering` 拆分落地；`snapshot`/`payload` 双字典（凭据边界）、composer 宽度引擎、`/tui` 双系统保留。剩余：`_handle_stream_event` 拆分、`cli` argv 扫描。
+
+### 2026-11-20 TUI Help/命令发现复核
+- 已落地：`CommandDescriptor`/`CommandDefinition` 增加可选 `usage`/`examples`/`group` 并贯通 payload 与插件 catalog；新增 `sdk/command_help.py` 统一 `client_syntax`→public path、schema→usage、group 排序；core `/help` 输出和 TUI `/tui help` 都改为该投影；新增 `tui/help_view.py`，`/tui` 控制、补全、help 共用一张表；`/help` receipt 由 TUI 从其 catalog `data` 渲染；`!` 前缀按 catalog `client_syntax` 路由。详见 [TUI TODO](../src/voidcode/tui/TODO.md)。
+- 跨模块剩余（不重复下方维护性清点）：core `/help`、CLI `invoke help` 与 TUI help 现已共用 `sdk/command_help.py`；`HealthModel.context_window` 与 web `client_syntax` 派生仍分别归属 SDK/Web，详见本文件“维护性清点”与 [TUI TODO](../src/voidcode/tui/TODO.md)。
+
+## 维护性清点（2026-11-20，当前树复核）
+
+口径：行数为当前工作树 `wc -l` 实测；`ruff check .`、`ruff format --check .`、`ty check src` 全绿。旧审计的方法数、类区间与 `row[N]` 计数已不再沿用。
+
+### 体量与职责
+
+| 模块 | 行数 | 职责 |
+|---|---|---|
+| `core/engine.py` | 6,697 | `Core`：生命周期、run/resume、ask/approval、命令 invoke/confirm、事件结算/observer；activation/usage/projection/cancellation/background registry 已抽为协作者 |
+| `core/services.py` | 1,498 | `RuntimeServices`：state/event/continuation/child/artifact/process/background 服务 |
+| `core/delegation.py` | 2,099 | `DelegationManager`：spawn/join/send/cancel、父子 facts、notice |
+| `core/plugins.py` | 1,894 | `PluginRuntime`：导入/catalog/lease/dispatch/hook/view/resource/query |
+| `core/storage/store.py` | 205 | facade：连接/生命周期/re-export |
+| `core/storage/records.py` | 1,025 | typed row decoders 与 SELECT 行类型 |
+| `core/storage/sessions.py` | 1,125 | sessions/events/checkpoints |
+| `core/storage/state.py` | 1,103 | revision/activation/adoption/owner state/confirmation/budget/overlay/projection |
+| `core/storage/continuations.py` | 1,370 | wakeup/continuation/background action/root budget/child-message claim |
+| `core/storage/writes.py` | 132 | 跨域写 helper |
+| `tui/terminal_app.py` | 2,437 | `CoreTuiApp` 状态所有者；事件泵/事件处理/catalog/operations/rendering 已拆到同级模块 |
+| `tui/event_pump.py` | 539 | 输入/stream/queue 泵与 frame→`_handle_stream_event` 桥 |
+| `tui/events.py` | 327 | typed frame 与事件投影 |
+| `tui/catalog.py` | 72 | catalog 生命周期 |
+| `tui/operations.py` | 149 | sessions/create/views/model reload/command input 请求与响应 |
+| `tui/rendering.py` | 338 | transcript/frame/footer/border 渲染 |
+| `tui/term.py` | 1,269 | 终端控制、宽度/裁剪、`render_lines`、`wrap_plain` |
+| `tui/composer.py` | 1,213 | 编辑器状态机、布局、粘贴块、自有折行 |
+| `tui/views.py` | 1,062 | 纯渲染器 + 交互视图；`render_tool_result(result: ToolResult, ...)` 直接消费 typed 结果 |
+| `plugins/workflows/workflows_plugin.py` | 2,327 | 脚本加载/执行、节点账本、上下文、命令/视图 |
+| `plugins/subagents/subagents_plugin.py` | 1,855 | child 投影、task/batch/wait、状态与监控 |
+| `sdk/services.py` | 1,617 | wire DTO + 服务子 Protocol |
+| `plugins/goal/goal_plugin.py` | 1,630 | goal 账本/提示词/命令/视图 |
+| `plugins/todo/todo_plugin.py` | 1,378 | todo 状态、提醒策略、命令 |
+| `capabilities/providers/native/openai_native.py` | 1,146 | HTTP/SSE wire、tool-call 累积、usage、错误映射 |
+| `plugins/lsp/lsp_manager.py` | 1,103 | LSP 进程、帧协议、请求路由、生命周期锁 |
+| `core/processes.py` | 1,031 | 进程注册表、捕获、supervised services/jobs |
+
+### 已落地（当前证据）
+
+- **Typed store rows**：`storage/records.py:633/651/686` 单点解码 session/info/event；`ChildOutcome` 与 spawn/ack/send 结果已强类型直传。残留 `row[N]` 仅 6 处（`continuations.py` 4、`records.py` 1、`state.py` 1），不再是全量逐字段解包。
+- **`render_tool_result` typed**：`tui/views.py:263` 直接收 `ToolResult`；`terminal_app` 不再经 `encode_tool_result`→dict→`isinstance` 还原；TUI view dispatch 也是 typed union。
+- **Config ingress**：`cli._tui_prefs` 走 `config.load_config(..., allow_missing=True)`；`bootstrap.config_from_snapshot` 只保留“5 个 section 必须存在”后交给单一 `parse_config`；TUI 配置写入唯一入口为 `config.update_model_section`，`grep "capabilities\." src/voidcode/tui` 为空。
+- **TUI 线程/事件/配置**：`WorkGroup` 是唯一有界执行器；`event_pump`/`events`/`catalog`/`operations`/`rendering` 已从 `terminal_app` 拆出；30fps 空转、逐操作裸线程、TUI 直写 `voidcode.json` 均已删除。
+- **Help**：`sdk/command_help.py` + `tui/help_view.py` 统一 core/CLI/TUI 的 usage、分组与 `/help` receipt。
+- **Ignore/constants**：唯一 ignore 表在 `capabilities/files/_common.py`（glob/grep 共用）；`RASTER_IMAGE_MIMES` 在 `sdk/tools.py`；`PAGE_BYTES` 在 `sdk/services.py`；`MAX_PAGE_BYTES` 单定义于 `core/artifacts.py`（`processes` 引用）；provider wire 常量统一在 `native/_wire_common.py`。保留：`_MAX_EVENT_PAGES`/`_EVENT_PAGE_SIZE` 按插件隔离各自定义。
+- **死符号**：4 个无实现的资源发现/枚举/搜索 `ArtifactServices` 方法；零读取 SDK 常量；TUI `set_cursor_shape`/`alt_screen`/`reset_live`/`set_enabled`/`ApprovalGate.from_fact` 均已删除。
+- **测试脚手架**：`tests/fixtures/core_factory.py`（`loopback_server`/`open_core_for_test`/`write_loopback_config`/`register_core`/`discard_core`/`close_cores`）与 `tests/fixtures/polling.py:wait_for` 已落地；12 个 integration 文件迁移 loopback、25 个文件迁移 core registry、7 个文件迁移 `_wait_for`。
+- **运行期 ownership 字面量**：事件 source/actor、artifact owner、overlay/continuation owner、`kernel_lost`→`core_lost` 已完成（见下节）；无兼容归一化。
+
+### 重复实现核查（此前待验证项，逐条结论）
+
+| 命题 | 结论 | 证据 |
+|---|---|---|
+| 宽度/ANSI 在 `term.py`、`views.py`、`terminal_app.py` 重复 | **反驳** | `term.py:170-288` 是唯一实现；`views.py:40`、`terminal_app.py:81`、`composer.py:27`、`artifact_viewer.py:26` 全部 import。残留仅 `composer.py:203-297` 的编辑器折行（保留每行逻辑列起点，复用 `cell_len`/`grapheme_spans`），不是第二套宽度引擎 |
+| web/TS 重复 ANSI/宽度 | **反驳** | `frontend/src` 无 strip/width 工具；HTML 渲染不需要 ANSI。跨端重复在 view 契约（`frontend/src/core/views/*.tsx` vs `tui/views.py:488-1066`），已由 TUI TODO 跟踪 |
+| config 解析/校验在 `config.py`/`cli.py`/`bootstrap.py` 重复 | **确认（原有 4 处）→ 2 处已收敛** | 权威仍为 `config.py:201`/`:251`。**已落地 2026-11-20**：`cli._tui_prefs` 改用 `load_config(..., allow_missing=True)`，删除自带 `json.loads`+`parse_config` 与 `except Exception: file_tui = {}`；格式错误改为带路径的显式 `ValueError`（经 `main` 输出 `status=failed`）。`bootstrap.config_from_snapshot` 删除逐 section `isinstance`+`json_wire_object` 复制，保留“5 个 section 必须存在”的显式检查后交给单一 `parse_config`；仍只解析 digest-verified 私有快照，不读 live 文件/环境，凭据边界不变。验证：`test_cli_arguments.py` 10、`test_provider_passthrough.py`+`test_config.py` 25 串行通过。已全部落地；TUI 配置写入走 `config.update_model_section`。 |
+| artifact 读取在 viewer 与 capabilities 重复 | **确认** | `core/coverage.py:71-85`（`read_artifact_content`）与 `tui/artifact_viewer.py:110-138`（`read_artifact_bytes`）同一分页/偏移/摘要校验算法，各约 28 行；TUI 版额外做逐页 reference 相等与取消检查，core 版做 EOF 一致性检查 |
+| markdown 渲染 TUI/web 重复 | **反驳（Python 侧）** | 仅 `tui/views.py:348` 一处 `Markdown` + `tui/styles.py:178` 主题；`core/history_renderer.py` 是给模型/`show` 的纯文本投影，不是第二渲染器 |
+| JSON guard 跨 `sdk/json_values.py` 使用方重复 | **反驳（helper）/确认（样板）** | 快照只有一套，且只剩 3 处 `json_wire_object(own_json_object(...))`（`cli.py:39`、`engine.py:4168`、`mcp_manager.py:472`）；但“must be an object”类手写形状检查仍是样板，不构成第二套 helper |
+
+新增重复（当时发现；除分页策略外均已落地，历史行号不再保证当前）：
+
+- `_response_payload` 两个 provider 逐字节相同：`anthropic_native.py:475-484` vs `openai_native.py:712-721`；`_response_metadata` 共享 6 行：`anthropic_native.py:218-229` vs `openai_native.py:1156-1164`。应移入已存在的 `native/_wire_common.py`。**（已落地 2026-11-20：`decode_response_payload` + `response_metadata(..., thinking_blocks=)`；provider/compaction 套件 227 passed。）**
+- **增量 UTF-8 分页解码（有意不同，不合并）**：`capabilities/resource_pages.py` 用 `replace` 做流式展示/进度，永不因半个字符失败；`capabilities/exec/process_reader.py` 用 `strict`+hex 游标，字节寻址日志的非法字节以 hex 呈现；`core/coverage.py` 用严格前缀，模型投影预算内绝不注入非法字节；`tui/artifact_viewer.py` 用 strict+state 缓存的视窗解码器。四种错误策略对应四种消费语义，强行抽共享 helper 会改变其中至少一端的可见行为，因此不视为重复缺陷。
+- 同包重复：`_INTEGER_PATTERN`/`_NUMBER_PATTERN` 在 `sdk/views.py:454-455` 与 `sdk/ask.py:29-30`；`PAGE_BYTES` 在 `core/history_renderer.py:23` 与 `sdk/services.py:1281`（注释自认相等，因禁止 sdk→core 而内联）。**（已落地 2026-11-20：页预算单一定义为 `sdk/services.py:PAGE_BYTES`，core renderer 引用；服务默认参数同源。）**
+- 常量分叉：`DEFAULT_IGNORE_PATTERNS` 在 `capabilities/files/glob_tool.py:27`（17 项）与 `grep_tool.py:36`（5 项）——同名不同义，`grep` 会搜 `target/.venv/vendor`；`RASTER_IMAGE_MIMES` 3 份（`core/coverage.py:38`、`capabilities/resource_pages.py:22`、`plugins/mcp/mcp_tool.py:40`）；`WEB_URI_PREFIX` 2 份（`plugins/web/web_fetch.py:42`、`web_reader.py:16`）；`_MAX_EVENT_PAGES`/`_EVENT_PAGE_SIZE` 4 份（`todo:43-44`、`cron:83-84`、`skills:628-629`、`compaction:59-60`）；`MAX_PAGE_BYTES` 2 份（`core/artifacts.py:28`、`core/processes.py:37`，注释写“matching”）；provider wire 常量 `_DEFAULT_TIMEOUT_SECONDS`/`_OUTPUT_CAP_WHEN_UNKNOWN`/`_PLACEHOLDER_API_KEY` 在 openai/anthropic 各一份。**（2026-11-20 已落地：ignore 表唯一为 `capabilities/files/_common.py:DEFAULT_IGNORE_PATTERNS` + `is_default_ignored`，glob/grep 共用；`RASTER_IMAGE_MIMES` 移入 `sdk/tools.py`；`web_reader` 删除未读副本；`MAX_PAGE_BYTES` 由 `processes` 引用 `artifacts`；provider 三常量移入 `native/_wire_common.py`。保留：`_MAX_EVENT_PAGES`/`_EVENT_PAGE_SIZE` 按插件隔离决定各自定义。）**
+
+### 防御式检查（已收敛）
+
+- TUI `_mount_interactive_view`/`_dispatch_catalog_command` 的恒真 `assert` 与 `Mapping` 降级路径已删；`render_tool_result` 直接收 typed `ToolResult`。
+- `bootstrap.config_from_snapshot` 去掉逐 section `isinstance`+`json_wire_object` 复制；store 读路径单点解码，残留 `row[N]` 仅 6 处。
+- 其余 `isinstance`/`cast` 仅保留在真实 ingress 或值形状检查；不再有对 `ChildOutcome`/spawn/ack/send 的字段级重验。
+- `except Exception` 静默点仅余 UI/插件边界的显式降级。
+
+### 死代码与空契约（已清理）
+
+- SDK 零读取常量、`CHUNK_BYTES`、`ArtifactStore.discard_all`、`CORE_TOOL_NAMES`、`COMPACTED_FACT_TYPE` 已删除。
+- 4 个无实现、0 调用的资源发现/枚举/搜索 `ArtifactServices` 方法及其 `FakeServices` 桩/断言已删除；`resources.py` DTO 与 `ResourceReader` slots 保留为未实现设计。
+- TUI `set_cursor_shape`/`alt_screen`/`reset_live`/`set_enabled`/`ApprovalGate.from_fact` 已删除。
+
+### 测试脚手架（已收敛）
+
+- `tests/fixtures/core_factory.py`（`loopback_server`/`open_core_for_test`/`write_loopback_config`/`register_core`/`discard_core`/`close_cores`）与 `tests/fixtures/polling.py:wait_for` 是唯一共享入口；conftest autouse teardown 关闭所有注册 Core。
+- 12 个 integration 文件迁移 `loopback_server`（最近一批 42 passed），25 个文件迁移 core registry，7 个文件迁移 `_wait_for`（`test_tui_monitor` 现可正常 collect）。
+- 剩余见下方“剩余（open）”中的测试 fixture 项。
+
+### 运行期 ownership 字面量去 kernel（2026-11-20，破坏性）
+- 事件 `source`/`actor`、artifact `owner`、session overlay owner、continuation owner（含 SQL 谓词）统一为 `"core"`；StopCause/status `"kernel_lost"` 改为 `"core_lost"`。测试与当前 docs/contracts 同步。
+- 不做读时归一化/兼容：旧库中已写入的 `"kernel"`/`kernel_lost` 行不会被识别；按零向后兼容策略，跨此改动应从新 state 目录开始。
+- 保留：`docs/CHANGELOG.md` 历史条目，以及 `core/TODO.md`/`docs/TODO.md` 中描述已删除 `kernel_identity`/旧 `owner='kernel'` 行的历史审计原样。
+
+### 剩余（open）
+
+1. `engine.py` 6,697 行；background invocation/tool-wait 仍在 `Core`（`_invoke_background_action`/`_wait_background_actions` 路径）。
+2. `PluginRuntime` 仍有两处构造（`engine.py:671`、`:3091`），未收敛为单一 builder。
+3. `LeaseContext`（`core/plugins.py:147`）未拆为 `LeaseIdentity` + `StagingBuffer`。
+4. `terminal_app.py:572-729` `_handle_stream_event` 仍约 158 行。
+5. `config.py:217` `resolve_providers` 仍延迟 import `capabilities.providers.native.provider_table`；provider 行应归中性 registry。
+6. 测试 fixture 残留：`test_overlays`；7 个特殊 registry 文件（`test_overlays`、`test_workflows_restart`、`test_background_actions`、`test_collaboration`、`test_goal_plugin`、`test_plan_plugin`、`test_todo_plugin`）；21 个 unit `_server` 副本；`test_idle_render` 的 5s/无 `what` wait helper。
+7. Artifact `.media` sidecar 未 fsync（`core/artifacts.py:_write_media_type`）；内容命名持久性仍依赖目录 fsync/后续流程。

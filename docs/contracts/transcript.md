@@ -2,7 +2,7 @@
 
 `PluginServices.read_transcript(after_sequence=0, limit=100)` exposes typed
 conversation records for the calling session. The core decodes storage events;
-consumers do not depend on `kernel.*` names or nested payload layouts. This uses
+consumers do not depend on `core.*` names or nested payload layouts. This uses
 the existing SQLite history and adds no bus, dependency or persistence table.
 
 `TranscriptEntry` preserves source sequence, run, revision and source identity.

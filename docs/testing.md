@@ -68,7 +68,7 @@ Or run `pytest` directly:
 
 ```bash
 # The whole suite with slow cases reported
-uv run python -X utf8 -m pytest -n auto --dist worksteal --durations=20
+uv run python -X utf8 -m pytest --durations=20
 
 # One tier
 uv run python -X utf8 -m pytest tests/unit/core/
