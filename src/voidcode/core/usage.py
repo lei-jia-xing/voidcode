@@ -8,20 +8,11 @@ only durable state, so the core can rebuild it per turn without owning the arith
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from ..sdk.codec import decode_provider_result
-from ..sdk.json_values import json_wire_object
 from ..sdk.services import SessionUsageReport
 from .events import EventType
+from .execution import wire_object
 from .storage.store import SessionRecord, SqliteStore, StoredEvent
-
-
-def _wire_object(value: object, what: str) -> Mapping[str, object]:
-    """Require a JSON object from a durable payload, failing visibly when malformed."""
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{what} must be a JSON object")
-    return json_wire_object(value)
 
 
 class UsageProjector:
@@ -105,7 +96,7 @@ class UsageProjector:
                     unknown_elapsed = True
             elif comp_ev.event_type == EventType.MODEL_TURN:
                 turn_count += 1
-                turn = decode_provider_result(_wire_object(comp_ev.payload["result"], "model turn"))
+                turn = decode_provider_result(wire_object(comp_ev.payload["result"], "model turn"))
                 u = turn.usage
                 if u is not None and u.input_tokens is not None:
                     total_input += u.input_tokens

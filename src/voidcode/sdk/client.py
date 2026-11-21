@@ -414,12 +414,9 @@ class HeadFrame:
         raw_session = payload.get("session")
         if not isinstance(raw_session, Mapping):
             raise ValueError("head frame must carry a session object")
-        for item in raw_events:
-            if not isinstance(item, Mapping):
-                raise ValueError("head frame events must be objects")
         return HeadFrame(
             session=SessionRow.from_payload(raw_session),
-            events=tuple(StreamEvent.from_payload(item) for item in raw_events if isinstance(item, Mapping)),
+            events=tuple(StreamEvent.from_payload(item) for item in raw_events),
         )
 
 
