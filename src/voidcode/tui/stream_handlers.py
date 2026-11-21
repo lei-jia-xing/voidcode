@@ -25,13 +25,13 @@ from .artifact_viewer import InteractiveArtifactViewer
 from .formatting import prefixed_rows, safe
 from .gates import (
     ActivationCommitted,
-    ApprovalGate,
     ApprovalRequested,
     ConfirmationGate,
     ConfirmationRequested,
     GateChange,
     GateDecided,
     RunTerminated,
+    approval_gate_from_payload,
 )
 from .rendering import ActiveToolProgress, content_rows
 
@@ -54,7 +54,7 @@ def handle_stream_event(app: CoreTuiApp, event: StreamEvent, rows: list[str]) ->
     if event.sequence <= committed:
         return  # Settled ledger: never replay already committed events
     app._session_cursors[app.session_id] = event.sequence
-    payload = event.payload if isinstance(event.payload, Mapping) else {}
+    payload = event.payload
     entry = event.transcript
     etype = event.type
     _transcript_entry(app, event, payload, entry, rows)
@@ -160,7 +160,7 @@ def _tool_progress(app: CoreTuiApp, event: StreamEvent, payload: Mapping[str, ob
             stream_name = str(raw_progress.get("stream", "stdout"))
             if isinstance(text, str) and text:
                 cols = max(1, app.terminal.width)
-                rows_budget = max(1, getattr(app.terminal, "height", 24))
+                rows_budget = max(1, app.terminal.height)
                 active.append_chunk(stream_name, text, cols=cols, rows=rows_budget)
 
 
@@ -248,25 +248,13 @@ def _observer_error(app: CoreTuiApp, payload: Mapping[str, object], rows: list[s
     rows.extend(prefixed_rows("Warning: plugin observer:", str(payload.get("error") or "Observer failed"), app.styles, slot="warning"))
 
 
-def _approval_gate_from_payload(payload: Mapping[str, object], *, run_id: str, revision_id: str) -> ApprovalGate:
-    """Decode one core approval request payload into its typed gate (outer only)."""
-    request_id = payload.get("request_id")
-    if not isinstance(request_id, str) or not request_id:
-        raise ValueError("approval payload requires a non-empty request_id")
-    raw_call = payload.get("call")
-    if not isinstance(raw_call, Mapping):
-        raise ValueError("approval payload requires a call object")
-    call = decode_tool_call(raw_call)
-    return ApprovalGate(call=call, request_id=request_id, run_id=run_id, revision_id=revision_id)
-
-
 def _gate_changes(event: StreamEvent) -> tuple[list[GateChange], bool]:
     """Decode one stream event's gate changes plus whether the run terminated.
 
     Returns ``(changes, run_terminated)``; the caller folds changes through
     the reducer and applies the same gate UI rules as before.
     """
-    payload = event.payload if isinstance(event.payload, Mapping) else {}
+    payload = event.payload
     if event.type == EventType.CONFIRMATION_REQUESTED:
         if str(payload.get("ui_type", "")) != "confirmation":
             return [], False
@@ -280,7 +268,7 @@ def _gate_changes(event: StreamEvent) -> tuple[list[GateChange], bool]:
         raw_call = payload.get("call")
         if not isinstance(request_id, str) or not request_id or not isinstance(raw_call, Mapping):
             return [], False
-        gate = _approval_gate_from_payload(payload, run_id=event.run_id, revision_id=event.revision_id)
+        gate = approval_gate_from_payload(payload, run_id=event.run_id, revision_id=event.revision_id)
         return [ApprovalRequested(gate)], False
     if event.type == EventType.APPROVAL_DECIDED:
         request_id = str(payload.get("request_id") or "")

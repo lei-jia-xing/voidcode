@@ -1,16 +1,18 @@
 """Typed decision gates: native approvals and plugin confirmations.
 
 Contracts only: frozen dataclasses plus a pure reducer. No sockets, no
-storage, no ``Core`` — and no raw event payloads. The outer layer decodes
-stream events and run receipts into :data:`GateChange`, then folds them with
-:func:`reduce_gates`.
+storage, no ``Core``. The outer layer decodes stream events and run receipts
+into :data:`GateChange`, then folds them with :func:`reduce_gates`; the one
+approval-payload decoder is shared here so both outer paths use the same check.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from voidcode.sdk.ask import AskRequest
+from voidcode.sdk.codec import decode_tool_call
 from voidcode.sdk.commands import ConfirmationRequest
 from voidcode.sdk.tools import ToolCall
 from voidcode.sdk.views import ConfirmationViewData, parse_view_data
@@ -240,6 +242,18 @@ def reduce_gates(state: GateState, change: GateChange) -> GateState:
     raise ValueError(f"unknown gate change: {type(change).__name__}")
 
 
+def approval_gate_from_payload(payload: Mapping[str, object], *, run_id: str, revision_id: str) -> ApprovalGate:
+    """Decode one core approval request payload into its typed gate (outer only)."""
+    request_id = payload.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError("approval payload requires a non-empty request_id")
+    raw_call = payload.get("call")
+    if not isinstance(raw_call, Mapping):
+        raise ValueError("approval payload requires a call object")
+    call = decode_tool_call(raw_call)
+    return ApprovalGate(call=call, request_id=request_id, run_id=run_id, revision_id=revision_id)
+
+
 def pending_gates(state: GateState) -> tuple[PendingGate, ...]:
     """Ordered pending gates: the blocking approval first, then asks and confirmations in arrival order."""
     by_id: dict[str, PendingGate] = {}
@@ -267,6 +281,7 @@ __all__ = [
     "GateState",
     "PendingGate",
     "RunTerminated",
+    "approval_gate_from_payload",
     "pending_gates",
     "reduce_gates",
 ]

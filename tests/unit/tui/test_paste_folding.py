@@ -266,6 +266,7 @@ def test_history_browse_preserves_draft_blocks() -> None:
 
 class _StubTerminal:
     width = 100
+    height = 24
     eof = False
     color_system = None
 

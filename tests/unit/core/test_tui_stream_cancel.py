@@ -27,6 +27,7 @@ class _Terminal:
     """The app's terminal surface without a real TTY: no keys, recorded committed rows."""
 
     width = 100
+    height = 24
     eof = False
     color_system = None
 

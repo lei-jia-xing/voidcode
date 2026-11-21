@@ -171,6 +171,7 @@ def _harness_app() -> CoreTuiApp:
 
     class _StubTerminal:
         width = 100
+        height = 24
         eof = False
         color_system = None
 

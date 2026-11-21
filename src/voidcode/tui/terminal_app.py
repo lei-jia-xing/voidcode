@@ -29,7 +29,6 @@ from voidcode.sdk.client import (
     SessionRow,
     StreamCancellation,
 )
-from voidcode.sdk.codec import decode_tool_call
 from voidcode.sdk.command_help import command_argument_hints
 from voidcode.sdk.commands import CommandDescriptor
 from voidcode.sdk.provider import ProviderTokenUsage, ProviderTurnResult
@@ -53,13 +52,13 @@ from voidcode.sdk.views import (
 )
 from voidcode.tui.gates import (
     ActivationCommitted,
-    ApprovalGate,
     ApprovalRequested,
     ConfirmationRequested,
     GateChange,
     GateDecided,
     GateState,
     RunTerminated,
+    approval_gate_from_payload,
     reduce_gates,
 )
 
@@ -152,18 +151,6 @@ _BUILTIN_BANNER = (
 
 #: Immutable ctor/entry default: None at the boundary always means disabled.
 _DEFAULT_BANNER = BannerConfig()
-
-
-def _approval_gate_from_payload(payload: Mapping[str, object], *, run_id: str, revision_id: str) -> ApprovalGate:
-    """Decode one core approval request payload into its typed gate (outer only)."""
-    request_id = payload.get("request_id")
-    if not isinstance(request_id, str) or not request_id:
-        raise ValueError("approval payload requires a non-empty request_id")
-    raw_call = payload.get("call")
-    if not isinstance(raw_call, Mapping):
-        raise ValueError("approval payload requires a call object")
-    call = decode_tool_call(raw_call)
-    return ApprovalGate(call=call, request_id=request_id, run_id=run_id, revision_id=revision_id)
 
 
 _IGNORED_PATH_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".codegraph"}
@@ -1584,7 +1571,7 @@ class CoreTuiApp:
                 )
                 if status == "waiting" and res.pending_approval is not None:
                     try:
-                        gate = _approval_gate_from_payload(res.pending_approval, run_id=res.run_id, revision_id=res.revision_id)
+                        gate = approval_gate_from_payload(res.pending_approval, run_id=res.run_id, revision_id=res.revision_id)
                     except ValueError as exc:
                         self._queue_notice(f"Approval receipt malformed: {exc}", tone="error", session_id=session_id, generation=generation)
                     else:

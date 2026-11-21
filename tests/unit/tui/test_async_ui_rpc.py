@@ -19,6 +19,7 @@ from voidcode.tui.views import InteractiveChoices, InteractiveForm
 class _StubTerminal:
     width = 100
     content_width = 100
+    height = 24
     eof = False
     color_system = None
 
@@ -55,6 +56,7 @@ def _row(session_id: str = "s1") -> SessionRow:
 class _BlockingClient:
     def __init__(self) -> None:
         self.release = threading.Event()
+        self.started = threading.Event()
         self.calls: list[tuple[str, str]] = []
 
     def command_catalog(self) -> CommandCatalog:
@@ -62,18 +64,21 @@ class _BlockingClient:
 
     def list_sessions(self, limit: int = 100) -> list[SessionRow]:
         self.calls.append(("sessions", "start"))
+        self.started.set()
         self.release.wait(5)
         self.calls.append(("sessions", "done"))
         return [_row()]
 
     def create_session(self) -> SessionRow:
         self.calls.append(("create", "start"))
+        self.started.set()
         self.release.wait(5)
         self.calls.append(("create", "done"))
         return _row("s2")
 
     def views(self, session_id: str) -> ViewsSnapshot:
         self.calls.append(("views", "start"))
+        self.started.set()
         self.release.wait(5)
         self.calls.append(("views", "done"))
         view = PluginViewDescriptor(
@@ -107,6 +112,7 @@ def test_show_sessions_returns_before_the_rpc_and_mounts_afterward() -> None:
     client = _BlockingClient()
     app, _ = _app(client)
     app._show_sessions()
+    assert client.started.wait(5)
     assert client.calls == [("sessions", "start")]
     assert app.status_line == "Loading sessions..."
     client.release.set()
@@ -121,6 +127,7 @@ def test_create_session_returns_before_the_rpc_and_switches_afterward(monkeypatc
     switched: list[str] = []
     monkeypatch.setattr(app, "_switch_session", lambda target: switched.append(target))
     app._create_session()
+    assert client.started.wait(5)
     assert client.calls == [("create", "start")]
     assert switched == []
     client.release.set()
@@ -132,6 +139,7 @@ def test_show_views_returns_before_the_rpc_and_mounts_the_form() -> None:
     client = _BlockingClient()
     app, _ = _app(client)
     app._show_views()
+    assert client.started.wait(5)
     assert client.calls == [("views", "start")]
     client.release.set()
     _settle(app)

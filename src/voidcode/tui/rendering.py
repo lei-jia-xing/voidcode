@@ -241,7 +241,7 @@ def render_frame(app: CoreTuiApp) -> None:
     elif app.active_overlay is not None:
         overlay = app.active_overlay
         overlay_rows = (
-            overlay.render_rows(width, app.styles, max_rows=max(6, getattr(app.terminal, "height", 24) - len(footer_rows)))
+            overlay.render_rows(width, app.styles, max_rows=max(6, app.terminal.height - len(footer_rows)))
             if isinstance(overlay, (InteractiveMarkdown, InteractiveChoices))
             else overlay.render_rows(width, app.styles)
         )
@@ -262,7 +262,7 @@ def _render_artifact_viewer(app: CoreTuiApp, width: int, footer_rows: tuple[str,
     ):
         viewer.fail_image(viewer.source.sha256, "Kitty upload acknowledgement timed out; no terminal image success was observed.")
         app._artifact_ack_deadline = None
-    available = max(1, getattr(app.terminal, "height", 24) - len(footer_rows))
+    available = max(1, app.terminal.height - len(footer_rows))
     rows = viewer.render_rows(width, app.styles, max_rows=available)
     placement_id = app.terminal.kitty_placement_id(viewer.source.sha256)
     placement = (
@@ -280,7 +280,7 @@ def _render_artifact_viewer(app: CoreTuiApp, width: int, footer_rows: tuple[str,
 
 def _render_composer(app: CoreTuiApp, width: int, footer_rows: tuple[str, ...]) -> None:
     app.composer.set_width(width)
-    height = getattr(app.terminal, "height", 24)
+    height = app.terminal.height
     available = max(1, height - len(footer_rows))
     app.composer.set_max_height(app.composer.input_height(available, status_visible=app.border == "borderless" and app._run_active))
     status = border_status(app)
