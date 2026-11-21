@@ -148,7 +148,7 @@ def test_tool_success_steering_context_appears_next_dispatch_only(tmp_path: Path
         # Rebuilding messages from SQLite events must not include the ephemeral steering context
         session = core.store.session(session_id)
         replayed_execution = _Execution(session, _Cursor(), list(core.store.events(session_id)), "test-replay")
-        replayed_messages = core._messages(replayed_execution)
+        replayed_messages = core._context_projection.messages(replayed_execution)
         assert not any(msg.role == "system" and "[Tool Guidance]" in (msg.content or "") for msg in replayed_messages)
 
 
@@ -195,7 +195,7 @@ def test_tool_failure_steering_context_appears_next_dispatch_only(tmp_path: Path
         # Replay from SQLite events
         session = core.store.session(session_id)
         replayed_execution = _Execution(session, _Cursor(), list(core.store.events(session_id)), "test-replay-fail")
-        replayed_messages = core._messages(replayed_execution)
+        replayed_messages = core._context_projection.messages(replayed_execution)
         assert not any(msg.role == "system" and "[Tool Guidance]" in (msg.content or "") for msg in replayed_messages)
 
 
@@ -212,7 +212,7 @@ def test_ephemeral_steering_multiple_tools_and_cleared_after_messages(tmp_path: 
         execution = _Execution(session, _Cursor(), list(core.store.events(session_id)), "unit-run")
         execution.ephemeral_steering.extend(["Guidance item 1", "Guidance item 2"])
 
-        messages = core._messages(execution)
+        messages = core._context_projection.messages(execution)
         guidance_messages = [msg for msg in messages if msg.role == "system" and (msg.content or "").startswith("[Tool Guidance]")]
         assert len(guidance_messages) == 1
         assert guidance_messages[0].content == "[Tool Guidance]\nGuidance item 1\nGuidance item 2"
@@ -221,5 +221,5 @@ def test_ephemeral_steering_multiple_tools_and_cleared_after_messages(tmp_path: 
         assert execution.ephemeral_steering == []
 
         # Subsequent call does not include it
-        messages_next = core._messages(execution)
+        messages_next = core._context_projection.messages(execution)
         assert not any(msg.role == "system" and "[Tool Guidance]" in (msg.content or "") for msg in messages_next)

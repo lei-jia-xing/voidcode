@@ -48,7 +48,7 @@ from .projection import (
     summary_prompt,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 #: STABLE cumulative fact: staged via ``services.stage_event`` as
 #: ``plugin.compaction.context_compacted``, one event per applied projection (threshold or
 #: manual) carrying core-measured accounting. Consumers count these events for the cumulative
@@ -59,7 +59,6 @@ _MAX_EVENT_PAGES = 3
 _EVENT_PAGE_SIZE = 200
 
 _PROJECTION_KEYS: frozenset[str] = frozenset({"covered_from_sequence", "covered_to_sequence", "covered_bytes", "dropped_bytes", "summary_kind"})
-_SUMMARY_KINDS: frozenset[str] = frozenset({"deterministic", "model"})
 
 ProjectionReason = Literal["threshold", "manual"]
 
@@ -103,12 +102,11 @@ class CompactionState:
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> CompactionState:
-        version = payload.get("schema_version", SCHEMA_VERSION)
-        if version != SCHEMA_VERSION:
+        if payload["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"compaction state schema_version must be {SCHEMA_VERSION}")
         return CompactionState(
-            cursor_sequence=_non_negative_int(payload.get("cursor_sequence", 0), field="cursor_sequence"),
-            last_projection=_projection_from_payload(payload.get("last_projection")),
+            cursor_sequence=_non_negative_int(payload["cursor_sequence"], field="cursor_sequence"),
+            last_projection=_projection_from_payload(payload["last_projection"]),
         )
 
 
@@ -129,15 +127,14 @@ def _projection_from_payload(raw: object) -> LastProjection | None:
     missing = sorted(_PROJECTION_KEYS - set(raw))
     if missing:
         raise ValueError(f"compaction last_projection is missing field: {missing[0]}")
-    summary_kind = raw.get("summary_kind")
-    if summary_kind not in _SUMMARY_KINDS:
-        raise ValueError("compaction last_projection summary_kind must be 'deterministic' or 'model'")
+    if raw["summary_kind"] != "model":
+        raise ValueError("compaction last_projection summary_kind must be 'model'")
     return LastProjection(
-        covered_from_sequence=_non_negative_int(raw.get("covered_from_sequence"), field="covered_from_sequence"),
-        covered_to_sequence=_non_negative_int(raw.get("covered_to_sequence"), field="covered_to_sequence"),
-        covered_bytes=_non_negative_int(raw.get("covered_bytes"), field="covered_bytes"),
-        dropped_bytes=_non_negative_int(raw.get("dropped_bytes"), field="dropped_bytes"),
-        summary_kind=summary_kind,
+        covered_from_sequence=_non_negative_int(raw["covered_from_sequence"], field="covered_from_sequence"),
+        covered_to_sequence=_non_negative_int(raw["covered_to_sequence"], field="covered_to_sequence"),
+        covered_bytes=_non_negative_int(raw["covered_bytes"], field="covered_bytes"),
+        dropped_bytes=_non_negative_int(raw["dropped_bytes"], field="dropped_bytes"),
+        summary_kind="model",
     )
 
 

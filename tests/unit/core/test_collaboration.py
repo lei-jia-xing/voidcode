@@ -35,8 +35,8 @@ from tests.fixtures.s5_plugin import write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
-from voidcode.core.events import CHILD_OUTCOME_RECEIPT_OWNER, child_completion_notice_id
-from voidcode.core.storage.store import StoreConflict
+from voidcode.core.events import CHILD_OUTCOME_RECEIPT_OWNER, EventType, child_completion_notice_id
+from voidcode.core.storage.store import EventDraft, StoreConflict
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.services import ChildOutcome, ChildSendReceipt
 
@@ -1340,6 +1340,30 @@ def test_child_without_captured_root_fails_publication_visibly(
         assert len(server.requests) == 1, "no notice turn ran and the child never reran"
 
 
+def test_child_spawn_fact_commit_failure_is_visible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with loopback_server([]) as server:
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        original = core.store.commit_staged
+
+        def fail_spawn(session_id: str, **kwargs: object):
+            events = kwargs.get("events", ())
+            if any(event.event_type == EventType.CHILD_SPAWNED for event in events):
+                raise StoreConflict("forced spawn fact conflict")
+            return original(session_id, **kwargs)
+
+        monkeypatch.setattr(core.store, "commit_staged", fail_spawn)
+        with pytest.raises(StoreConflict, match="forced spawn fact conflict"):
+            core.spawn_child(parent, "child prompt")
+        assert not [event for event in core.store.events(parent) if event.event_type == EventType.CHILD_SPAWNED]
+
+        def fail_diagnostic(session_id: str, **kwargs: object):
+            raise StoreConflict("forced diagnostic conflict")
+
+        monkeypatch.setattr(core.store, "commit_staged", fail_diagnostic)
+        core._commit_control_event(parent, EventDraft(EventType.MODEL_QUERY, "core", "plugin", {}))
+
+
 def test_send_authorization_follows_the_current_stance(tmp_path: Path) -> None:
     replies = [
         _turn(output="child one done"),
@@ -1784,6 +1808,23 @@ def test_child_budget_stop_is_typed_from_exact_event_across_reopen_and_resume(tm
         assert len(facts) == 1 and facts[0]["run_id"] == resumed.run_id
         assert "budget_exhaustion" not in facts[0], "the resumed terminal fact does not inherit the old pause"
         assert len(server.requests) == 2, "the child resumes at the committed checkpoint without replay"
+
+
+def test_resume_rejects_invalid_root_action_extension_before_writes(tmp_path: Path) -> None:
+    with loopback_server([]) as server:
+        core = _open(tmp_path, server)
+        session_id = core.create_session("s").session_id
+        before_events = core.store.events(session_id)
+        cases = [
+            (0, "grant", "extend_root_actions must be a positive integer"),
+            (-1, "grant", "extend_root_actions must be a positive integer"),
+            (1, None, "root_action_grant_id must be nonempty text"),
+            (None, "grant", "root_action_grant_id requires extend_root_actions"),
+        ]
+        for amount, grant, message in cases:
+            with pytest.raises(ValueError, match=message):
+                core.resume(session_id, extend_root_actions=amount, root_action_grant_id=grant)
+            assert core.store.events(session_id) == before_events
 
 
 def test_join_during_publication_waits_and_never_returns_an_empty_completed(tmp_path: Path) -> None:

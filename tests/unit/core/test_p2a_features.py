@@ -14,7 +14,7 @@ import pytest
 from voidcode.core.activation import ExecutionConfig, ExecutionPolicy
 from voidcode.core.engine import Core
 from voidcode.core.plugins import PluginSource
-from voidcode.core.storage.store import EventDraft
+from voidcode.core.storage.store import CheckpointKind, EventDraft, SessionStatus
 
 
 def make_p2a_plugin(
@@ -509,8 +509,8 @@ def test_p2a_usage_windowing_and_unknown_semantics(tmp_path: Path) -> None:
                     {"dispatch_sequence": latest_s.last_event_sequence + 1, "error": "simulated transport loss"},
                 ),
             ),
-            status="interrupted",
-            checkpoint_kind="interrupted",
+            status=SessionStatus.INTERRUPTED,
+            checkpoint_kind=CheckpointKind.INTERRUPTED,
             checkpoint_payload={},
         )
 

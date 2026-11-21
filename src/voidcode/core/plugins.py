@@ -71,6 +71,7 @@ from voidcode.sdk.provider import (
 )
 from voidcode.sdk.resources import ResourceContractError, ResourcePage, ResourceReadCaller, ResourceReadRequest, ResourceUnavailable
 from voidcode.sdk.services import (
+    BackgroundActionStatus,
     CancelSubtreeReceipt,
     ChildOutcome,
     ChildSendReceipt,
@@ -106,6 +107,8 @@ from .processes import ProcessRegistry
 from .sandbox import SandboxBackend
 from .services import ResourceReaderServicesView, RuntimeServices
 from .storage.store import (
+    ContinuationRecord,
+    ContinuationStatus,
     EventDraft,
     ObserverReceiptRecord,
     SessionRecord,
@@ -344,11 +347,9 @@ class PluginRuntime:
         self.model_query_structured_callback = model_query_structured_callback
         self.progress_callback = progress_callback
         self.tool_definition_callback = tool_definition_callback
-        #: Core-owned background wiring: the claim loop's wakeup, the claim liveness check,
-        #: and the action ids this generation currently drives. Set by the core after build.
+        #: Core-owned background wiring: the claim loop's wakeup and the claim liveness check.
         self.background_action_notify_callback: Callable[[], None] | None = None
         self.background_claim_live_callback: Callable[[Any], bool] | None = None
-        self.background_live_actions: set[str] = set()
         self._artifacts = None if artifacts_dir is None else ArtifactStore(artifacts_dir)
         self._namespace = f"voidcode_runtime_{uuid4().hex}"
         self._modules: list[str] = []
@@ -1015,34 +1016,32 @@ class PluginRuntime:
         if callback is not None:
             callback()
 
-    def background_action_status(self, record: Any) -> Any:
+    def background_action_status(self, record: ContinuationRecord) -> BackgroundActionStatus:
         """Project one background action row to its owner-visible status; the core sets liveness.
 
         `interrupted` is reported when the row is claimed but its claim identity no longer
         verifies live. The verification callback is core-owned; without it a claimed row
-        reports `running` only when this runtime drives it, else `interrupted`.
+        reports `interrupted`.
         """
-        from voidcode.sdk.services import BackgroundActionStatus as Status
-
-        error: str | None = None
-        claimed = getattr(record, "status", "pending")
-        payload = getattr(record, "payload", {})
-        error_value = payload.get("error") if isinstance(payload, Mapping) else None
-        if isinstance(error_value, str) and error_value:
-            error = error_value
-        action_id = str(getattr(record, "continuation_id", ""))
-        if claimed in ("completed", "failed", "cancelled"):
-            return Status(action_id=action_id, status=claimed, error=error)
-        if claimed == "pending":
-            return Status(action_id=action_id, status="pending")
-        live = action_id in self.background_live_actions
+        error_value = record.payload.get("error")
+        error = error_value if isinstance(error_value, str) and error_value else None
+        claimed = record.status
+        if claimed in (ContinuationStatus.COMPLETED, ContinuationStatus.FAILED, ContinuationStatus.CANCELLED):
+            return BackgroundActionStatus(action_id=record.continuation_id, status=claimed.value, error=error)
+        if claimed is ContinuationStatus.PENDING:
+            return BackgroundActionStatus(action_id=record.continuation_id, status=ContinuationStatus.PENDING.value)
+        live = False
         verify = self.background_claim_live_callback
-        if not live and verify is not None:
+        if verify is not None:
             try:
                 live = bool(verify(record))
             except Exception:
                 live = False
-        return Status(action_id=action_id, status="running" if live else "interrupted", error=error)
+        return BackgroundActionStatus(
+            action_id=record.continuation_id,
+            status="running" if live else "interrupted",
+            error=error,
+        )
 
     def execute_query(
         self,

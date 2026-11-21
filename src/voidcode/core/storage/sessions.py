@@ -26,12 +26,15 @@ from .records import (
     MAX_WAKEUP_PAYLOAD_BYTES,
     AskAnswerConflict,
     Checkpoint,
+    CheckpointKind,
+    ContinuationStatus,
     EventDraft,
     FencedSubtree,
     ObserverReceiptRecord,
     RootBudgetExhausted,
     SequenceConflict,
     SessionRecord,
+    SessionStatus,
     StagedBudgetUpdate,
     StagedCancellation,
     StagedConfirmation,
@@ -91,7 +94,7 @@ class _SessionsMixin(_ConnectionStore):
             return SessionRecord(
                 session_id=session_id,
                 workspace=workspace,
-                status="idle",
+                status=SessionStatus.IDLE,
                 active_revision_id=revision_id,
                 run_id=None,
                 turn=0,
@@ -199,7 +202,7 @@ class _SessionsMixin(_ConnectionStore):
             return SessionRecord(
                 session_id=session_id,
                 workspace=workspace,
-                status="idle",
+                status=SessionStatus.IDLE,
                 active_revision_id=revision_id,
                 run_id=None,
                 turn=0,
@@ -552,8 +555,8 @@ class _SessionsMixin(_ConnectionStore):
         run_id: str,
         revision_id: str,
         events: tuple[EventDraft, ...] | Sequence[EventDraft],
-        status: str,
-        checkpoint_kind: str,
+        status: SessionStatus,
+        checkpoint_kind: CheckpointKind,
         checkpoint_payload: Mapping[str, object],
         start_turn: bool = False,
     ) -> SessionRecord:
@@ -580,8 +583,8 @@ class _SessionsMixin(_ConnectionStore):
         run_id: str,
         revision_id: str,
         events: tuple[EventDraft, ...] | Sequence[EventDraft],
-        status: str,
-        checkpoint_kind: str | None = None,
+        status: SessionStatus,
+        checkpoint_kind: CheckpointKind | None = None,
         checkpoint_payload: Mapping[str, object] | None = None,
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
@@ -592,7 +595,7 @@ class _SessionsMixin(_ConnectionStore):
         staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
-        completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
+        completed_continuation_status: ContinuationStatus = ContinuationStatus.COMPLETED,
         checkpoint_bindings: Sequence[tuple[str, str]] = (),
         root_action_id: str | None = None,
         root_action_budget: int | None = None,
@@ -998,7 +1001,7 @@ class _SessionsMixin(_ConnectionStore):
                         SET status = ?, updated_at = ?
                         WHERE continuation_id = ?
                         """,
-                        (completed_continuation_status, now, completed_continuation_id),
+                        (completed_continuation_status.value, now, completed_continuation_id),
                     )
 
                 # Append events
@@ -1059,7 +1062,7 @@ class _SessionsMixin(_ConnectionStore):
                         last_event_sequence = ?
                     WHERE session_id = ?
                     """,
-                    (status, run_id, new_turn, now, current_seq, session_id),
+                    (status.value, run_id, new_turn, now, current_seq, session_id),
                 )
 
                 if checkpoint_kind is not None and checkpoint_payload is not None:
@@ -1091,7 +1094,7 @@ class _SessionsMixin(_ConnectionStore):
                         """,
                         (
                             session_id,
-                            checkpoint_kind,
+                            checkpoint_kind.value,
                             revision_id,
                             run_id,
                             current_seq,

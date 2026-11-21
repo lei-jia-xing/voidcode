@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
@@ -20,14 +20,12 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 import jsonschema
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..sdk.ask import AskAnswerStatus, AskError, AskRequest, AskRequestDraft, AskResultBody, validate_ask_answer
 from ..sdk.client import CLIENT_PROMPT_MAX_BYTES, BudgetExhaustion
 from ..sdk.codec import (
     decode_provider_result,
     decode_tool_call,
-    decode_tool_result,
     encode_provider_result,
     encode_tool_call,
     encode_tool_definition,
@@ -61,7 +59,6 @@ from ..sdk.services import (
 )
 from ..sdk.suspend import ParkRevisionError
 from ..sdk.tools import (
-    TOOL_OUTPUT_BYTES,
     Change,
     TextOutput,
     ToolCall,
@@ -83,13 +80,10 @@ from .background_actions import BackgroundActionRegistry
 from .background_execution import BackgroundExecution
 from .cancellation import Cancellation
 from .child_contracts import ChildSpawnRequest
+from .context_projection import ContextProjector
 from .coverage import (
-    ProjectionAllocation,
     _target_paths,
-    allocate_tool_text_budget,
     canonical_path,
-    measured_tokens_per_character,
-    project_tool_result,
     read_artifact_content,
 )
 from .delegation import (
@@ -98,8 +92,9 @@ from .delegation import (
     _terminal_run_result,
 )
 from .events import CHILD_MESSAGE_OWNER, EventType, child_completion_notice_id
+from .execution import _Cursor, _Execution, committed_event, wire_object
+from .fact_delivery import BirthAuthorization, FactDelivery
 from .facts import FACT_EVENT_TYPES as _FACT_EVENT_TYPES
-from .facts import fact_for_event
 from .output_projection import ResultProjector
 from .plugins import CommandInvocationOutcome, LeaseContext, PluginRuntime, PluginSource, ToolInvocationOutcome, ToolSuspension
 from .sandbox import SandboxBackend
@@ -107,13 +102,17 @@ from .storage.store import (
     DATABASE_FILENAME,
     AskAnswerConflict,
     Checkpoint,
+    CheckpointKind,
+    ConfirmationStatus,
     ContinuationRecord,
+    ContinuationStatus,
     EventDraft,
     InvalidRevision,
     ObserverReceiptRecord,
     RootBudgetExhausted,
     SequenceConflict,
     SessionRecord,
+    SessionStatus,
     SqliteStore,
     StagedBudgetUpdate,
     StagedCancellation,
@@ -131,18 +130,16 @@ from .usage import UsageProjector
 logger = logging.getLogger(__name__)
 
 
-class _UnboundRun:
-    """Sentinel for the legacy unbound cancel path; distinct from a bound null run."""
+class _UnboundCancel:
+    """Sentinel for an unbound session cancel: signal whichever run currently owns the session.
+
+    Distinct from a bound null run: ``expected_run_id=None`` is a real binding to a
+    reserved, never-started run, while this sentinel means the caller named only the
+    session.
+    """
 
 
-_UNBOUND_RUN = _UnboundRun()
-
-
-def _wire_object(value: object, what: str) -> Mapping[str, object]:
-    """Require a JSON object from a durable payload, failing visibly when malformed."""
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{what} must be a JSON object")
-    return json_wire_object(value)
+_UNBOUND_CANCEL = _UnboundCancel()
 
 
 _PARKED_INTERVENING_TYPES = frozenset(
@@ -426,39 +423,6 @@ def _tool_call_from_entry(entry: Mapping[str, object]) -> ToolCall:
     return ToolCall(tool_name=name, arguments=dict(arguments), tool_call_id=call_id)
 
 
-class _Cursor(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    batch_sequence: int | None = Field(default=None, ge=1)
-    next_call: int = Field(default=0, ge=0)
-    intent_sequence: int | None = Field(default=None, ge=1)
-    approval_sequence: int | None = Field(default=None, ge=1)
-    ask_sequence: int | None = Field(default=None, ge=1)
-    ask_request_id: str | None = None
-    deferred_sequence: int | None = Field(default=None, ge=1)
-    deferred_depth: int = Field(default=0, ge=0)
-    deferred_action_id: str | None = None
-    deferred_origin_tools: tuple[str, ...] | None = None
-    deferred_origin_readonly: bool | None = None
-    deferred_authority_missing: bool = False
-    deferred_only: bool = False
-    #: Optional provider-turn cap for this logical run; independent of shared root actions.
-    max_steps: int | None = None
-    step: int = Field(default=0, ge=0)
-    abandon_batch: bool = False
-    continuation_id: str | None = None
-    logical_turn: str = ""
-    stop_cause: StopCause | None = None
-    initial_root_budget: int | None = None
-    root_id: str = ""
-    #: Staged continuation this session owes itself: an activation request id or an upgrade pause id.
-    resume_intent: str = ""
-
-    @field_validator("deferred_origin_tools", mode="before")
-    @classmethod
-    def _decode_deferred_origin_tools(cls, value: object) -> object:
-        return tuple(value) if isinstance(value, list) else value
-
-
 @dataclass(frozen=True, slots=True)
 class CoreResult:
     session_id: str
@@ -489,32 +453,6 @@ class CoreResult:
         if self.budget_exhaustion is not None:
             payload["budget_exhaustion"] = asdict(self.budget_exhaustion)
         return payload
-
-
-@dataclass(slots=True)
-class _ShrinkableToolProjection:
-    """One ceiling-rendered tool message that adaptive sizing may re-project smaller."""
-
-    index: int
-    result: ToolResult
-    label: str | None
-
-
-@dataclass(slots=True)
-class _Execution:
-    session: SessionRecord
-    cursor: _Cursor
-    events: list[StoredEvent]
-    run_id: str
-    lifecycle_started: bool = False
-    ephemeral_steering: list[str] = field(default_factory=list)
-    projection_allocation: ProjectionAllocation | None = None
-    allocation_ineffective_tools: int = 0
-    #: Request-scoped interaction declaration for this drive (D3): None means
-    #: interactive. Unattended drives refuse ask and approval parks at the
-    #: park-commit site with a typed ToolFailure and continue. Ephemeral:
-    #: never checkpointed, re-declared by every run/resume entry.
-    interaction: Literal["interactive", "unattended"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -599,6 +537,8 @@ class Core:
             self._activation = ActivationCoordinator(self)
             self._usage = UsageProjector(self.store)
             self._projection = ResultProjector(self._artifacts)
+            self._context_projection = ContextProjector(self)
+            self._fact_delivery = FactDelivery(self)
             resources.callback(self.store.close)
             runtime = self._build_runtime(plugins, revision_id=revision_id, sandbox_backend=sandbox_backend)
             # A runtime whose registry cannot be published is closed here: nothing may outlive a
@@ -625,7 +565,7 @@ class Core:
             resources.callback(self._close_runtime)
             # Initialization work still owns the resources: a failure here unwinds the stack
             # (runtime, store, workspace lease) instead of leaking an already-detached core.
-            self._replay_pending_observers()
+            self._fact_delivery.replay_pending()
             self._background_started = False
             self._background_workers: list[threading.Thread] = []
             resources.callback(self._stop_background_work)
@@ -797,13 +737,13 @@ class Core:
 
     def cancel_session(self, session_id: str, reason: str = "user cancellation", *, cause: StopCause = "user_stop") -> bool:
         """Signal the currently executing run and command invocations of one session."""
-        return self._cancel_session_run(session_id, reason, cause=cause, expected_run_id=_UNBOUND_RUN)
+        return self._cancel_session_run(session_id, reason, cause=cause, expected_run_id=_UNBOUND_CANCEL)
 
-    def _cancel_session_run(self, session_id: str, reason: str, *, cause: StopCause, expected_run_id: str | None | _UnboundRun) -> bool:
+    def _cancel_session_run(self, session_id: str, reason: str, *, cause: StopCause, expected_run_id: str | None | _UnboundCancel) -> bool:
         """Signal one session only when its live run matches ``expected_run_id``.
 
         ``expected_run_id=None`` is a REAL binding (a reserved, never-started
-        run); the unbound public path passes the ``_UNBOUND_RUN`` sentinel.
+        run); the unbound public path passes the ``_UNBOUND_CANCEL`` sentinel.
         Lock order is aborts -> store only; the target's long-held session
         lock is never taken, so a blocked provider run stays signallable.
         Signals fire only after the durable run and the live abort entry both
@@ -814,7 +754,7 @@ class Core:
         # Ownership first: a session id from another workspace sharing this
         # database may never be signalled or settled.
         self.session(session_id)
-        is_bound = expected_run_id is not _UNBOUND_RUN
+        is_bound = expected_run_id is not _UNBOUND_CANCEL
         bound = cast("str | None", None if not is_bound else expected_run_id)
         with self._aborts_lock:
             if is_bound and (self.store.session(session_id).run_id or None) != bound:
@@ -841,7 +781,8 @@ class Core:
         self.store.cancel_pending_continuations(session_id, "core")
         self._delegation.notify_child_state_changed()
         # A bound call with no live abort for the bound run falls through to
-        # the pinned parked settle; an unbound call keeps legacy behavior.
+        # the pinned parked settle; an unbound call settles whatever parked
+        # work the session currently holds.
         settled = self._settle_parked_cancel(session_id, reason, cause, expected_run_id=bound, is_bound=is_bound) if abort is None else False
         return bool(signals) or settled
 
@@ -889,8 +830,8 @@ class Core:
                 return False
             self._commit(
                 execution,
-                "interrupted",
-                "terminal",
+                SessionStatus.INTERRUPTED,
+                CheckpointKind.TERMINAL,
                 EventDraft(
                     EventType.RUN_INTERRUPTED,
                     "core",
@@ -923,13 +864,13 @@ class Core:
         authentic identity is a corrupt state and fails visibly here - before any
         write - instead of being reported as an ordinary no-work cancellation.
         """
-        if session.status not in ("waiting", "interrupted"):
+        if session.status not in (SessionStatus.WAITING, SessionStatus.INTERRUPTED):
             return None
-        if checkpoint is not None and checkpoint.kind == "terminal":
+        if checkpoint is not None and checkpoint.kind is CheckpointKind.TERMINAL:
             return None
         run_id = session.run_id
         if not run_id or checkpoint is None or checkpoint.run_id != run_id:
-            raise ValueError(f"session {session.session_id!r} reports parked {session.status} work without its authentic run identity")
+            raise ValueError(f"session {session.session_id!r} reports parked {session.status.value} work without its authentic run identity")
         return run_id
 
     def admits_fresh_work(self, session: SessionRecord) -> bool:
@@ -939,10 +880,15 @@ class Core:
         interruption of the session's own run. Anything else still holds
         unfinished native work that only an explicit resume may re-enter.
         """
-        if session.status in {"idle", "completed", "failed"}:
+        if session.status in {SessionStatus.IDLE, SessionStatus.COMPLETED, SessionStatus.FAILED}:
             return True
         checkpoint = self.store.checkpoint(session.session_id)
-        return session.status == "interrupted" and checkpoint is not None and checkpoint.kind == "terminal" and checkpoint.run_id == session.run_id
+        return (
+            session.status is SessionStatus.INTERRUPTED
+            and checkpoint is not None
+            and checkpoint.kind is CheckpointKind.TERMINAL
+            and checkpoint.run_id == session.run_id
+        )
 
     def cancel(self, reason: str = "user cancellation", *, cause: StopCause = "user_stop") -> None:
         self._abort.set_cancelled(True, reason=reason, stop_cause=cause)
@@ -1028,7 +974,7 @@ class Core:
         if session_id is not None:
             try:
                 active_sess = self.store.session(session_id)
-                if active_sess.status in ("running", "waiting"):
+                if active_sess.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
                     if root_action_budget is not None:
                         raise ValueError("a queued follow-up cannot assign a new root action budget; resume with an explicit extension")
                     return self._queue_followup(active_sess, prompt, max_steps, images=images)
@@ -1047,7 +993,7 @@ class Core:
                     session = self.store.session(session_id)
                 except KeyError:
                     session = self._create_session_row(session_id)
-                if session.status in ("running", "waiting"):
+                if session.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
                     if root_action_budget is not None:
                         raise ValueError("a queued follow-up cannot assign a new root action budget; resume with an explicit extension")
                     return self._queue_followup(session, prompt, max_steps, images=images)
@@ -1096,7 +1042,7 @@ class Core:
                     return CoreResult(
                         session_id, "", self.revision_id, "interrupted", error="child was cancelled before its first run", stop_cause="owner_cancel"
                     )
-                if session.status == "interrupted":
+                if session.status is SessionStatus.INTERRUPTED:
                     # Finish the abandoned stopped prefix on its own cursor first,
                     # then start the new user turn with a fresh cursor: it must not
                     # inherit a stale continuation claim or a spent chain budget.
@@ -1119,8 +1065,8 @@ class Core:
                     user_payload["images"] = [img.as_payload() for img in images]
                 self._commit(
                     execution,
-                    "running",
-                    "ready",
+                    SessionStatus.RUNNING,
+                    CheckpointKind.READY,
                     EventDraft(
                         EventType.USER_MESSAGE,
                         "client",
@@ -1249,7 +1195,7 @@ class Core:
         images: tuple[ImageAttachment, ...] = (),
     ) -> CoreResult:
         if not isinstance(root_id, str) or not root_id:
-            self.store.complete_continuation(continuation_id, status="failed")
+            self.store.complete_continuation(continuation_id, status=ContinuationStatus.FAILED)
             return CoreResult(
                 session_id,
                 "",
@@ -1259,7 +1205,7 @@ class Core:
                 stop_cause="error",
             )
         if root_action_budget is not None and (type(root_action_budget) is not int or root_action_budget < 0):
-            self.store.complete_continuation(continuation_id, status="failed")
+            self.store.complete_continuation(continuation_id, status=ContinuationStatus.FAILED)
             return CoreResult(
                 session_id,
                 "",
@@ -1278,12 +1224,12 @@ class Core:
             try:
                 session = self.store.session(session_id)
                 if not self.admits_fresh_work(session):
-                    self.store.complete_continuation(continuation_id, status="failed")
+                    self.store.complete_continuation(continuation_id, status=ContinuationStatus.FAILED)
                     return CoreResult(session_id, "", self.revision_id, "failed", error="session does not admit fresh work")
                 self.check_session(session)
                 root_state = self.store.root_budget_state(root_id)
                 if root_action_budget is None and root_state is not None:
-                    self.store.complete_continuation(continuation_id, status="failed")
+                    self.store.complete_continuation(continuation_id, status=ContinuationStatus.FAILED)
                     return CoreResult(
                         session_id,
                         "",
@@ -1293,7 +1239,7 @@ class Core:
                         stop_cause="error",
                     )
                 if root_action_budget is not None and (root_state is None or root_state[0] < root_action_budget):
-                    self.store.complete_continuation(continuation_id, status="failed")
+                    self.store.complete_continuation(continuation_id, status=ContinuationStatus.FAILED)
                     return CoreResult(
                         session_id,
                         "",
@@ -1313,7 +1259,7 @@ class Core:
                     list(self.store.events(session_id)),
                     run_abort_id,
                 )
-                if session.status == "interrupted":
+                if session.status is SessionStatus.INTERRUPTED:
                     previous = self.store.checkpoint(session_id)
                     if previous is not None and isinstance(previous.payload, Mapping):
                         execution.cursor = _Cursor.model_validate(json_wire_object(previous.payload))
@@ -1334,21 +1280,21 @@ class Core:
                     user_payload["images"] = [img.as_payload() for img in images]
                 self._commit(
                     execution,
-                    "running",
-                    "ready",
+                    SessionStatus.RUNNING,
+                    CheckpointKind.READY,
                     EventDraft(EventType.USER_MESSAGE, "client", "user", user_payload),
                     start_turn=True,
                 )
                 self.store.set_continuation_run_id(continuation_id, execution.run_id)
                 result = self._drive(execution)
-                status: Literal["completed", "failed", "cancelled"] = "completed"
+                status = ContinuationStatus.COMPLETED
                 if result.status in ("completed", "idle"):
-                    status = "completed"
+                    status = ContinuationStatus.COMPLETED
                 elif result.status == "failed":
-                    status = "failed"
+                    status = ContinuationStatus.FAILED
                 elif result.status == "interrupted":
                     if result.stop_cause in ("user_stop", "owner_cancel"):
-                        status = "cancelled"
+                        status = ContinuationStatus.CANCELLED
                     else:
                         return result
                 elif result.status == "waiting":
@@ -1372,6 +1318,7 @@ class Core:
     ) -> CoreResult:
         self._validate_steps(max_steps)
         self._validate_interaction(interaction)
+        self._validate_root_action_extension(extend_root_actions, root_action_grant_id)
         with self._session_lock(session_id):
             self.ensure_open()
             self._abort.set_cancelled(False)
@@ -1385,7 +1332,7 @@ class Core:
                 session = self.store.session(session_id)
                 self.check_session(session)
                 checkpoint = self.store.checkpoint(session_id)
-                if checkpoint is None or checkpoint.kind == "terminal":
+                if checkpoint is None or checkpoint.kind is CheckpointKind.TERMINAL:
                     raise ValueError("session has no resumable checkpoint")
                 if (
                     checkpoint.revision_id != self.revision_id
@@ -1423,15 +1370,15 @@ class Core:
                 if max_steps is not None:
                     cursor.max_steps = max_steps
                 execution = _Execution(session, cursor, list(self.store.events(session_id)), run_abort_id, interaction=interaction)
-                self._messages(execution, allow_pending=True)
+                self._context_projection.messages(execution, allow_pending=True)
                 if cursor.intent_sequence is not None:
-                    intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
+                    intent = committed_event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
                     batch, call = self._pending(execution)
                     if intent.payload["batch_sequence"] != batch.sequence or json_wire_object(intent.payload)["call"] != encode_tool_call(call):
                         raise ValueError("pending intent does not match its native batch member")
                 approval: StoredEvent | None = None
                 if cursor.approval_sequence is not None:
-                    approval = self._event(execution, cursor.approval_sequence, EventType.APPROVAL_REQUESTED)
+                    approval = committed_event(execution, cursor.approval_sequence, EventType.APPROVAL_REQUESTED)
                     if decision not in {"allow", "deny"} or approval_request_id != approval.payload["request_id"]:
                         raise ValueError("approval resume requires the exact pending request identity and decision")
                     batch, call = self._pending(execution)
@@ -1465,8 +1412,8 @@ class Core:
                     root_budget_grant = (cursor.root_id, extend_root_actions, cast(str, root_action_grant_id))
                 self._commit(
                     execution,
-                    "running",
-                    "ready",
+                    SessionStatus.RUNNING,
+                    CheckpointKind.READY,
                     EventDraft(EventType.RUN_RESUMED, "core", "user", resume_payload),
                     root_budget_grant=root_budget_grant,
                 )
@@ -1474,8 +1421,8 @@ class Core:
                     cursor.approval_sequence = None
                     self._commit(
                         execution,
-                        "running",
-                        "ready",
+                        SessionStatus.RUNNING,
+                        CheckpointKind.READY,
                         EventDraft(EventType.APPROVAL_DECIDED, "client", "user", {"request_id": approval_request_id, "decision": decision}),
                     )
                     _, call = self._pending(execution)
@@ -1503,7 +1450,7 @@ class Core:
                 elif cursor.abandon_batch:
                     self._interrupt_batch(execution)
                 elif cursor.intent_sequence is not None:
-                    intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
+                    intent = committed_event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
                     _, call = self._pending(execution)
                     if json_wire_object(intent.payload)["call"] != encode_tool_call(call):
                         raise ValueError("pending intent does not match its native batch member")
@@ -1548,8 +1495,8 @@ class Core:
         """Validate the cursor's live ask binding against its committed request event."""
         if cursor.ask_sequence is None or cursor.ask_request_id is None:
             raise ValueError("session holds no live ask binding")
-        event = self._event(execution, cursor.ask_sequence, EventType.ASK_REQUESTED)
-        request = AskRequest.from_payload(_wire_object(event.payload.get("request"), "ask request"))
+        event = committed_event(execution, cursor.ask_sequence, EventType.ASK_REQUESTED)
+        request = AskRequest.from_payload(wire_object(event.payload.get("request"), "ask request"))
         if request.request_id != cursor.ask_request_id:
             raise ValueError("parked ask binding does not match its committed request")
         parked_at = event.payload.get("parked_at_ms")
@@ -1591,7 +1538,7 @@ class Core:
         if execution.cursor.intent_sequence is None:
             raise ValueError("ask adoption requires its parked tool intent")
         _, call = self._pending(execution)
-        intent = self._event(execution, execution.cursor.intent_sequence, EventType.TOOL_INTENT)
+        intent = committed_event(execution, execution.cursor.intent_sequence, EventType.TOOL_INTENT)
         if json_wire_object(intent.payload)["call"] != encode_tool_call(call):
             raise ValueError("parked ask intent does not match its native batch member")
         if status == "answered":
@@ -1628,10 +1575,10 @@ class Core:
         for ev in self.store.events(session_id):
             if ev.event_type == EventType.ASK_ANSWERED and ev.payload.get("request_id") == request_id:
                 raise AskError(f"ask {request_id!r} was already answered (status: {ev.payload.get('status')})")
-        if session.status != "waiting":
-            raise AskError(f"session {session_id!r} holds no live ask park (status: {session.status})")
+        if session.status is not SessionStatus.WAITING:
+            raise AskError(f"session {session_id!r} holds no live ask park (status: {session.status.value})")
         checkpoint = self.store.checkpoint(session_id)
-        if checkpoint is None or checkpoint.kind == "terminal":
+        if checkpoint is None or checkpoint.kind is CheckpointKind.TERMINAL:
             raise AskError(f"session {session_id!r} holds no live ask park")
         if (
             checkpoint.revision_id != self.revision_id
@@ -1667,7 +1614,7 @@ class Core:
         if session.parent_session_id is not None:
             self._delegation._captured_child_root_id(session_id)
         execution = _Execution(session, cursor, list(self.store.events(session_id)), run_abort_id)
-        self._messages(execution, allow_pending=True)
+        self._context_projection.messages(execution, allow_pending=True)
         binding = self._ask_binding(execution, cursor)
         if binding.request.request_id != request_id:
             raise AskError(f"ask {request_id!r} is not the live parked ask of session {session_id!r}")
@@ -1898,8 +1845,8 @@ class Core:
                     images = self._rehydrate_followup_images(raw_images, cid)
                 except Exception:
                     try:
-                        if self.store.continuation_status(cid) == "claimed":
-                            self.store.complete_continuation(cid, status="failed")
+                        if self.store.continuation_status(cid) is ContinuationStatus.CLAIMED:
+                            self.store.complete_continuation(cid, status=ContinuationStatus.FAILED)
                     except Exception:
                         pass
                     raise
@@ -1907,8 +1854,8 @@ class Core:
                     run_res = self._execute_user_followup(session_id, cid, prompt, steps, root_id, root_budget, images=images)
                 except Exception:
                     try:
-                        if self.store.continuation_status(cid) == "claimed":
-                            self.store.complete_continuation(cid, status="failed")
+                        if self.store.continuation_status(cid) is ContinuationStatus.CLAIMED:
+                            self.store.complete_continuation(cid, status=ContinuationStatus.FAILED)
                     except Exception:
                         pass
                     raise
@@ -2016,7 +1963,7 @@ class Core:
                 with self._aborts_lock:
                     self._session_aborts[session_id] = (execution.run_id, abort)
                 try:
-                    self._commit(execution, "running", "ready")
+                    self._commit(execution, SessionStatus.RUNNING, CheckpointKind.READY)
                     result = self._drive(execution)
                 finally:
                     with self._aborts_lock:
@@ -2131,12 +2078,12 @@ class Core:
         checkpoint = self.store.checkpoint(session_id)
         payload: dict[str, object] = {
             "session_id": s.session_id,
-            "status": s.status,
+            "status": s.status.value,
             "run_id": s.run_id,
             "revision_id": s.active_revision_id,
             "turn": s.turn,
             "last_event_sequence": s.last_event_sequence,
-            "checkpoint": None if checkpoint is None else {"kind": checkpoint.kind, "payload": json_wire_object(checkpoint.payload)},
+            "checkpoint": None if checkpoint is None else {"kind": checkpoint.kind.value, "payload": json_wire_object(checkpoint.payload)},
         }
         if events:
             payload["events"] = [
@@ -2315,7 +2262,7 @@ class Core:
                 model = self.config.model
                 lines = [
                     f"session: {s.session_id}",
-                    f"status: {s.status}",
+                    f"status: {s.status.value}",
                     f"workspace: {self.workspace}",
                     f"revision: {s.active_revision_id}",
                     f"model: {model}" if model is not None else "model: not configured",
@@ -2343,7 +2290,7 @@ class Core:
         if cmd_desc is None:
             raise ValueError(f"Unknown command: {name}")
 
-        if cmd_desc.busy_gate and s.status not in {"idle", "completed", "failed"}:
+        if cmd_desc.busy_gate and s.status not in {SessionStatus.IDLE, SessionStatus.COMPLETED, SessionStatus.FAILED}:
             raise ValueError(f"Session {session_id} is busy and command '{name}' requires an idle session")
 
         # Core read-only policy check: external mutation only.
@@ -2437,23 +2384,19 @@ class Core:
                 latest_session = self.store.session(session_id)
                 completion_event = self._command_completion(name, cmd_desc.owner, context, outcome)
                 all_events = tuple(staged_events) + (completion_event,)
-                self.store.commit_staged(
+                self.commit_public_staged(
                     session_id,
-                    expected_sequence=latest_session.last_event_sequence,
-                    expected_run_id=latest_session.run_id,
                     run_id=latest_session.run_id or run_id,
-                    revision_id=self.revision_id,
-                    events=all_events,
                     status=latest_session.status,
-                    checkpoint_kind=None,
-                    checkpoint_payload=None,
+                    events=all_events,
                     staged_state=staged_state,
                     staged_continuations=staged_continuations,
                     staged_cancellations=staged_cancellations,
                     staged_budgets=tuple(staged_budget_updates),
                     observer_receipts=staged_observer_receipts,
+                    root_action_id=root_action_id,
+                    initial_root_budget=initial_root_budget,
                 )
-                self.notify_commit()
                 if self.auto_drain and staged_continuations:
                     latest_sess = self.store.session(session_id)
                     if self.admits_fresh_work(latest_sess):
@@ -2484,20 +2427,20 @@ class Core:
         rec = self.store.confirmation(request_id)
         if rec is None or rec.session_id != session_id:
             raise ValueError(f"Confirmation request {request_id!r} not found for session {session_id!r}")
-        if rec.status != "pending":
-            raise ValueError(f"Confirmation request {request_id!r} is not pending (status: {rec.status})")
+        if rec.status is not ConfirmationStatus.PENDING:
+            raise ValueError(f"Confirmation request {request_id!r} is not pending (status: {rec.status.value})")
         if rec.revision_id != self.revision_id:
             raise ValueError("Confirmation request belongs to another revision")
 
         if rec.expected_state_version is not None:
             _, curr_ver = self.store.plugin_state(rec.owner, "session", session_id)
             if curr_ver != rec.expected_state_version:
-                self.store.decide_confirmation(request_id, "stale")
+                self.store.decide_confirmation(request_id, ConfirmationStatus.STALE)
                 self._commit_confirmation_decision(session_id, request_id, rec.command_name, "stale")
                 raise ValueError(f"Confirmation request is stale: expected state version {rec.expected_state_version}, got {curr_ver}")
 
         if decision == "deny":
-            self.store.decide_confirmation(request_id, "denied")
+            self.store.decide_confirmation(request_id, ConfirmationStatus.DENIED)
             self._commit_confirmation_decision(session_id, request_id, rec.command_name, "deny")
             return CommandResult(status="ok", output="Action denied by user")
 
@@ -2512,10 +2455,10 @@ class Core:
         # re-checked against the session's CURRENT stance. A pending write approved after the
         # session moved to read-only (e.g. /plan) must not mutate anything.
         if self.session_read_only(session_id) and denied_under_restriction(frozenset(cmd_desc.effects)):
-            self.store.decide_confirmation(request_id, "stale")
+            self.store.decide_confirmation(request_id, ConfirmationStatus.STALE)
             self._commit_confirmation_decision(session_id, request_id, rec.command_name, "stale")
             return CommandResult(status="error", error="read-only policy denies command write effects")
-        self.store.decide_confirmation(request_id, "allowed")
+        self.store.decide_confirmation(request_id, ConfirmationStatus.ALLOWED)
         run_id = s.run_id or uuid4().hex
         inv_id = uuid4().hex
         root_action_id, initial_root_budget = self._capture_root_authorization(s)
@@ -2568,23 +2511,19 @@ class Core:
                     ),
                     completion_event,
                 )
-                self.store.commit_staged(
+                self.commit_public_staged(
                     session_id,
-                    expected_sequence=latest_session.last_event_sequence,
-                    expected_run_id=latest_session.run_id,
                     run_id=latest_session.run_id or run_id,
-                    revision_id=self.revision_id,
-                    events=all_events,
                     status=latest_session.status,
-                    checkpoint_kind=None,
-                    checkpoint_payload=None,
+                    events=all_events,
                     staged_state=staged_state,
                     staged_continuations=staged_continuations,
                     staged_cancellations=staged_cancellations,
                     staged_budgets=tuple(staged_budget_updates),
                     observer_receipts=staged_observer_receipts,
+                    root_action_id=root_action_id,
+                    initial_root_budget=initial_root_budget,
                 )
-                self.notify_commit()
                 if self.auto_drain and staged_continuations:
                     latest_sess = self.store.session(session_id)
                     if self.admits_fresh_work(latest_sess):
@@ -2696,14 +2635,14 @@ class Core:
                         cont_record = claimed[0]
                         run_id = cont_record.run_id
                     else:
-                        if s.status in ("running", "waiting"):
+                        if s.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
                             break
                         pending = self.store.pending_continuations(session_id, limit=100)
                         if continuation_id is not None:
                             pending = tuple(record for record in pending if record.continuation_id == continuation_id)
                         if pending and (not isinstance(pending[0].root_id, str) or not pending[0].root_id):
                             missing = pending[0]
-                            self.store.complete_continuation(missing.continuation_id, status="failed")
+                            self.store.complete_continuation(missing.continuation_id, status=ContinuationStatus.FAILED)
                             results.append(
                                 ContinuationResult(
                                     continuation_id=missing.continuation_id,
@@ -2737,7 +2676,7 @@ class Core:
                             break
 
                     if not isinstance(cont_record.root_id, str) or not cont_record.root_id:
-                        self.store.complete_continuation(cont_record.continuation_id, status="failed")
+                        self.store.complete_continuation(cont_record.continuation_id, status=ContinuationStatus.FAILED)
                         results.append(
                             ContinuationResult(
                                 continuation_id=cont_record.continuation_id,
@@ -2755,8 +2694,8 @@ class Core:
 
                     if recovering:
                         checkpoint = self.store.checkpoint(session_id)
-                        if checkpoint is None or checkpoint.kind == "terminal":
-                            self.store.complete_continuation(cont_record.continuation_id, status="failed")
+                        if checkpoint is None or checkpoint.kind is CheckpointKind.TERMINAL:
+                            self.store.complete_continuation(cont_record.continuation_id, status=ContinuationStatus.FAILED)
                             results.append(
                                 ContinuationResult(
                                     continuation_id=cont_record.continuation_id,
@@ -2778,7 +2717,7 @@ class Core:
                             or str(cp.get("continuation_id")) != cont_record.continuation_id
                             or cursor.root_id != cont_record.root_id
                         ):
-                            self.store.complete_continuation(cont_record.continuation_id, status="failed")
+                            self.store.complete_continuation(cont_record.continuation_id, status=ContinuationStatus.FAILED)
                             results.append(
                                 ContinuationResult(
                                     continuation_id=cont_record.continuation_id,
@@ -2832,20 +2771,20 @@ class Core:
                     else:
                         run_res = self._drive(execution)
 
-                    status_str: Literal["pending", "claimed", "completed", "failed", "cancelled"] = "completed"
+                    status_str = ContinuationStatus.COMPLETED
                     if run_res.status in ("completed", "idle"):
-                        status_str = "completed"
+                        status_str = ContinuationStatus.COMPLETED
                     elif run_res.status == "failed":
-                        status_str = "failed"
+                        status_str = ContinuationStatus.FAILED
                     elif run_res.status == "waiting":
-                        status_str = "claimed"
+                        status_str = ContinuationStatus.CLAIMED
                     elif run_res.status == "interrupted":
                         if run_res.stop_cause in ("user_stop", "owner_cancel"):
-                            status_str = "cancelled"
+                            status_str = ContinuationStatus.CANCELLED
                         else:
-                            status_str = "claimed"
+                            status_str = ContinuationStatus.CLAIMED
 
-                    if status_str != "claimed":
+                    if status_str is not ContinuationStatus.CLAIMED:
                         self.store.complete_continuation(cont_record.continuation_id, status=status_str)
 
                     results.append(
@@ -2853,7 +2792,7 @@ class Core:
                             continuation_id=cont_record.continuation_id,
                             owner=cont_record.owner,
                             session_id=session_id,
-                            status=status_str,
+                            status=status_str.value,
                             payload=cont_record.payload,
                             run_status=run_res.status,
                             run_id=run_res.run_id,
@@ -2924,8 +2863,16 @@ class Core:
         if self.config.policy.read_only:
             return CommandResult(status="error", error="read-only policy denies capability activation")
         session = self.session(session_id)
-        if session.status not in {"idle", "completed", "failed", "interrupted"}:
-            return CommandResult(status="error", error=f"session {session_id} is busy ({session.status}); activation requires an idle session")
+        if session.status not in {
+            SessionStatus.IDLE,
+            SessionStatus.COMPLETED,
+            SessionStatus.FAILED,
+            SessionStatus.INTERRUPTED,
+        }:
+            return CommandResult(
+                status="error",
+                error=f"session {session_id} is busy ({session.status.value}); activation requires an idle session",
+            )
         outcome = self.activate(session_id=session_id, source="client")
         if not outcome["activated"]:
             return CommandResult(status="error", error=str(outcome["error"]))
@@ -2978,7 +2925,7 @@ class Core:
         self._background.park(reason)
 
     def flush_old_generation_facts(self, deferred_to_candidate: frozenset[str]) -> None:
-        self._replay_pending_observers(require_complete=True, defer_to_candidate=deferred_to_candidate)
+        self._fact_delivery.replay_pending(require_complete=True, defer_to_candidate=deferred_to_candidate)
 
     def _build_runtime(self, sources: tuple[PluginSource, ...], *, revision_id: str, sandbox_backend: SandboxBackend | None) -> PluginRuntime:
         """Assemble one runtime generation with every host callback bound to this core."""
@@ -3041,11 +2988,22 @@ class Core:
             )
             self._activating_thread = None
             self._calls_lock.notify_all()
+        # The revision is durable and published: nothing below may escape, and no
+        # failure may leave `_snapshot` pointing at a runtime this method closes.
+        try:
+            self._wire_background_runtime(prepared.plugin_runtime)
+            self._background.notify()
+        except Exception:
+            logger.exception("activation %s: background runtime wiring failed after publication", admission.revision_id)
         # Deliver facts deferred to owners the candidate now registers, under the new runtime.
-        self._replay_pending_observers()
-        snapshot.plugin_runtime.close()
-        self._wire_background_runtime(prepared.plugin_runtime)
-        self._background.notify()
+        try:
+            self._fact_delivery.replay_pending()
+        except Exception:
+            logger.exception("activation %s: deferred fact replay failed after publication", admission.revision_id)
+        try:
+            snapshot.plugin_runtime.close()
+        except Exception:
+            logger.exception("activation %s: old runtime close failed after publication", admission.revision_id)
 
     def activation_checkpoint(self, payload: Mapping[str, object] | None, /, *, source: str, request_id: str) -> Mapping[str, object]:
         """Carry the session's own cursor across the switch, plus a real resume intent where owed."""
@@ -3111,7 +3069,7 @@ class Core:
             self._commit(
                 execution,
                 session.status,
-                checkpoint.kind if checkpoint is not None else "ready",
+                checkpoint.kind if checkpoint is not None else CheckpointKind.READY,
                 EventDraft(
                     EventType.ACTIVATION_FAILED,
                     "core",
@@ -3145,6 +3103,19 @@ class Core:
             result_schema=request.result_schema,
         )
 
+    def birth_record(self, session_id: str) -> BirthAuthorization | None:
+        """Decode one child's durable birth into its captured root authorization."""
+        birth = self._delegation._birth_record(session_id)
+        if birth is None or "root_action_budget" not in birth:
+            return None
+        root_id = birth.get("root_id")
+        budget = birth.get("root_action_budget")
+        if not isinstance(root_id, str) or not root_id or "\0" in root_id:
+            return None
+        if budget is not None and (type(budget) is not int or budget < 0):
+            return None
+        return BirthAuthorization(root_id=root_id, root_action_budget=budget)
+
     def _capture_root_authorization(self, session: SessionRecord) -> tuple[str, int | None]:
         """Capture the current invocation's root, or inherit an immutable child birth."""
         if session.parent_session_id is not None:
@@ -3153,7 +3124,7 @@ class Core:
                 raise StoreConflict(f"child session {session.session_id!r} has no captured root authorization")
             root_id = birth.get("root_id")
             root_budget = birth.get("root_action_budget")
-        elif session.status in ("running", "waiting"):
+        elif session.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
             checkpoint = self.store.checkpoint(session.session_id)
             payload = checkpoint.payload if checkpoint is not None and isinstance(checkpoint.payload, Mapping) else {}
             if "initial_root_budget" not in payload:
@@ -3207,7 +3178,15 @@ class Core:
                         raise StoreConflict(f"keyed child {retry_id!r} has an invalid captured root budget")
             if root_action_id is None:
                 parent_sess = self.store.session(parent_session_id)
-                if idempotency_key is not None and parent_sess.parent_session_id is None and parent_sess.status not in ("running", "waiting"):
+                if (
+                    idempotency_key is not None
+                    and parent_sess.parent_session_id is None
+                    and parent_sess.status
+                    not in (
+                        SessionStatus.RUNNING,
+                        SessionStatus.WAITING,
+                    )
+                ):
                     retry_id = self._delegation._keyed_child_id(parent_session_id, owner, idempotency_key)
                     root_action_id = hashlib.sha256(f"root:{retry_id}".encode()).hexdigest()
                     initial_root_budget = None
@@ -3289,7 +3268,7 @@ class Core:
         cursor = _Cursor(root_id=wakeup.root_id, logical_turn=logical_turn)
         execution = _Execution(session, cursor, list(self.store.events(session.session_id)), run_id)
         with self._session_lock(session.session_id):
-            self._deliver_facts(execution, (self._event(execution, session.last_event_sequence, EventType.WAKEUP_FIRED),))
+            self._fact_delivery.deliver(execution, (committed_event(execution, session.last_event_sequence, EventType.WAKEUP_FIRED),))
             result = self._drive(execution)
         if result.status in ("completed", "idle"):
             terminal: Literal["completed", "failed", "cancelled"] = "completed"
@@ -3325,12 +3304,12 @@ class Core:
         expected_session: SessionRecord,
         events: Sequence[EventDraft],
         *,
-        status: str | None = None,
-        checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None = None,
+        status: SessionStatus | None = None,
+        checkpoint_kind: CheckpointKind | None = None,
         checkpoint_payload: Mapping[str, object] | None = None,
     ) -> None:
         events = self._stamp_fact_owners(events)
-        self.store.commit_staged(
+        committed = self.store.commit_staged(
             session_id,
             expected_sequence=expected_session.last_event_sequence,
             expected_run_id=expected_session.run_id,
@@ -3343,6 +3322,12 @@ class Core:
         )
         self.notify_commit()
         self._background.notify_tool_waiters()
+        self._deliver_committed_facts(
+            session_id,
+            after_sequence=expected_session.last_event_sequence,
+            upto_sequence=committed.last_event_sequence,
+            run_id=expected_session.run_id or uuid4().hex,
+        )
 
     def cancel_background_tool_requests(
         self,
@@ -3384,7 +3369,7 @@ class Core:
                     "background_action_id": action_id,
                     "owner": request.payload.get("requester", ""),
                     "revision_id": request.payload.get("expected_revision", ""),
-                    "tool_name": decode_tool_call(_wire_object(request.payload["call"], "deferred tool call")).tool_name,
+                    "tool_name": decode_tool_call(wire_object(request.payload["call"], "deferred tool call")).tool_name,
                     "status": status,
                     "reason": reason,
                 }
@@ -3401,9 +3386,9 @@ class Core:
                 return
             checkpoint = self.store.checkpoint(session_id)
             checkpoint_payload: Mapping[str, object] | None = None
-            checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None = None
-            new_status: str | None = None
-            if checkpoint is not None and checkpoint.kind != "terminal" and isinstance(checkpoint.payload, Mapping):
+            checkpoint_kind: CheckpointKind | None = None
+            new_status: SessionStatus | None = None
+            if checkpoint is not None and checkpoint.kind is not CheckpointKind.TERMINAL and isinstance(checkpoint.payload, Mapping):
                 cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
                 current_request = next((request for request in requests if request.sequence == cursor.deferred_sequence), None)
                 if (
@@ -3452,8 +3437,8 @@ class Core:
                     cursor.deferred_origin_readonly = None
                     cursor.deferred_authority_missing = False
                     checkpoint_payload = cursor.model_dump(mode="json")
-                    checkpoint_kind = "terminal"
-                    new_status = "interrupted"
+                    checkpoint_kind = CheckpointKind.TERMINAL
+                    new_status = SessionStatus.INTERRUPTED
             try:
                 self._commit_tool_wait_events(
                     session_id,
@@ -3609,7 +3594,7 @@ class Core:
         if include_context:
             session = self.store.session(session_id)
             execution = _Execution(session, _Cursor(), list(self.store.events(session_id)), session.run_id or uuid4().hex)
-            context = self._messages(execution, completed_only=True, model=selected)
+            context = self._context_projection.messages(execution, completed_only=True, model=selected)
         request = ProviderTurnRequest(
             messages=(*context, ProviderMessage("user", prompt)),
             available_tools=(),
@@ -3644,7 +3629,7 @@ class Core:
         )
 
     def _commit_control_event(self, session_id: str, event: EventDraft) -> None:
-        """Append one core control fact on a session without disturbing its run state."""
+        """Append one best-effort diagnostic control fact; losing it never blocks owner work."""
         try:
             session = self.store.session(session_id)
             self.store.commit_staged(
@@ -3822,270 +3807,6 @@ class Core:
         )
 
     @staticmethod
-    def _event(execution: _Execution, sequence: int, kind: str) -> StoredEvent:
-        if sequence < 1 or sequence > len(execution.events):
-            raise ValueError("checkpoint references a missing event")
-        event = execution.events[sequence - 1]
-        if event.sequence != sequence or event.event_type != kind:
-            raise ValueError("checkpoint references the wrong event kind")
-        return event
-
-    def _settlement_candidates(self, session_id: str) -> list[StoredEvent]:
-        """Events needing observer delivery: terminal facts plus unsettled dispatches.
-
-        A dispatch intent with no completion event means the process died after
-        requesting a turn; it must settle as an unknown-cost usage fact exactly
-        once (receipts dedupe it) instead of leaving consumers with stale totals.
-        """
-        events = self.store.events(session_id)
-        completed_dispatches: set[int] = set()
-        for event in events:
-            if event.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
-                dispatch_seq = event.payload.get("dispatch_sequence")
-                if isinstance(dispatch_seq, (int, float)):
-                    completed_dispatches.add(int(dispatch_seq))
-        pending: list[StoredEvent] = []
-        for event in events:
-            if event.event_type == EventType.PROVIDER_INTENT:
-                if event.sequence not in completed_dispatches:
-                    pending.append(event)
-            elif event.event_type in _FACT_EVENT_TYPES:
-                pending.append(event)
-        return pending
-
-    def _replay_pending_observers(self, *, require_complete: bool = False, defer_to_candidate: frozenset[str] = frozenset()) -> None:
-        """Deliver facts whose observer receipts never committed before accepting new work.
-
-        Eligibility comes from each source event's OWN revision (its manifest declarations),
-        not from whoever is subscribed now, so a reload can neither re-deliver an old fact to
-        a new subscriber nor drop one an eligible owner already received. With
-        `require_complete`, an eligible owner that is no longer registered aborts instead of
-        being papered over: an activation must never mask an undelivered fact.
-        """
-        for session in self.store.sessions():
-            if session.workspace != str(self.workspace) or session.active_revision_id != self.revision_id:
-                continue
-            pending = self._settlement_candidates(session.session_id)
-            if not pending:
-                continue
-            checkpoint = self.store.checkpoint(session.session_id)
-            cursor = (
-                _Cursor.model_validate(json_wire_object(checkpoint.payload))
-                if checkpoint is not None and isinstance(checkpoint.payload, Mapping)
-                else _Cursor()
-            )
-            execution = _Execution(session, cursor, list(self.store.events(session.session_id)), session.run_id or uuid4().hex)
-            settled = [self._record_unknown_dispatch(execution, ev) if ev.event_type == EventType.PROVIDER_INTENT else ev for ev in pending]
-            self._deliver_facts(
-                execution,
-                sorted(settled, key=lambda event: event.sequence),
-                require_complete=require_complete,
-                defer_to_candidate=defer_to_candidate,
-            )
-
-    def _eligible_observers(self, event: StoredEvent) -> tuple[str, ...]:
-        """Owners that subscribed this fact type when the event was produced.
-
-        The list is frozen on the durable event, so a restart with changed plugin source can
-        neither hand an old fact to a new subscriber nor drop an old one.
-        """
-        owners = event.payload.get("eligible_owners")
-        if not isinstance(owners, (list, tuple)) or not all(isinstance(owner, str) for owner in owners):
-            raise ValueError(
-                f"cannot deliver event {event.sequence}: it carries no recorded eligible owners; "
-                "the recorded fact does not satisfy the current contract"
-            )
-        return tuple(str(owner) for owner in owners)
-
-    def _observer_gap_event(self, event: StoredEvent, missing: Sequence[str]) -> EventDraft:
-        """A durable diagnostic for a fact that its own revision's owner can no longer receive."""
-        return EventDraft(
-            EventType.OBSERVER_ERROR,
-            source="core",
-            actor="core",
-            payload={
-                "owner": ", ".join(missing),
-                "error": f"event {event.sequence} was produced by revision {event.revision_id} but its registered owner is not loaded",
-                "event_sequence": event.sequence,
-            },
-        )
-
-    def _observer_root_authorization(self, execution: _Execution) -> tuple[str | None, int | None]:
-        """Recorded root authorization for observer leases delivering this execution's facts.
-
-        Reads the run's own durable root — the birth record for child sessions, the
-        checkpoint cursor otherwise (the same sources `_capture_root_authorization`
-        uses) — and never mints a fresh identity: a terminal fact's observer spends
-        the run's own budget chain or fails visibly. Returns `(None, None)` when no
-        valid root is recorded (legacy rows); the caller then leaves the lease
-        rootless and the spawn/background/wakeup guards fail closed.
-        """
-        session = execution.session
-        if session.parent_session_id is not None:
-            birth = self._delegation._birth_record(session.session_id)
-            if birth is None or "root_action_budget" not in birth:
-                return None, None
-            root_id = birth.get("root_id")
-            budget = birth.get("root_action_budget")
-        else:
-            root_id = execution.cursor.root_id
-            budget = execution.cursor.initial_root_budget
-        if not isinstance(root_id, str) or not root_id or "\0" in root_id:
-            return None, None
-        if budget is not None and (type(budget) is not int or budget < 0):
-            return None, None
-        return root_id, budget
-
-    def _deliver_fact_for_event(
-        self,
-        execution: _Execution,
-        ev: StoredEvent,
-        *,
-        require_complete: bool = False,
-        defer_to_candidate: frozenset[str] = frozenset(),
-    ) -> None:
-        """Notify exactly the owners this event's revision registered, then persist those receipts."""
-        fact = self._fact_for(execution, ev)
-        if fact is None:
-            return
-        fact_type, fact_payload = fact
-        session_id = ev.session_id
-        with self.dispatch(f"observer:{fact_type}") as snapshot:
-            eligible = self._eligible_observers(ev)
-            registered = snapshot.plugin_runtime.observer_owners.get(fact_type, ())
-            missing = [owner for owner in eligible if owner not in registered and owner not in defer_to_candidate]
-            if missing:
-                if require_complete:
-                    missing_list = ", ".join(missing)
-                    raise ValueError(
-                        f"cannot activate: event {ev.sequence} ({ev.event_type}) of session {session_id} is still undelivered for {missing_list}"
-                    )
-                self._commit_staged_rebased(
-                    execution,
-                    status=execution.session.status,
-                    kind=None,
-                    events=(self._observer_gap_event(ev, missing),),
-                )
-            active = [o for o in eligible if o in registered and not self.store.has_observer_receipt(session_id, ev.sequence, o)]
-            if not active:
-                return
-            logical_turn = str(fact_payload.get("logical_turn", ""))
-            root_id, root_budget = self._observer_root_authorization(execution)
-            obs_res = snapshot.plugin_runtime.notify_fact(
-                fact_type, fact_payload, owners=tuple(active), logical_turn=logical_turn, root_action_id=root_id, initial_root_budget=root_budget
-            )
-            receipts = tuple(ObserverReceiptRecord(session_id=ev.session_id, event_sequence=ev.sequence, owner=o) for o in active)
-            staged_events: list[EventDraft] = []
-            staged_budget_updates: list[StagedBudgetUpdate] = []
-            if obs_res:
-                staged_events.extend(obs_res.staged_events)
-                for owner, b_val in obs_res.staged_budgets:
-                    if b_val == "clear":
-                        staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
-                    elif isinstance(b_val, PluginBudget):
-                        staged_budget_updates.append(StagedBudgetUpdate(owner=b_val.owner, action="set", budget=b_val))
-                for err in obs_res.errors:
-                    staged_events.append(
-                        EventDraft(
-                            EventType.OBSERVER_ERROR,
-                            source=f"plugin.{err.get('owner', 'observer')}",
-                            actor="plugin",
-                            payload={"owner": err.get("owner"), "error": err.get("error")},
-                        )
-                    )
-            self._commit_staged_rebased(
-                execution,
-                status=execution.session.status,
-                kind=None,
-                events=tuple(staged_events),
-                staged_state=obs_res.staged_state if obs_res else (),
-                staged_continuations=obs_res.staged_continuations if obs_res else (),
-                staged_cancellations=obs_res.staged_cancellations if obs_res else (),
-                staged_budgets=tuple(staged_budget_updates),
-                observer_receipts=receipts,
-            )
-
-    def _deliver_facts(
-        self,
-        execution: _Execution,
-        events: Sequence[StoredEvent],
-        *,
-        require_complete: bool = False,
-        defer_to_candidate: frozenset[str] = frozenset(),
-        tolerate_conflicts: bool = False,
-    ) -> None:
-        """One ordered delivery path for live commits, recovery and observer-produced facts."""
-        pending = list(events)
-        seen: set[int] = set()
-        for event in pending:
-            if event.sequence in seen or event.event_type not in _FACT_EVENT_TYPES:
-                continue
-            seen.add(event.sequence)
-            before_delivery = len(execution.events)
-            try:
-                self._deliver_fact_for_event(
-                    execution,
-                    event,
-                    require_complete=require_complete,
-                    defer_to_candidate=defer_to_candidate,
-                )
-            except StoreConflict as exc:
-                if not tolerate_conflicts:
-                    raise
-                # The outcome is durable. Leave the receipt absent for recovery,
-                # and expose the rejected observer proposal without failing the run.
-                try:
-                    self._commit_staged_rebased(
-                        execution,
-                        status=execution.session.status,
-                        kind=None,
-                        events=(
-                            EventDraft(
-                                EventType.OBSERVER_ERROR,
-                                "plugin.observer",
-                                "plugin",
-                                {"owner": None, "error": f"observer proposals rejected: {exc}"},
-                            ),
-                        ),
-                    )
-                except StoreConflict, ValueError:
-                    pass
-            pending.extend(execution.events[before_delivery:])
-
-    def _record_unknown_dispatch(self, execution: _Execution, intent: StoredEvent) -> StoredEvent:
-        committed = self._commit_staged_rebased(
-            execution,
-            status=execution.session.status,
-            kind=None,
-            events=(
-                EventDraft(
-                    EventType.PROVIDER_INTERRUPTED,
-                    "core",
-                    "core",
-                    {
-                        "dispatch_sequence": intent.sequence,
-                        "logical_turn": intent.payload.get("logical_turn", ""),
-                        "eligible_owners": list(self._eligible_observers(intent)),
-                    },
-                ),
-            ),
-        )
-        return committed[0]
-
-    def _settle_unsettled_dispatches(self, execution: _Execution) -> None:
-        """Settle dispatches of this run that never produced a completion event."""
-        completed: set[int] = set()
-        for event in execution.events:
-            if event.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
-                dispatch_seq = event.payload.get("dispatch_sequence")
-                if isinstance(dispatch_seq, (int, float)):
-                    completed.add(int(dispatch_seq))
-        for event in execution.events:
-            if event.event_type == EventType.PROVIDER_INTENT and event.sequence not in completed:
-                settled = self._record_unknown_dispatch(execution, event)
-                self._deliver_facts(execution, (settled,))
-
-    @staticmethod
     def _assert_execution_prefix(execution: _Execution) -> int:
         """Fail closed unless the in-memory prefix still ends exactly at the session tip.
 
@@ -4134,12 +3855,12 @@ class Core:
         if session is not None:
             execution.session = session
 
-    def _commit_staged_rebased(
+    def commit_staged_rebased(
         self,
         execution: _Execution,
         *,
-        status: str,
-        kind: str | None,
+        status: SessionStatus,
+        kind: CheckpointKind | None,
         events: Sequence[EventDraft] = (),
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
@@ -4147,7 +3868,7 @@ class Core:
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
-        completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
+        completed_continuation_status: ContinuationStatus = ContinuationStatus.COMPLETED,
         reserve_root: bool = False,
         root_budget_grant: tuple[str, int, str] | None = None,
         start_turn: bool = False,
@@ -4266,10 +3987,111 @@ class Core:
             )
         return tuple(stamped)
 
-    def _fact_for(self, execution: _Execution, ev: StoredEvent) -> tuple[str, dict[str, object]] | None:
-        return fact_for_event(ev, execution.events)
+    def _deliver_committed_facts(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int,
+        upto_sequence: int,
+        run_id: str,
+        root_action_id: str | None = None,
+        initial_root_budget: int | None = None,
+    ) -> None:
+        """Deliver public facts committed by a non-turn transaction under the normal rules."""
+        if self._fact_delivery.delivering_session(session_id):
+            # An active same-session delivery loop will append this commit to its
+            # pending queue after the current observer returns, preserving event order.
+            return
+        session = self.store.session(session_id)
+        checkpoint = self.store.checkpoint(session_id)
+        cursor = (
+            _Cursor.model_validate(json_wire_object(checkpoint.payload))
+            if checkpoint is not None
+            else _Cursor(root_id=root_action_id or "", initial_root_budget=initial_root_budget)
+        )
+        events = list(self.store.events(session_id, limit=session.last_event_sequence)) if session.last_event_sequence else []
+        execution = _Execution(session, cursor, events, run_id)
+        committed = tuple(event for event in events if after_sequence < event.sequence <= upto_sequence)
+        if committed:
+            self._fact_delivery.deliver(execution, committed, tolerate_conflicts=True)
 
-    def _measured_run_elapsed_fields(self, execution: _Execution) -> dict[str, int]:
+    def commit_public_staged(
+        self,
+        session_id: str,
+        *,
+        events: Sequence[EventDraft],
+        run_id: str | None = None,
+        status: SessionStatus | None = None,
+        revision_id: str | None = None,
+        checkpoint_kind: CheckpointKind | None = None,
+        checkpoint_payload: Mapping[str, object] | None = None,
+        staged_state: Sequence[StagedStateUpdate] = (),
+        staged_continuations: Sequence[StagedContinuationDraft] = (),
+        staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_budgets: Sequence[StagedBudgetUpdate] = (),
+        staged_confirmations: Sequence[StagedConfirmation] = (),
+        observer_receipts: Sequence[ObserverReceiptRecord] = (),
+        root_action_id: str | None = None,
+        initial_root_budget: int | None = None,
+    ) -> SessionRecord:
+        """Commit a public event transaction with frozen fact owners and live delivery.
+
+        This is the non-turn public fact path. Diagnostic control facts keep
+        `_commit_control_event`'s best-effort behavior; here a stamping, commit,
+        or delivery failure is visible to the caller.
+        """
+        session = self.store.session(session_id)
+        before = session.last_event_sequence
+        resolved_run_id = run_id if run_id is not None else (session.run_id or uuid4().hex)
+        resolved_status = status if status is not None else session.status
+        committed = self.store.commit_staged(
+            session_id,
+            expected_sequence=before,
+            expected_run_id=session.run_id,
+            run_id=resolved_run_id,
+            revision_id=self.revision_id if revision_id is None else revision_id,
+            events=self._stamp_fact_owners(events),
+            status=resolved_status,
+            checkpoint_kind=checkpoint_kind,
+            checkpoint_payload=checkpoint_payload,
+            staged_state=staged_state,
+            staged_continuations=staged_continuations,
+            staged_cancellations=staged_cancellations,
+            staged_budgets=staged_budgets,
+            staged_confirmations=staged_confirmations,
+            observer_receipts=observer_receipts,
+        )
+        self.notify_commit()
+        self._deliver_committed_facts(
+            session_id,
+            after_sequence=before,
+            upto_sequence=committed.last_event_sequence,
+            run_id=resolved_run_id,
+            root_action_id=root_action_id,
+            initial_root_budget=initial_root_budget,
+        )
+        return committed
+
+    def commit_public_fact(
+        self,
+        session_id: str,
+        event: EventDraft,
+        *,
+        run_id: str | None = None,
+        root_action_id: str | None = None,
+        initial_root_budget: int | None = None,
+    ) -> SessionRecord:
+        """Commit one public fact with the same stamping and delivery as a staged transaction."""
+        return self.commit_public_staged(
+            session_id,
+            run_id=run_id,
+            events=(event,),
+            root_action_id=root_action_id,
+            initial_root_budget=initial_root_budget,
+        )
+
+    @staticmethod
+    def _measured_run_elapsed_fields(execution: _Execution) -> dict[str, int]:
         """Stamp the duration this process actually measured for the run, if it dispatched at all."""
         starts: list[float] = []
         for event in execution.events:
@@ -4285,8 +4107,8 @@ class Core:
     def _commit(
         self,
         execution: _Execution,
-        status: str,
-        kind: str,
+        status: SessionStatus,
+        kind: CheckpointKind,
         *events: EventDraft,
         start_turn: bool = False,
         staged_state: Sequence[StagedStateUpdate] = (),
@@ -4295,7 +4117,7 @@ class Core:
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
-        completed_continuation_status: Literal["completed", "failed", "cancelled"] = "completed",
+        completed_continuation_status: ContinuationStatus = ContinuationStatus.COMPLETED,
         reserve_root: bool = False,
         root_budget_grant: tuple[str, int, str] | None = None,
         checkpoint_bindings: Sequence[tuple[str, str]] = (),
@@ -4304,7 +4126,7 @@ class Core:
         ask_answer_guard: str | None = None,
     ) -> tuple[StoredEvent, ...]:
         known_before = len(execution.events)
-        new_events = self._commit_staged_rebased(
+        new_events = self.commit_staged_rebased(
             execution,
             status=status,
             kind=kind,
@@ -4325,7 +4147,7 @@ class Core:
             ask_answer_guard=ask_answer_guard,
         )
         self._background.notify_tool_waiters()
-        self._deliver_facts(execution, execution.events[known_before:], tolerate_conflicts=True)
+        self._fact_delivery.deliver(execution, execution.events[known_before:], tolerate_conflicts=True)
         return new_events
 
     def _budget_admission(self, execution: _Execution) -> CoreResult | None:
@@ -4400,12 +4222,12 @@ class Core:
     def _pending(self, execution: _Execution) -> tuple[StoredEvent, ToolCall]:
         cursor = execution.cursor
         if cursor.deferred_sequence is not None:
-            event = self._event(execution, cursor.deferred_sequence, EventType.TOOL_DEFERRED)
-            return event, decode_tool_call(_wire_object(event.payload["call"], "deferred tool call"))
+            event = committed_event(execution, cursor.deferred_sequence, EventType.TOOL_DEFERRED)
+            return event, decode_tool_call(wire_object(event.payload["call"], "deferred tool call"))
         if cursor.batch_sequence is None:
             raise ValueError("checkpoint has no pending batch")
-        event = self._event(execution, cursor.batch_sequence, EventType.MODEL_TURN)
-        turn = decode_provider_result(_wire_object(event.payload["result"], "model turn"))
+        event = committed_event(execution, cursor.batch_sequence, EventType.MODEL_TURN)
+        turn = decode_provider_result(wire_object(event.payload["result"], "model turn"))
         if cursor.next_call >= len(turn.tool_calls):
             raise ValueError("checkpoint is outside its native batch")
         return event, turn.tool_calls[cursor.next_call]
@@ -4720,14 +4542,14 @@ class Core:
                     cursor.deferred_sequence = request.sequence
                     cursor.deferred_depth = cast(int, request.payload["depth"])
                     if cursor.deferred_authority_missing:
-                        call = decode_tool_call(_wire_object(request.payload["call"], "deferred tool call"))
+                        call = decode_tool_call(wire_object(request.payload["call"], "deferred tool call"))
                         self._report(execution, call, ToolFailure(call.tool_name, "background tool request lacks captured origin authorization"))
                         continue
                     try:
                         self._commit(
                             execution,
-                            "running",
-                            "ready",
+                            SessionStatus.RUNNING,
+                            CheckpointKind.READY,
                             reserve_root=True,
                         )
                     except RootBudgetExhausted as exc:
@@ -4768,8 +4590,8 @@ class Core:
                 if cursor.deferred_only:
                     self._commit(
                         execution,
-                        "completed",
-                        "terminal",
+                        SessionStatus.COMPLETED,
+                        CheckpointKind.TERMINAL,
                         EventDraft(
                             EventType.RUN_COMPLETED,
                             "core",
@@ -4814,10 +4636,10 @@ class Core:
                     # context assembly: observers see unknown usage exactly once, and any
                     # budget they set (even a zero cap) or cancellation they raise is
                     # already durable when the admission checks below read it.
-                    self._settle_unsettled_dispatches(execution)
+                    self._fact_delivery.settle_unsettled_dispatches(execution)
                     try:
                         visible_tools = self._visible_tools(execution, snapshot)
-                        messages = self._messages(
+                        messages = self._context_projection.messages(
                             execution,
                             model=model,
                             tool_schema_characters=self._tool_schema_characters(visible_tools),
@@ -4864,8 +4686,8 @@ class Core:
                     try:
                         intent_events = self._commit(
                             execution,
-                            "running",
-                            "ready",
+                            SessionStatus.RUNNING,
+                            CheckpointKind.READY,
                             EventDraft(
                                 EventType.PROVIDER_INTENT,
                                 "core",
@@ -4917,8 +4739,8 @@ class Core:
                         elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
                         self._commit(
                             execution,
-                            "interrupted",
-                            "interrupted",
+                            SessionStatus.INTERRUPTED,
+                            CheckpointKind.INTERRUPTED,
                             EventDraft(
                                 EventType.PROVIDER_INTERRUPTED,
                                 "core",
@@ -4947,8 +4769,8 @@ class Core:
                         elapsed_ms = max(0, int((time.monotonic() - t0) * 1000))
                         self._commit(
                             execution,
-                            "interrupted",
-                            "interrupted",
+                            SessionStatus.INTERRUPTED,
+                            CheckpointKind.INTERRUPTED,
                             EventDraft(
                                 EventType.PROVIDER_INTERRUPTED,
                                 "core",
@@ -4986,8 +4808,8 @@ class Core:
                         # settle the actual user stop rather than inventing a failure.
                         self._commit(
                             execution,
-                            "interrupted",
-                            "interrupted",
+                            SessionStatus.INTERRUPTED,
+                            CheckpointKind.INTERRUPTED,
                             EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
                         )
                         return self._stop(
@@ -4999,22 +4821,22 @@ class Core:
                     if has_duplicate_or_missing_ids:
                         self._commit(
                             execution,
-                            "failed",
-                            "terminal",
+                            SessionStatus.FAILED,
+                            CheckpointKind.TERMINAL,
                             EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
                             completed_continuation_id=execution.cursor.continuation_id,
-                            completed_continuation_status="failed",
+                            completed_continuation_status=ContinuationStatus.FAILED,
                         )
                         return self._fail(execution, "provider returned missing/duplicate native call identities")
 
                     if invalid_done_reason:
                         self._commit(
                             execution,
-                            "failed",
-                            "terminal",
+                            SessionStatus.FAILED,
+                            CheckpointKind.TERMINAL,
                             EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
                             completed_continuation_id=execution.cursor.continuation_id,
-                            completed_continuation_status="failed",
+                            completed_continuation_status=ContinuationStatus.FAILED,
                         )
                         return self._fail(execution, f"provider did not complete its turn: {turn.done_reason}")
 
@@ -5025,16 +4847,16 @@ class Core:
                         cursor.next_call = 0
                         self._commit(
                             execution,
-                            "running",
-                            "ready",
+                            SessionStatus.RUNNING,
+                            CheckpointKind.READY,
                             EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
                             checkpoint_bindings=(("batch_sequence", EventType.MODEL_TURN),),
                         )
                     else:
                         self._commit(
                             execution,
-                            "completed",
-                            "terminal",
+                            SessionStatus.COMPLETED,
+                            CheckpointKind.TERMINAL,
                             EventDraft(EventType.MODEL_TURN, "provider", "model", model_turn_payload),
                             EventDraft(
                                 EventType.RUN_COMPLETED,
@@ -5044,7 +4866,7 @@ class Core:
                             ),
                             *self._lifecycle_events(execution, snapshot, "session_end", status="completed"),
                             completed_continuation_id=execution.cursor.continuation_id,
-                            completed_continuation_status="completed",
+                            completed_continuation_status=ContinuationStatus.COMPLETED,
                         )
                         return self._result(execution, output=turn.output, stop_cause="completed")
                     if self._abort.cancelled or (session_abort and session_abort.cancelled):
@@ -5100,8 +4922,8 @@ class Core:
                     payload["activation_pending"] = True
                 self._commit(
                     execution,
-                    "waiting",
-                    "approval_wait",
+                    SessionStatus.WAITING,
+                    CheckpointKind.APPROVAL_WAIT,
                     EventDraft(EventType.APPROVAL_REQUESTED, "core", "plugin" if cursor.deferred_sequence is not None else "model", payload),
                     checkpoint_bindings=(("approval_sequence", EventType.APPROVAL_REQUESTED),),
                 )
@@ -5125,8 +4947,8 @@ class Core:
                 invocation_id = uuid4().hex
                 self._commit(
                     execution,
-                    "running",
-                    "ready",
+                    SessionStatus.RUNNING,
+                    CheckpointKind.READY,
                     EventDraft(
                         EventType.TOOL_INTENT,
                         "core",
@@ -5147,7 +4969,7 @@ class Core:
                     checkpoint_bindings=(("intent_sequence", EventType.TOOL_INTENT),),
                 )
             else:
-                intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
+                intent = committed_event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
                 invocation_id = str(intent.payload["invocation_id"])
 
             if call.tool_name in self._snapshot.native_tools:
@@ -5336,7 +5158,7 @@ class Core:
                 staged_observations=staged.staged_observations,
             )
             return None
-        draft = AskRequestDraft.from_payload(_wire_object(park.intent.get("draft"), "suspend ask draft"))
+        draft = AskRequestDraft.from_payload(wire_object(park.intent.get("draft"), "suspend ask draft"))
         raw_key = park.intent.get("idempotency_key")
         idempotency_key = raw_key if isinstance(raw_key, str) and raw_key else None
         request_id = uuid4().hex
@@ -5362,8 +5184,8 @@ class Core:
         cursor.ask_request_id = request_id
         self._commit(
             execution,
-            "waiting",
-            "ready",
+            SessionStatus.WAITING,
+            CheckpointKind.READY,
             EventDraft(EventType.ASK_REQUESTED, "core", "plugin" if cursor.deferred_sequence is not None else "model", envelope),
             *staged.staged_events,
             staged_state=staged.staged_state,
@@ -5421,12 +5243,12 @@ class Core:
         cursor = execution.cursor
         deferred = cursor.deferred_sequence is not None
         batch_sequence = cursor.deferred_sequence or cursor.batch_sequence
-        request = self._event(execution, batch_sequence or 0, EventType.TOOL_DEFERRED) if deferred else None
+        request = committed_event(execution, batch_sequence or 0, EventType.TOOL_DEFERRED) if deferred else None
         requester_only = request is not None and request.payload.get("result_delivery") == "requester"
         invocation_id: str | None = None
         intent: StoredEvent | None = None
         if cursor.intent_sequence is not None:
-            intent = self._event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
+            intent = committed_event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
             raw_invocation = intent.payload.get("invocation_id")
             invocation_id = raw_invocation if isinstance(raw_invocation, str) else None
         cursor.intent_sequence = None
@@ -5485,7 +5307,7 @@ class Core:
         else:
             cursor.next_call += 1
             turn = decode_provider_result(
-                _wire_object(self._event(execution, batch_sequence or 0, EventType.MODEL_TURN).payload["result"], "model turn")
+                wire_object(committed_event(execution, batch_sequence or 0, EventType.MODEL_TURN).payload["result"], "model turn")
             )
             if cursor.next_call == len(turn.tool_calls):
                 cursor.batch_sequence = None
@@ -5531,8 +5353,8 @@ class Core:
 
         self._commit(
             execution,
-            "running",
-            "ready",
+            SessionStatus.RUNNING,
+            CheckpointKind.READY,
             *all_events,
             staged_state=staged_state,
             staged_continuations=staged_conts,
@@ -5581,222 +5403,6 @@ class Core:
                 enforce_pin=enforce_pin,
             )
             first = False
-
-    def _messages(
-        self,
-        execution: _Execution,
-        *,
-        allow_pending: bool = False,
-        completed_only: bool = False,
-        model: str | None = None,
-        tool_schema_characters: int = 0,
-    ) -> tuple[ProviderMessage, ...]:
-        messages: list[ProviderMessage] = []
-        pending_calls: tuple[ToolCall, ...] = ()
-        pending_index = 0
-        batch_start = 0
-        batch_sequence: int | None = None
-        shrinkable: list[_ShrinkableToolProjection] = []
-        execution.projection_allocation = None
-        execution.allocation_ineffective_tools = 0
-        # A verified projection replaces a committed prefix with its owner's summary, so a long
-        # session keeps a bounded window without rewriting a single historical event.
-        projection = self.store.window_projection(execution.session.session_id)
-        projected_through = 0
-        if projection is not None:
-            projected_through = projection.covered_to_sequence
-            messages.append(
-                ProviderMessage(
-                    "system",
-                    f"[window summary by {projection.owner}; {projection.covered_to_sequence} covered events "
-                    f"({projection.covered_bytes} bytes -> {projection.dropped_bytes} dropped)]\n{projection.replacement}",
-                )
-            )
-        for event in execution.events:
-            if event.sequence <= projected_through:
-                continue
-            if event.event_type == EventType.USER_MESSAGE:
-                if pending_calls:
-                    raise ValueError("user message crossed an unfinished native batch")
-                raw_images = event.payload.get("images")
-                imgs = tuple(ImageAttachment.from_payload(item) for item in raw_images) if isinstance(raw_images, (list, tuple)) else ()
-                messages.append(ProviderMessage("user", str(event.payload["content"]), images=imgs))
-            elif event.event_type == EventType.CONTINUATION_STARTED:
-                if pending_calls:
-                    raise ValueError("continuation crossed an unfinished native batch")
-                p_payload = event.payload.get("payload")
-                p_map = p_payload if isinstance(p_payload, Mapping) else {}
-                payload_str = json.dumps(json_wire_object(p_map), ensure_ascii=False)
-                if event.payload.get("role") == "user":
-                    # The owner declared a user-role message: its text (or payload) is verbatim.
-                    text = p_map.get("text")
-                    if text is None and "prompt" in p_map:
-                        text = p_map.get("prompt")
-                    raw_images = p_map.get("images")
-                    imgs = tuple(ImageAttachment.from_payload(item) for item in raw_images) if isinstance(raw_images, (list, tuple)) else ()
-                    messages.append(ProviderMessage("user", text if isinstance(text, str) else payload_str, images=imgs))
-                else:
-                    messages.append(ProviderMessage("system", f"[Durable continuation from {event.source}]\n{payload_str}"))
-            elif event.event_type == EventType.WAKEUP_FIRED:
-                if pending_calls:
-                    raise ValueError("wakeup crossed an unfinished native batch")
-                w_payload = event.payload.get("payload")
-                w_map = w_payload if isinstance(w_payload, Mapping) else {}
-                payload_str = json.dumps(json_wire_object(w_map), ensure_ascii=False)
-                if event.payload.get("role") == "user":
-                    text = w_map.get("text")
-                    messages.append(ProviderMessage("user", text if isinstance(text, str) else payload_str))
-                else:
-                    owner_label = str(event.payload.get("owner", event.source))
-                    messages.append(ProviderMessage("system", f"[Durable wakeup from {owner_label}]\n{payload_str}"))
-            elif event.event_type == EventType.MODEL_TURN:
-                if pending_calls:
-                    raise ValueError("provider turn crossed an unfinished native batch")
-                turn = decode_provider_result(_wire_object(event.payload["result"], "model turn"))
-                batch_start = len(messages)
-                messages.append(
-                    ProviderMessage("assistant", turn.output, reasoning=turn.reasoning, tool_calls=turn.tool_calls, metadata=turn.metadata or {})
-                )
-                if turn.tool_calls:
-                    pending_calls = turn.tool_calls
-                    pending_index = 0
-                    batch_sequence = event.sequence
-            elif event.event_type in {EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED}:
-                if event.payload.get("deferred") is True:
-                    request = self._event(execution, cast(int, event.payload["batch_sequence"]), EventType.TOOL_DEFERRED)
-                    if event.payload["call"] != request.payload["call"]:
-                        raise ValueError("deferred tool result does not match its committed request")
-                    if request.payload.get("result_delivery") == "requester":
-                        continue
-                    result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
-                    text, images, _clipped = project_tool_result(result, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self.artifact_page)
-                    label = (
-                        f"[Untrusted deferred tool result: {result.tool_name}; "
-                        f"invocation {event.payload.get('invocation_id', 'not-dispatched')}; "
-                        f"request {request.payload['request_id']}; caller {request.payload['caller_invocation_id']}]\n"
-                    )
-                    messages.append(ProviderMessage("user", label + (text or ""), images=images))
-                    shrinkable.append(_ShrinkableToolProjection(len(messages) - 1, result, label))
-                    continue
-                if not pending_calls or event.payload["batch_sequence"] != batch_sequence:
-                    raise ValueError("reported tool result crossed an unfinished native batch")
-                call = pending_calls[pending_index]
-                if _wire_object(event.payload["call"], "tool call") != json_wire_object(encode_tool_call(call)):
-                    raise ValueError("reported tool result does not match the active batch call")
-                result = decode_tool_result(_wire_object(event.payload["result"], "tool result"))
-                text, images, _clipped = project_tool_result(result, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=self.artifact_page)
-                messages.append(
-                    ProviderMessage(
-                        "tool",
-                        text,
-                        tool_call_id=call.tool_call_id,
-                        tool_name=call.tool_name,
-                        is_error=isinstance(result, ToolFailure),
-                        images=images,
-                    )
-                )
-                shrinkable.append(_ShrinkableToolProjection(len(messages) - 1, result, None))
-                pending_index += 1
-                if pending_index == len(pending_calls):
-                    pending_calls = ()
-        if pending_calls and completed_only:
-            del messages[batch_start:]
-            shrinkable = [entry for entry in shrinkable if entry.index < len(messages)]
-        elif pending_calls:
-            if not allow_pending:
-                raise ValueError("cannot call the provider before completing the pending native batch")
-            if execution.cursor.batch_sequence != batch_sequence or execution.cursor.next_call != pending_index:
-                raise ValueError("checkpoint is not the authentic completed batch prefix")
-        elif execution.cursor.batch_sequence is not None or execution.cursor.next_call != 0:
-            raise ValueError("checkpoint references an already completed batch")
-
-        # Contributed context from plugins only when not allow_pending. A context
-        # failure is never suppressed or re-wrapped here: the drive boundary
-        # finishes the run failed before any provider charge.
-        if not allow_pending:
-            with self.dispatch("context") as snapshot:
-                contributions = snapshot.plugin_runtime.contribute_context(
-                    execution.session.session_id,
-                    run_id=execution.run_id,
-                    logical_turn=execution.cursor.logical_turn,
-                )
-                for c in contributions:
-                    if c.get("type") != "text":
-                        continue
-                    owner = str(c.get("owner", "plugin"))
-                    content = str(c.get("content", ""))
-                    if c.get("role") == "user":
-                        # Declarative role: verbatim, never re-wrapped as core system prose.
-                        messages.append(ProviderMessage("user", content))
-                    else:
-                        messages.append(ProviderMessage("system", f"[{owner} context]\n{content}"))
-
-            activation_note = self._activation_outcome_note(execution)
-            if activation_note is not None:
-                messages.append(ProviderMessage("system", activation_note))
-            if execution.ephemeral_steering:
-                messages.append(ProviderMessage("system", "[Tool Guidance]\n" + "\n".join(execution.ephemeral_steering)))
-                execution.ephemeral_steering.clear()
-
-        if model is not None and not allow_pending:
-            self._apply_projection_allocation(execution, messages, shrinkable, model=model, tool_schema_characters=tool_schema_characters)
-
-        return tuple(messages)
-
-    def _apply_projection_allocation(
-        self,
-        execution: _Execution,
-        messages: list[ProviderMessage],
-        shrinkable: list[_ShrinkableToolProjection],
-        *,
-        model: str,
-        tool_schema_characters: int,
-    ) -> None:
-        """Shrink ceiling-rendered tool projections to the active model's remaining headroom.
-
-        Phase one above rendered every tool result at the fixed ``TOOL_OUTPUT_BYTES``
-        host ceiling; this phase measures that window, pairs the session's own
-        committed token rate for the active model, and re-projects smaller only
-        when every input is known. Any unknown keeps the ceiling bytes exactly,
-        and a per-tool re-projection that cannot fit its identities keeps its own
-        ceiling rendering: adaptive sizing never refuses a dispatch.
-        """
-        provider_name, separator, model_name = model.partition("/")
-        limits = None
-        rate: float | None = None
-        if separator and model_name:
-            with self.dispatch("context") as snapshot:
-                limits = snapshot.plugin_runtime.provider_model_limits(provider_name, model_name)
-            rate = measured_tokens_per_character(execution.events, provider_name=provider_name, model_name=model_name)
-        shrinkable_characters = 0
-        for entry in shrinkable:
-            shrinkable_characters += len(messages[entry.index].content or "") - len(entry.label or "")
-        fixed_characters = sum(len(message.content or "") + len(message.reasoning or "") for message in messages) - shrinkable_characters
-        allocation = allocate_tool_text_budget(
-            tool_count=len(shrinkable),
-            fixed_characters=fixed_characters,
-            tool_schema_characters=tool_schema_characters,
-            images_present=any(message.images for message in messages),
-            limits=limits,
-            rate_tokens_per_char=rate,
-            ceiling_bytes=TOOL_OUTPUT_BYTES,
-        )
-        execution.projection_allocation = allocation
-        budget = allocation.per_tool_max_bytes
-        if allocation.policy != "adaptive" or budget is None:
-            return
-        ineffective = 0
-        for entry in shrinkable:
-            try:
-                text, images, _clipped = project_tool_result(entry.result, max_bytes=budget, artifact_reader=self.artifact_page)
-            except ValueError, OSError, RuntimeError:
-                # The ceiling rendering in hand is authoritative; a budget that
-                # cannot fit this tool's identities keeps it instead of failing.
-                ineffective += 1
-                continue
-            current = messages[entry.index]
-            messages[entry.index] = replace(current, content=(entry.label or "") + text, images=images)
-        execution.allocation_ineffective_tools = ineffective
 
     def _drive_pending_activations(self) -> None:
         """Finish committed command-tool work and staged continuations left across restart."""
@@ -5852,10 +5458,6 @@ class Core:
                 except Exception:
                     break
 
-    def _first_child_message(self, session_id: str) -> ContinuationRecord | None:
-        """The oldest core child message that is claimed or still pending, if any."""
-        return self._delegation._first_child_message(session_id)
-
     def _consume_resume_intent(self, session_id: str) -> None:
         """Claim and drive one owed continuation, exactly once, on its own captured generation.
 
@@ -5883,8 +5485,8 @@ class Core:
             try:
                 self._commit(
                     execution,
-                    "running",
-                    "ready",
+                    SessionStatus.RUNNING,
+                    CheckpointKind.READY,
                 )
             except StoreConflict:
                 return
@@ -5896,33 +5498,6 @@ class Core:
             finally:
                 with self._aborts_lock:
                     self._session_aborts.pop(session_id, None)
-
-    def _activation_outcome_note(self, execution: _Execution) -> str | None:
-        """Tell the next prompt what happened to a staged activation this run asked for."""
-        request_id: str | None = None
-        outcome: tuple[str, str] | None = None
-        for event in execution.events:
-            payload = event.payload if isinstance(event.payload, Mapping) else {}
-            candidate = payload.get("request_id")
-            if not isinstance(candidate, str) or not candidate:
-                continue
-            if event.run_id != execution.run_id:
-                # Only the run that asked for the switch is told about it; later turns are not
-                # re-fed an old decision as if it were news.
-                continue
-            if event.event_type == EventType.ACTIVATION_REQUESTED:
-                request_id = candidate
-                outcome = None
-            elif event.event_type == EventType.ACTIVATION_COMMITTED and candidate == request_id:
-                outcome = ("committed", str(payload.get("to_revision_id", "")))
-            elif outcome is None and candidate == request_id and event.event_type == EventType.ACTIVATION_FAILED:
-                outcome = ("refused", str(payload.get("error", "")))
-        if request_id is None or outcome is None:
-            return None
-        kind, detail = outcome
-        if kind == "committed":
-            return f"[core] capability activation {request_id} committed the revision {detail}."
-        return f"[core] capability activation {request_id} was refused and the previous revision is still active: {detail}"
 
     def _stop(
         self,
@@ -5940,7 +5515,7 @@ class Core:
         bridge_action_id: str | None = None
         bridge_request_id: str | None = None
         if cursor.deferred_sequence is not None and cursor.deferred_action_id is not None:
-            bridge_request = self._event(execution, cursor.deferred_sequence, EventType.TOOL_DEFERRED)
+            bridge_request = committed_event(execution, cursor.deferred_sequence, EventType.TOOL_DEFERRED)
             if bridge_request.payload.get("background_action_id") != cursor.deferred_action_id:
                 raise StoreConflict("deferred request action identity changed before stop")
             bridge_action_id = cursor.deferred_action_id
@@ -5952,7 +5527,7 @@ class Core:
             and (cursor.batch_sequence is not None or cursor.deferred_sequence is not None)
         ):
             self._interrupt_batch(execution, budget_exhaustion=budget_exhaustion)
-        checkpoint_kind = "terminal" if deliberate else "interrupted"
+        checkpoint_kind = CheckpointKind.TERMINAL if deliberate else CheckpointKind.INTERRUPTED
         self.store.cancel_pending_continuations(execution.session.session_id, "core")
         stop_payload: dict[str, object] = {
             "reason": message,
@@ -5978,7 +5553,7 @@ class Core:
                 "background_action_id": bridge_action_id,
                 "owner": bridge_request.payload.get("requester", ""),
                 "revision_id": bridge_request.payload.get("expected_revision", ""),
-                "tool_name": decode_tool_call(_wire_object(bridge_request.payload["call"], "deferred tool call")).tool_name,
+                "tool_name": decode_tool_call(wire_object(bridge_request.payload["call"], "deferred tool call")).tool_name,
                 "status": terminal_status,
                 "reason": message,
                 "stop_cause": stop_cause,
@@ -6000,14 +5575,14 @@ class Core:
         if deliberate and cursor.continuation_id is not None:
             self._commit(
                 execution,
-                "interrupted",
+                SessionStatus.INTERRUPTED,
                 checkpoint_kind,
                 *terminal_events,
                 completed_continuation_id=cursor.continuation_id,
-                completed_continuation_status="cancelled",
+                completed_continuation_status=ContinuationStatus.CANCELLED,
             )
         else:
-            self._commit(execution, "interrupted", checkpoint_kind, *terminal_events)
+            self._commit(execution, SessionStatus.INTERRUPTED, checkpoint_kind, *terminal_events)
         return self._result(
             execution,
             error=message,
@@ -6019,8 +5594,8 @@ class Core:
         execution.cursor.stop_cause = "error"
         self._commit(
             execution,
-            "failed",
-            "terminal",
+            SessionStatus.FAILED,
+            CheckpointKind.TERMINAL,
             EventDraft(
                 EventType.RUN_FAILED,
                 "core",
@@ -6029,7 +5604,7 @@ class Core:
             ),
             *self._lifecycle_events(execution, self._snapshot, "session_end", status="failed", error=message),
             completed_continuation_id=execution.cursor.continuation_id,
-            completed_continuation_status="failed",
+            completed_continuation_status=ContinuationStatus.FAILED,
         )
         return self._result(execution, error=message, stop_cause="error")
 
@@ -6048,7 +5623,7 @@ class Core:
             execution.session.session_id,
             execution.run_id,
             self.revision_id,
-            execution.session.status,
+            execution.session.status.value,
             output=output,
             error=error,
             pending_approval=pending_approval,

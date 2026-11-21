@@ -23,9 +23,12 @@ from .records import (
     BACKGROUND_ACTION_SOURCE,
     MAX_CONTINUATION_PAYLOAD_BYTES,
     MAX_WAKEUP_PAYLOAD_BYTES,
+    CheckpointKind,
     ContinuationRecord,
+    ContinuationStatus,
     FencedSubtree,
     SessionRecord,
+    SessionStatus,
     StoreConflict,
     StoredEvent,
     UnknownContinuation,
@@ -39,6 +42,7 @@ from .records import (
     _continuation_kind,
     _ContinuationColumns,
     _decode_background_action,
+    _decode_closed_enum,
     _decode_continuation,
     _decode_session,
     _decode_tool_allowlist,
@@ -109,8 +113,8 @@ class _ContinuationsMixin(_ConnectionStore):
                 session = _decode_session(session_row)
                 if session.active_revision_id != revision_id:
                     raise StoreConflict("wakeup session belongs to another capability revision")
-                if session.status in ("running", "waiting"):
-                    raise StoreConflict(f"wakeup session {session.session_id!r} is busy ({session.status})")
+                if session.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
+                    raise StoreConflict(f"wakeup session {session.session_id!r} is busy ({session.status.value})")
                 budget_row = self._connection.execute(
                     "SELECT budget FROM root_budgets WHERE root_id = ?",
                     (wakeup.root_id,),
@@ -226,7 +230,7 @@ class _ContinuationsMixin(_ConnectionStore):
                     SessionRecord(
                         session_id=session.session_id,
                         workspace=session.workspace,
-                        status="running",
+                        status=SessionStatus.RUNNING,
                         active_revision_id=revision_id,
                         run_id=run_id,
                         turn=session.turn,
@@ -280,7 +284,10 @@ class _ContinuationsMixin(_ConnectionStore):
                     raise UnknownSession(f"wakeup session {session_id!r} does not exist", session_id)
                 (session_status,) = session
                 if root_action_id is None:
-                    if session_status in ("running", "waiting"):
+                    if _decode_closed_enum(SessionStatus, session_status, field="status", record=f"session {session_id!r}") in (
+                        SessionStatus.RUNNING,
+                        SessionStatus.WAITING,
+                    ):
                         checkpoint = self._connection.execute(
                             "SELECT payload_json FROM checkpoints WHERE session_id = ?",
                             (session_id,),
@@ -562,7 +569,8 @@ class _ContinuationsMixin(_ConnectionStore):
                     raise UnknownSession(f"session {session_id!r} does not exist", session_id)
                 guard_row = _ChildClaimGuardColumns(*row)
                 sequence = guard_row.last_event_sequence
-                if guard_row.status != "running" or guard_row.run_id != run_id or guard_row.active_revision_id != revision_id:
+                guard_status = _decode_closed_enum(SessionStatus, guard_row.status, field="status", record=f"session {session_id!r}")
+                if guard_status is not SessionStatus.RUNNING or guard_row.run_id != run_id or guard_row.active_revision_id != revision_id:
                     self._connection.execute("COMMIT")
                     in_transaction = False
                     return ()
@@ -697,7 +705,7 @@ class _ContinuationsMixin(_ConnectionStore):
             row = cursor.fetchone()
             return None if row is None else row[0]
 
-    def continuation_status(self, continuation_id: str) -> str | None:
+    def continuation_status(self, continuation_id: str) -> ContinuationStatus | None:
         """Return the durable status of one continuation row, or None when absent."""
         with self._lock:
             self._check_open()
@@ -706,7 +714,9 @@ class _ContinuationsMixin(_ConnectionStore):
                 (continuation_id,),
             )
             row = cursor.fetchone()
-            return None if row is None else row[0]
+            if row is None:
+                return None
+            return _decode_closed_enum(ContinuationStatus, row[0], field="status", record=f"continuation {continuation_id!r}")
 
     def continuation_owner(self, continuation_id: str) -> str | None:
         """Return the owning plugin of one continuation row, or None when absent."""
@@ -761,8 +771,10 @@ class _ContinuationsMixin(_ConnectionStore):
             )
             return tuple(_decode_continuation(row) for row in cursor.fetchall())
 
-    def complete_continuation(self, continuation_id: str, status: Literal["completed", "failed", "cancelled"] = "completed") -> None:
+    def complete_continuation(self, continuation_id: str, status: ContinuationStatus = ContinuationStatus.COMPLETED) -> None:
         """Mark a claimed continuation as completed, failed, or cancelled."""
+        if status not in (ContinuationStatus.COMPLETED, ContinuationStatus.FAILED, ContinuationStatus.CANCELLED):
+            raise ValueError(f"continuation completion must be terminal, got {status.value!r}")
         with self._lock:
             self._check_open()
             now = int(time.time() * 1000)
@@ -772,7 +784,7 @@ class _ContinuationsMixin(_ConnectionStore):
                 SET status = ?, updated_at = ?
                 WHERE continuation_id = ?
                 """,
-                (status, now, continuation_id),
+                (status.value, now, continuation_id),
             )
             if cursor.rowcount == 0:
                 raise UnknownContinuation(f"continuation {continuation_id!r} does not exist", continuation_id)
@@ -815,6 +827,7 @@ class _ContinuationsMixin(_ConnectionStore):
                 if row is None:
                     raise UnknownSession(f"session {session_id!r} does not exist", session_id)
                 session_row = _SessionColumns(*row)
+                session_status = _decode_closed_enum(SessionStatus, session_row.status, field="status", record=f"session {session_id!r}")
                 if session_row.active_revision_id != revision_id:
                     raise StoreConflict(
                         f"active revision mismatch for session {session_id!r}: active is {session_row.active_revision_id!r}, got {revision_id!r}"
@@ -825,6 +838,11 @@ class _ContinuationsMixin(_ConnectionStore):
                     (session_id,),
                 ).fetchone()
                 checkpoint_guard = None if checkpoint_query_row is None else _CheckpointGuardColumns(*checkpoint_query_row)
+                guard_kind = (
+                    None
+                    if checkpoint_guard is None
+                    else _decode_closed_enum(CheckpointKind, checkpoint_guard.kind, field="kind", record=f"checkpoint of session {session_id!r}")
+                )
                 now = int(time.time() * 1000)
 
                 c_cursor = self._connection.execute(
@@ -839,7 +857,7 @@ class _ContinuationsMixin(_ConnectionStore):
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
-                    (session_id, continuation_id, continuation_id, automatic and session_row.status == "interrupted", CHILD_MESSAGE_OWNER),
+                    (session_id, continuation_id, continuation_id, automatic and session_status is SessionStatus.INTERRUPTED, CHILD_MESSAGE_OWNER),
                 )
                 pending_row = c_cursor.fetchone()
                 cont_row = None if pending_row is None else _ContinuationColumns(*pending_row)
@@ -868,7 +886,7 @@ class _ContinuationsMixin(_ConnectionStore):
                     cont_row = _ContinuationColumns(*claimed_row)
                     if checkpoint_guard is None:
                         raise StoreConflict(f"claimed continuation {cont_row.continuation_id!r} has no resumable checkpoint")
-                    if checkpoint_guard.kind == "terminal":
+                    if guard_kind is CheckpointKind.TERMINAL:
                         raise StoreConflict(f"claimed continuation {cont_row.continuation_id!r} has a terminal checkpoint")
                     try:
                         cp_payload = json.loads(checkpoint_guard.payload_json)
@@ -889,7 +907,7 @@ class _ContinuationsMixin(_ConnectionStore):
                     return claimed_record, SessionRecord(
                         session_id=session_id,
                         workspace=session_row.workspace,
-                        status=session_row.status,
+                        status=session_status,
                         active_revision_id=session_row.active_revision_id,
                         run_id=session_row.run_id,
                         turn=session_row.turn,
@@ -902,14 +920,19 @@ class _ContinuationsMixin(_ConnectionStore):
 
                 if not cont_row.root_id:
                     raise StoreConflict(f"continuation {cont_row.continuation_id!r} has no captured root action identity")
-                if session_row.status not in ("idle", "completed", "failed", "interrupted"):
-                    raise StoreConflict(f"session {session_id!r} already holds active work ({session_row.status})")
-                if session_row.status == "idle" and session_row.parent_session_id is not None:
+                if session_status not in (
+                    SessionStatus.IDLE,
+                    SessionStatus.COMPLETED,
+                    SessionStatus.FAILED,
+                    SessionStatus.INTERRUPTED,
+                ):
+                    raise StoreConflict(f"session {session_id!r} already holds active work ({session_status.value})")
+                if session_status is SessionStatus.IDLE and session_row.parent_session_id is not None:
                     # A spawned child is idle only before its first run commits; its first
                     # boundary merges the queued follow-up instead of racing a second start.
                     raise StoreConflict(f"child session {session_id!r} has not committed its spawn run")
-                if checkpoint_guard is not None and checkpoint_guard.kind != "terminal":
-                    raise StoreConflict(f"session {session_id!r} holds a resumable/parked checkpoint ({checkpoint_guard.kind})")
+                if guard_kind is not None and guard_kind is not CheckpointKind.TERMINAL:
+                    raise StoreConflict(f"session {session_id!r} holds a resumable/parked checkpoint ({guard_kind.value})")
                 claimed_other = self._connection.execute(
                     "SELECT 1 FROM continuations WHERE session_id = ? AND status = 'claimed' LIMIT 1",
                     (session_id,),
@@ -931,7 +954,7 @@ class _ContinuationsMixin(_ConnectionStore):
                     _decode_continuation(pending_row),
                     run_id=run_id,
                     revision_id=revision_id,
-                    status="claimed",
+                    status=ContinuationStatus.CLAIMED,
                     updated_at=now,
                 )
 
@@ -1029,7 +1052,7 @@ class _ContinuationsMixin(_ConnectionStore):
                 return cont_record, SessionRecord(
                     session_id=session_id,
                     workspace=session_row.workspace,
-                    status="running",
+                    status=SessionStatus.RUNNING,
                     active_revision_id=revision_id,
                     run_id=run_id,
                     root_session_id=session_row.root_session_id,
@@ -1231,13 +1254,13 @@ class _ContinuationsMixin(_ConnectionStore):
                     raise StoreConflict(f"background action {action_row.action_id!r} was claimed concurrently")
                 self._connection.execute("COMMIT")
                 in_transaction = False
-                return _decode_background_action(row, status="claimed")
+                return _decode_background_action(row, status=ContinuationStatus.CLAIMED)
             except Exception:
                 if in_transaction:
                     self._connection.execute("ROLLBACK")
                 raise
 
-    def complete_background_action(self, action_id: str, *, status: Literal["completed", "failed", "cancelled"], error: str | None = None) -> None:
+    def complete_background_action(self, action_id: str, *, status: ContinuationStatus, error: str | None = None) -> None:
         """Settle a pending or claimed background action into its terminal state.
 
         A failed settle records the driver's error in the error column, leaving the
@@ -1246,14 +1269,14 @@ class _ContinuationsMixin(_ConnectionStore):
         """
         with self._lock:
             self._check_open()
-            if status not in ("completed", "failed", "cancelled"):
-                raise ValueError(f"background action completion must be terminal, got {status!r}")
+            if status not in (ContinuationStatus.COMPLETED, ContinuationStatus.FAILED, ContinuationStatus.CANCELLED):
+                raise ValueError(f"background action completion must be terminal, got {status.value!r}")
             cursor = self._connection.execute(
                 """
                 UPDATE background_actions SET status = ?, updated_at = ?, error = ?
                 WHERE action_id = ? AND status IN ('pending', 'claimed')
                 """,
-                (status, int(time.time() * 1000), error if status == "failed" else None, action_id),
+                (status.value, int(time.time() * 1000), error if status is ContinuationStatus.FAILED else None, action_id),
             )
             if cursor.rowcount == 0:
                 raise StoreConflict(f"background action {action_id!r} is not settleable")

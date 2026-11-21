@@ -7,7 +7,7 @@ import pytest
 
 from voidcode.core.plugins import LeaseContext, LeaseIdentity, PluginRuntime
 from voidcode.core.services import RuntimeServices
-from voidcode.core.storage.store import StoredEvent, canonical_json
+from voidcode.core.storage.store import SessionStatus, StoredEvent, canonical_json
 from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.provider import ProviderMessage
 from voidcode.sdk.transcript import TranscriptPage
@@ -196,7 +196,7 @@ def test_projection_admission_rechecks_ids_and_accepts_completed_deferred_work(t
                 run_id="run",
                 revision_id=revision,
                 events=tuple(EventDraft(e.event_type, e.source, e.actor, e.payload) for e in (*source, deferred)),
-                status="completed",
+                status=SessionStatus.COMPLETED,
             )
             with PluginRuntime((), workspace=tmp_path, revision_id=revision, store=store) as runtime:
                 lease = LeaseContext(LeaseIdentity("token", "compressor", "session", tmp_path, "run", revision, "invoke", False))

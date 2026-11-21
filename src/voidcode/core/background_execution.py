@@ -19,26 +19,30 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
-from ..sdk.client import BudgetExhaustion
 from ..sdk.codec import decode_tool_call, decode_tool_result
 from ..sdk.hooks import StopCause
 from ..sdk.invocation import ToolContext
-from ..sdk.json_values import json_wire_object, own_json_object
-from ..sdk.services import ArtifactPage, PluginBudget, ToolAwaitResult, ToolInvocationReceipt
+from ..sdk.json_values import own_json_object
+from ..sdk.services import ArtifactPage, BudgetExhaustion, PluginBudget, ToolAwaitResult, ToolInvocationReceipt
 from ..sdk.tools import ConfirmedStop, ExecutionObservation, ToolFailure, UnconfirmedStop
 from .background_actions import BackgroundActionRegistry
 from .cancellation import _EventAbortSignal
 from .coverage import read_artifact_content
 from .events import EventType
+from .execution import wire_object
 from .plugins import PluginRuntime
 from .storage.store import (
     ContinuationRecord,
+    ContinuationStatus,
     EventDraft,
+    ObserverReceiptRecord,
     SequenceConflict,
     SessionRecord,
     SqliteStore,
     StagedBudgetUpdate,
     StagedCancellation,
+    StagedContinuationDraft,
+    StagedStateUpdate,
     StoreConflict,
     StoredEvent,
 )
@@ -124,6 +128,21 @@ class BackgroundExecutionHost(Protocol):
 
     def notify_commit(self) -> None: ...
 
+    def commit_public_staged(
+        self,
+        session_id: str,
+        *,
+        events: Sequence[EventDraft],
+        revision_id: str,
+        staged_state: Sequence[StagedStateUpdate] = (),
+        staged_continuations: Sequence[StagedContinuationDraft] = (),
+        staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_budgets: Sequence[StagedBudgetUpdate] = (),
+        observer_receipts: Sequence[ObserverReceiptRecord] = (),
+        root_action_id: str | None = None,
+        initial_root_budget: int | None = None,
+    ) -> SessionRecord: ...
+
     def owner_cancel_claimed_work(
         self,
         session_id: str,
@@ -132,29 +151,6 @@ class BackgroundExecutionHost(Protocol):
     ) -> None: ...
 
     def assert_background_wait_unleased(self) -> None: ...
-
-
-def _wire_object(value: object, what: str) -> Mapping[str, object]:
-    """Require a JSON object from a durable payload, failing visibly when malformed."""
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{what} must be a JSON object")
-    return json_wire_object(value)
-
-
-def _budget_exhaustion_from_payload(value: object) -> BudgetExhaustion | None:
-    if not isinstance(value, Mapping):
-        return None
-    try:
-        return BudgetExhaustion(
-            dimension=cast(Any, value["dimension"]),
-            source=cast(Any, value["source"]),
-            limit=cast(int, value["limit"]),
-            consumed=cast(int, value["consumed"]),
-            remaining=cast(int, value["remaining"]),
-            continue_with=cast(Any, value["continue_with"]),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("tool wait contains a malformed budget exhaustion") from exc
 
 
 def _execution_from_payload(value: object) -> ExecutionObservation | None:
@@ -254,12 +250,12 @@ class BackgroundExecution:
     def drive(self, claimed: ContinuationRecord, abort: threading.Event) -> None:
         """Run one claimed action's owner driver, then settle the row terminally."""
         action_id = claimed.continuation_id
-        terminal: Literal["completed", "failed", "cancelled"] = "completed"
+        terminal = ContinuationStatus.COMPLETED
         failure: str | None = None
         try:
             if abort.is_set() or self._host.closed:
                 raise InterruptedError(f"background action {action_id!r} was cancelled before dispatch")
-            action = _wire_object(claimed.payload.get("action"), f"background action {action_id!r} envelope")
+            action = wire_object(claimed.payload.get("action"), f"background action {action_id!r} envelope")
             root_action_id = claimed.root_id
             root_budget = claimed.payload.get("root_action_budget")
             if not isinstance(root_action_id, str) or not root_action_id:
@@ -303,16 +299,16 @@ class BackgroundExecution:
             if driver is None:
                 raise RuntimeError(f"owner {claimed.owner!r} registers no background driver")
             driver(context)
-            terminal = "cancelled" if abort.is_set() else "completed"
+            terminal = ContinuationStatus.CANCELLED if abort.is_set() else ContinuationStatus.COMPLETED
         except InterruptedError:
-            terminal = "cancelled"
+            terminal = ContinuationStatus.CANCELLED
             failure = None
         except BaseException as exc:
             # Any driver exit — including SystemExit or an asyncio cancellation escaping
             # the script — settles failed with its real type recorded. This runs on the
             # worker thread only, so it can never swallow the main thread's Ctrl-C, and
             # the live registries below always clear in `finally`.
-            terminal = "failed"
+            terminal = ContinuationStatus.FAILED
             failure = f"{type(exc).__name__}: {exc}"
         try:
             self._host.store.complete_background_action(action_id, status=terminal, error=failure)
@@ -323,9 +319,6 @@ class BackgroundExecution:
             pass
         finally:
             self._background.settle_driver(action_id)
-            snapshot = self._host.snapshot
-            if snapshot is not None:
-                snapshot.plugin_runtime.background_live_actions.discard(action_id)
 
     def invoke[T](self, context: BackgroundContext, callback: Callable[[ToolContext, Any], T]) -> T:
         """Run one driver callback under a fresh lease and commit its staged work atomically."""
@@ -411,25 +404,19 @@ class BackgroundExecution:
             for _attempt in range(8):
                 if abort.is_set() or host.closed:
                     raise InterruptedError(f"background action {action_id!r} was cancelled")
-                latest = host.store.session(session_id)
                 try:
-                    host.store.commit_staged(
+                    host.commit_public_staged(
                         session_id,
-                        expected_sequence=latest.last_event_sequence,
-                        expected_run_id=latest.run_id,
-                        run_id=latest.run_id or action_id,
                         revision_id=snapshot.revision_id,
-                        events=tuple(staged_events),
-                        status=latest.status,
-                        checkpoint_kind=None,
-                        checkpoint_payload=None,
+                        events=staged_events,
                         staged_state=staged_state,
                         staged_continuations=staged_conts,
                         staged_cancellations=staged_cancels,
-                        observer_receipts=staged_receipts,
                         staged_budgets=tuple(staged_budget_updates),
+                        observer_receipts=staged_receipts,
+                        root_action_id=context._root_action_id,
+                        initial_root_budget=context._initial_root_budget,
                     )
-                    host.notify_commit()
                 except SequenceConflict:
                     continue
                 committed = True
@@ -486,24 +473,24 @@ class BackgroundExecution:
         for raw_action_id in action_ids:
             action_id = cast(str, raw_action_id)
             record = self._host.store.background_action(action_id)
-            if record is not None and record.status == "pending":
+            if record is not None and record.status is ContinuationStatus.PENDING:
                 continue
-            if record is not None and record.status == "claimed" and self._background.claim_live(record):
+            if record is not None and record.status is ContinuationStatus.CLAIMED and self._background.claim_live(record):
                 continue
-            if record is None or record.status in {"claimed", "interrupted"}:
+            if record is None or record.status is ContinuationStatus.CLAIMED:
                 status: Literal["cancelled", "interrupted", "core_lost", "budget_exhausted"] = "core_lost"
                 stop_cause: StopCause | None = None
                 reason = "background script was lost before its tool request reached a terminal result"
-            elif record.status == "cancelled":
+            elif record.status is ContinuationStatus.CANCELLED:
                 status = "cancelled"
                 stop_cause = "owner_cancel"
                 reason = "background action was cancelled before its tool request completed"
-            elif record.status in {"failed", "completed"}:
+            elif record.status in (ContinuationStatus.FAILED, ContinuationStatus.COMPLETED):
                 status = "interrupted"
                 stop_cause = "error"
                 reason = "background driver settled before its tool request reached a terminal result"
             else:
-                raise StoreConflict(f"background action {action_id!r} has unknown status {record.status!r}")
+                raise StoreConflict(f"background action {action_id!r} has unknown status {record.status.value!r}")
             self._host.cancel_background_tool_requests(
                 session_id,
                 action_id,
@@ -533,12 +520,12 @@ class BackgroundExecution:
             record = self._host.store.background_action(action_id)
             action_abort = self._background.abort_event(action_id)
             live = self._background.is_live(action_id)
-            if record is None or record.status != "claimed" or not live:
+            if record is None or record.status is not ContinuationStatus.CLAIMED or not live:
                 self.reconcile_lost(session_id)
                 record = self._host.store.background_action(action_id)
                 action_abort = self._background.abort_event(action_id)
                 live = self._background.is_live(action_id)
-                if record is None or record.status != "claimed" or not live:
+                if record is None or record.status is not ContinuationStatus.CLAIMED or not live:
                     return
             if action_abort is None:
                 raise StoreConflict(f"live background action {action_id!r} has no cancellation binding")
@@ -559,7 +546,7 @@ class BackgroundExecution:
         )
         if request is None:
             raise ValueError(f"tool request {receipt.request_id!r} was not committed by this background action")
-        call = decode_tool_call(_wire_object(request.payload["call"], "deferred tool call"))
+        call = decode_tool_call(wire_object(request.payload["call"], "deferred tool call"))
         if (
             request.payload.get("background_action_id") != context.action_id
             or request.payload.get("requester") != context.owner
@@ -597,15 +584,7 @@ class BackgroundExecution:
                     stop_cause=stop_cause,
                     reason="background action stopped",
                 )
-            elif record.status == "interrupted":
-                host.cancel_background_tool_requests(
-                    context.session_id,
-                    context.action_id,
-                    status="core_lost",
-                    stop_cause=None,
-                    reason="background driver did not survive the previous core process",
-                )
-            elif record.status == "failed":
+            elif record.status is ContinuationStatus.FAILED:
                 host.cancel_background_tool_requests(
                     context.session_id,
                     context.action_id,
@@ -613,7 +592,7 @@ class BackgroundExecution:
                     stop_cause="error",
                     reason="background driver failed before completing its deferred tool wait",
                 )
-            elif record.status == "cancelled":
+            elif record.status is ContinuationStatus.CANCELLED:
                 host.cancel_background_tool_requests(
                     context.session_id,
                     context.action_id,
@@ -621,7 +600,7 @@ class BackgroundExecution:
                     stop_cause="owner_cancel",
                     reason="background action was cancelled",
                 )
-            elif record.status == "completed":
+            elif record.status is ContinuationStatus.COMPLETED:
                 host.cancel_background_tool_requests(
                     context.session_id,
                     context.action_id,
@@ -636,7 +615,7 @@ class BackgroundExecution:
     def _tool_outcome(self, context: BackgroundToolContext, request: StoredEvent) -> ToolAwaitResult | None:
         host = self._host
         request_id = str(request.payload["request_id"])
-        request_call = decode_tool_call(_wire_object(request.payload["call"], "deferred tool call"))
+        request_call = decode_tool_call(wire_object(request.payload["call"], "deferred tool call"))
         events = host.store.events(context.session_id, after_sequence=request.sequence)
         tool_event = next(
             (
@@ -673,7 +652,7 @@ class BackgroundExecution:
         ):
             tool_event = None
         if tool_event is not None:
-            if _wire_object(tool_event.payload["call"], "deferred result call") != _wire_object(request.payload["call"], "deferred request call"):
+            if wire_object(tool_event.payload["call"], "deferred result call") != wire_object(request.payload["call"], "deferred request call"):
                 raise ValueError("deferred terminal result changed its request call")
             if tool_event.event_type == EventType.TOOL_INTERRUPTED:
                 stop_event = next(
@@ -701,7 +680,7 @@ class BackgroundExecution:
                 stop_cause = None
                 budget_value = None
                 terminal_sequence = tool_event.sequence
-            raw_result = _wire_object(tool_event.payload["result"], "deferred tool result")
+            raw_result = wire_object(tool_event.payload["result"], "deferred tool result")
             result = decode_tool_result(raw_result)
             if result.tool_name != request_call.tool_name:
                 raise ValueError("deferred terminal result changed its tool identity")
@@ -709,13 +688,13 @@ class BackgroundExecution:
             if reference is not None:
                 try:
                     canonical = read_artifact_content(reference, host.artifact_page)
-                    complete = decode_tool_result(_wire_object(json.loads(canonical), "canonical tool result"))
+                    complete = decode_tool_result(wire_object(json.loads(canonical), "canonical tool result"))
                     if complete.tool_name != request_call.tool_name:
                         raise ValueError("canonical tool result changed tool identity")
                     result = replace(complete, result_reference=reference)
                 except Exception as exc:
                     raise RuntimeError(f"complete result for tool request {request_id!r} could not be hydrated: {exc}") from exc
-            budget = _budget_exhaustion_from_payload(budget_value)
+            budget = BudgetExhaustion.from_payload(budget_value)
             if tool_event.event_type == EventType.TOOL_COMPLETED:
                 status: Literal["completed", "interrupted", "cancelled", "core_lost", "budget_exhausted"] = "completed"
             elif stop_cause == "limit_reached" and budget is not None:
@@ -762,6 +741,6 @@ class BackgroundExecution:
             result=None,
             terminal_sequence=cancellation.sequence,
             stop_cause=cast("StopCause | None", payload.get("stop_cause")),
-            budget_exhaustion=_budget_exhaustion_from_payload(payload.get("budget_exhaustion")),
+            budget_exhaustion=BudgetExhaustion.from_payload(payload.get("budget_exhaustion")),
             execution=_execution_from_payload(payload.get("execution")),
         )

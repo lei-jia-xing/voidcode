@@ -528,3 +528,29 @@ def test_environment_credentials_do_not_enable_disabled_provider_capabilities(tm
         assert "model" not in {command.name for command in core.command_catalog().commands}
     with open_core(workspace, state_dir=tmp_path / "state") as core:
         assert core.session(session.session_id).session_id == session.session_id
+
+
+def test_activation_publication_survives_post_commit_replay_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "plugin"
+    write_reload_plugin(source, tool_output="v1")
+    with loopback_server([]) as server:
+        _configure(tmp_path / "workspace", server, source)
+        core = _open(tmp_path)
+        session = core.create_session("sess-publish-failure")
+        old_runtime = core.plugin_runtime
+        old_revision = core.revision_id
+
+        original = core._fact_delivery.replay_pending
+
+        def fail_post_commit(*, require_complete: bool = False, defer_to_candidate: frozenset[str] = frozenset()) -> None:
+            if not require_complete:
+                raise RuntimeError("forced post-commit replay failure")
+            original(require_complete=require_complete, defer_to_candidate=defer_to_candidate)
+
+        monkeypatch.setattr(core._fact_delivery, "replay_pending", fail_post_commit)
+        outcome = core.activate(session_id=session.session_id, source="client")
+
+        assert outcome["activated"] is True
+        assert core.revision_id != old_revision
+        assert old_runtime.closed is True
+        assert core.plugin_runtime.closed is False

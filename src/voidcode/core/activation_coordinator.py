@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Protocol
 from uuid import uuid4
 
 from ..sdk.json_values import json_wire_object
@@ -29,7 +29,7 @@ from .activation import (
 from .events import EventType
 from .plugins import PluginRuntime
 from .sandbox import SandboxBackend
-from .storage.store import DATABASE_FILENAME, EventDraft, SessionRecord, SqliteStore, StoreConflict
+from .storage.store import DATABASE_FILENAME, CheckpointKind, EventDraft, SessionRecord, SqliteStore, StoreConflict
 
 
 class ActivationFenced(RuntimeError):
@@ -157,7 +157,9 @@ class ActivationCoordinator:
             self._commit_activation(snapshot, session, request_id=request_id, source=source, prepared=prepared)
         except Exception as exc:
             host.end_activation()
-            prepared.plugin_runtime.close()
+            published = host.snapshot
+            if published is None or published.revision_id != prepared.admission.revision_id:
+                prepared.plugin_runtime.close()
             if not isinstance(exc, StoreConflict):
                 raise
             host.record_activation_refusal(session_id, request_id, source, str(exc), ())
@@ -257,7 +259,6 @@ class ActivationCoordinator:
         except Exception:
             if candidate_runtime is not None:
                 candidate_runtime.close()
-            host.end_activation()
             raise
         return PreparedActivation(
             admission=admission,
@@ -307,14 +308,14 @@ class ActivationCoordinator:
         target_revision_id = admission.revision_id
         checkpoint = host.store.checkpoint(session.session_id)
         checkpoint_payload: Mapping[str, object] | None = None
-        checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None = None
+        checkpoint_kind: CheckpointKind | None = None
         if checkpoint is not None and isinstance(checkpoint.payload, Mapping):
             checkpoint_payload = host.activation_checkpoint(
                 json_wire_object(checkpoint.payload),
                 source=source,
                 request_id=request_id,
             )
-            checkpoint_kind = cast("Literal['ready', 'approval_wait', 'terminal', 'interrupted']", checkpoint.kind)
+            checkpoint_kind = checkpoint.kind
         disabled_owners = self._deactivated_owners(snapshot, admission)
         # The model's request was already recorded durably by its own tool commit; this
         # transaction only answers it (a client-initiated switch answers no staged request).

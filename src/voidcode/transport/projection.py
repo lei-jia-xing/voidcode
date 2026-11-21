@@ -40,7 +40,7 @@ def session_payload(record: SessionRecord) -> dict[str, object]:
     return {
         "session_id": record.session_id,
         "workspace": record.workspace,
-        "status": record.status,
+        "status": record.status.value,
         "active_revision_id": record.active_revision_id,
         "run_id": record.run_id,
         "turn": record.turn,

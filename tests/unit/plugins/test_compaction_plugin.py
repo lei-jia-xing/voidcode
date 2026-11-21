@@ -708,23 +708,19 @@ def test_state_round_trips_and_rejects_unknown_keys() -> None:
     assert payload["schema_version"] == SCHEMA_VERSION
     assert CompactionState.from_payload(payload) == state
     assert _loaded(None) == CompactionState()
-    assert CompactionState.from_payload({"schema_version": 1, "cursor_sequence": 0, "last_projection": None}) == CompactionState()
-    # Read compatibility: an old stored deterministic row still validates, though nothing writes it again.
-    legacy = dict(payload["last_projection"])
-    legacy["summary_kind"] = "deterministic"
-    assert CompactionState.from_payload({**payload, "last_projection": legacy}).last_projection.summary_kind == "deterministic"
+    assert CompactionState.from_payload({"schema_version": SCHEMA_VERSION, "cursor_sequence": 0, "last_projection": None}) == CompactionState()
     with pytest.raises(ValueError, match="unsupported field"):
-        _loaded({"schema_version": 1, "cursor_sequence": 0, "last_projection": None, "extra": 1})
+        _loaded({"schema_version": SCHEMA_VERSION, "cursor_sequence": 0, "last_projection": None, "extra": 1})
     with pytest.raises(ValueError, match="schema_version"):
-        CompactionState.from_payload({"schema_version": 2, "cursor_sequence": 0, "last_projection": None})
+        CompactionState.from_payload({"schema_version": SCHEMA_VERSION + 1, "cursor_sequence": 0, "last_projection": None})
     with pytest.raises(ValueError, match="cursor_sequence"):
-        CompactionState.from_payload({"schema_version": 1, "cursor_sequence": True, "last_projection": None})
+        CompactionState.from_payload({"schema_version": SCHEMA_VERSION, "cursor_sequence": True, "last_projection": None})
     with pytest.raises(ValueError, match="missing field"):
-        CompactionState.from_payload({"schema_version": 1, "cursor_sequence": 0, "last_projection": {"summary_kind": "model"}})
+        CompactionState.from_payload({"schema_version": SCHEMA_VERSION, "cursor_sequence": 0, "last_projection": {"summary_kind": "model"}})
     with pytest.raises(ValueError, match="summary_kind"):
         CompactionState.from_payload(
             {
-                "schema_version": 1,
+                "schema_version": SCHEMA_VERSION,
                 "cursor_sequence": 0,
                 "last_projection": {
                     "covered_from_sequence": 1,

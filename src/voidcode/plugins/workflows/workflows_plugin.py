@@ -531,9 +531,9 @@ class WorkflowState:
 
     @classmethod
     def from_payload(cls, raw: Mapping[str, object]) -> WorkflowState:
-        if raw.get("schema_version", SCHEMA_VERSION) != SCHEMA_VERSION:
+        if raw["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"workflows state schema_version must be {SCHEMA_VERSION}")
-        runs = raw.get("runs", {})
+        runs = raw["runs"]
         if not isinstance(runs, Mapping):
             raise ValueError("workflows state 'runs' must be an object")
         parsed: dict[str, WorkflowRun] = {}

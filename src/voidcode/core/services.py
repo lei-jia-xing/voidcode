@@ -45,6 +45,7 @@ from .artifacts import SHA256_PATTERN
 from .child_contracts import ChildSpawnRequest
 from .events import CHILD_MESSAGE_OWNER, CHILD_OUTCOME_RECEIPT_OWNER, EventType
 from .history_renderer import PAGE_BYTES, HistoryPage, render_history_page
+from .storage.store import CheckpointKind, SessionStatus
 from .transcript import transcript_entry
 
 if TYPE_CHECKING:
@@ -73,9 +74,6 @@ class RuntimeServices:
     def _active_lease(self) -> LeaseContext:
         if self._lease.revoked or self._runtime.closed:
             raise PermissionError("Service lease was revoked")
-        if self._lease.identity.hook:
-            # Checked per method below; this is the shared hook gate.
-            pass
         return self._lease
 
     def _check_hook(self, method: str) -> None:
@@ -1266,10 +1264,10 @@ class RuntimeServices:
             session = store.session(session_id)
         except KeyError:
             return None
-        if session.status != "waiting":
+        if session.status is not SessionStatus.WAITING:
             return None
         checkpoint = store.checkpoint(session_id)
-        if checkpoint is None or checkpoint.kind == "terminal" or checkpoint.run_id != session.run_id:
+        if checkpoint is None or checkpoint.kind is CheckpointKind.TERMINAL or checkpoint.run_id != session.run_id:
             return None
         payload = checkpoint.payload
         candidate = payload.get("ask_request_id")

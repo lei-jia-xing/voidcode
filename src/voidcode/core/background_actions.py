@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from ..sdk.hooks import StopCause
 from .plugins import PluginRuntime
-from .storage.store import ContinuationRecord, SessionRecord, SqliteStore, StoreConflict
+from .storage.store import ContinuationRecord, ContinuationStatus, SessionRecord, SqliteStore, StoreConflict
 
 
 class BackgroundSnapshot(Protocol):
@@ -78,9 +78,6 @@ class BackgroundActionRegistry:
         """Bind one runtime's background projections to this process's live driver registry."""
         runtime.background_action_notify_callback = self.notify
         runtime.background_claim_live_callback = self.claim_live
-        with self._cond:
-            live = set(self._live)
-        runtime.background_live_actions = live
 
     def notify(self) -> None:
         with self._cond:
@@ -214,9 +211,6 @@ class BackgroundActionRegistry:
                     abort.set()
                 self._claiming -= 1
                 self._cond.notify_all()
-            snapshot = host.snapshot
-            if snapshot is not None:
-                snapshot.plugin_runtime.background_live_actions.add(claimed.continuation_id)
             worker = threading.Thread(
                 target=host.drive_background_action,
                 args=(claimed, abort),
@@ -232,25 +226,17 @@ class BackgroundActionRegistry:
         record = host.store.background_action(action_id)
         if record is None or record.owner != owner or record.session_id != session_id:
             return False
-        if record.status in ("completed", "failed", "cancelled"):
+        if record.status in (ContinuationStatus.COMPLETED, ContinuationStatus.FAILED, ContinuationStatus.CANCELLED):
             return False
         with self._cond:
             abort = self._aborts.get(action_id)
-            live = action_id in self._live
-            if live and abort is not None:
+            cancelling_live = action_id in self._live and abort is not None
+            if cancelling_live:
                 self._abort_causes[action_id] = "owner_cancel"
                 abort.set()
                 self._cond.notify_all()
-        if live and abort is not None:
+        if cancelling_live:
             self.notify_tool_waiters()
-            host.cancel_background_tool_requests(
-                session_id,
-                action_id,
-                status="cancelled",
-                stop_cause="owner_cancel",
-                reason=reason,
-            )
-            return True
         host.cancel_background_tool_requests(
             session_id,
             action_id,
@@ -258,8 +244,10 @@ class BackgroundActionRegistry:
             stop_cause="owner_cancel",
             reason=reason,
         )
+        if cancelling_live:
+            return True
         try:
-            host.store.complete_background_action(action_id, status="cancelled")
+            host.store.complete_background_action(action_id, status=ContinuationStatus.CANCELLED)
         except StoreConflict:
             return False
         with self._cond:
@@ -285,7 +273,7 @@ class BackgroundActionRegistry:
             pending = host.store.pending_background_actions(session_id)
             with self._cond:
                 live = set(self._live)
-            waited = [record for record in pending if record.status == "pending" or record.continuation_id in live]
+            waited = [record for record in pending if record.status is ContinuationStatus.PENDING or record.continuation_id in live]
             if not waited:
                 # A claimed row outside the live set is stale — unless a claim is
                 # in flight, in which case its completion notifies this cond.
@@ -295,20 +283,20 @@ class BackgroundActionRegistry:
                 pending = host.store.pending_background_actions(session_id)
                 with self._cond:
                     live = set(self._live)
-                waited = [record for record in pending if record.status == "pending" or record.continuation_id in live]
+                waited = [record for record in pending if record.status is ContinuationStatus.PENDING or record.continuation_id in live]
                 if waited:
                     continue
                 return tuple(_stale_action_entry(record) for record in pending)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return tuple({"action_id": record.continuation_id, "status": record.status} for record in waited)
+                return tuple({"action_id": record.continuation_id, "status": record.status.value} for record in waited)
             with self._cond:
                 self._cond.wait(timeout=min(remaining, 0.2))
             # One round settled (or was notified): surface failures before waiting further,
             # so a failed action never hides behind a longer-running sibling.
             for record in waited:
                 current = host.store.background_action(record.continuation_id)
-                if current is None or current.status != "failed":
+                if current is None or current.status is not ContinuationStatus.FAILED:
                     continue
                 raise RuntimeError(f"background action {current.continuation_id!r} failed" + _action_error_suffix(current))
 
@@ -322,13 +310,13 @@ class BackgroundActionRegistry:
         while True:
             current = store.background_action(action_id)
             assert current is not None  # background rows are never deleted
-            if current.status in ("completed", "failed", "cancelled"):
-                if current.status == "failed":
+            if current.status in (ContinuationStatus.COMPLETED, ContinuationStatus.FAILED, ContinuationStatus.CANCELLED):
+                if current.status is ContinuationStatus.FAILED:
                     raise RuntimeError(f"background action {action_id!r} failed" + _action_error_suffix(current))
-                return {"action_id": action_id, "status": current.status}
+                return {"action_id": action_id, "status": current.status.value}
             with self._cond:
                 live = action_id in self._live
-            if current.status == "claimed" and not live:
+            if current.status is ContinuationStatus.CLAIMED and not live:
                 with self._cond:
                     if self._claiming > 0:
                         self._cond.wait(timeout=max(0.0, deadline - time.monotonic()))
@@ -336,11 +324,11 @@ class BackgroundActionRegistry:
                 assert reconfirmed is not None
                 with self._cond:
                     live = action_id in self._live
-                if reconfirmed.status == "claimed" and not live:
+                if reconfirmed.status is ContinuationStatus.CLAIMED and not live:
                     return _stale_action_entry(reconfirmed)
                 continue
             if time.monotonic() >= deadline:
-                return {"action_id": action_id, "status": current.status}
+                return {"action_id": action_id, "status": current.status.value}
             with self._cond:
                 self._cond.wait(timeout=0.2)
 

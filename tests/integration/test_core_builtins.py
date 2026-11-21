@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
-from voidcode.core.storage.store import EventDraft, StagedBudgetUpdate
+from voidcode.core.storage.store import EventDraft, SessionStatus, StagedBudgetUpdate
 from voidcode.sdk.services import PluginBudget
 
 
@@ -65,7 +65,7 @@ def test_core_status_reports_counts_usage_and_all_owner_budgets_without_plugins(
                 EventDraft("core.user_message", "client", "user", {"content": "hi"}),
                 EventDraft("core.command_completed", "plugin.probe", "user", {"name": "usage", "result": {"status": "ok"}}),
             ),
-            status="idle",
+            status=SessionStatus.IDLE,
             staged_budgets=(
                 StagedBudgetUpdate(owner="goal", action="set", budget=PluginBudget(owner="goal", max_total_tokens=100)),
                 StagedBudgetUpdate(owner="probe", action="set", budget=PluginBudget(owner="probe", max_total_tokens=50)),

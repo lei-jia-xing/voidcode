@@ -463,7 +463,7 @@ def test_wait_raises_on_a_failed_action(tmp_path: Path) -> None:
         core.create_session("parent")
         action_id = _enqueue(core, "parent", note="raise", spins=0)
         with pytest.raises(RuntimeError, match=action_id) as excinfo:
-            core.wait_background_actions("parent", timeout_seconds=20)
+            core.wait_background_actions("parent", action_id=action_id, timeout_seconds=20)
         assert "boom from driver" in str(excinfo.value)
         assert _status(core, "parent", action_id) == {"action_id": action_id, "status": "failed", "error": "ValueError: boom from driver"}
 
@@ -479,7 +479,6 @@ def test_base_exception_driver_exit_settles_and_clears_liveness(tmp_path: Path) 
         assert "SystemExit: base exit from driver" in str(excinfo.value)
         assert _status(core, "parent", action_id) == {"action_id": action_id, "status": "failed", "error": "SystemExit: base exit from driver"}
         assert not core._background.is_live(action_id)
-        assert action_id not in core.plugin_runtime.background_live_actions
 
 
 def test_business_error_field_is_never_misread_as_execution_error(tmp_path: Path) -> None:
@@ -526,21 +525,19 @@ def test_crash_between_child_row_and_parent_fact_stays_recoverable(tmp_path: Pat
     with _server([_turn(output="repaired child done")]) as server:
         core = _open(tmp_path, server)
         core.create_session("parent")
-        original_commit = core._commit_control_event
+        original_commit = core.commit_public_fact
         gate = {"armed": True}
 
-        def _crash_once(session_id: str, event: object) -> None:
-            from voidcode.core.events import EventType as ET
-
-            if gate["armed"] and getattr(event, "event_type", None) == ET.CHILD_SPAWNED:
+        def _crash_once(session_id: str, event: EventDraft, **kwargs: object) -> object:
+            if gate["armed"] and event.event_type == EventType.CHILD_SPAWNED:
                 gate["armed"] = False
                 raise RuntimeError("injected crash before the parent spawn fact")
-            return original_commit(session_id, event)  # type: ignore[arg-type]
+            return original_commit(session_id, event, **kwargs)
 
-        monkeypatch.setattr(core, "_commit_control_event", _crash_once)
+        monkeypatch.setattr(core, "commit_public_fact", _crash_once)
         with pytest.raises(RuntimeError, match="injected crash"):
             core.spawn_child("parent", "crash-window work", owner=PLUGIN_ID, idempotency_key="crash-node")
-        monkeypatch.setattr(core, "_commit_control_event", original_commit)
+        monkeypatch.setattr(core, "commit_public_fact", original_commit)
         assert len(core.store.descendant_sessions("parent")) == 1
         found = core.find_keyed_child("parent", PLUGIN_ID, "crash-node")
         assert found is not None

@@ -52,7 +52,7 @@ CONTINUITY_SUMMARY_OUTPUT_CHARS = 8_000
 #: ``services.model_query`` accepts one prompt of at most 64 KiB (core-enforced).
 MODEL_QUERY_MAX_BYTES = 64 * 1024
 
-SummaryKind = Literal["deterministic", "model"]
+SummaryKind = Literal["model"]
 
 
 # --- Budget: the legacy threshold/reserve resolution ---

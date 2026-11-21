@@ -72,7 +72,6 @@ def apply_state_updates_locked(
             raise StoreConflict(f"duplicate state update for {st.owner!r} in {st.scope}:{st.scope_key} in one commit")
         seen.add(key)
         payload_json = canonical_json(st.payload)
-        actual_schema_ver = max(1, st.schema_version)
         actual_rev_id = st.revision_id or default_revision_id
         if st.expected_version == 0:
             try:
@@ -81,7 +80,7 @@ def apply_state_updates_locked(
                     INSERT INTO plugin_state (scope, scope_key, owner, version, schema_version, revision_id, payload_json, updated_at)
                     VALUES (?, ?, ?, 1, ?, ?, ?, ?)
                     """,
-                    (st.scope, st.scope_key, st.owner, actual_schema_ver, actual_rev_id, payload_json, now),
+                    (st.scope, st.scope_key, st.owner, st.schema_version, actual_rev_id, payload_json, now),
                 )
             except sqlite3.IntegrityError as exc:
                 raise StoreConflict(f"state already exists for owner {st.owner!r} in {st.scope}:{st.scope_key}") from exc
@@ -92,7 +91,7 @@ def apply_state_updates_locked(
                 SET version = version + 1, schema_version = ?, revision_id = ?, payload_json = ?, updated_at = ?
                 WHERE scope = ? AND scope_key = ? AND owner = ? AND version = ?
                 """,
-                (actual_schema_ver, actual_rev_id, payload_json, now, st.scope, st.scope_key, st.owner, st.expected_version),
+                (st.schema_version, actual_rev_id, payload_json, now, st.scope, st.scope_key, st.owner, st.expected_version),
             )
             if c.rowcount == 0:
                 raise StoreConflict(f"state CAS conflict for {st.owner!r} in {st.scope}:{st.scope_key}: expected version {st.expected_version}")

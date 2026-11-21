@@ -18,15 +18,18 @@ from voidcode.core.storage.store import (
     MAX_CONTINUATION_PAYLOAD_BYTES,
     MAX_WAKEUP_PAYLOAD_BYTES,
     Checkpoint,
+    CheckpointKind,
     EventDraft,
     ForeignDatabaseError,
     SessionRecord,
+    SessionStatus,
     SqliteStore,
     StagedContinuationDraft,
     StagedWakeup,
     StorageError,
     StoreConflict,
     StoredEvent,
+    StoredValueError,
     WakeupRecord,
     canonical_json,
 )
@@ -163,8 +166,8 @@ def test_immutable_history_triggers(tmp_path: Path) -> None:
             run_id="run-1",
             revision_id=rev_id,
             events=(EventDraft("test.event", "source", "actor", {"k": "v"}),),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"cursor": 1},
         )
 
@@ -244,8 +247,8 @@ def test_commit_atomic_cas_and_stale_writer_protection(tmp_path: Path) -> None:
             run_id="run-1",
             revision_id=rev_id,
             events=(draft_1, draft_2),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"call_index": 0},
             start_turn=True,
         )
@@ -279,8 +282,8 @@ def test_commit_atomic_cas_and_stale_writer_protection(tmp_path: Path) -> None:
             run_id="run-1",
             revision_id=rev_id,
             events=(draft_3,),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"call_index": 1},
             start_turn=False,
         )
@@ -296,8 +299,8 @@ def test_commit_atomic_cas_and_stale_writer_protection(tmp_path: Path) -> None:
                 run_id="run-1",
                 revision_id=rev_id,
                 events=(EventDraft("stale.event", "source", "actor", {}),),
-                status="running",
-                checkpoint_kind="ready",
+                status=SessionStatus.RUNNING,
+                checkpoint_kind=CheckpointKind.READY,
                 checkpoint_payload={},
             )
 
@@ -310,8 +313,8 @@ def test_commit_atomic_cas_and_stale_writer_protection(tmp_path: Path) -> None:
                 run_id="run-1",
                 revision_id=rev_id,
                 events=(),
-                status="running",
-                checkpoint_kind="ready",
+                status=SessionStatus.RUNNING,
+                checkpoint_kind=CheckpointKind.READY,
                 checkpoint_payload={},
             )
 
@@ -325,8 +328,8 @@ def test_commit_atomic_cas_and_stale_writer_protection(tmp_path: Path) -> None:
                 run_id="run-1",
                 revision_id=rev_id_2,
                 events=(),
-                status="running",
-                checkpoint_kind="ready",
+                status=SessionStatus.RUNNING,
+                checkpoint_kind=CheckpointKind.READY,
                 checkpoint_payload={},
             )
 
@@ -339,8 +342,8 @@ def test_commit_atomic_cas_and_stale_writer_protection(tmp_path: Path) -> None:
                 run_id="run-1",
                 revision_id=rev_id,
                 events=(),
-                status="running",
-                checkpoint_kind="ready",
+                status=SessionStatus.RUNNING,
+                checkpoint_kind=CheckpointKind.READY,
                 checkpoint_payload={},
             )
 
@@ -361,8 +364,8 @@ def test_atomic_run_rotation_for_session_resume(tmp_path: Path) -> None:
             run_id="run-1",
             revision_id=rev_id,
             events=(EventDraft("tool.approval_requested", "core", "model", {"call_id": "c1"}),),
-            status="waiting",
-            checkpoint_kind="approval_wait",
+            status=SessionStatus.WAITING,
+            checkpoint_kind=CheckpointKind.APPROVAL_WAIT,
             checkpoint_payload={"approval_seq": 1},
             start_turn=True,
         )
@@ -375,8 +378,8 @@ def test_atomic_run_rotation_for_session_resume(tmp_path: Path) -> None:
             run_id="run-2",
             revision_id=rev_id,
             events=(EventDraft("user.approval_granted", "client", "user", {"call_id": "c1"}),),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"next": 0},
             start_turn=False,
         )
@@ -392,8 +395,8 @@ def test_atomic_run_rotation_for_session_resume(tmp_path: Path) -> None:
                 run_id="run-1",
                 revision_id=rev_id,
                 events=(),
-                status="running",
-                checkpoint_kind="ready",
+                status=SessionStatus.RUNNING,
+                checkpoint_kind=CheckpointKind.READY,
                 checkpoint_payload={},
             )
 
@@ -416,8 +419,8 @@ def test_restart_prefix_and_checkpoint_alignment(tmp_path: Path) -> None:
             run_id="run-1",
             revision_id=rev_id,
             events=events_batch,
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"index": 5},
             start_turn=True,
         )
@@ -440,7 +443,7 @@ def test_restart_prefix_and_checkpoint_alignment(tmp_path: Path) -> None:
 
 
 def test_full_rollback_on_write_failure(tmp_path: Path) -> None:
-    """A commit failure midway (e.g. invalid checkpoint kind) rolls back all event appends and session updates."""
+    """A commit failure midway (duplicate staged continuation id) rolls back appends and session updates."""
     db_path = tmp_path / "rollback.sqlite3"
     with SqliteStore(db_path) as store:
         rev_id = store.put_revision({"v": 1})
@@ -455,15 +458,22 @@ def test_full_rollback_on_write_failure(tmp_path: Path) -> None:
             run_id="run-1",
             revision_id=rev_id,
             events=(EventDraft("initial", "core", "user", {}),),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"step": 1},
             start_turn=True,
         )
 
-        # Attempt commit with invalid checkpoint kind ('bogus_kind' violates CHECK constraint)
-        with pytest.raises(sqlite3.IntegrityError):
-            store.commit(
+        # Attempt commit with a duplicate staged continuation id; the primary-key
+        # violation must roll back the event appends and session projection together.
+        duplicate = StagedContinuationDraft(
+            continuation_id="duplicate-continuation",
+            owner="probe",
+            source="probe",
+            payload={"kind": "duplicate"},
+        )
+        with pytest.raises(StoreConflict, match="already exists"):
+            store.commit_staged(
                 "sess-rb",
                 expected_sequence=1,
                 expected_run_id="run-1",
@@ -473,9 +483,10 @@ def test_full_rollback_on_write_failure(tmp_path: Path) -> None:
                     EventDraft("ev-2", "core", "model", {}),
                     EventDraft("ev-3", "core", "model", {}),
                 ),
-                status="running",
-                checkpoint_kind="bogus_kind",  # Invalid checkpoint kind
+                status=SessionStatus.RUNNING,
+                checkpoint_kind=CheckpointKind.READY,
                 checkpoint_payload={"step": 2},
+                staged_continuations=(duplicate, duplicate),
             )
 
         # Verify full rollback: session remains at seq 1, events table only has 1 event
@@ -496,8 +507,8 @@ def test_full_rollback_on_write_failure(tmp_path: Path) -> None:
             run_id="run-1",
             revision_id=rev_id,
             events=(EventDraft("ev-2-valid", "core", "model", {}),),
-            status="completed",
-            checkpoint_kind="terminal",
+            status=SessionStatus.COMPLETED,
+            checkpoint_kind=CheckpointKind.TERMINAL,
             checkpoint_payload={"done": True},
         )
         assert store.session("sess-rb").last_event_sequence == 2
@@ -543,8 +554,8 @@ def test_store_can_commit_from_a_run_worker_thread(tmp_path: Path) -> None:
                 run_id="run",
                 revision_id=revision_id,
                 events=(EventDraft("observation", "tool", "model", {"value": 42}),),
-                status="completed",
-                checkpoint_kind="terminal",
+                status=SessionStatus.COMPLETED,
+                checkpoint_kind=CheckpointKind.TERMINAL,
                 checkpoint_payload={"last": 42},
             ).result(timeout=5)
         assert committed.last_event_sequence == 1
@@ -574,8 +585,8 @@ def test_commit_staged_rejects_oversized_event_payload_atomically(tmp_path: Path
             run_id="run-1",
             revision_id=rev_id,
             events=(EventDraft("core.turn_start", "core", "user", {"turn": 1}),),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"call_index": 0},
         )
         with pytest.raises(StoreConflict, match=f"{MAX_COMMITTED_EVENT_BYTES + 1} bytes.*{MAX_COMMITTED_EVENT_BYTES}-byte"):
@@ -586,8 +597,8 @@ def test_commit_staged_rejects_oversized_event_payload_atomically(tmp_path: Path
                 run_id="run-1",
                 revision_id=rev_id,
                 events=(EventDraft("tool.completed", "host", "tool", payload),),
-                status="running",
-                checkpoint_kind="ready",
+                status=SessionStatus.RUNNING,
+                checkpoint_kind=CheckpointKind.READY,
                 checkpoint_payload={"call_index": 1},
             )
         assert store.session("sess-guard").last_event_sequence == 1
@@ -612,8 +623,8 @@ def test_commit_accepts_event_payload_at_bound(tmp_path: Path) -> None:
             run_id="run-1",
             revision_id=rev_id,
             events=(EventDraft("tool.completed", "host", "tool", payload),),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"call_index": 0},
         )
         assert session.last_event_sequence == 1
@@ -660,8 +671,8 @@ def test_commit_staged_rejects_oversized_staged_continuation_atomically(tmp_path
             run_id="run-1",
             revision_id=rev_id,
             events=(EventDraft("core.turn_start", "core", "user", {"turn": 1}),),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"call_index": 0},
         )
         with pytest.raises(StoreConflict, match=f"{MAX_CONTINUATION_PAYLOAD_BYTES + 1} bytes.*{MAX_CONTINUATION_PAYLOAD_BYTES}-byte"):
@@ -672,8 +683,8 @@ def test_commit_staged_rejects_oversized_staged_continuation_atomically(tmp_path
                 run_id="run-1",
                 revision_id=rev_id,
                 events=(EventDraft("tool.completed", "host", "tool", {"ok": True}),),
-                status="running",
-                checkpoint_kind="ready",
+                status=SessionStatus.RUNNING,
+                checkpoint_kind=CheckpointKind.READY,
                 checkpoint_payload={"call_index": 1},
                 staged_continuations=(
                     StagedContinuationDraft(continuation_id="staged-big", owner="owner", source="plugin.owner", payload=payload, root_id="root-1"),
@@ -699,8 +710,8 @@ def test_commit_staged_accepts_staged_continuation_at_bound(tmp_path: Path) -> N
             run_id="run-1",
             revision_id=rev_id,
             events=(EventDraft("core.turn_start", "core", "user", {"turn": 1}),),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"call_index": 0},
             staged_continuations=(
                 StagedContinuationDraft(continuation_id="staged-edge", owner="owner", source="plugin.owner", payload=payload, root_id="root-1"),
@@ -753,8 +764,8 @@ def test_commit_staged_rejects_oversized_staged_wakeup_atomically(tmp_path: Path
             run_id="run-1",
             revision_id=rev_id,
             events=(EventDraft("core.turn_start", "core", "user", {"turn": 1}),),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"call_index": 0},
         )
         with pytest.raises(StoreConflict, match=f"{MAX_WAKEUP_PAYLOAD_BYTES + 1} bytes.*{MAX_WAKEUP_PAYLOAD_BYTES}-byte"):
@@ -765,8 +776,8 @@ def test_commit_staged_rejects_oversized_staged_wakeup_atomically(tmp_path: Path
                 run_id="run-1",
                 revision_id=rev_id,
                 events=(EventDraft("tool.completed", "host", "tool", {"ok": True}),),
-                status="running",
-                checkpoint_kind="ready",
+                status=SessionStatus.RUNNING,
+                checkpoint_kind=CheckpointKind.READY,
                 checkpoint_payload={"call_index": 1},
                 staged_wakeups=(StagedWakeup(wakeup_id="staged-wake-big", owner="owner", session_id="sess-wake", payload=payload, due_at=0),),
                 root_action_id="root-1",
@@ -792,8 +803,8 @@ def test_commit_staged_accepts_staged_wakeup_at_bound(tmp_path: Path) -> None:
             run_id="run-1",
             revision_id=rev_id,
             events=(EventDraft("core.turn_start", "core", "user", {"turn": 1}),),
-            status="running",
-            checkpoint_kind="ready",
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
             checkpoint_payload={"call_index": 0},
             staged_wakeups=(StagedWakeup(wakeup_id="staged-wake-edge", owner="owner", session_id="sess-wake", payload=payload, due_at=0),),
             root_action_id="root-1",
@@ -855,3 +866,47 @@ def test_create_child_session_accepts_birth_label_at_bound(tmp_path: Path) -> No
         assert record.last_event_sequence == 1
         (birth,) = store.events("child-edge")
         assert birth.payload["label"] == label
+
+
+def test_corrupt_closed_state_columns_fail_with_typed_storage_error(tmp_path: Path) -> None:
+    """Rows outside the declared status/kind sets are rejected at decode, not compared as text."""
+    with SqliteStore(tmp_path / "corrupt-state.sqlite3") as store:
+        rev_id = store.put_revision({"plugins": []})
+        store.record_workspace_revision("/ws", rev_id)
+        store.create_session("sess-corrupt", "/ws", rev_id)
+        store.commit(
+            "sess-corrupt",
+            expected_sequence=0,
+            expected_run_id=None,
+            run_id="run-corrupt",
+            revision_id=rev_id,
+            events=(EventDraft("initial", "core", "user", {}),),
+            status=SessionStatus.RUNNING,
+            checkpoint_kind=CheckpointKind.READY,
+            checkpoint_payload={"step": 1},
+        )
+
+        store._connection.execute("PRAGMA ignore_check_constraints = ON")
+        store._connection.execute("UPDATE sessions SET status = 'bogus' WHERE session_id = 'sess-corrupt'")
+        with pytest.raises(StoredValueError, match="unknown status 'bogus'"):
+            store.session("sess-corrupt")
+
+        store._connection.execute("UPDATE sessions SET status = 'running' WHERE session_id = 'sess-corrupt'")
+        store._connection.execute("UPDATE checkpoints SET kind = 'bogus' WHERE session_id = 'sess-corrupt'")
+        with pytest.raises(StoredValueError, match="unknown kind 'bogus'"):
+            store.checkpoint("sess-corrupt")
+
+        store._connection.execute("UPDATE checkpoints SET kind = 'ready' WHERE session_id = 'sess-corrupt'")
+        store.enqueue_continuation(
+            "cont-corrupt",
+            "probe",
+            "sess-corrupt",
+            "probe",
+            "run-corrupt",
+            rev_id,
+            {"kind": "probe"},
+            root_id="root-corrupt",
+        )
+        store._connection.execute("UPDATE continuations SET status = 'bogus' WHERE continuation_id = 'cont-corrupt'")
+        with pytest.raises(StoredValueError, match="unknown status 'bogus'"):
+            store.continuation_status("cont-corrupt")

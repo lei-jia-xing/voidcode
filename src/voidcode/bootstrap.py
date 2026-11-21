@@ -10,7 +10,7 @@ from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NamedTuple, cast
+from typing import TYPE_CHECKING, NamedTuple
 from uuid import uuid4
 
 from .config import (
@@ -37,7 +37,9 @@ from .core.plugins import PluginRuntime, PluginSource
 from .core.sandbox import SandboxBackend, check_helper
 from .core.storage.store import (
     DATABASE_FILENAME,
+    CheckpointKind,
     EventDraft,
+    SessionStatus,
     SqliteStore,
     canonical_json,
     inspect_existing_workspace,
@@ -47,7 +49,6 @@ from .sdk.json_values import json_wire_object
 if TYPE_CHECKING:
     from .sdk.client import SessionClient
 
-PRIVATE_SNAPSHOT_VERSION = 2
 BUNDLED_PLUGIN_IDS = (
     "ast_grep",
     "btw",
@@ -193,7 +194,6 @@ def admit_live(
         "max_root_children": config.policy.max_root_children,
     }
     snapshot: dict[str, object] = {
-        "version": PRIVATE_SNAPSHOT_VERSION,
         "providers": inputs.providers,
         "model": model,
         "policy": policy,
@@ -538,19 +538,19 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
             session = store.session(session_id) if session_id is not None else None
             checkpoint = store.checkpoint(session_id) if session_id is not None else None
             checkpoint_payload = None
-            checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None = None
+            checkpoint_kind: CheckpointKind | None = None
             if checkpoint is not None and isinstance(checkpoint.payload, Mapping):
                 checkpoint_payload = json_wire_object(checkpoint.payload)
-                checkpoint_kind = cast("Literal['ready', 'approval_wait', 'terminal', 'interrupted']", checkpoint.kind)
+                checkpoint_kind = checkpoint.kind
             run_identity = uuid4().hex if session is None else (session.run_id or uuid4().hex)
             events: tuple[EventDraft, ...] = ()
-            status: str | None = None
+            status: SessionStatus | None = None
             if session is not None:
                 drafts: list[EventDraft] = []
-                if session.status == "running":
+                if session.status is SessionStatus.RUNNING:
                     if checkpoint_payload is not None:
-                        checkpoint_kind = "interrupted"
-                    logical_turn = checkpoint_payload.get("logical_turn", "") if checkpoint_payload is not None else ""
+                        checkpoint_kind = CheckpointKind.INTERRUPTED
+                    logical_turn = checkpoint_payload["logical_turn"] if checkpoint_payload is not None else ""
                     drafts.append(
                         EventDraft(
                             EventType.RUN_INTERRUPTED,
@@ -559,12 +559,12 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
                             {
                                 "reason": "the process that owned this run is gone; adoption recovered the session at its last committed boundary",
                                 "stop_cause": "shutdown",
-                                "logical_turn": logical_turn if isinstance(logical_turn, str) else "",
+                                "logical_turn": logical_turn,
                                 "eligible_owners": list(fact_observers.get("run_finished", ())),
                             },
                         )
                     )
-                    status = "interrupted"
+                    status = SessionStatus.INTERRUPTED
                 else:
                     status = session.status
                     drafts.append(

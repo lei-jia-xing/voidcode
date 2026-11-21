@@ -7,7 +7,7 @@ import pytest
 
 from voidcode.core.facts import fact_for_event
 from voidcode.core.plugins import LeaseContext, LeaseIdentity, PluginRuntime
-from voidcode.core.storage.store import EventDraft, SqliteStore
+from voidcode.core.storage.store import EventDraft, SessionStatus, SqliteStore
 from voidcode.sdk.codec import decode_tool_result, encode_tool_result
 from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, UsageFact
 from voidcode.sdk.tools import Change, ReadObservation, TextOutput, ToolSuccess
@@ -29,7 +29,7 @@ def append(runtime, *drafts):
         run_id="run",
         revision_id=runtime.revision_id,
         events=drafts,
-        status="completed",
+        status=SessionStatus.COMPLETED,
     )
 
 

@@ -6,7 +6,7 @@ from dataclasses import asdict
 from tests.fixtures.core_factory import loopback_server
 from tests.unit.core.test_nested_tools import _call, _turn
 from voidcode.bootstrap import open_core
-from voidcode.core.storage.store import EventDraft
+from voidcode.core.storage.store import CheckpointKind, EventDraft, SessionStatus
 from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, RequestWindow
 from voidcode.sdk.json_values import json_wire_value
 
@@ -92,6 +92,8 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
             core.join_child(result.session_id, children[0], timeout_seconds=15)
             facts = history(core, result.session_id)
             observed = [e.payload["fact"] for e in core.store.events(result.session_id) if e.event_type == "plugin.probe.seen"]
+            # Live observer-visible order must equal durable event order, including a
+            # child_spawned fact committed from inside usage delivery.
             assert json_wire_value(observed) == json_wire_value([asdict(fact) for fact in facts])
             invocation = next(fact for fact in facts if isinstance(fact, InvocationFinishedFact))
             assert invocation.partial is True
@@ -112,9 +114,9 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
                 orphan.session_id,
                 run_id="orphan-run",
                 revision_id=core.revision_id,
-                status="interrupted",
-                checkpoint_kind="terminal",
-                checkpoint_payload={"stop_cause": "shutdown"},
+                status=SessionStatus.INTERRUPTED,
+                checkpoint_kind=CheckpointKind.TERMINAL,
+                checkpoint_payload={"stop_cause": "shutdown", "root_id": "orphan-root", "initial_root_budget": None},
                 events=(
                     EventDraft(
                         "core.provider_intent",

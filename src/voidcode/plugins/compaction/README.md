@@ -22,6 +22,6 @@ The observer resolves the gate with no catalog window, so without an explicit `t
 ## Behavior and limits
 
 - The plan covers the committed prefix up to a certified safe boundary (every native call answered inside the prefix) minus the kept recent tail; a summary whose replacement would not shrink the prefix raises, and `project_window` staging plus state/event commits are atomic — a failure applies neither.
-- The replacement is always the model's summary text; old stored rows may still report `deterministic`, but nothing writes it again.
+- The replacement is always the model's summary text.
 - Accounting is the core's measured numbers read back after verification (`covered_bytes`, `dropped_bytes`), never the plugin's plan. Committed history is untouched: compaction projects the model window only, and consumers still see every entry via [transcript](../../../../docs/contracts/transcript.md).
-- Session state (`schema_version 1`): `cursor_sequence` plus the last projection's coverage. Disconnect/re-enable keeps history untouched; nothing is re-armed automatically.
+- Session state (`schema_version 2`): `cursor_sequence` plus the last projection's coverage. Disconnect/re-enable keeps history untouched; nothing is re-armed automatically.

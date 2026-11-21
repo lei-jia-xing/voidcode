@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping, Sequence
-from typing import Literal, cast
+from typing import cast
 from uuid import uuid4
 
 from ...sdk.json_values import own_json_object
@@ -20,10 +20,13 @@ from ...sdk.services import PluginBudget
 from ..events import EventType
 from .records import (
     ActionConfirmationRecord,
+    CheckpointKind,
+    ConfirmationStatus,
     EventDraft,
     PluginStateRow,
     SequenceConflict,
     SessionRecord,
+    SessionStatus,
     StagedStateUpdate,
     StorageError,
     StoreConflict,
@@ -34,6 +37,7 @@ from .records import (
     _checkpoint_index_values,
     _ConnectionStore,
     _decode_budget,
+    _decode_closed_enum,
     _decode_confirmation,
     _decode_plugin_state,
     _decode_projection,
@@ -197,9 +201,9 @@ class _StateMixin(_ConnectionStore):
         target_revision_id: str,
         target_payload: Mapping[str, object],
         run_id: str,
-        status: str,
+        status: SessionStatus,
         events: Sequence[EventDraft],
-        checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None,
+        checkpoint_kind: CheckpointKind | None,
         checkpoint_payload: Mapping[str, object] | None,
         state_updates: Sequence[StagedStateUpdate] = (),
         cancelled_owners: Sequence[str] = (),
@@ -414,7 +418,7 @@ class _StateMixin(_ConnectionStore):
                     SET status = ?, run_id = ?, updated_at = ?, last_event_sequence = ?
                     WHERE session_id = ?
                     """,
-                    (status, run_id, now, current_seq, session_id),
+                    (status.value, run_id, now, current_seq, session_id),
                 )
 
                 if checkpoint_kind is not None and checkpoint_payload is not None:
@@ -439,7 +443,7 @@ class _StateMixin(_ConnectionStore):
                         """,
                         (
                             session_id,
-                            checkpoint_kind,
+                            checkpoint_kind.value,
                             target_revision_id,
                             run_id,
                             current_seq,
@@ -483,9 +487,9 @@ class _StateMixin(_ConnectionStore):
         target_revision_id: str,
         target_payload: Mapping[str, object],
         run_id: str,
-        status: str | None,
+        status: SessionStatus | None,
         events: Sequence[EventDraft] = (),
-        checkpoint_kind: Literal["ready", "approval_wait", "terminal", "interrupted"] | None = None,
+        checkpoint_kind: CheckpointKind | None = None,
         checkpoint_payload: Mapping[str, object] | None = None,
         state_updates: Sequence[StagedStateUpdate] = (),
         cancelled_owners: Sequence[str] = (),
@@ -549,6 +553,7 @@ class _StateMixin(_ConnectionStore):
                     if row is None:
                         raise UnknownSession(f"session {session_id!r} does not exist", session_id)
                     adopt_row = _AdoptSessionColumns(*row)
+                    adopt_status = _decode_closed_enum(SessionStatus, adopt_row.status, field="status", record=f"session {session_id!r}")
                     if adopt_row.workspace != workspace:
                         raise StoreConflict(f"session {session_id!r} belongs to workspace {adopt_row.workspace!r}")
                     if adopt_row.last_event_sequence != expected_sequence:
@@ -564,11 +569,11 @@ class _StateMixin(_ConnectionStore):
                         )
                     if target_revision_id == expected_revision_id:
                         raise StoreConflict("the workspace already runs the target capability revision")
-                    if recover_orphaned_runs and adopt_row.status == "running":
+                    if recover_orphaned_runs and adopt_status is SessionStatus.RUNNING:
                         # The caller proved no core owns the workspace, so this acting row is an
                         # orphan too. It may adopt only as interrupted, keeping its cursor for an
                         # explicit resume instead of ending the transaction still "running".
-                        if status != "interrupted" or checkpoint_kind not in (None, "interrupted"):
+                        if status is not SessionStatus.INTERRUPTED or checkpoint_kind not in (None, CheckpointKind.INTERRUPTED):
                             raise StoreConflict("an orphaned acting session must be adopted as interrupted")
                         acting_was_running = True
 
@@ -738,7 +743,7 @@ class _StateMixin(_ConnectionStore):
                         SET status = ?, run_id = ?, updated_at = ?, last_event_sequence = ?
                         WHERE session_id = ?
                         """,
-                        (status, run_id, now, current_seq, session_id),
+                        (status.value, run_id, now, current_seq, session_id),
                     )
                     if checkpoint_kind is not None and checkpoint_payload is not None:
                         checkpoint_root_id, checkpoint_approval, checkpoint_ask_seq, checkpoint_ask_req = _checkpoint_index_values(checkpoint_payload)
@@ -762,7 +767,7 @@ class _StateMixin(_ConnectionStore):
                             """,
                             (
                                 session_id,
-                                checkpoint_kind,
+                                checkpoint_kind.value,
                                 target_revision_id,
                                 run_id,
                                 current_seq,
@@ -1055,7 +1060,7 @@ class _StateMixin(_ConnectionStore):
                 return None
             return _decode_confirmation(row)
 
-    def decide_confirmation(self, request_id: str, decision: str) -> None:
+    def decide_confirmation(self, request_id: str, decision: ConfirmationStatus) -> None:
         """Transition a pending confirmation record to allowed, denied, or stale."""
         with self._lock:
             self._check_open()
@@ -1066,7 +1071,7 @@ class _StateMixin(_ConnectionStore):
                 SET status = ?, decided_at = ?
                 WHERE request_id = ? AND status = 'pending'
                 """,
-                (decision, now, request_id),
+                (decision.value, now, request_id),
             )
             if cursor.rowcount == 0:
                 raise UnknownConfirmation(f"confirmation {request_id!r} is not in pending state or does not exist", request_id)

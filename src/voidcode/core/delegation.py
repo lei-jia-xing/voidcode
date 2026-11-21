@@ -26,11 +26,14 @@ from .events import CHILD_MESSAGE_OWNER, CHILD_OUTCOME_RECEIPT_OWNER, EventType,
 from .history_renderer import iter_event_blocks
 from .storage.store import (
     MAX_CHILD_LABEL_BYTES,
+    CheckpointKind,
     ContinuationRecord,
+    ContinuationStatus,
     EventDraft,
     FencedSubtree,
     SequenceConflict,
     SessionRecord,
+    SessionStatus,
     SqliteStore,
     StagedContinuationDraft,
     StoreConflict,
@@ -366,10 +369,16 @@ class DelegationManager:
             spawned_payload["spawn_owner"] = owner
             spawned_payload["idempotency_key"] = idempotency_key
             spawned_payload["spec_hash"] = spec_hash
-        self.core._commit_control_event(
-            parent.session_id,
-            EventDraft(EventType.CHILD_SPAWNED, "core", "plugin", spawned_payload),
-        )
+        try:
+            self.core.commit_public_fact(
+                parent.session_id,
+                EventDraft(EventType.CHILD_SPAWNED, "core", "plugin", spawned_payload),
+                root_action_id=root_id,
+                initial_root_budget=root_cap,
+            )
+        except StoreConflict:
+            if self._spawned_fact(parent.session_id, child_id) is None:
+                raise
         self._start_child_run(parent.session_id, child_id, effective_prompt, max_steps, label, notify_on_completion)
         return child_id
 
@@ -517,14 +526,25 @@ class DelegationManager:
                 raise ValueError("spawn idempotency key was already used with a different spec")
             if "notify_on_completion" not in fact:
                 raise KeyError(f"spawn fact for child {child_id!r} is missing notify_on_completion")
-            pristine = child.status == "idle" and child.run_id is None
+            pristine = child.status is SessionStatus.IDLE and child.run_id is None
             if pristine:
                 repaired: dict[str, object] = dict(fact)
                 repaired["notify_on_completion"] = notify_on_completion
-                self.core._commit_control_event(
-                    parent_session_id,
-                    EventDraft(EventType.CHILD_SPAWNED, "core", "plugin", repaired),
-                )
+                root_budget = repaired.get("root_action_budget")
+                if root_budget is not None and type(root_budget) is not int:
+                    raise StoreConflict("spawn fact has an invalid captured root budget")
+                # A concurrent same-key retry may have committed the fact first; adoption
+                # is the idempotent result, and the winner starts the single initial run.
+                try:
+                    self.core.commit_public_fact(
+                        parent_session_id,
+                        EventDraft(EventType.CHILD_SPAWNED, "core", "plugin", repaired),
+                        root_action_id=root_id,
+                        initial_root_budget=root_budget,
+                    )
+                except StoreConflict:
+                    if self._spawned_fact(parent_session_id, child_id) is None:
+                        raise
                 # Fresh process repairing the crash window; the start claim itself is
                 # atomic, so a retry in the spawning process never starts a second driver.
                 self._start_child_run(parent_session_id, child_id, prompt, max_steps, label, notify_on_completion)
@@ -544,29 +564,38 @@ class DelegationManager:
             raise ValueError("spawn idempotency key was already used with a different spec")
         if birth.get("readonly") is True and "read-only" not in self.core.store.session_overlays(child_id):
             self.core.store.set_session_overlay(child_id, "core")
-        if child.status != "idle" or child.run_id is not None:
+        if child.status is not SessionStatus.IDLE or child.run_id is not None:
             return child_id
         if readonly:
             self.core.store.set_session_overlay(child_id, "core")
-        self.core._commit_control_event(
-            parent_session_id,
-            EventDraft(
-                EventType.CHILD_SPAWNED,
-                "core",
-                "plugin",
-                {
-                    "child_session_id": child_id,
-                    "root_id": root_id,
-                    "label": label,
-                    "depth": depth,
-                    "tool_allowlist": list(scope) if scope is not None else None,
-                    "notify_on_completion": notify_on_completion,
-                    "spawn_owner": owner,
-                    "idempotency_key": idempotency_key,
-                    "spec_hash": spec_hash,
-                },
-            ),
-        )
+        birth_budget = birth.get("root_action_budget")
+        if birth_budget is not None and type(birth_budget) is not int:
+            raise StoreConflict("child birth has an invalid captured root budget")
+        try:
+            self.core.commit_public_fact(
+                parent_session_id,
+                EventDraft(
+                    EventType.CHILD_SPAWNED,
+                    "core",
+                    "plugin",
+                    {
+                        "child_session_id": child_id,
+                        "root_id": root_id,
+                        "label": label,
+                        "depth": depth,
+                        "tool_allowlist": list(scope) if scope is not None else None,
+                        "notify_on_completion": notify_on_completion,
+                        "spawn_owner": owner,
+                        "idempotency_key": idempotency_key,
+                        "spec_hash": spec_hash,
+                    },
+                ),
+                root_action_id=root_id,
+                initial_root_budget=birth_budget,
+            )
+        except StoreConflict:
+            if self._spawned_fact(parent_session_id, child_id) is None:
+                raise
         self._start_child_run(parent_session_id, child_id, prompt, max_steps, label, notify_on_completion)
         return child_id
 
@@ -742,9 +771,18 @@ class DelegationManager:
             captured_messages[child.session_id] = set(message_ids)
             if isinstance(child.run_id, str) and child.run_id:
                 bound_runs.add((child.session_id, child.run_id))
-            if child.status == "waiting" and isinstance(child.run_id, str) and child.run_id:
+            if child.status is SessionStatus.WAITING and isinstance(child.run_id, str) and child.run_id:
                 approval_resume_thresholds[child.session_id] = child.last_event_sequence
-            elif child.run_id is None and child.session_id in spawned_ids and child.status not in ("completed", "failed", "interrupted"):
+            elif (
+                child.run_id is None
+                and child.session_id in spawned_ids
+                and child.status
+                not in (
+                    SessionStatus.COMPLETED,
+                    SessionStatus.FAILED,
+                    SessionStatus.INTERRUPTED,
+                )
+            ):
                 initial_spawn_thresholds[child.session_id] = child.last_event_sequence
             child_events = self.core.store.events(child.session_id)
             started_messages.update((child.session_id, message_id) for message_id in bind_child_events(child.session_id, child_events))
@@ -810,7 +848,7 @@ class DelegationManager:
             for child_id in selected:
                 child = self.core.store.session(child_id)
                 run_id = child.run_id
-                if child.status != "interrupted" or not isinstance(run_id, str) or not run_id:
+                if child.status is not SessionStatus.INTERRUPTED or not isinstance(run_id, str) or not run_id:
                     continue
                 if (child_id, run_id) not in bound_runs:
                     continue
@@ -852,14 +890,14 @@ class DelegationManager:
                 child = self.core.store.session(child_id)
                 if child.run_id != run_id:
                     continue
-                if child.status in ("running", "waiting"):
+                if child.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
                     pending = True
                     break
-                if child.status in ("completed", "failed"):
+                if child.status in (SessionStatus.COMPLETED, SessionStatus.FAILED):
                     if self._child_fact(parent_session_id, child_id, run_id) is None:
                         pending = True
                         break
-                elif child.status == "interrupted":
+                elif child.status is SessionStatus.INTERRUPTED:
                     stop_event = self.core.store.latest_stop_event(child_id, run_id)
                     if stop_event is None:
                         pending = True
@@ -868,29 +906,38 @@ class DelegationManager:
                     if stop_cause in ("owner_cancel", "user_stop") and self._child_fact(parent_session_id, child_id, run_id) is None:
                         pending = True
                         break
-                elif child.status not in ("idle", "pending"):
-                    raise StoreConflict(f"child session has an unknown wait status: {child.status!r}")
+                elif child.status is not SessionStatus.IDLE:
+                    raise StoreConflict(f"child session has an unknown wait status: {child.status.value!r}")
             if not pending:
                 for child_id, message_ids in captured_messages.items():
                     for message_id in message_ids:
                         if (child_id, message_id) in started_messages:
                             continue
                         status = self.core.store.continuation_status(message_id)
-                        if status in ("pending", "claimed"):
+                        if status in (ContinuationStatus.PENDING, ContinuationStatus.CLAIMED):
                             pending = True
                             break
-                        if status not in (None, "completed", "failed", "cancelled"):
-                            raise StoreConflict(f"child message has an unknown continuation state: {status!r}")
+                        if status not in (
+                            None,
+                            ContinuationStatus.COMPLETED,
+                            ContinuationStatus.FAILED,
+                            ContinuationStatus.CANCELLED,
+                        ):
+                            raise StoreConflict(f"child message has an unknown continuation state: {status.value!r}")
                     if pending:
                         break
             if not pending:
                 for child_id in initial_spawn_thresholds:
                     child = self.core.store.session(child_id)
-                    if child.run_id is None and child.status not in ("completed", "failed", "interrupted"):
+                    if child.run_id is None and child.status not in (
+                        SessionStatus.COMPLETED,
+                        SessionStatus.FAILED,
+                        SessionStatus.INTERRUPTED,
+                    ):
                         pending = True
                         break
                     if (
-                        child.status in ("completed", "failed")
+                        child.status in (SessionStatus.COMPLETED, SessionStatus.FAILED)
                         and child.run_id
                         and self._child_fact(parent_session_id, child_id, child.run_id) is None
                     ):
@@ -960,10 +1007,10 @@ class DelegationManager:
 
         while True:
             child = self.core.store.session(child_id)
-            if child.status == "waiting":
+            if child.status is SessionStatus.WAITING:
                 # Approval is not terminal and not something a parent wait can resolve.
                 return self._child_status_outcome(child)
-            if child.status == "interrupted" and not self.core.admits_fresh_work(child):
+            if child.status is SessionStatus.INTERRUPTED and not self.core.admits_fresh_work(child):
                 # A recoverable interruption needs an explicit public resume, not a join.
                 # A terminal cancellation still publishes a fact (error/history); prefer it.
                 fact = published_fact(child.run_id)
@@ -983,7 +1030,7 @@ class DelegationManager:
                     return self._child_outcome(child_id, fact)
                 with self._child_finished_lock:
                     publishing = child.run_id is not None and (child_id, child.run_id) in self._child_publication_inflight
-                terminal = child.status in ("completed", "failed")
+                terminal = child.status in (SessionStatus.COMPLETED, SessionStatus.FAILED)
                 if not publishing and not terminal:
                     return self._child_status_outcome(child)
                 # A terminal session whose fact/artifacts are still in flight is not a
@@ -1096,7 +1143,7 @@ class DelegationManager:
             )
         except FencedSubtree as exc:
             raise PermissionError(str(exc)) from exc
-        outstanding = child.status in ("running", "waiting")
+        outstanding = child.status in (SessionStatus.RUNNING, SessionStatus.WAITING)
         delivery: Literal["started", "queued"] = "queued"
         started_run: str | None = None
         if not outstanding:
@@ -1195,7 +1242,7 @@ class DelegationManager:
                     session_id=child.session_id,
                     parent_session_id=child.parent_session_id,
                     depth=child.depth,
-                    status=child.status,
+                    status=child.status.value,
                     # The reserved-claim bookkeeping marker ("") is not a real
                     # run: project it as null so detail/cancel bindings stay
                     # valid and a claimed parent with descendants stays selectable.
@@ -1206,7 +1253,7 @@ class DelegationManager:
                     turn=child.turn,
                     last_event_sequence=child.last_event_sequence,
                     has_queued_followup=queued,
-                    awaiting_approval=child.status == "waiting",
+                    awaiting_approval=child.status is SessionStatus.WAITING,
                 )
             )
         return tuple(nodes)
@@ -1343,13 +1390,13 @@ class DelegationManager:
                         disarmed.append(node_id)
                     moved.append(node_id)
                     continue
-                if fresh.status in ("completed", "failed"):
+                if fresh.status in (SessionStatus.COMPLETED, SessionStatus.FAILED):
                     if pending:
                         disarmed.append(node_id)
                     else:
                         already_terminal.append(node_id)
                     continue
-                if record.run_id is None and record.status == "idle":
+                if record.run_id is None and record.status is SessionStatus.IDLE:
                     # Reserved but unstarted: the lock-free CAS claim below wins
                     # only on the pristine state, so a racing first run either
                     # claims first (claim is moot) or loses its own CAS.
@@ -1429,31 +1476,34 @@ class DelegationManager:
         taken: an initial driver may already hold it for its provider call.
         """
         child = self.core.store.session(child_id)
-        if child.status != "idle" or child.run_id is not None:
+        if child.status is not SessionStatus.IDLE or child.run_id is not None:
             return False
         for event in self.core.store.events(child_id):
             if event.event_type == EventType.USER_MESSAGE:
                 return False
         try:
-            self.core.store.commit_staged(
+            self.core.commit_public_staged(
                 child_id,
-                expected_sequence=child.last_event_sequence,
-                expected_run_id=None,
                 run_id="",
-                revision_id=self.core.revision_id,
+                status=SessionStatus.INTERRUPTED,
                 events=(
                     EventDraft(
                         EventType.RUN_INTERRUPTED,
                         "core",
                         "core",
-                        {"reason": reason, "stop_cause": "owner_cancel", "logical_turn": ""},
+                        {
+                            "reason": reason,
+                            "stop_cause": "owner_cancel",
+                            "logical_turn": "",
+                            # A pristine reservation has no run to report: freeze an empty
+                            # eligibility set rather than offering observers a run-less fact.
+                            "eligible_owners": [],
+                        },
                     ),
                 ),
-                status="interrupted",
-                checkpoint_kind="terminal",
+                checkpoint_kind=CheckpointKind.TERMINAL,
                 checkpoint_payload={"step": 0, "stop_cause": "owner_cancel"},
             )
-            self.core.notify_commit()
         except StoreConflict:
             return False
         self.notify_child_state_changed()
@@ -1461,12 +1511,12 @@ class DelegationManager:
 
     def _child_has_outstanding_work(self, child: SessionRecord) -> bool:
         """A running child, or a follow-up queued for it (never unread notices or parked work)."""
-        if child.status == "running":
+        if child.status is SessionStatus.RUNNING:
             return True
-        if child.status == "idle":
+        if child.status is SessionStatus.IDLE:
             # A just-created spawn has not committed its first run event yet.
             return True
-        if child.status != "completed" and child.status != "failed":
+        if child.status not in (SessionStatus.COMPLETED, SessionStatus.FAILED):
             return False
         for continuation in self.core.store.pending_continuations(child.session_id, limit=50):
             if continuation.payload.get("kind") == "child_followup":
@@ -1504,24 +1554,24 @@ class DelegationManager:
         if not isinstance(stop_cause, str):
             stop_cause = None
         error = None
-        if child.status == "interrupted" and stop_payload is not None:
+        if child.status is SessionStatus.INTERRUPTED and stop_payload is not None:
             reason = stop_payload.get("reason")
             error = reason if isinstance(reason, str) else None
-        if child.status == "completed":
+        if child.status is SessionStatus.COMPLETED:
             status = "completed"
-        elif child.status == "failed":
+        elif child.status is SessionStatus.FAILED:
             status = "failed"
-        elif child.status == "waiting":
+        elif child.status is SessionStatus.WAITING:
             status = "waiting"
-        elif child.status == "running":
+        elif child.status is SessionStatus.RUNNING:
             status = "running"
-        elif child.status == "interrupted":
+        elif child.status is SessionStatus.INTERRUPTED:
             status = "cancelled" if stop_cause in ("user_stop", "owner_cancel") else "interrupted"
         else:
             status = "interrupted"
         budget_exhaustion = (
             BudgetExhaustion.from_payload(stop_payload.get("budget_exhaustion"))
-            if child.status == "interrupted" and stop_payload is not None
+            if child.status is SessionStatus.INTERRUPTED and stop_payload is not None
             else None
         )
         return ChildOutcome(
@@ -1534,7 +1584,7 @@ class DelegationManager:
         )
 
     def _child_wait_outcome(self, child: SessionRecord) -> ChildOutcome:
-        if child.status == "waiting":
+        if child.status is SessionStatus.WAITING:
             return self._child_status_outcome(child)
         return ChildOutcome(child_session_id=child.session_id, status="running", run_id=child.run_id)
 
@@ -1838,19 +1888,12 @@ class DelegationManager:
             if session.active_revision_id != self.core.revision_id:
                 return False
             try:
-                self.core.store.commit_staged(
+                self.core.commit_public_staged(
                     parent_session_id,
-                    expected_sequence=session.last_event_sequence,
-                    expected_run_id=session.run_id,
-                    run_id=session.run_id or uuid4().hex,
-                    revision_id=self.core.revision_id,
                     events=(event,),
-                    status=session.status,
-                    checkpoint_kind=None,
-                    checkpoint_payload=None,
+                    revision_id=self.core.revision_id,
                     staged_continuations=(notice,) if notice is not None else (),
                 )
-                self.core.notify_commit()
                 return True
             except SequenceConflict:
                 if attempt >= _CHILD_FACT_MAX_ATTEMPTS or self.core._closed:
@@ -2086,7 +2129,7 @@ class DelegationManager:
 
     def _first_child_message(self, session_id: str) -> ContinuationRecord | None:
         """The oldest eligible core child message, excluding implicit stopped-session wakeups."""
-        interrupted = self.core.store.session(session_id).status == "interrupted"
+        interrupted = self.core.store.session(session_id).status is SessionStatus.INTERRUPTED
         for records in (
             self.core.store.claimed_continuations(session_id, limit=100),
             self.core.store.pending_continuations(session_id, limit=100),

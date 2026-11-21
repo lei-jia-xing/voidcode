@@ -10,6 +10,8 @@ import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import adopt_generation, bundled_sources, open_core
+from voidcode.core.execution import _Cursor, _Execution
+from voidcode.core.fact_delivery import FactDeliveryContractError
 from voidcode.core.storage.store import StoreConflict
 
 OBSERVER = """
@@ -114,7 +116,7 @@ def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(
         _write(source, OBSERVER.format(facts=("usage",)))
         core = open_core(workspace, state_dir=tmp_path / "state")
         assert core.revision_id == revision
-        assert core._eligible_observers(old) == ("observer",)
+        assert core._fact_delivery.eligible_observers(old) == ("observer",)
         assert core.run("two", session_id="s").status == "completed"
         events = core.events_after("s")
         new_run = [event for event in events if event.event_type == "core.run_completed"][-1]
@@ -125,13 +127,41 @@ def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(
 
         # A second restart still reads the frozen owners, never the current source.
         core = open_core(workspace, state_dir=tmp_path / "state")
-        assert core._eligible_observers(old) == ("observer",)
-        assert core._eligible_observers(new_usage) == ("observer",)
+        assert core._fact_delivery.eligible_observers(old) == ("observer",)
+        assert core._fact_delivery.eligible_observers(new_usage) == ("observer",)
         core.close()
     finally:
         server.shutdown()
         server.server_close()
         worker.join(timeout=5)
+
+
+def test_observer_delivery_requires_captured_root_authorization(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _config(workspace, {})
+    with open_core(workspace, state_dir=tmp_path / "state") as core:
+        parent = core.create_session("parent")
+        core.store.create_child_session(
+            "child",
+            str(core.workspace),
+            core.revision_id,
+            parent_session_id=parent.session_id,
+            root_session_id=parent.session_id,
+            depth=1,
+            birth={"root_id": "root-without-budget"},
+        )
+        child = core.session("child")
+        child_execution = _Execution(child, _Cursor(), list(core.store.events("child")), "child-run")
+        with pytest.raises(FactDeliveryContractError, match="has no captured root authorization") as missing_birth:
+            core._fact_delivery._observer_root_authorization(child_execution)
+        assert missing_birth.value.session_id == "child"
+
+        root = core.create_session("root")
+        root_execution = _Execution(root, _Cursor(), [], "root-run")
+        with pytest.raises(FactDeliveryContractError, match="has no captured root action identity") as missing_root:
+            core._fact_delivery._observer_root_authorization(root_execution)
+        assert missing_root.value.session_id == "root"
 
 
 def test_plain_restart_and_adoption_refuse_schema_mismatch(tmp_path: Path) -> None:

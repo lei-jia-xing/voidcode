@@ -32,7 +32,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                             "covered_to_sequence": {"type": "integer", "minimum": 0},
                             "covered_bytes": {"type": "integer", "minimum": 0},
                             "dropped_bytes": {"type": "integer", "minimum": 0},
-                            "summary_kind": {"type": "string", "enum": ["deterministic", "model"]},
+                            "summary_kind": {"type": "string", "enum": ["model"]},
                         },
                     },
                 },

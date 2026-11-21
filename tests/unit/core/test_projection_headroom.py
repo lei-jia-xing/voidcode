@@ -624,7 +624,7 @@ def test_budget_below_identity_minimum_keeps_ceiling_without_refusing_dispatch(t
         assert rate is not None and rate > 0
         schemas = int(RequestWindow.from_payload(_intents(core, session_id)[0].payload["request_window"]).tool_schema_characters)
         session = core.store.session(session_id)
-        fixed_messages = core._messages(_Execution(session, _Cursor(), list(events), "measure"))
+        fixed_messages = core._context_projection.messages(_Execution(session, _Cursor(), list(events), "measure"))
         tool_characters = sum(len(message.content or "") for message in fixed_messages if message.role == "tool")
         fixed = sum(len(message.content or "") + len(message.reasoning or "") for message in fixed_messages) - tool_characters
         assert sum(1 for message in fixed_messages if message.role == "tool") == 1

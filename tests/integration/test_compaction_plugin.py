@@ -24,7 +24,7 @@ from pathlib import Path
 
 import jsonschema
 
-from tests.fixtures.core_factory import loopback_server, register_core
+from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -110,7 +110,38 @@ def _probe_source(tmp_path: Path) -> Path:
     return root
 
 
-def _core(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: int = 1_000) -> Core:
+_PROJECTION_OBSERVER_SOURCE = '''"""Test-only observer for context_projected facts."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+from voidcode.sdk.plugin import Plugin, StateSchema
+from voidcode.sdk.services import PluginServices
+
+
+def observer(fact, context, services: PluginServices) -> None:
+    _ = context
+    state, version = services.get_state("session")
+    payload = dict(state or {})
+    payload["observed_sequence"] = fact.event_sequence
+    services.replace_state(payload, expected_version=version, scope="session")
+
+
+def create_plugin(config: Mapping[str, object]) -> Plugin:
+    _ = config
+    return Plugin(observer=observer, observed_facts=("context_projected",), state=StateSchema(version=1))
+'''
+
+
+def _projection_observer_source(tmp_path: Path) -> Path:
+    root = tmp_path / "projection-observer"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "__init__.py").write_text(_PROJECTION_OBSERVER_SOURCE, encoding="utf-8")
+    return root
+
+
+def _core(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: int = 1_000, observer: bool = False) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -143,6 +174,8 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: int
             },
         },
     }
+    if observer:
+        config["plugins"]["projection-observer"] = {"path": str(_projection_observer_source(tmp_path))}
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
@@ -337,7 +370,7 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         assert state_schema is not None
         # Exactly how the core validates an owner's state copy against the declaration.
         jsonschema.Draft202012Validator(json_wire_object(state_schema)).validate(json_wire_object(stored))
-        assert stored["schema_version"] == 1
+        assert stored["schema_version"] == 2
         assert stored["cursor_sequence"] >= row.covered_to_sequence
         assert stored["last_projection"]["covered_bytes"] == row.covered_bytes
         assert stored["last_projection"]["dropped_bytes"] == row.dropped_bytes
@@ -351,6 +384,36 @@ def test_manual_compact_projects_on_demand_then_noops(tmp_path: Path) -> None:
         assert first_prompt not in [str(message.get("content", "")) for message in _messages(server.requests[-1]) if message.get("role") == "user"]
         events = core.events_after(session_id)
         assert any(str(event.payload.get("content", "")) == first_prompt for event in events if event.event_type == "core.user_message")
+
+
+def test_manual_compact_fact_survives_reopen_and_delivers(tmp_path: Path) -> None:
+    replies = [
+        _turn(_tool_call("call-1", _WRITE_TOOL, {"path": "notes.txt", "text": _NOTES_TEXT}), prompt_tokens=10),
+        _turn(output="notes written", prompt_tokens=10),
+        openai_response(message={"role": "assistant", "content": "manual summary"}, finish="stop"),
+    ]
+    with loopback_server(replies) as server:
+        core = _core(tmp_path, server, observer=True)
+        session_id = core.create_session("sess-compact-reopen").session_id
+        assert core.run("first prompt: project before reopen", session_id=session_id).status == "completed"
+        projected = _command(core, session_id, "compact", {})
+        assert projected.status == "ok"
+        assert projected.data is not None and projected.data["noop"] is False
+        projection_event = next(event for event in core.events_after(session_id) if event.event_type == "core.window_projected")
+        assert projection_event.payload["eligible_owners"] == ("projection-observer",)
+        live_state, _ = core.store.plugin_state("projection-observer", "session", session_id)
+        assert live_state is not None and live_state["observed_sequence"] == projection_event.sequence
+        core.close()
+        discard_core(core)
+
+        reopened = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
+        try:
+            assert reopened.store.window_projection(session_id) is not None
+            assert reopened.store.has_observer_receipt(session_id, projection_event.sequence, "projection-observer")
+            replayed_state, _ = reopened.store.plugin_state("projection-observer", "session", session_id)
+            assert replayed_state is not None and replayed_state["observed_sequence"] == projection_event.sequence
+        finally:
+            reopened.close()
 
 
 def test_a_blank_model_summary_fails_loudly_and_stages_nothing(tmp_path: Path) -> None:

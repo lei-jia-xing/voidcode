@@ -14,6 +14,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, cast
@@ -65,6 +66,54 @@ MAX_CHILD_LABEL_BYTES = 1024
 
 class StorageError(RuntimeError):
     """Base error for core storage failures."""
+
+
+class StoredValueError(StorageError):
+    """A persisted closed-set column holds a value outside its declared set."""
+
+    def __init__(self, message: str, *, field: str, value: object) -> None:
+        super().__init__(message)
+        self.field = field
+        self.value = value
+
+
+class SessionStatus(StrEnum):
+    """Durable session lifecycle state; SQLite stores the wire spelling."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    WAITING = "waiting"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
+class CheckpointKind(StrEnum):
+    """Durable checkpoint position of one run."""
+
+    READY = "ready"
+    APPROVAL_WAIT = "approval_wait"
+    TERMINAL = "terminal"
+    INTERRUPTED = "interrupted"
+
+
+class ContinuationStatus(StrEnum):
+    """Durable continuation/background-action row state."""
+
+    PENDING = "pending"
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ConfirmationStatus(StrEnum):
+    """Durable action-confirmation decision state."""
+
+    PENDING = "pending"
+    ALLOWED = "allowed"
+    DENIED = "denied"
+    STALE = "stale"
 
 
 class ForeignDatabaseError(StorageError):
@@ -164,7 +213,7 @@ class UnknownWorkspace(ValueError):
 class SessionRecord:
     session_id: str
     workspace: str
-    status: str
+    status: SessionStatus
     active_revision_id: str
     run_id: str | None
     turn: int
@@ -202,7 +251,7 @@ class StoredEvent:
 
 @dataclass(frozen=True, slots=True)
 class Checkpoint:
-    kind: str
+    kind: CheckpointKind
     revision_id: str
     run_id: str
     last_event_sequence: int
@@ -232,7 +281,7 @@ class ActionConfirmationRecord:
     expected_state_version: int | None
     ui_type: str
     ui_data: Mapping[str, object]
-    status: str
+    status: ConfirmationStatus
     created_at: int
     decided_at: int | None
 
@@ -246,7 +295,7 @@ class ContinuationRecord:
     run_id: str
     revision_id: str
     idempotency_key: str | None
-    status: str
+    status: ContinuationStatus
     payload: Mapping[str, object]
     created_at: int
     updated_at: int
@@ -262,7 +311,7 @@ class StagedStateUpdate:
     scope_key: str
     payload: Mapping[str, object]
     expected_version: int
-    schema_version: int = 1
+    schema_version: int
     revision_id: str = ""
 
     def __post_init__(self) -> None:
@@ -630,13 +679,21 @@ def _decode_tool_allowlist(raw: str | None) -> tuple[str, ...] | None:
     return tuple(parsed)
 
 
+def _decode_closed_enum[E: StrEnum](enum_type: type[E], value: object, *, field: str, record: str) -> E:
+    """Decode one persisted closed-set value, or fail with the typed storage error."""
+    try:
+        return enum_type(value)
+    except ValueError as exc:
+        raise StoredValueError(f"{record} has unknown {field} {value!r}", field=field, value=value) from exc
+
+
 def _decode_session(row: Sequence[Any]) -> SessionRecord:
     """Map one eleven-column sessions row onto its immutable record."""
     cols = _SessionColumns(*row)
     return SessionRecord(
         session_id=cols.session_id,
         workspace=cols.workspace,
-        status=cols.status,
+        status=_decode_closed_enum(SessionStatus, cols.status, field="status", record=f"session {cols.session_id!r}"),
         active_revision_id=cols.active_revision_id,
         run_id=cols.run_id,
         turn=cols.turn,
@@ -667,7 +724,7 @@ def _decode_session_info(row: Sequence[Any]) -> SessionInfo:
     )
     return SessionInfo(
         session_id=session.session_id,
-        status=session.status,
+        status=session.status.value,
         run_id=session.run_id,
         revision_id=session.active_revision_id,
         parent_session_id=session.parent_session_id,
@@ -738,7 +795,7 @@ def _decode_checkpoint(row: Sequence[Any]) -> Checkpoint:
     """Map one checkpoints row onto its immutable record."""
     cols = _CheckpointColumns(*row)
     return Checkpoint(
-        kind=cols.kind,
+        kind=_decode_closed_enum(CheckpointKind, cols.kind, field="kind", record="checkpoint"),
         revision_id=cols.revision_id,
         run_id=cols.run_id,
         last_event_sequence=cols.last_event_sequence,
@@ -757,7 +814,7 @@ def _decode_continuation(row: Sequence[Any]) -> ContinuationRecord:
         run_id=cols.run_id,
         revision_id=cols.revision_id,
         idempotency_key=cols.idempotency_key,
-        status=cols.status,
+        status=_decode_closed_enum(ContinuationStatus, cols.status, field="status", record=f"continuation {cols.continuation_id!r}"),
         payload=own_json_object(json.loads(cols.payload_json)),
         created_at=cols.created_at,
         updated_at=cols.updated_at,
@@ -766,7 +823,7 @@ def _decode_continuation(row: Sequence[Any]) -> ContinuationRecord:
     )
 
 
-def _decode_background_action(row: Sequence[Any], *, status: str | None = None) -> ContinuationRecord:
+def _decode_background_action(row: Sequence[Any], *, status: ContinuationStatus | None = None) -> ContinuationRecord:
     """Project one background_actions row onto the caller-visible continuation shape.
 
     Columns are the durable truth; the payload dict only reassembles the keys drivers
@@ -788,7 +845,11 @@ def _decode_background_action(row: Sequence[Any], *, status: str | None = None) 
         run_id="",
         revision_id=cols.revision_id,
         idempotency_key=cols.idempotency_key,
-        status=cols.status if status is None else status,
+        status=(
+            status
+            if status is not None
+            else _decode_closed_enum(ContinuationStatus, cols.status, field="status", record=f"background action {cols.action_id!r}")
+        ),
         payload=payload,
         created_at=cols.created_at,
         updated_at=cols.updated_at,
@@ -823,7 +884,7 @@ def _decode_confirmation(row: Sequence[Any]) -> ActionConfirmationRecord:
         expected_state_version=cols.expected_state_version,
         ui_type=cols.ui_type,
         ui_data=own_json_object(json.loads(cols.ui_data_json)),
-        status=cols.status,
+        status=_decode_closed_enum(ConfirmationStatus, cols.status, field="status", record=f"confirmation {cols.request_id!r}"),
         created_at=cols.created_at,
         decided_at=cols.decided_at,
     )

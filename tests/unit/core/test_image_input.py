@@ -10,7 +10,7 @@ from voidcode.capabilities.providers.native.anthropic_native import AnthropicMes
 from voidcode.capabilities.providers.native.google_native import GoogleGenAIProvider
 from voidcode.capabilities.providers.native.openai_native import OpenAIChatCompletionsProvider
 from voidcode.core.events import EventType
-from voidcode.core.storage.store import EventDraft, SqliteStore
+from voidcode.core.storage.store import EventDraft, SessionStatus, SqliteStore
 from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.client import RunSpec
 from voidcode.sdk.provider import (
@@ -95,7 +95,7 @@ def test_event_persistence_and_session_recovery_preserves_images(tmp_path: Path)
             run_id="run-1",
             revision_id=rev_id,
             events=(draft,),
-            status="running",
+            status=SessionStatus.RUNNING,
         )
 
         events = store.events("sess-1")
