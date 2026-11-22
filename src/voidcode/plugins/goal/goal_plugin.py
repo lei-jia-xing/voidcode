@@ -28,6 +28,7 @@ from voidcode.sdk.hooks import (
 )
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.plugin import StateScope
 from voidcode.sdk.provider import ProviderTokenUsage
 from voidcode.sdk.services import ArtifactServices, BudgetServices, PluginServices, StateServices
 from voidcode.sdk.tools import (
@@ -120,6 +121,56 @@ class ActiveWindow:
         return cls(start_sequence=start, end_sequence=end)
 
 
+def _parse_goal_metric_int(data: Mapping[str, object], name: str) -> int | None:
+    if name not in data:
+        raise ValueError(f"GoalState requires {name} key (null when unreported)")
+    v = data[name]
+    if v is None:
+        return None
+    if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+        raise ValueError(f"{name} must be a non-negative integer or null: {v!r}")
+    return v
+
+
+def _parse_goal_metric_float(data: Mapping[str, object], name: str) -> float | None:
+    if name not in data:
+        raise ValueError(f"GoalState requires {name} key (null when unreported)")
+    v = data[name]
+    if v is None:
+        return None
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or float(v) < 0.0:
+        raise ValueError(f"{name} must be a non-negative number or null: {v!r}")
+    return float(v)
+
+
+def _parse_goal_windows(raw: object) -> tuple[ActiveWindow, ...]:
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("active_windows must be a list")
+    windows: list[ActiveWindow] = []
+    for w in raw:
+        if not isinstance(w, Mapping):
+            raise ValueError("active_windows entries must be objects")
+        windows.append(ActiveWindow.from_dict(w))
+    return tuple(windows)
+
+
+def _parse_goal_artifact_ref(data: Mapping[str, object]) -> tuple[str | None, str | None]:
+    if "objective_file_ref" not in data:
+        raise ValueError("GoalState requires objective_file_ref key (null when inline)")
+    file_ref = data["objective_file_ref"]
+    if file_ref is not None and (not isinstance(file_ref, str) or not file_ref.startswith("artifact://")):
+        raise ValueError("objective_file_ref must be an artifact:// URI or null")
+
+    if "objective_file_sha256" not in data:
+        raise ValueError("GoalState requires objective_file_sha256 key (null when inline)")
+    file_sha = data["objective_file_sha256"]
+    if file_sha is not None and (not isinstance(file_sha, str) or len(file_sha) != 64):
+        raise ValueError("objective_file_sha256 must be a 64-char hex string or null")
+    if (file_ref is None) != (file_sha is None):
+        raise ValueError("objective_file_ref and objective_file_sha256 must both be set or both be null")
+    return file_ref, file_sha
+
+
 @dataclass(frozen=True, slots=True)
 class GoalState:
     """Strongly typed session state for an active, paused, or completed goal."""
@@ -204,7 +255,7 @@ class GoalState:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object] | None) -> GoalState | None:
-        if data is None or not data:
+        if not data:
             return None
         if not isinstance(data, Mapping):
             raise ValueError("GoalState data must be a mapping")
@@ -243,50 +294,11 @@ class GoalState:
                 raise ValueError(f"Goal token_budget must be a positive integer or null: {raw_budget!r}")
             budget = raw_budget
 
-        if "objective_file_ref" not in data:
-            raise ValueError("GoalState requires objective_file_ref key (null when inline)")
-        file_ref = data["objective_file_ref"]
-        if file_ref is not None and (not isinstance(file_ref, str) or not file_ref.startswith("artifact://")):
-            raise ValueError("objective_file_ref must be an artifact:// URI or null")
-
-        if "objective_file_sha256" not in data:
-            raise ValueError("GoalState requires objective_file_sha256 key (null when inline)")
-        file_sha = data["objective_file_sha256"]
-        if file_sha is not None and (not isinstance(file_sha, str) or len(file_sha) != 64):
-            raise ValueError("objective_file_sha256 must be a 64-char hex string or null")
-        if (file_ref is None) != (file_sha is None):
-            raise ValueError("objective_file_ref and objective_file_sha256 must both be set or both be null")
-
-        def _parse_metric_int(name: str) -> int | None:
-            if name not in data:
-                raise ValueError(f"GoalState requires {name} key (null when unreported)")
-            v = data[name]
-            if v is None:
-                return None
-            if not isinstance(v, int) or isinstance(v, bool) or v < 0:
-                raise ValueError(f"{name} must be a non-negative integer or null: {v!r}")
-            return v
-
-        def _parse_metric_float(name: str) -> float | None:
-            if name not in data:
-                raise ValueError(f"GoalState requires {name} key (null when unreported)")
-            v = data[name]
-            if v is None:
-                return None
-            if not isinstance(v, (int, float)) or isinstance(v, bool) or float(v) < 0.0:
-                raise ValueError(f"{name} must be a non-negative number or null: {v!r}")
-            return float(v)
+        file_ref, file_sha = _parse_goal_artifact_ref(data)
 
         if "active_windows" not in data:
             raise ValueError("GoalState requires active_windows key")
-        raw_windows = data["active_windows"]
-        if not isinstance(raw_windows, (list, tuple)):
-            raise ValueError("active_windows must be a list")
-        windows: list[ActiveWindow] = []
-        for w in raw_windows:
-            if not isinstance(w, Mapping):
-                raise ValueError("active_windows entries must be objects")
-            windows.append(ActiveWindow.from_dict(w))
+        windows = _parse_goal_windows(data["active_windows"])
 
         if "blocked_turns_count" not in data:
             raise ValueError("GoalState requires blocked_turns_count key")
@@ -321,13 +333,13 @@ class GoalState:
             objective_file_ref=file_ref,
             objective_file_sha256=file_sha,
             token_budget=budget,
-            tokens_used=_parse_metric_int("tokens_used"),
-            window_tokens_used=_parse_metric_int("window_tokens_used"),
-            window_allowance=_parse_metric_int("window_allowance"),
+            tokens_used=_parse_goal_metric_int(data, "tokens_used"),
+            window_tokens_used=_parse_goal_metric_int(data, "window_tokens_used"),
+            window_allowance=_parse_goal_metric_int(data, "window_allowance"),
             has_unknown_usage=raw_unknown,
-            time_used_seconds=_parse_metric_float("time_used_seconds"),
-            cost_usd=_parse_metric_float("cost_usd"),
-            active_windows=tuple(windows),
+            time_used_seconds=_parse_goal_metric_float(data, "time_used_seconds"),
+            cost_usd=_parse_goal_metric_float(data, "cost_usd"),
+            active_windows=windows,
             blocked_turns_count=raw_blocked,
             last_blocked_logical_turn=last_turn,
             objective_edited=raw_objective_edited,
@@ -1590,7 +1602,7 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
 
 def prepare_goal_deactivation(
     state: Mapping[str, object],
-    scope: str,
+    scope: StateScope,
     scope_key: str,
     tip_sequence: int | None,
 ) -> Mapping[str, object]:

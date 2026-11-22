@@ -29,7 +29,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final, Literal, cast, get_args
+from typing import Any, Final, Literal, get_args
 from uuid import uuid4
 
 import jsonschema
@@ -49,15 +49,15 @@ from voidcode.sdk.hooks import (
     RunFinishedFact,
     RunLifecycle,
     RunRequestedFact,
-    StopCause,
     ToolIntent,
     ToolOutcome,
     UsageFact,
     WakeupFiredFact,
+    is_stop_cause,
 )
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object, own_json_object
-from voidcode.sdk.plugin import Plugin, PluginQueryCaller, StateSchema
+from voidcode.sdk.plugin import Plugin, PluginQueryCaller, StateSchema, StateScope
 from voidcode.sdk.provider import (
     ModelContextLimits,
     ModelLimitsProvider,
@@ -72,6 +72,7 @@ from voidcode.sdk.provider import (
 from voidcode.sdk.resources import ResourceContractError, ResourcePage, ResourceReadCaller, ResourceReadRequest, ResourceUnavailable
 from voidcode.sdk.services import (
     BackgroundActionStatus,
+    BackgroundContext,
     CancelSubtreeReceipt,
     ChildOutcome,
     ChildSendReceipt,
@@ -150,7 +151,7 @@ class PluginSource:
 class LeaseStaging:
     """Per-invocation scratch work, frozen together and committed as one atomic unit."""
 
-    state: dict[tuple[str, str], tuple[Mapping[str, object], int, int]] = field(default_factory=dict)
+    state: dict[tuple[StateScope, str], tuple[Mapping[str, object], int, int]] = field(default_factory=dict)
     events: list[EventDraft] = field(default_factory=list)
     continuations: list[StagedContinuationDraft] = field(default_factory=list)
     cancellations: list[StagedCancellation] = field(default_factory=list)
@@ -386,8 +387,8 @@ class PluginRuntime:
         self._pre_tool_hooks: list[tuple[Any, tuple[str, ...], bool, str]] = []
         self._lifecycle_hooks: dict[str, tuple[Any, str]] = {}
         self._observers: list[tuple[Any, tuple[str, ...], str]] = []
-        self._background_actions: dict[str, Any] = {}
-        self._state_deactivators: dict[str, Any] = {}
+        self._background_actions: dict[str, Callable[[BackgroundContext], None]] = {}
+        self._state_deactivators: dict[str, Callable[[Mapping[str, object], StateScope, str, int | None], Mapping[str, object]]] = {}
         self._queries: dict[str, tuple[Any, str]] = {}
         self._resource_readers: dict[str, tuple[Any, str]] = {}
 
@@ -1443,12 +1444,12 @@ class PluginRuntime:
     def run_lifecycle(
         self,
         owner: str,
-        kind: str,
+        kind: Literal["session_start", "session_end"],
         *,
         session_id: str,
         run_id: str,
         logical_turn: str = "",
-        status: str = "",
+        status: Literal["completed", "failed", "interrupted", ""] = "",
         error: str | None = None,
         readonly: bool = True,
     ) -> str | None:
@@ -1462,7 +1463,7 @@ class PluginRuntime:
             session_id=session_id,
             run_id=run_id,
             logical_turn=logical_turn,
-            status=cast("Literal['completed', 'failed', 'interrupted', '']", status),
+            status=status,
             error=error if isinstance(error, str) and error else None,
         )
         lease = self._open_lease(
@@ -1543,7 +1544,7 @@ class PluginRuntime:
         run_id: str,
         tool_name: str,
         tool_call_id: str | None,
-        status: str,
+        status: Literal["ok", "error", "cancelled"],
         text: str,
         arguments: Mapping[str, object],
         readonly: bool,
@@ -1561,7 +1562,7 @@ class PluginRuntime:
         outcome = ToolOutcome(
             tool_name=tool_name,
             tool_call_id=tool_call_id,
-            status=cast("Literal['ok', 'error', 'cancelled']", status),
+            status=status,
             text=text,
             arguments=json_wire_object(arguments),
         )
@@ -1768,8 +1769,8 @@ class PluginRuntime:
             return TypeAdapter(extra_types[fact_type]).validate_python(json_wire_object(fact))
         if fact_type == "run_finished":
             stop_cause_payload = fact.get("stop_cause")
-            if stop_cause_payload is not None and not isinstance(stop_cause_payload, str):
-                raise ValueError("'stop_cause' must be a string or null")
+            if stop_cause_payload is not None and not is_stop_cause(stop_cause_payload):
+                raise ValueError(f"Unknown 'stop_cause': {stop_cause_payload!r}")
             status_payload = _required_text(fact, "status")
             if status_payload not in ("completed", "failed", "interrupted"):
                 raise ValueError(f"Unknown run status: {status_payload!r}")
@@ -1780,7 +1781,7 @@ class PluginRuntime:
                 logical_turn=logical_turn,
                 event_sequence=_required_int(fact, "event_sequence"),
                 status=status_payload,
-                stop_cause=cast(StopCause | None, stop_cause_payload),
+                stop_cause=stop_cause_payload,
                 elapsed_seconds=_optional_number(fact, "elapsed_seconds"),
             )
         raise ValueError(f"Unknown fact_type: {fact_type}")
@@ -1790,10 +1791,10 @@ class PluginRuntime:
         owner: str,
         payload: Mapping[str, object],
         *,
-        scope: str,
+        scope: StateScope,
         scope_key: str,
         tip_sequence: int | None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Run one owner's pure deactivation transform in the runtime that still holds its schema."""
         if scope not in ("session", "workspace"):
             raise RuntimeError("scope must be 'session' or 'workspace'")

@@ -12,10 +12,10 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping, Sequence
-from typing import cast
 from uuid import uuid4
 
 from ...sdk.json_values import own_json_object
+from ...sdk.plugin import StateScope
 from ...sdk.services import PluginBudget
 from ..events import EventType
 from .records import (
@@ -42,6 +42,7 @@ from .records import (
     _decode_plugin_state,
     _decode_projection,
     _decode_tool_allowlist,
+    _int_value,
     _SessionColumns,
     canonical_json,
 )
@@ -383,11 +384,11 @@ class _StateMixin(_ConnectionStore):
                             self._connection,
                             session_id,
                             str(projection["owner"]),
-                            covered_from_sequence=cast(int, projection["covered_from_sequence"]),
-                            covered_to_sequence=cast(int, projection["covered_to_sequence"]),
+                            covered_from_sequence=_int_value(projection["covered_from_sequence"], "covered_from_sequence"),
+                            covered_to_sequence=_int_value(projection["covered_to_sequence"], "covered_to_sequence"),
                             replacement=str(projection["replacement"]),
-                            covered_bytes=cast(int, projection["covered_bytes"]),
-                            dropped_bytes=cast(int, projection["dropped_bytes"]),
+                            covered_bytes=_int_value(projection["covered_bytes"], "covered_bytes"),
+                            dropped_bytes=_int_value(projection["dropped_bytes"], "dropped_bytes"),
                         )
                     current_seq += 1
                     first_sequence_by_type.setdefault(draft.event_type, current_seq)
@@ -934,7 +935,7 @@ class _StateMixin(_ConnectionStore):
                 (workspace, revision_id, int(time.time() * 1000)),
             )
 
-    def plugin_state_rows(self, scope: str, scope_key: str) -> tuple[PluginStateRow, ...]:
+    def plugin_state_rows(self, scope: StateScope, scope_key: str) -> tuple[PluginStateRow, ...]:
         """Every owner state row in one scope, with its core-owned version metadata."""
         with self._lock:
             self._check_open()
@@ -1024,7 +1025,7 @@ class _StateMixin(_ConnectionStore):
             self._check_open()
             return tuple(self._activation_blockers_locked(workspace, acting_session_id, exclude_claimed_in_session=False))
 
-    def plugin_state(self, owner: str, scope: str, scope_key: str) -> tuple[Mapping[str, object] | None, int]:
+    def plugin_state(self, owner: str, scope: StateScope, scope_key: str) -> tuple[Mapping[str, object] | None, int]:
         """Fetch current plugin state and version for the given owner, scope, and scope_key."""
         with self._lock:
             self._check_open()

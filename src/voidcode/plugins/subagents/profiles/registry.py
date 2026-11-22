@@ -5,7 +5,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import cast
 
 from voidcode.capabilities.agent_queries import AgentDefinition, AgentSourceScope
 from voidcode.capabilities.frontmatter import load_frontmatter_mapping, split_frontmatter
@@ -79,7 +78,7 @@ def agent_from_markdown(contents: str, *, scope: AgentSourceScope, source_path: 
         prompt=body,
         source_scope=scope,
         source_path=source_path,
-        max_turns=cast(int | None, turns),
+        max_turns=turns if isinstance(turns, int) and not isinstance(turns, bool) else None,
     )
 
 

@@ -32,10 +32,20 @@ class Probe:
         effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SESSION}),
         argument_schema={"type": "object", "properties": {
             "argv": {"type": "array", "items": {"type": "string"}},
-            "confirm": {"type": "boolean"}, "fail": {"type": "boolean"}
+            "confirm": {"type": "boolean"}, "fail": {"type": "boolean"}, "identity": {"type": "boolean"}
         }, "required": ["argv"], "additionalProperties": False},
     )
     def invoke(self, invocation, services):
+        if invocation.arguments.get("identity"):
+            context = invocation.context
+            return CommandResult(status="ok", data={
+                "session_id": context.session_id, "run_id": context.run_id,
+                "invocation_id": context.invocation_id, "revision_id": context.revision_id,
+                "actor": context.actor, "logical_turn": context.logical_turn,
+                "root_action_id": context.root_action_id, "initial_root_budget": context.initial_root_budget,
+                "origin_visible_tools": None if context.origin_visible_tools is None else list(context.origin_visible_tools),
+                "origin_readonly": context.origin_readonly,
+            })
         if invocation.arguments.get("confirm") and invocation.context.actor != "user":
             request_id = uuid4().hex
             return CommandResult(status="pending_confirmation", confirmation=ConfirmationRequest(
@@ -79,6 +89,23 @@ def _wait_marker(marker: Path) -> None:
     while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert marker.exists(), "command process never started"
+
+
+def test_one_captured_invocation_identity_reaches_the_plugin(core: Core) -> None:
+    result = _invoke(core, {"argv": [], "identity": True})
+    assert result.status == "ok", result.as_payload()
+    assert result.data is not None
+    data = json_wire_object(result.data)
+    assert data["session_id"] == "s"
+    assert data["run_id"] and data["invocation_id"] and data["logical_turn"]
+    assert data["revision_id"] == core.revision_id
+    assert data["actor"] == "client"
+    assert data["root_action_id"]
+    assert data["initial_root_budget"] is None
+    assert data["origin_visible_tools"] == ["core_reload"]
+    assert data["origin_readonly"] is False
+    completed = [event for event in core.events_after("s") if event.event_type == "core.command_completed"]
+    assert len(completed) == 1
 
 
 @pytest.mark.parametrize("confirmed", [False, True])

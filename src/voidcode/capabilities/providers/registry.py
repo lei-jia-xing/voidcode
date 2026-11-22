@@ -17,7 +17,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, TypeIs, cast
+from typing import Final, Literal, TypeIs
 
 type ProviderWire = Literal["openai-completions", "anthropic-messages", "google-generative-ai"]
 
@@ -53,19 +53,23 @@ class ProviderTableRow:
 
 
 def _string_tuple(value: object, *, field: str, provider_id: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+    if not isinstance(value, list):
         raise ValueError(f"provider table entry {provider_id!r} field {field!r} must be a list of non-empty strings")
-    return tuple(cast(list[str], value))
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"provider table entry {provider_id!r} field {field!r} must be a list of non-empty strings")
+        result.append(item)
+    return tuple(result)
 
 
 def _row(raw: object) -> ProviderTableRow:
     if not isinstance(raw, dict):
         raise ValueError("provider table entries must be objects")
-    entry = cast(dict[str, object], raw)
-    provider_id = entry.get("id")
-    label = entry.get("label")
-    wire = entry.get("wire")
-    default_base_url = entry.get("default_base_url")
+    provider_id = raw.get("id")
+    label = raw.get("label")
+    wire = raw.get("wire")
+    default_base_url = raw.get("default_base_url")
     if not isinstance(provider_id, str) or not provider_id:
         raise ValueError("provider table entry is missing a non-empty 'id'")
     if not isinstance(label, str) or not label:
@@ -79,15 +83,18 @@ def _row(raw: object) -> ProviderTableRow:
         label=label,
         wire=wire,
         default_base_url=default_base_url,
-        env_vars=_string_tuple(entry.get("env_vars", []), field="env_vars", provider_id=provider_id),
-        models_dev_keys=_string_tuple(entry.get("models_dev_keys", []), field="models_dev_keys", provider_id=provider_id),
+        env_vars=_string_tuple(raw.get("env_vars", []), field="env_vars", provider_id=provider_id),
+        models_dev_keys=_string_tuple(raw.get("models_dev_keys", []), field="models_dev_keys", provider_id=provider_id),
     )
 
 
 def _rows_from_payload(payload: object) -> tuple[ProviderTableRow, ...]:
-    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+    if not isinstance(payload, dict):
         raise ValueError("provider_table.json must hold a 'rows' list")
-    rows = tuple(_row(raw) for raw in cast(list[object], payload["rows"]))
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list):
+        raise ValueError("provider_table.json must hold a 'rows' list")
+    rows = tuple(_row(raw) for raw in raw_rows)
     seen: set[str] = set()
     for row in rows:
         if row.id in seen:

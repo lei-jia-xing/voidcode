@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from voidcode.sdk.client import CommandCatalog, StreamEvent
+from voidcode.sdk.client import CommandCatalog, SessionClient, StreamEvent
 from voidcode.sdk.codec import encode_tool_call, encode_tool_result
 from voidcode.sdk.provider import ProviderTurnResult
 from voidcode.sdk.services import ArtifactReference
 from voidcode.sdk.tools import CompositeOutput, MediaPart, OutputBounds, TextOutput, ToolCall, ToolSuccess
 from voidcode.sdk.transcript import TranscriptEntry, TranscriptTool
 from voidcode.tui.stream_handlers import handle_stream_event
+from voidcode.tui.term import Terminal
 from voidcode.tui.terminal_app import CoreTuiApp
 
 
@@ -43,7 +44,7 @@ class _StubClient:
 
 
 def _app() -> CoreTuiApp:
-    return CoreTuiApp(_StubClient(), session_id="s1", terminal=_StubTerminal())
+    return CoreTuiApp(cast(SessionClient, _StubClient()), session_id="s1", terminal=cast(Terminal, _StubTerminal()))
 
 
 def _event(
@@ -76,6 +77,29 @@ def _transcript_tool() -> TranscriptTool:
         batch_sequence=1,
         deferred=False,
     )
+
+
+def test_plugin_and_unknown_event_types_are_ignored_without_side_effects() -> None:
+    app = _app()
+    rows: list[str] = []
+
+    handle_stream_event(app, _event(1, "plugin.demo.tick", content=ProviderTurnResult(output="plugin detail")), rows)
+    handle_stream_event(app, _event(2, "core.future_event", content=ProviderTurnResult(output="future detail")), rows)
+
+    assert app._session_cursors == {}
+    assert app._stream_buffers == {}
+    assert app._run_active is False
+    assert rows == []
+
+
+def test_decoded_core_event_still_dispatches_and_renders() -> None:
+    app = _app()
+    rows: list[str] = []
+
+    handle_stream_event(app, _event(1, "core.model_turn", content=ProviderTurnResult(output="decoded assistant text")), rows)
+
+    assert app._session_cursors == {"s1": 1}
+    assert any("decoded assistant text" in row for row in rows)
 
 
 def test_wrong_session_event_never_advances_cursor_or_mutates_state() -> None:

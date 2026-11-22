@@ -17,9 +17,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, cast
+from typing import Any, Literal, NamedTuple
 
 from ...sdk.json_values import json_wire_object, json_wire_value, own_json_object
+from ...sdk.plugin import StateScope
 from ...sdk.services import PluginBudget, SessionInfo
 
 #: SQLite file-header identity of a voidcode database: b'VOID' plus the schema version.
@@ -75,6 +76,13 @@ class StoredValueError(StorageError):
         super().__init__(message)
         self.field = field
         self.value = value
+
+
+def _int_value(value: object, field_name: str = "value") -> int:
+    """Validate and return an int value without boolean coercion."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer, got {value!r}")
+    return value
 
 
 class SessionStatus(StrEnum):
@@ -286,6 +294,10 @@ class ActionConfirmationRecord:
     decided_at: int | None
 
 
+#: The conversational role a message, continuation, or wakeup is rendered with.
+type MessageRole = Literal["system", "user", "assistant", "tool"]
+
+
 @dataclass(frozen=True, slots=True)
 class ContinuationRecord:
     continuation_id: str
@@ -301,13 +313,13 @@ class ContinuationRecord:
     updated_at: int
     root_id: str | None = None
     #: Message role the core renders this continuation with ("system" by default).
-    role: str = "system"
+    role: MessageRole = "system"
 
 
 @dataclass(frozen=True, slots=True)
 class StagedStateUpdate:
     owner: str
-    scope: str
+    scope: StateScope
     scope_key: str
     payload: Mapping[str, object]
     expected_version: int
@@ -327,7 +339,7 @@ class StagedContinuationDraft:
     idempotency_key: str | None = None
     ordinal: int = 0
     root_id: str | None = None
-    role: str = "system"
+    role: MessageRole = "system"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", own_json_object(self.payload))
@@ -344,7 +356,7 @@ class WakeupRecord:
     payload: Mapping[str, object]
     root_id: str
     due_at: int
-    role: str
+    role: MessageRole
     status: str
     claim_run_id: str | None = None
 
@@ -360,7 +372,7 @@ class StagedWakeup:
     session_id: str
     payload: Mapping[str, object]
     due_at: int
-    role: str = "system"
+    role: MessageRole = "system"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", own_json_object(self.payload))
@@ -424,7 +436,7 @@ class PluginStateRow:
     """One durable owner state row plus its core-owned version metadata."""
 
     owner: str
-    scope: str
+    scope: StateScope
     scope_key: str
     payload: Mapping[str, object]
     version: int
@@ -714,7 +726,7 @@ def _decode_session_info(row: Sequence[Any]) -> SessionInfo:
         if tail.budget_owner is None
         else PluginBudget(
             owner=tail.budget_owner,
-            since_sequence=cast(int, tail.budget_since_sequence),
+            since_sequence=0 if tail.budget_since_sequence is None else tail.budget_since_sequence,
             max_input_tokens=tail.budget_max_input_tokens,
             max_output_tokens=tail.budget_max_output_tokens,
             max_total_tokens=tail.budget_max_total_tokens,
@@ -755,6 +767,12 @@ def _decode_event(row: Sequence[Any]) -> StoredEvent:
     )
 
 
+def _decode_role(value: str) -> MessageRole:
+    if value in ("system", "user", "assistant", "tool"):
+        return value
+    return "system"
+
+
 def _decode_wakeup(row: Sequence[Any]) -> WakeupRecord:
     """Map one wakeups row; the stored payload must be a JSON object written by this core."""
     cols = _WakeupColumns(*row)
@@ -768,7 +786,7 @@ def _decode_wakeup(row: Sequence[Any]) -> WakeupRecord:
         session_id=cols.session_id,
         payload=own_json_object(payload),
         root_id=cols.root_id,
-        role=cols.role,
+        role=_decode_role(cols.role),
         due_at=cols.due_at,
         status=cols.status,
         claim_run_id=cols.claim_run_id,
@@ -819,7 +837,7 @@ def _decode_continuation(row: Sequence[Any]) -> ContinuationRecord:
         created_at=cols.created_at,
         updated_at=cols.updated_at,
         root_id=cols.root_id,
-        role=cols.role,
+        role=_decode_role(cols.role),
     )
 
 
@@ -860,9 +878,10 @@ def _decode_background_action(row: Sequence[Any], *, status: ContinuationStatus 
 def _decode_plugin_state(row: Sequence[Any]) -> PluginStateRow:
     """Map one plugin_state row (payload already validated by the write that stored it)."""
     cols = _PluginStateColumns(*row)
+    scope: StateScope = "session" if cols.scope == "session" else "workspace"
     return PluginStateRow(
         owner=cols.owner,
-        scope=cols.scope,
+        scope=scope,
         scope_key=cols.scope_key,
         payload=own_json_object(json.loads(cols.payload_json)),
         version=cols.version,

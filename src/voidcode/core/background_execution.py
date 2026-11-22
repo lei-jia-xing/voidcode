@@ -16,11 +16,11 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, Protocol, TypeGuard
 from uuid import uuid4
 
 from ..sdk.codec import decode_tool_call, decode_tool_result
-from ..sdk.hooks import StopCause
+from ..sdk.hooks import StopCause, is_stop_cause
 from ..sdk.invocation import ToolContext
 from ..sdk.json_values import own_json_object
 from ..sdk.services import ArtifactPage, BudgetExhaustion, PluginBudget, ToolAwaitResult, ToolInvocationReceipt
@@ -46,6 +46,12 @@ from .storage.store import (
     StoreConflict,
     StoredEvent,
 )
+
+_CancellationStatus = Literal["cancelled", "interrupted", "core_lost", "budget_exhausted"]
+
+
+def _is_cancellation_status(value: object) -> TypeGuard[_CancellationStatus]:
+    return value in ("cancelled", "interrupted", "core_lost", "budget_exhausted")
 
 
 class BackgroundSnapshot(Protocol):
@@ -462,16 +468,15 @@ class BackgroundExecution:
     def reconcile_lost(self, session_id: str) -> None:
         events = list(self._host.store.events(session_id))
         terminal_ids = self.terminal_request_ids(events)
-        action_ids = {
-            event.payload.get("background_action_id")
+        action_ids: set[str] = {
+            str(event.payload["background_action_id"])
             for event in events
             if event.event_type == EventType.TOOL_DEFERRED
             and event.payload.get("result_delivery") == "requester"
             and event.payload.get("request_id") not in terminal_ids
             and isinstance(event.payload.get("background_action_id"), str)
         }
-        for raw_action_id in action_ids:
-            action_id = cast(str, raw_action_id)
+        for action_id in action_ids:
             record = self._host.store.background_action(action_id)
             if record is not None and record.status is ContinuationStatus.PENDING:
                 continue
@@ -516,7 +521,7 @@ class BackgroundExecution:
             )
             if request is None:
                 return
-            action_id = cast(str, request.payload["background_action_id"])
+            action_id = str(request.payload["background_action_id"])
             record = self._host.store.background_action(action_id)
             action_abort = self._background.abort_event(action_id)
             live = self._background.is_live(action_id)
@@ -666,10 +671,11 @@ class BackgroundExecution:
                     None,
                 )
                 stop_cause_value = tool_event.payload.get("stop_cause")
-                if stop_cause_value is not None:
-                    stop_cause = cast("StopCause | None", stop_cause_value)
-                elif stop_event is not None:
-                    stop_cause = cast("StopCause | None", stop_event.payload.get("stop_cause"))
+                stop_event_cause = stop_event.payload.get("stop_cause") if stop_event is not None else None
+                if is_stop_cause(stop_cause_value):
+                    stop_cause: StopCause | None = stop_cause_value
+                elif is_stop_cause(stop_event_cause):
+                    stop_cause = stop_event_cause
                 else:
                     return None
                 budget_value = tool_event.payload.get("budget_exhaustion")
@@ -727,9 +733,10 @@ class BackgroundExecution:
         ):
             raise ValueError("background tool cancellation changed its owner, revision, or tool identity")
         status_value = payload.get("status")
-        if status_value not in {"cancelled", "interrupted", "core_lost", "budget_exhausted"}:
+        if not _is_cancellation_status(status_value):
             raise ValueError("background tool cancellation event has an unknown terminal status")
-        status = cast("Literal['cancelled', 'interrupted', 'core_lost', 'budget_exhausted']", status_value)
+        raw_stop_cause = payload.get("stop_cause")
+        stop_cause = raw_stop_cause if is_stop_cause(raw_stop_cause) else None
         return ToolAwaitResult(
             request_id=request_id,
             owner=context.owner,
@@ -737,10 +744,10 @@ class BackgroundExecution:
             session_id=context.session_id,
             revision_id=context.revision_id,
             tool_name=request_call.tool_name,
-            status=status,
+            status=status_value,
             result=None,
             terminal_sequence=cancellation.sequence,
-            stop_cause=cast("StopCause | None", payload.get("stop_cause")),
+            stop_cause=stop_cause,
             budget_exhaustion=BudgetExhaustion.from_payload(payload.get("budget_exhaustion")),
             execution=_execution_from_payload(payload.get("execution")),
         )

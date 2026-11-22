@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeGuard
 
 from .json_values import own_json_object
 from .provider import ProviderTokenUsage
-from .tools import Change, ReadObservation
+from .tools import Change, ReadObservation, ToolEffect
 
 ObservedFactKind = Literal[
     "usage", "invocation_finished", "run_finished", "run_requested", "approval_requested", "child_spawned", "context_projected", "wakeup_fired"
@@ -18,6 +18,11 @@ ObservedFactKind = Literal[
 RunStatus = Literal["completed", "failed", "interrupted"]
 #: Canonical neutral stop cause shared by core and SDK.
 StopCause = Literal["completed", "error", "user_stop", "owner_cancel", "limit_reached", "shutdown"]
+
+
+def is_stop_cause(value: object) -> TypeGuard[StopCause]:
+    """Check whether a value is a valid canonical StopCause."""
+    return value in ("completed", "error", "user_stop", "owner_cancel", "limit_reached", "shutdown")
 
 
 ContributionRole = Literal["system", "user"]
@@ -74,7 +79,7 @@ class InvocationFinishedFact:
     #: Owner plugin of the invoked tool, as declared at admission.
     owner: str = ""
     #: Declared effects the core governed this invocation under.
-    effects: tuple[str, ...] = ()
+    effects: tuple[ToolEffect, ...] = ()
     #: Attribution and semantic observations frozen at completion. Consumers
     #: must not consult the current catalog to reinterpret these facts.
     model: str | None = None

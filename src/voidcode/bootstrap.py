@@ -45,6 +45,7 @@ from .core.storage.store import (
     inspect_existing_workspace,
 )
 from .sdk.json_values import json_wire_object
+from .sdk.plugin import StateScope
 
 if TYPE_CHECKING:
     from .sdk.client import SessionClient
@@ -298,7 +299,7 @@ def _workspace_lease(workspace: Path) -> Generator[None]:
 
 
 def _deactivation_unavailable(
-    owner: str, payload: Mapping[str, object], scope: str, scope_key: str, tip_sequence: int | None
+    owner: str, payload: Mapping[str, object], scope: StateScope, scope_key: str, tip_sequence: int | None
 ) -> Mapping[str, object]:
     del payload, scope, scope_key, tip_sequence
     raise ValueError(f"plugin {owner} needs deactivation but this installation no longer ships it; disable it before upgrading")

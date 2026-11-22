@@ -25,7 +25,7 @@ from collections.abc import Callable, Coroutine, Mapping
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Literal, TypeVar, cast
+from typing import IO, Any, Literal, TypeVar
 
 import httpx2
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
@@ -33,7 +33,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
-from mcp.types import CallToolResult, Implementation, ListToolsResult, Tool
+from mcp.types import Implementation, Tool
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 
@@ -85,7 +85,7 @@ def _validate_input_schema(raw_schema: object) -> dict[str, object]:
     return schema
 
 
-def _read_write_streams(transport_streams: tuple[object, ...]) -> tuple[object, object]:
+def _read_write_streams(transport_streams: tuple[object, ...]) -> tuple[Any, Any]:
     if len(transport_streams) < 2:
         raise ValueError("MCP transport context must provide read and write streams")
     return transport_streams[0], transport_streams[1]
@@ -464,7 +464,7 @@ class ManagedMcpManager:
                 read_timeout_seconds=self._request_timeout_seconds,
             ),
         )
-        call_result = cast(CallToolResult, result)
+        call_result = result
         raw_structured_content = call_result.structured_content
         if raw_structured_content is None:
             structured_content = None
@@ -617,7 +617,9 @@ class ManagedMcpManager:
         session_context: _OwnedAsyncContext | None = None
         try:
             if server_config.transport == "remote-http":
-                transport_context = _OwnedAsyncContext(streamable_http_client(cast(str, server_config.url)))
+                if server_config.url is None:
+                    raise ValueError(f"remote-http MCP server {server_name!r} requires a url")
+                transport_context = _OwnedAsyncContext(streamable_http_client(server_config.url))
                 read_stream, write_stream = _read_write_streams(await transport_context.enter())
             else:
                 stderr_log = open(
@@ -635,8 +637,8 @@ class ManagedMcpManager:
                 read_stream, write_stream = _read_write_streams(await transport_context.enter())
             session_context = _OwnedAsyncContext(
                 ClientSession(
-                    cast(Any, read_stream),
-                    cast(Any, write_stream),
+                    read_stream,
+                    write_stream,
                     read_timeout_seconds=self._request_timeout_seconds,
                     client_info=Implementation(
                         name=MCP_CLIENT_NAME,
@@ -657,15 +659,15 @@ class ManagedMcpManager:
             raise
         return transport_context, session_context, session, stderr_log
 
-    async def _call_sdk_owned(
+    async def _call_sdk_owned[T](
         self,
         running: _RunningMcpServer,
         *,
         stage: str,
         method: str,
-        operation: Callable[[], Coroutine[Any, Any, Any]],
+        operation: Callable[[], Coroutine[Any, Any, T]],
         suppress_failure_event_when: Callable[[Exception], bool] | None = None,
-    ) -> Any:
+    ) -> T:
         async with running.io_lock:
             if self._running_servers.get(running.server_name) is not running:
                 raise ValueError(f"MCP[{running.server_name}]: connection was replaced before {method}; the request was not sent")
@@ -757,7 +759,7 @@ class ManagedMcpManager:
                 method="tools/list",
                 operation=lambda: running.session.list_tools(),
             )
-        list_result = cast(ListToolsResult, result)
+        list_result = result
         server_descriptors: dict[str, McpToolDescriptor] = {}
         descriptors: list[McpToolDescriptor] = []
         for tool in list_result.tools:

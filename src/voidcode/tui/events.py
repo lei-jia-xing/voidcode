@@ -11,6 +11,7 @@ from voidcode.sdk.services import ArtifactPage
 from voidcode.sdk.views import PluginViewDescriptor, ViewsSnapshot
 
 from .artifact_viewer import InteractiveArtifactViewer
+from .formatting import NoticeTone
 from .gates import ApprovalGate
 from .term import TerminalKittyReply
 from .views import InteractiveChoices, InteractiveConfirmation, InteractiveForm, InteractiveMarkdown
@@ -95,7 +96,7 @@ class ReconciledEvent(TuiEvent):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class NoticeEvent(TuiEvent):
     text: str
-    tone: str = "info"
+    tone: NoticeTone = "info"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

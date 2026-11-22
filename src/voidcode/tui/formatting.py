@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Literal
 
 from voidcode.sdk.client import CommandResult
 from voidcode.sdk.command_help import public_command_path
@@ -17,8 +18,16 @@ from voidcode.sdk.views import PluginViewDescriptor
 from .styles import Styles
 from .term import clamp_row, crop_row_right, escape_terminal_controls, visible_width
 
-TONE_PREFIX: dict[str, str] = {"warning": "Warning: ", "error": "Error: "}
-TONE_SLOT: dict[str, str] = {"info": "accent", "ok": "success", "warning": "warning", "error": "error"}
+type NoticeTone = Literal["info", "success", "warning", "error"]
+
+TONE_PREFIX: dict[NoticeTone | str, str] = {"warning": "Warning: ", "error": "Error: "}
+TONE_SLOT: dict[NoticeTone | str, str] = {
+    "info": "accent",
+    "success": "success",
+    "ok": "success",
+    "warning": "warning",
+    "error": "error",
+}
 
 #: App/editor keys a catalog shortcut may never claim; the client keeps them.
 #: Compared case-insensitively: catalog chords are lowercase (``alt+pageup``)
@@ -88,17 +97,17 @@ def json_safe(value: object) -> object:
         return str(value)
 
 
-def tone_prefix(tone: str) -> str:
+def tone_prefix(tone: NoticeTone | str) -> str:
     """Canonical visible prefix for a tone; ordinary info has none."""
     return TONE_PREFIX.get(tone, "")
 
 
-def tone_slot(tone: str) -> str:
+def tone_slot(tone: NoticeTone | str) -> str:
     """Canonical style slot for a tone (unknown tones read as ordinary text)."""
     return TONE_SLOT.get(tone, "accent")
 
 
-def notice_row(text: object, tone: str, styles: Styles) -> str:
+def notice_row(text: object, tone: NoticeTone | str, styles: Styles) -> str:
     """One status/notice row with the shared prefix and slot."""
     return styles.fg(tone_slot(tone), f"{tone_prefix(tone)}{safe(text)}")
 

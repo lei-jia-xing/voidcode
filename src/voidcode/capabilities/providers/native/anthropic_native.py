@@ -607,7 +607,8 @@ class AnthropicMessagesProvider:
                     if isinstance(block, Mapping) and block.get("type") in {"thinking", "redacted_thinking"}:
                         thinking_blocks[index] = dict(block)
                         if block.get("type") == "thinking":
-                            thinking_fragments[index] = [cast(str, block.get("thinking", ""))]
+                            raw_thinking = block.get("thinking")
+                            thinking_fragments[index] = [raw_thinking if isinstance(raw_thinking, str) else ""]
                     elif isinstance(block, Mapping) and block.get("type") == "tool_use":
                         name = block.get("name")
                         raw_input = block.get("input")
@@ -637,7 +638,8 @@ class AnthropicMessagesProvider:
                         yield ProviderStreamEvent(kind="delta", channel="reasoning", text=delta["thinking"], metadata={"source": "delta.thinking"})
                     elif delta_type == "signature_delta" and isinstance(delta.get("signature"), str):
                         block = thinking_blocks[index]
-                        block["signature"] = cast(str, block.get("signature", "")) + delta["signature"]
+                        prior_sig = block.get("signature")
+                        block["signature"] = (prior_sig if isinstance(prior_sig, str) else "") + delta["signature"]
                     elif delta_type == "input_json_delta" and isinstance(delta.get("partial_json"), str):
                         fragment = delta["partial_json"]
                         prior = accumulators[index]

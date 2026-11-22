@@ -21,6 +21,7 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandP
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.plugin import StateScope
 from voidcode.sdk.resources import ResourcePage, ResourceReadCaller, ResourceReaderServices, ResourceReadRequest
 from voidcode.sdk.services import HistoryServices, PluginServices, StateServices
 from voidcode.sdk.tools import OutputBounds, ToolEffect
@@ -772,7 +773,7 @@ class SkillsContextProvider:
 
 def prepare_skills_deactivation(
     state: Mapping[str, object],
-    scope: str,
+    scope: StateScope,
     scope_key: str,
     tip_sequence: int | None,
 ) -> Mapping[str, object]:

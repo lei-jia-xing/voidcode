@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
-from typing import Protocol, cast
+from typing import Protocol
 
 from voidcode.sdk.provider import ProviderDoneReason, ProviderExecutionError, ProviderStreamEvent, ProviderTokenUsage
 
@@ -248,7 +248,9 @@ def iter_stream_with_timeout(
                         retryable=False,
                         fallback_allowed=False,
                     ) from value
-                raise cast(BaseException, value)
+                if isinstance(value, BaseException):
+                    raise value
+                raise RuntimeError(f"provider stream error: {value!r}")
             seen_first_event = True
             yield value
             deadline = monotonic() + timeout_seconds

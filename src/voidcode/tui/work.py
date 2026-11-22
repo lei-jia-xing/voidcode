@@ -68,13 +68,21 @@ class WorkGroup:
             time.sleep(0.005)
         return True
 
-    def start(self, name: str, target: Callable[[], None]) -> threading.Thread | None:
+    def start(
+        self,
+        name: str,
+        target: Callable[[], None],
+        *,
+        on_created: Callable[[threading.Thread], None] | None = None,
+    ) -> threading.Thread | None:
         """Start one tracked lifecycle thread (input reader, session stream)."""
         with self._lock:
             if self._closed:
                 return None
             thread = threading.Thread(target=target, name=f"{self._prefix}-{name}", daemon=True)
             self._threads.append(thread)
+            if on_created is not None:
+                on_created(thread)
         thread.start()
         return thread
 

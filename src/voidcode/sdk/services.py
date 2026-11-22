@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, NoReturn, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Final, Literal, NoReturn, Protocol, runtime_checkable
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -174,12 +174,11 @@ class BudgetExhaustion:
         """Parse a committed typed cap fact; absent stays absent."""
         if value is None:
             return None
-        if not isinstance(value, Mapping):
-            raise ValueError("budget exhaustion must be an object or null")
+        if not isinstance(value, Mapping) or any(not isinstance(k, str) for k in value):
+            raise ValueError("budget exhaustion must be an object with string keys or null")
+        wire_map: dict[str, object] = {k: v for k, v in value.items() if isinstance(k, str)}
         try:
-            parsed = _BUDGET_EXHAUSTION_ADAPTER.validate_json(
-                json.dumps(json_wire_object(cast(Mapping[str, object], value)), allow_nan=False), strict=True, extra="forbid"
-            )
+            parsed = _BUDGET_EXHAUSTION_ADAPTER.validate_json(json.dumps(json_wire_object(wire_map), allow_nan=False), strict=True, extra="forbid")
         except ValidationError as exc:
             raise ValueError(f"budget exhaustion is invalid: {exc}") from exc
         if parsed.limit < 0 or parsed.consumed < 0 or parsed.remaining < 0:
@@ -609,9 +608,13 @@ class RawStreamCapture:
         for name in ("stream", "bytes_captured", "bytes_dropped", "artifact", "capture_error"):
             if name not in payload:
                 raise ValueError(f"raw stream capture is missing {name}")
-        stream = payload["stream"]
-        if stream not in ("stdout", "stderr"):
-            raise ValueError(f"raw stream capture requires 'stdout' or 'stderr', got {stream!r}")
+        raw_stream = payload["stream"]
+        if raw_stream == "stdout":
+            stream: Literal["stdout", "stderr"] = "stdout"
+        elif raw_stream == "stderr":
+            stream = "stderr"
+        else:
+            raise ValueError(f"raw stream capture requires 'stdout' or 'stderr', got {raw_stream!r}")
         captured = payload["bytes_captured"]
         dropped = payload["bytes_dropped"]
         if type(captured) is not int or captured < 0:
@@ -639,7 +642,7 @@ class RawStreamCapture:
                 raise ValueError("raw stream capture artifact fields have the wrong types")
             reference = ArtifactReference(sha256=sha256, bytes=total, media_type=media_type)
         return RawStreamCapture(
-            stream=cast(Literal["stdout", "stderr"], stream),
+            stream=stream,
             bytes_captured=captured,
             bytes_dropped=dropped,
             artifact=reference,

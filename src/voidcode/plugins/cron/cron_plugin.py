@@ -38,7 +38,7 @@ import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import ClassVar, Final, Literal, cast
+from typing import ClassVar, Final, Literal, TypeGuard
 from uuid import uuid4
 
 from voidcode.capabilities.plugin_state import PluginStateStore
@@ -46,6 +46,7 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandP
 from voidcode.sdk.hooks import PluginFact, RunFinishedFact, WakeupFiredFact
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.plugin import StateScope
 from voidcode.sdk.services import (
     PluginServices,
     ScheduledWorkServices,
@@ -86,6 +87,10 @@ _EVENT_PAGE_SIZE: Final[int] = 200
 ScheduleKind = Literal["every", "at", "cron", "once"]
 
 
+def _is_schedule_kind(value: object) -> TypeGuard[ScheduleKind]:
+    return value in ("every", "at", "cron", "once")
+
+
 def _clock_ms() -> int:
     """The wall clock the schedule math runs on, in the core's due-time unit.
 
@@ -118,9 +123,9 @@ class ScheduleEntry:
         if missing:
             raise ValueError(f"cron schedule '{schedule_id}' is missing field(s): " + ", ".join(missing))
         raw_kind = raw["kind"]
-        if not isinstance(raw_kind, str) or raw_kind not in _KINDS:
+        if not _is_schedule_kind(raw_kind):
             raise ValueError(f"cron schedule '{schedule_id}' kind must be one of {sorted(_KINDS)}, got {raw_kind!r}")
-        kind = cast(ScheduleKind, raw_kind)
+        kind = raw_kind
         enabled = raw["enabled"]
         if not isinstance(enabled, bool):
             raise ValueError(f"cron schedule '{schedule_id}' enabled must be a boolean")
@@ -715,7 +720,7 @@ def cron_observer(fact: PluginFact, context: ToolContext, services: PluginServic
 
 def prepare_cron_deactivation(
     state: Mapping[str, object],
-    scope: str,
+    scope: StateScope,
     scope_key: str,
     tip_sequence: int | None,
 ) -> Mapping[str, object]:

@@ -12,7 +12,7 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal, TypeGuard
 
 from .json_values import json_wire_object, own_json_object
 from .services import ArtifactReference
@@ -30,6 +30,10 @@ AskAnswerStatus = Literal["answered", "cancelled", "expired"]
 
 _SQLITE_INT_MAX = 9_223_372_036_854_775_807
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _is_form_field_type(value: object) -> TypeGuard[FormFieldType]:
+    return value in ("text", "multiline", "integer", "number", "boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,8 +226,8 @@ def _question_from_payload(payload: Mapping[str, object]) -> AskQuestion:
             raise ValueError("ask question requires a non-empty name")
         if not isinstance(label, str):
             raise ValueError("ask question label must be text")
-        field_type = payload.get("field_type", "text")
-        if field_type not in ("text", "multiline", "integer", "number", "boolean"):
+        field_type_val = payload.get("field_type", "text")
+        if not _is_form_field_type(field_type_val):
             raise ValueError("ask question has an unknown field_type")
         required = payload.get("required", True)
         if type(required) is not bool:
@@ -244,7 +248,7 @@ def _question_from_payload(payload: Mapping[str, object]) -> AskQuestion:
             options = tuple(parsed)
         else:
             raise ValueError("ask question options must be a list of options or null")
-        return FormField(name=name, label=label, field_type=cast(FormFieldType, field_type), required=required, options=options)
+        return FormField(name=name, label=label, field_type=field_type_val, required=required, options=options)
     raise ValueError("ask question requires kind 'field' or 'multi'")
 
 

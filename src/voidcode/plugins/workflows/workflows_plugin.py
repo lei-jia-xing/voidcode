@@ -21,7 +21,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, ClassVar, Literal, cast, overload
+from typing import Any, ClassVar, Literal, TypeGuard, overload
 from uuid import uuid4
 
 from voidcode.capabilities.agent_queries import AGENT_DEFINITIONS, AgentDefinitionRequest, apply_agent_profile
@@ -156,6 +156,46 @@ def parse_workflows_config(config: Mapping[str, object] | None) -> Mapping[str, 
 # --- Durable state ---
 
 
+def _is_node_status(status: object) -> TypeGuard[NodeStatus]:
+    return status in _NODE_STATUSES
+
+
+def _is_run_status(status: object) -> TypeGuard[RunStatus]:
+    return status in _RUN_STATUSES
+
+
+def _node_optional_id(raw: Mapping[str, object], field: str, run_id: str, key: str, label: str) -> str | None:
+    val = raw[field]
+    if val is not None and (not isinstance(val, str) or not val):
+        raise ValueError(f"workflow run '{run_id}' node '{key}' {field} must be {label} or null")
+    return val
+
+
+def _node_optional_sha256(raw: Mapping[str, object], field: str, run_id: str, key: str) -> str | None:
+    val = raw[field]
+    if val is not None and (not isinstance(val, str) or len(val) != 64):
+        raise ValueError(f"workflow run '{run_id}' node '{key}' {field} must be a sha256 or null")
+    return val
+
+
+def _node_optional_text(val: object, *, field: str, run_id: str, key: str) -> str | None:
+    if val is not None and not isinstance(val, str):
+        raise ValueError(f"workflow run '{run_id}' node '{key}' {field} must be text or null")
+    return val
+
+
+def _run_text(val: object, *, field: str, run_id: str) -> str:
+    if not isinstance(val, str) or not val:
+        raise ValueError(f"workflow run '{run_id}' {field} must be a non-empty string")
+    return val
+
+
+def _run_sha256(val: object, *, field: str, run_id: str) -> str:
+    if not isinstance(val, str) or len(val) != 64:
+        raise ValueError(f"workflow run '{run_id}' {field} must be a sha256 hex digest")
+    return val
+
+
 def _structured_parse_error_from_payload(value: object, *, run_id: str, key: str) -> StructuredQueryParseError | None:
     """Parse a persisted structured parse error; absent stays absent."""
     if value is None:
@@ -171,8 +211,8 @@ def _structured_parse_error_from_payload(value: object, *, run_id: str, key: str
         raise ValueError(f"workflow run '{run_id}' node '{key}' parse_error requires a non-empty message")
     if path is not None and not isinstance(path, str):
         raise ValueError(f"workflow run '{run_id}' node '{key}' parse_error path must be a string or null")
-    # Membership was checked above; cast mirrors BudgetExhaustion.from_payload's narrowing.
-    return StructuredQueryParseError(kind=cast(Literal["invalid_json", "schema_violation"], kind), message=message, path=path)
+    error_kind: Literal["invalid_json", "schema_violation"] = "invalid_json" if kind == "invalid_json" else "schema_violation"
+    return StructuredQueryParseError(kind=error_kind, message=message, path=path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,60 +259,24 @@ class WorkflowNode:
         if not isinstance(key, str) or not key:
             raise ValueError(f"workflow run '{run_id}' node key must be a non-empty string")
         status = raw["status"]
-        if status == "pending":
-            node_status: NodeStatus = "pending"
-        elif status == "running":
-            node_status = "running"
-        elif status == "waiting":
-            node_status = "waiting"
-        elif status == "interrupted":
-            node_status = "interrupted"
-        elif status == "completed":
-            node_status = "completed"
-        elif status == "failed":
-            node_status = "failed"
-        elif status == "cancelled":
-            node_status = "cancelled"
-        elif status == "skipped":
-            node_status = "skipped"
-        else:
+        if not _is_node_status(status):
             raise ValueError(f"workflow run '{run_id}' node '{key}' has an unknown status: {status!r}")
         depends_on = raw["depends_on"]
         if not isinstance(depends_on, (list, tuple)) or any(not isinstance(dep, str) or not dep for dep in depends_on):
             raise ValueError(f"workflow run '{run_id}' node '{key}' depends_on must list non-empty keys")
-        agent = raw["agent"]
-        if agent is not None and (not isinstance(agent, str) or not agent):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' agent must be a name or null")
-        child_session_id = raw["child_session_id"]
-        if child_session_id is not None and (not isinstance(child_session_id, str) or not child_session_id):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' child_session_id must be an id or null")
-        run_id_value = raw["run_id"]
-        if run_id_value is not None and (not isinstance(run_id_value, str) or not run_id_value):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' run_id must be an id or null")
-        effective_input_sha256 = raw["effective_input_sha256"]
-        if effective_input_sha256 is not None and (not isinstance(effective_input_sha256, str) or len(effective_input_sha256) != 64):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' effective_input_sha256 must be a sha256 or null")
-        output = raw["output"]
-        if output is not None and not isinstance(output, str):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' output must be text or null")
-        output_sha256 = raw["output_sha256"]
-        if output_sha256 is not None and (not isinstance(output_sha256, str) or len(output_sha256) != 64):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' output_sha256 must be a sha256 or null")
+        agent = _node_optional_id(raw, "agent", run_id, key, "a name")
+        child_session_id = _node_optional_id(raw, "child_session_id", run_id, key, "an id")
+        run_id_value = _node_optional_id(raw, "run_id", run_id, key, "an id")
+        effective_input_sha256 = _node_optional_sha256(raw, "effective_input_sha256", run_id, key)
+        output = _node_optional_text(raw["output"], field="output", run_id=run_id, key=key)
+        output_sha256 = _node_optional_sha256(raw, "output_sha256", run_id, key)
         output_bytes = raw["output_bytes"]
         if output_bytes is not None and (not isinstance(output_bytes, int) or isinstance(output_bytes, bool) or output_bytes < 0):
             raise ValueError(f"workflow run '{run_id}' node '{key}' output_bytes must be a byte count or null")
-        output_preview = raw.get("output_preview")
-        if output_preview is not None and not isinstance(output_preview, str):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' output_preview must be text or null")
-        output_error = raw.get("output_error")
-        if output_error is not None and not isinstance(output_error, str):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' output_error must be text or null")
-        history_error = raw.get("history_error")
-        if history_error is not None and not isinstance(history_error, str):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' history_error must be text or null")
-        error = raw["error"]
-        if error is not None and not isinstance(error, str):
-            raise ValueError(f"workflow run '{run_id}' node '{key}' error must be text or null")
+        output_preview = _node_optional_text(raw.get("output_preview"), field="output_preview", run_id=run_id, key=key)
+        output_error = _node_optional_text(raw.get("output_error"), field="output_error", run_id=run_id, key=key)
+        history_error = _node_optional_text(raw.get("history_error"), field="history_error", run_id=run_id, key=key)
+        error = _node_optional_text(raw["error"], field="error", run_id=run_id, key=key)
         budget_exhaustion = BudgetExhaustion.from_payload(raw.get("budget_exhaustion"))
         schema_raw = raw.get("result_schema")
         result_schema: Mapping[str, object] | None = None
@@ -295,7 +299,7 @@ class WorkflowNode:
         parse_error = _structured_parse_error_from_payload(raw.get("parse_error"), run_id=run_id, key=key)
         return cls(
             key=key,
-            status=node_status,
+            status=status,
             depends_on=tuple(depends_on),
             agent=agent,
             child_session_id=child_session_id,
@@ -392,43 +396,21 @@ class WorkflowRun:
         run_id = raw["run_id"]
         if not isinstance(run_id, str) or not run_id:
             raise ValueError("workflow run run_id must be a non-empty string")
-        session_id = raw["session_id"]
-        if not isinstance(session_id, str) or not session_id:
-            raise ValueError(f"workflow run '{run_id}' session_id must be a non-empty string")
-        workflow = raw["workflow"]
-        if not isinstance(workflow, str) or not workflow:
-            raise ValueError(f"workflow run '{run_id}' workflow must be a non-empty string")
-        source_path = raw["source_path"]
-        if not isinstance(source_path, str) or not source_path:
-            raise ValueError(f"workflow run '{run_id}' source_path must be a non-empty string")
-        source_sha256 = raw["source_sha256"]
-        if not isinstance(source_sha256, str) or len(source_sha256) != 64:
-            raise ValueError(f"workflow run '{run_id}' source_sha256 must be a sha256 hex digest")
+        session_id = _run_text(raw["session_id"], field="session_id", run_id=run_id)
+        workflow = _run_text(raw["workflow"], field="workflow", run_id=run_id)
+        source_path = _run_text(raw["source_path"], field="source_path", run_id=run_id)
+        source_sha256 = _run_sha256(raw["source_sha256"], field="source_sha256", run_id=run_id)
         task = raw["task"]
         try:
             owned_task: object = own_json_value(task)
         except ValueError:
             raise ValueError(f"workflow run '{run_id}' task must be a JSON value") from None
-        input_sha256 = raw["input_sha256"]
-        if not isinstance(input_sha256, str) or len(input_sha256) != 64:
-            raise ValueError(f"workflow run '{run_id}' input_sha256 must be a sha256 hex digest")
+        input_sha256 = _run_sha256(raw["input_sha256"], field="input_sha256", run_id=run_id)
         notify_on_completion = raw["notify_on_completion"]
         if not isinstance(notify_on_completion, bool):
             raise ValueError(f"workflow run '{run_id}' notify_on_completion must be a boolean")
         status = raw["status"]
-        if status == "running":
-            run_status: RunStatus = "running"
-        elif status == "paused":
-            run_status = "paused"
-        elif status == "parked":
-            run_status = "parked"
-        elif status == "completed":
-            run_status = "completed"
-        elif status == "failed":
-            run_status = "failed"
-        elif status == "cancelled":
-            run_status = "cancelled"
-        else:
+        if not _is_run_status(status):
             raise ValueError(f"workflow run '{run_id}' has an unknown status: {status!r}")
         error = raw["error"]
         if error is not None and not isinstance(error, str):
@@ -476,7 +458,7 @@ class WorkflowRun:
             task=owned_task,
             input_sha256=input_sha256,
             notify_on_completion=notify_on_completion,
-            status=run_status,
+            status=status,
             error=error,
             action_id=action_id,
             nodes=parsed,
@@ -1899,6 +1881,7 @@ class WorkflowStatusCommand(_WorkflowRunInput):
                 budget = node.budget_exhaustion
                 line += f" budget={budget.dimension}/{budget.source} limit={budget.limit} consumed={budget.consumed} remaining={budget.remaining}"
             lines.append(line)
+        result_page_info: tuple[str, int, int] | None = None
         if result_key is not None:
             node = run.node(result_key)
             if node is None:
@@ -1908,11 +1891,13 @@ class WorkflowStatusCommand(_WorkflowRunInput):
             except (ValueError, UnicodeDecodeError) as exc:
                 return CommandResult(status="error", error=str(exc))
             consumed = len(page.encode("utf-8"))
+            next_offset = result_offset + consumed
+            result_page_info = (page, next_offset, total)
             data["result"] = {
                 "key": result_key,
                 "status": node.status,
                 "offset": result_offset,
-                "next_offset": result_offset + consumed,
+                "next_offset": next_offset,
                 "total_bytes": total,
                 "text": page,
                 "budget_exhaustion": None if node.budget_exhaustion is None else node.budget_exhaustion.as_payload(),
@@ -1925,11 +1910,13 @@ class WorkflowStatusCommand(_WorkflowRunInput):
                     f"budget exhaustion: {budget.dimension}/{budget.source} "
                     f"limit={budget.limit} consumed={budget.consumed} remaining={budget.remaining}"
                 )
+        run_summary_info: tuple[str, int] | None = None
         if run.status == "completed":
             try:
                 summary, total = _run_result_page(services, run, 0)
             except (ValueError, UnicodeDecodeError) as exc:
                 return CommandResult(status="error", error=str(exc))
+            run_summary_info = (summary, total)
             data["run_result"] = {"total_bytes": total, "text": summary}
             if total:
                 lines.append(f"run result ({total} bytes):")
@@ -1953,12 +1940,9 @@ class WorkflowStatusCommand(_WorkflowRunInput):
             if run.status != "running":
                 actions.append({"label": "Resume run", "action": "workflow.resume", "arguments": {"run_id": raw}})
             actions.append({"label": "Cancel run", "action": "workflow.cancel", "arguments": {"run_id": raw}})
-        if result_key is not None:
-            result = cast(dict[str, Any], data["result"])
-            content = (
-                f"Node {result_key[:100]} · {node.status}\n\n"
-                f"Bytes {result_offset}–{result['next_offset']} of {result['total_bytes']}\n\n{result['text']}"
-            )
+        if result_key is not None and result_page_info is not None and node is not None:
+            page, next_offset, total = result_page_info
+            content = f"Node {result_key[:100]} · {node.status}\n\nBytes {result_offset}–{next_offset} of {total}\n\n{page}"
             if result_offset:
                 actions.append(
                     {
@@ -1967,12 +1951,12 @@ class WorkflowStatusCommand(_WorkflowRunInput):
                         "arguments": {"run_id": raw, "result_key": result_key, "result_offset": 0},
                     }
                 )
-            if result["next_offset"] < result["total_bytes"]:
+            if next_offset < total:
                 actions.append(
                     {
                         "label": "Next result page",
                         "action": "workflow.status",
-                        "arguments": {"run_id": raw, "result_key": result_key, "result_offset": result["next_offset"]},
+                        "arguments": {"run_id": raw, "result_key": result_key, "result_offset": next_offset},
                     }
                 )
         else:
@@ -1991,9 +1975,9 @@ class WorkflowStatusCommand(_WorkflowRunInput):
                 )
             if node_offset + 10 < len(run.nodes):
                 actions.append({"label": "Next nodes", "action": "workflow.status", "arguments": {"run_id": raw, "node_offset": node_offset + 10}})
-            if "run_result" in data:
-                run_result = cast(dict[str, Any], data["run_result"])
-                detail.append(f"Run summary preview ({run_result['total_bytes']} total bytes):\n{run_result['text'][:1000]}")
+            if run_summary_info is not None:
+                summary, total = run_summary_info
+                detail.append(f"Run summary preview ({total} total bytes):\n{summary[:1000]}")
             content = "\n\n".join(detail)
         return CommandResult(
             status="ok",

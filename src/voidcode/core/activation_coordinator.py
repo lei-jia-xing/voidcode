@@ -17,6 +17,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from ..sdk.json_values import json_wire_object
+from ..sdk.plugin import StateScope
 from .activation import (
     PRIVATE_DIR_NAME,
     Admission,
@@ -273,7 +274,7 @@ class ActivationCoordinator:
         runtime: PluginRuntime,
         owner: str,
         payload: Mapping[str, object],
-        scope: str,
+        scope: StateScope,
         scope_key: str,
         tip_sequence: int | None,
     ) -> Mapping[str, object]:

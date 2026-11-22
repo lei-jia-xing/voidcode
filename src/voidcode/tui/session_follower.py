@@ -175,7 +175,10 @@ class SessionFollower:
         def run_worker() -> None:
             asyncio.run(stream_worker())
 
-        self._thread = self._work.start("Stream", run_worker)
+        def set_thread(thread: threading.Thread) -> None:
+            self._thread = thread
+
+        self._thread = self._work.start("Stream", run_worker, on_created=set_thread)
 
     def refresh_health(self, session_id: str, generation: int) -> None:
         """Refresh server identity/liveness off the UI thread; stale replies are dropped."""

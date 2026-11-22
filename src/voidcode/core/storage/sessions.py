@@ -13,7 +13,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Callable, Mapping, Sequence
-from typing import Literal, cast
+from typing import Literal
 
 from ...sdk.json_values import own_json_object
 from ...sdk.services import SessionInfo
@@ -56,6 +56,7 @@ from .records import (
     _decode_session_info,
     _decode_tool_allowlist,
     _decode_waiting_ask,
+    _int_value,
     _RootBudgetColumns,
     _SessionColumns,
     _stored_root_budget,
@@ -732,12 +733,12 @@ class _SessionsMixin(_ConnectionStore):
                 # Apply staged continuation operations in their recorded order, so
                 # cancel-then-enqueue keeps the new continuation while enqueue-then-cancel
                 # (including by returned id) cancels exactly the one that was enqueued.
-                ops: list[tuple[int, Literal["enqueue", "cancel"], object]] = []
+                ops: list[tuple[int, Literal["enqueue", "cancel"], StagedContinuationDraft | StagedCancellation]] = []
                 ops.extend((c.ordinal, "enqueue", c) for c in staged_continuations)
                 ops.extend((c.ordinal, "cancel", c) for c in staged_cancellations)
-                for _ord, kind, payload in sorted(ops, key=lambda item: item[0]):
-                    if kind == "enqueue":
-                        cont = cast(StagedContinuationDraft, payload)
+                for _ord, _kind, payload in sorted(ops, key=lambda item: item[0]):
+                    if isinstance(payload, StagedContinuationDraft):
+                        cont = payload
                         cont_payload_json = canonical_json(cont.payload)
                         if cont.idempotency_key is not None:
                             # Model rows and background rows live in separate tables: one
@@ -829,8 +830,8 @@ class _SessionsMixin(_ConnectionStore):
                                 )
                             except sqlite3.IntegrityError as exc:
                                 raise StoreConflict(f"continuation {cont.continuation_id!r} already exists") from exc
-                    else:
-                        canc = cast(StagedCancellation, payload)
+                    elif isinstance(payload, StagedCancellation):
+                        canc = payload
                         if canc.continuation_id is not None:
                             self._connection.execute(
                                 """
@@ -1014,11 +1015,11 @@ class _SessionsMixin(_ConnectionStore):
                             self._connection,
                             session_id,
                             str(projection["owner"]),
-                            covered_from_sequence=cast(int, projection["covered_from_sequence"]),
-                            covered_to_sequence=cast(int, projection["covered_to_sequence"]),
+                            covered_from_sequence=_int_value(projection["covered_from_sequence"], "covered_from_sequence"),
+                            covered_to_sequence=_int_value(projection["covered_to_sequence"], "covered_to_sequence"),
                             replacement=str(projection["replacement"]),
-                            covered_bytes=cast(int, projection["covered_bytes"]),
-                            dropped_bytes=cast(int, projection["dropped_bytes"]),
+                            covered_bytes=_int_value(projection["covered_bytes"], "covered_bytes"),
+                            dropped_bytes=_int_value(projection["dropped_bytes"], "dropped_bytes"),
                         )
                     current_seq += 1
                     first_sequence_by_type.setdefault(draft.event_type, current_seq)

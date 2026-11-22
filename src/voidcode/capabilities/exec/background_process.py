@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.plugin import StateScope
 from voidcode.sdk.resources import ResourceReaderServices
 from voidcode.sdk.services import PluginServices, ProcessHandle, ProcessServices, StateServices
 from voidcode.sdk.tools import (
@@ -345,7 +346,7 @@ def _write_records(services: StateServices, records: Mapping[str, _ProcessRecord
 
 def prepare_exec_deactivation(
     state: Mapping[str, object],
-    scope: str,
+    scope: StateScope,
     scope_key: str,
     tip_sequence: int | None,
 ) -> Mapping[str, object]:

@@ -12,7 +12,7 @@ from typing import Literal, Protocol
 import jsonschema
 
 from ..sdk.json_values import json_wire_object, own_json_object
-from ..sdk.plugin import StateSchema
+from ..sdk.plugin import StateSchema, StateScope
 from .plugins import PluginSource
 from .storage.store import (
     PluginStateRow,
@@ -165,7 +165,7 @@ class StateCopyPlan:
 class StateCopySource(Protocol):
     """The two store reads the state-copy planner needs."""
 
-    def plugin_state_rows(self, scope: str, scope_key: str) -> tuple[PluginStateRow, ...]: ...
+    def plugin_state_rows(self, scope: StateScope, scope_key: str) -> tuple[PluginStateRow, ...]: ...
     def session(self, session_id: str) -> SessionRecord: ...
 
 
@@ -176,7 +176,7 @@ def plan_state_copies(
     session_ids: Sequence[str],
     old_states: Mapping[str, StateSchema],
     candidate_states: Mapping[str, StateSchema],
-    deactivate: Callable[[str, Mapping[str, object], str, str, int | None], Mapping[str, object]],
+    deactivate: Callable[[str, Mapping[str, object], StateScope, str, int | None], Mapping[str, object]],
 ) -> StateCopyPlan:
     """Validate or deactivate owner state for the candidate generation.
 
@@ -187,7 +187,7 @@ def plan_state_copies(
     updates: list[StagedStateUpdate] = []
     deactivated: list[str] = []
     deactivate_owners = frozenset(old_states) - frozenset(candidate_states)
-    scopes: list[tuple[str, str]] = [("session", session_id) for session_id in session_ids]
+    scopes: list[tuple[StateScope, str]] = [("session", session_id) for session_id in session_ids]
     scopes.append(("workspace", workspace))
     for scope, scope_key in scopes:
         tip = store.session(scope_key).last_event_sequence if scope == "session" else None

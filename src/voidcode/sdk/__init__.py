@@ -99,6 +99,7 @@ from .hooks import (
     UsageFact,
     WakeupFiredFact,
     WindowSegment,
+    is_stop_cause,
 )
 from .icons import Icon
 from .invocation import ToolContext
@@ -110,7 +111,7 @@ from .observed_effects import (
     ObservedDenial,
     ObservedEffects,
 )
-from .plugin import Plugin, PluginQuery, PluginQueryCaller, StateSchema
+from .plugin import Plugin, PluginQuery, PluginQueryCaller, StateSchema, StateScope
 from .provider import (
     ImageAttachment,
     ModelContextLimits,
@@ -455,6 +456,7 @@ __all__ = [
     "SessionUsageReport",
     "SessionFrame",
     "StateSchema",
+    "StateScope",
     "StructuredModelResult",
     "StructuredQueryParseError",
     "SuspendAsk",
@@ -527,6 +529,7 @@ __all__ = [
     "encode_context_history",
     "has_external_mutations",
     "is_read_tier",
+    "is_stop_cause",
     "json_wire_object",
     "json_wire_value",
     "own_json_object",

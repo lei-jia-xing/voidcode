@@ -14,8 +14,9 @@ import math
 import signal
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 from . import __version__
@@ -241,28 +242,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .tui import run_tui
 
             prefs = _tui_prefs(args, workspace=workspace)
-            border = cast(Literal["lines", "box", "borderless"], prefs["border"])
-            footer = cast(Literal["full", "compact", "off"], prefs["footer"])
-            show_session = bool(prefs["show_session"])
-            banner = cast(BannerConfig | None, prefs["banner"])
             if args.server is not None:
                 return run_tui(
                     args.server,
                     token=args.token,
                     session_id=args.tui_session_id,
-                    border=border,
-                    footer=footer,
-                    show_session=show_session,
-                    banner=banner,
+                    border=prefs.border,
+                    footer=prefs.footer,
+                    show_session=prefs.show_session,
+                    banner=prefs.banner,
                 )
             return _embedded_tui(
                 workspace,
                 bare_directory,
                 session_id=args.tui_session_id,
-                border=border,
-                footer=footer,
-                show_session=show_session,
-                banner=banner,
+                border=prefs.border,
+                footer=prefs.footer,
+                show_session=prefs.show_session,
+                banner=prefs.banner,
             )
         if args.command == "show":
             return _show(workspace, bare_directory, args.session_id, events=args.events)
@@ -360,7 +357,20 @@ def _show(workspace: Path, directory: Path, session_id: str, *, events: bool) ->
     return 0
 
 
-def _tui_prefs(args: argparse.Namespace, *, workspace: Path) -> dict[str, object]:
+@dataclass(frozen=True, slots=True)
+class _TuiPrefs:
+    border: Literal["lines", "box", "borderless"]
+    footer: Literal["full", "compact", "off"]
+    show_session: bool
+    banner: BannerConfig | None
+
+    def __getitem__(self, item: str) -> object:
+        if hasattr(self, item):
+            return getattr(self, item)
+        raise KeyError(item)
+
+
+def _tui_prefs(args: argparse.Namespace, *, workspace: Path) -> _TuiPrefs:
     """Per-field precedence CLI > file > defaults.
 
     Embedded reads the workspace file; remote reads the caller's LOCAL cwd file because
@@ -374,19 +384,15 @@ def _tui_prefs(args: argparse.Namespace, *, workspace: Path) -> dict[str, object
         parsed = load_config(source, allow_missing=True)
     except (OSError, ValueError) as exc:
         raise ValueError(f"cannot read TUI preferences from {source / CONFIG_FILE_NAME}: {exc}") from exc
-    prefs: dict[str, object] = {
-        "border": parsed.tui.border,
-        "footer": parsed.tui.footer,
-        "show_session": parsed.tui.show_session,
-        "banner": parsed.tui.banner,
-    }
-    if args.no_border:
-        prefs["border"] = "borderless"
-    if args.footer is not None:
-        prefs["footer"] = args.footer
-    if args.show_session:
-        prefs["show_session"] = True
-    return prefs
+    border = "borderless" if args.no_border else parsed.tui.border
+    footer = args.footer if args.footer is not None else parsed.tui.footer
+    show_session = True if args.show_session else parsed.tui.show_session
+    return _TuiPrefs(
+        border=border,
+        footer=footer,
+        show_session=show_session,
+        banner=parsed.tui.banner,
+    )
 
 
 def _embedded_tui(

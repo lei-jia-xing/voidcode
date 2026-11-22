@@ -39,49 +39,54 @@ if TYPE_CHECKING:
     from .terminal_app import CoreTuiApp
 
 _TERMINAL_RUN_EVENTS = (EventType.RUN_COMPLETED, EventType.RUN_FAILED, EventType.RUN_INTERRUPTED)
-_GATE_EVENTS = (
-    EventType.CONFIRMATION_REQUESTED,
-    EventType.CONFIRMATION_DECIDED,
-    EventType.APPROVAL_REQUESTED,
-    EventType.APPROVAL_DECIDED,
-)
+
+
+def _decode_event_type(raw: str) -> EventType | None:
+    """One typed decode at the stream boundary; ``plugin.*``/future types are non-core."""
+    try:
+        return EventType(raw)
+    except ValueError:
+        return None
 
 
 def handle_stream_event(app: CoreTuiApp, event: StreamEvent, rows: list[str]) -> None:
     if event.session_id != app.session_id:
         return  # Reject wrong-session events immediately without advancing this session's cursor
+    event_type = _decode_event_type(event.type)
+    if event_type is None:
+        return  # Non-core bookkeeping: no dispatch, no cursor, no rows
     committed = app._session_cursors.get(app.session_id, 0)
     if event.sequence <= committed:
         return  # Settled ledger: never replay already committed events
     app._session_cursors[app.session_id] = event.sequence
     payload = event.payload
     entry = event.transcript
-    etype = event.type
-    _transcript_entry(app, event, payload, entry, rows)
-    if etype in (EventType.USER_MESSAGE, EventType.RUN_RESUMED):
-        _run_started(app)
-    elif etype == EventType.MODEL_TURN:
-        app._record_model_turn(payload, entry.content if entry else None)
-    elif etype == EventType.TOOL_INTENT:
-        _tool_intent(app, event, payload)
-    elif etype == EventType.TOOL_PROGRESS:
-        _tool_progress(app, event, payload)
-    elif etype in (EventType.TOOL_COMPLETED, EventType.TOOL_INTERRUPTED):
-        _tool_terminal(app, event, payload, entry)
-    elif etype == EventType.PROVIDER_PROGRESS:
-        _provider_progress(app, payload)
-    elif etype == EventType.COMMAND_COMPLETED:
-        _command_completed(app, payload, rows)
-    elif etype == EventType.ACTIVATION_COMMITTED:
-        _activation_committed(app, payload, rows)
-    elif etype in _GATE_EVENTS:
-        _gate_change(app, event)
-    elif etype in (EventType.RUN_INTERRUPTED, EventType.RUN_FAILED):
-        _run_notice(app, event, payload, rows)
-    elif etype == EventType.RUN_COMPLETED:
-        _run_completed(app, event)
-    elif etype == EventType.OBSERVER_ERROR:
-        _observer_error(app, payload, rows)
+    _transcript_entry(app, event, event_type, entry, rows)
+    match event_type:
+        case EventType.USER_MESSAGE | EventType.RUN_RESUMED:
+            _run_started(app)
+        case EventType.MODEL_TURN:
+            app._record_model_turn(payload, entry.content if entry else None)
+        case EventType.TOOL_INTENT:
+            _tool_intent(app, event, payload)
+        case EventType.TOOL_PROGRESS:
+            _tool_progress(app, event, payload)
+        case EventType.TOOL_COMPLETED | EventType.TOOL_INTERRUPTED:
+            _tool_terminal(app, event, payload, entry)
+        case EventType.PROVIDER_PROGRESS:
+            _provider_progress(app, payload)
+        case EventType.COMMAND_COMPLETED:
+            _command_completed(app, payload, rows)
+        case EventType.ACTIVATION_COMMITTED:
+            _activation_committed(app, payload, rows)
+        case EventType.CONFIRMATION_REQUESTED | EventType.CONFIRMATION_DECIDED | EventType.APPROVAL_REQUESTED | EventType.APPROVAL_DECIDED:
+            _gate_change(app, event, event_type)
+        case EventType.RUN_INTERRUPTED | EventType.RUN_FAILED:
+            _run_notice(app, event, event_type, payload, rows)
+        case EventType.RUN_COMPLETED:
+            _run_completed(app, event, event_type)
+        case EventType.OBSERVER_ERROR:
+            _observer_error(app, payload, rows)
 
 
 def _run_started(app: CoreTuiApp) -> None:
@@ -92,12 +97,13 @@ def _run_started(app: CoreTuiApp) -> None:
 def _transcript_entry(
     app: CoreTuiApp,
     event: StreamEvent,
-    payload: Mapping[str, object],
+    event_type: EventType,
     entry: TranscriptEntry | None,
     rows: list[str],
 ) -> None:
-    if entry is None or entry.sequence != event.sequence or event.type in _TERMINAL_RUN_EVENTS:
+    if entry is None or entry.sequence != event.sequence or event_type in _TERMINAL_RUN_EVENTS:
         return
+    payload = event.payload
     if isinstance(entry.content, ProviderTurnResult):
         app._settle_stream(payload)
     content = entry.content
@@ -220,26 +226,26 @@ def _activation_committed(app: CoreTuiApp, payload: Mapping[str, object], rows: 
         rows.append(app.styles.fg("warning", "Warning: pending action discarded after configuration changed"))
 
 
-def _gate_change(app: CoreTuiApp, event: StreamEvent) -> None:
-    for change in _gate_changes(event)[0]:
+def _gate_change(app: CoreTuiApp, event: StreamEvent, event_type: EventType) -> None:
+    for change in _gate_changes(event, event_type)[0]:
         app._apply_gate_change(change)
 
 
-def _run_notice(app: CoreTuiApp, event: StreamEvent, payload: Mapping[str, object], rows: list[str]) -> None:
-    if event.type == EventType.RUN_INTERRUPTED:
+def _run_notice(app: CoreTuiApp, event: StreamEvent, event_type: EventType, payload: Mapping[str, object], rows: list[str]) -> None:
+    if event_type == EventType.RUN_INTERRUPTED:
         app._render_run_notice("interrupted", payload.get("reason"), rows, stop_cause=payload.get("stop_cause"))
     else:
         app._render_run_notice("failed", payload.get("error"), rows)
     app._clear_run_tools(event.session_id, event.run_id)
-    for change in _gate_changes(event)[0]:
+    for change in _gate_changes(event, event_type)[0]:
         app._apply_gate_change(change)
     app._clear_stream()
     app._present_queued_confirmation()
 
 
-def _run_completed(app: CoreTuiApp, event: StreamEvent) -> None:
+def _run_completed(app: CoreTuiApp, event: StreamEvent, event_type: EventType) -> None:
     app._clear_run_tools(event.session_id, event.run_id)
-    for change in _gate_changes(event)[0]:
+    for change in _gate_changes(event, event_type)[0]:
         app._apply_gate_change(change)
     app._clear_stream()
 
@@ -248,37 +254,38 @@ def _observer_error(app: CoreTuiApp, payload: Mapping[str, object], rows: list[s
     rows.extend(prefixed_rows("Warning: plugin observer:", str(payload.get("error") or "Observer failed"), app.styles, slot="warning"))
 
 
-def _gate_changes(event: StreamEvent) -> tuple[list[GateChange], bool]:
+def _gate_changes(event: StreamEvent, event_type: EventType) -> tuple[list[GateChange], bool]:
     """Decode one stream event's gate changes plus whether the run terminated.
 
     Returns ``(changes, run_terminated)``; the caller folds changes through
     the reducer and applies the same gate UI rules as before.
     """
     payload = event.payload
-    if event.type == EventType.CONFIRMATION_REQUESTED:
-        if str(payload.get("ui_type", "")) != "confirmation":
-            return [], False
-        request = ConfirmationRequest.from_payload(payload)
-        return [ConfirmationRequested(ConfirmationGate.from_request(request, revision_id=event.revision_id))], False
-    if event.type == EventType.CONFIRMATION_DECIDED:
-        request_id = str(payload.get("request_id") or "")
-        return ([GateDecided(request_id)] if request_id else []), False
-    if event.type == EventType.APPROVAL_REQUESTED:
-        request_id = payload.get("request_id")
-        raw_call = payload.get("call")
-        if not isinstance(request_id, str) or not request_id or not isinstance(raw_call, Mapping):
-            return [], False
-        gate = approval_gate_from_payload(payload, run_id=event.run_id, revision_id=event.revision_id)
-        return [ApprovalRequested(gate)], False
-    if event.type == EventType.APPROVAL_DECIDED:
-        request_id = str(payload.get("request_id") or "")
-        return ([GateDecided(request_id)] if request_id else []), False
-    if event.type == EventType.ACTIVATION_COMMITTED:
-        return [ActivationCommitted(str(payload.get("to_revision_id") or ""))], False
-    if event.type in (EventType.RUN_INTERRUPTED, EventType.RUN_FAILED):
-        return [RunTerminated(event.run_id)], True
-    if event.type == EventType.RUN_COMPLETED:
-        return [RunTerminated(event.run_id)], False
+    match event_type:
+        case EventType.CONFIRMATION_REQUESTED:
+            if str(payload.get("ui_type", "")) != "confirmation":
+                return [], False
+            request = ConfirmationRequest.from_payload(payload)
+            return [ConfirmationRequested(ConfirmationGate.from_request(request, revision_id=event.revision_id))], False
+        case EventType.CONFIRMATION_DECIDED:
+            request_id = str(payload.get("request_id") or "")
+            return ([GateDecided(request_id)] if request_id else []), False
+        case EventType.APPROVAL_REQUESTED:
+            request_id = payload.get("request_id")
+            raw_call = payload.get("call")
+            if not isinstance(request_id, str) or not request_id or not isinstance(raw_call, Mapping):
+                return [], False
+            gate = approval_gate_from_payload(payload, run_id=event.run_id, revision_id=event.revision_id)
+            return [ApprovalRequested(gate)], False
+        case EventType.APPROVAL_DECIDED:
+            request_id = str(payload.get("request_id") or "")
+            return ([GateDecided(request_id)] if request_id else []), False
+        case EventType.ACTIVATION_COMMITTED:
+            return [ActivationCommitted(str(payload.get("to_revision_id") or ""))], False
+        case EventType.RUN_INTERRUPTED | EventType.RUN_FAILED:
+            return [RunTerminated(event.run_id)], True
+        case EventType.RUN_COMPLETED:
+            return [RunTerminated(event.run_id)], False
     return [], False
 
 

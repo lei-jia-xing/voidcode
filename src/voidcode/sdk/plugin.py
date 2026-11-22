@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, get_args
+from typing import Final, Literal, get_args
 
 import jsonschema
 
@@ -26,6 +26,9 @@ from .views import PluginView
 
 #: The fact kinds a plugin observer may subscribe to; the single source is ``ObservedFactKind``.
 _VALID_OBSERVED_FACTS: Final[frozenset[str]] = frozenset(get_args(ObservedFactKind))
+
+#: The scope an owner-state record belongs to: session-bound or workspace-bound.
+type StateScope = Literal["session", "workspace"]
 
 
 def _validated_schema(schema: Mapping[str, object] | None, *, field_name: str) -> Mapping[str, object] | None:
@@ -121,7 +124,7 @@ class Plugin:
     #: Owner-state schema the deactivation operator below assumes.
     state: StateSchema = StateSchema()
     #: Pure deactivation transform, run in the current runtime when this owner is disabled.
-    prepare_deactivate: Callable[[Mapping[str, object], str, str, int | None], Mapping[str, object]] | None = None
+    prepare_deactivate: Callable[[Mapping[str, object], StateScope, str, int | None], Mapping[str, object]] | None = None
     close: Callable[[], None] | None = None
 
     def __post_init__(self) -> None:

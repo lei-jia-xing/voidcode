@@ -67,6 +67,9 @@ from .artifact_viewer import ArtifactSource, InteractiveArtifactViewer, artifact
 from .composer import Composer, ComposerAction
 from .event_pump import drain_events
 from .formatting import (
+    NoticeTone,
+)
+from .formatting import (
     command_result_rows as _command_result_rows,
 )
 from .formatting import (
@@ -928,13 +931,13 @@ class CoreTuiApp:
         outcome = self.pending_approval.handle_key(key)
         if outcome is None:
             return
-        self._resolve_approval(str(outcome.get("decision", "deny")))
-
-    def _resolve_approval(self, decision: str) -> None:
-        if decision not in ("allow", "deny"):
-            self.status_line = f"Unknown approval decision: {_safe(decision)}"
+        decision_raw = str(outcome.get("decision", "deny"))
+        if decision_raw not in ("allow", "deny"):
+            self.status_line = f"Unknown approval decision: {_safe(decision_raw)}"
             return
-        assert decision == "allow" or decision == "deny"
+        self._resolve_approval(decision_raw)
+
+    def _resolve_approval(self, decision: Literal["allow", "deny"]) -> None:
         approval = self.pending_approval
         if approval is None:
             return
@@ -993,7 +996,11 @@ class CoreTuiApp:
             return
 
         if isinstance(self.active_overlay, InteractiveConfirmation):
-            self._resolve_confirmation(str(outcome.get("decision", "deny")))
+            decision_raw = str(outcome.get("decision", "deny"))
+            if decision_raw not in ("allow", "deny"):
+                self.status_line = f"Unknown confirmation decision: {_safe(decision_raw)}"
+                return
+            self._resolve_confirmation(decision_raw)
         elif isinstance(self.active_overlay, (InteractiveChoices, InteractiveForm, InteractiveMarkdown)):
             action = str(outcome.get("action", ""))
             arguments = outcome.get("arguments", {})
@@ -1029,12 +1036,8 @@ class CoreTuiApp:
             self.status_line = f"Dispatching /{_slash_display(action)}..."
             self._invoke_async(action, arguments if isinstance(arguments, dict) else {}, revision, submit_key=submit_key)
 
-    def _resolve_confirmation(self, decision: str) -> None:
+    def _resolve_confirmation(self, decision: Literal["allow", "deny"]) -> None:
         """Submit the stored request id's decision; the overlay never lies about it."""
-        if decision not in ("allow", "deny"):
-            self.status_line = f"Unknown confirmation decision: {_safe(decision)}"
-            return
-        assert decision == "allow" or decision == "deny"
         request_id = getattr(self.active_overlay, "request_id", "")
         # The revision of the envelope that displayed this confirmation.
         revision = getattr(self.active_overlay, "revision_id", "")
@@ -1181,7 +1184,7 @@ class CoreTuiApp:
         self,
         text: str,
         *,
-        tone: str = "info",
+        tone: NoticeTone = "info",
         session_id: str | None = None,
         generation: int | None = None,
     ) -> None:

@@ -12,9 +12,10 @@ import asyncio
 import os
 from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
 from voidcode import __version__
+from voidcode.core.storage.records import SessionStatus
 from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.client import (
     ArtifactPage,
@@ -108,11 +109,14 @@ class CoreLocalClient(SessionClient):
 
     @staticmethod
     def _run_result(result: CoreResult) -> RunResult:
+        raw_status = result.status.value if isinstance(result.status, SessionStatus) else result.status
+        if raw_status not in ("completed", "waiting", "failed", "interrupted", "queued"):
+            raise ValueError(f"unexpected run status: {raw_status}")
         return RunResult(
             session_id=result.session_id,
             run_id=result.run_id,
             revision_id=result.revision_id,
-            status=cast(Literal["completed", "waiting", "failed", "interrupted", "queued"], result.status),
+            status=raw_status,
             output=result.output,
             error=result.error,
             pending_approval=result.pending_approval,
@@ -149,13 +153,7 @@ class CoreLocalClient(SessionClient):
             web_bundle=None,
             generation=1,
             active_upgrade=None,
-            model=HealthModel(
-                raw=cast(str | None, model["raw"]),
-                provider=cast(str | None, model["provider"]),
-                model=cast(str | None, model["model"]),
-                reasoning_effort=cast(str | None, model["reasoning_effort"]),
-                reasoning_levels=tuple(cast(list[str], model["reasoning_levels"])),
-            ),
+            model=HealthModel.from_payload(model),
         )
 
     def command_catalog(self) -> CommandCatalog:
@@ -222,7 +220,7 @@ class CoreLocalClient(SessionClient):
             result = self._core.resume(
                 session_id,
                 approval_request_id=active.approval_request_id,
-                decision=cast(Any, active.decision),
+                decision=active.decision,
                 max_steps=active.max_steps,
                 extend_root_actions=active.extend_root_actions,
                 root_action_grant_id=active.root_action_grant_id,
@@ -277,7 +275,7 @@ class CoreLocalClient(SessionClient):
         if not expected_revision:
             raise CoreClientError("expected_revision must be the revision the client displayed", status_code=400, code="invalid_params")
         try:
-            return self._core.confirm_action(session_id, request_id, cast(Any, decision), expected_revision=expected_revision)
+            return self._core.confirm_action(session_id, request_id, decision, expected_revision=expected_revision)
         except Exception as exc:
             raise self._refusal(exc) from None
 

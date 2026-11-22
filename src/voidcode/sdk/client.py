@@ -124,6 +124,13 @@ class HealthModel:
         if self.context_window is not None and (type(self.context_window) is not int or self.context_window <= 0):
             raise ValueError("health model context_window must be a positive integer or null")
 
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> HealthModel:
+        return _decode(_HEALTH_MODEL_ADAPTER, payload, "health model")
+
+
+_HEALTH_MODEL_ADAPTER: TypeAdapter[HealthModel] = TypeAdapter(HealthModel)
+
 
 @dataclass(frozen=True, slots=True)
 class HealthStatus:

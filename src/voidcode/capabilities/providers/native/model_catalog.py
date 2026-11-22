@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, fields
 from functools import lru_cache
-from typing import Annotated, cast
+from typing import Annotated
 
 from pydantic import ConfigDict, Field, TypeAdapter
 from pydantic.dataclasses import dataclass as validated_dataclass
@@ -89,23 +89,27 @@ def _static_catalog_from_payload(data: object) -> dict[str, dict[str, ProviderMo
     if not isinstance(data, dict):
         raise ValueError("model_catalog_data.json must hold an object of providers")
     result: dict[str, dict[str, ProviderModelMetadata]] = {}
-    for provider, models in cast(dict[str, object], data).items():
-        provider_key = provider.strip().lower()
+    for raw_provider, models in data.items():
+        if not isinstance(raw_provider, str):
+            raise ValueError(f"catalog provider key must be a string: {raw_provider!r}")
+        provider_key = raw_provider.strip().lower()
         if not provider_key or provider_key in result:
-            raise ValueError(f"empty or duplicate normalized catalog provider: {provider!r}")
+            raise ValueError(f"empty or duplicate normalized catalog provider: {raw_provider!r}")
         if not isinstance(models, dict):
-            raise ValueError(f"model catalog provider {provider!r} must hold an object of models")
+            raise ValueError(f"model catalog provider {raw_provider!r} must hold an object of models")
         per_provider: dict[str, ProviderModelMetadata] = {}
-        for model_id, entry in models.items():
-            model_key = model_id.strip().lower()
+        for raw_model_id, entry in models.items():
+            if not isinstance(raw_model_id, str):
+                raise ValueError(f"catalog model id must be a string: {raw_model_id!r}")
+            model_key = raw_model_id.strip().lower()
             if not model_key or model_key in per_provider:
-                raise ValueError(f"empty or duplicate normalized catalog model: {provider}/{model_id}")
+                raise ValueError(f"empty or duplicate normalized catalog model: {raw_provider}/{raw_model_id}")
             if not isinstance(entry, dict):
-                raise ValueError(f"model catalog entry {provider}/{model_id} must be an object")
+                raise ValueError(f"model catalog entry {raw_provider}/{raw_model_id} must be an object")
             try:
                 per_provider[model_key] = _MODEL_METADATA.validate_python(entry)
             except ValueError as exc:
-                raise ValueError(f"invalid model catalog entry {provider}/{model_id}: {exc}") from exc
+                raise ValueError(f"invalid model catalog entry {raw_provider}/{raw_model_id}: {exc}") from exc
         result[provider_key] = per_provider
     return result
 

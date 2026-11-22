@@ -14,6 +14,7 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandP
 from voidcode.sdk.hooks import ContextContribution, InvocationFinishedFact, PluginFact, RunFinishedFact, RunRequestedFact
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.plugin import StateScope
 from voidcode.sdk.services import HistoryServices, PluginServices, StateServices
 from voidcode.sdk.tools import (
     TextOutput,
@@ -1358,7 +1359,7 @@ def todo_context(context: ToolContext, services: PluginServices) -> ContextContr
 
 def prepare_todo_deactivation(
     state: Mapping[str, object],
-    scope: str,
+    scope: StateScope,
     scope_key: str,
     tip_sequence: int | None,
 ) -> Mapping[str, object]:
