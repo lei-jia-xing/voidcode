@@ -700,6 +700,13 @@ class Core:
                 self._interrupt_batch(execution, pinned_run_id=expected_run_id if is_bound else None, enforce_pin=is_bound)
             if is_bound and execution.run_id != expected_run_id:
                 return False
+            lifecycle_events = self._governance.lifecycle_events(
+                execution,
+                self.snapshot,
+                "session_end",
+                status="interrupted",
+                error=reason,
+            )
             self._commit(
                 execution,
                 SessionStatus.INTERRUPTED,
@@ -715,6 +722,7 @@ class Core:
                         **self.measured_run_elapsed_fields(execution),
                     },
                 ),
+                *lifecycle_events,
                 staged_cancellations=(
                     (StagedCancellation(owner=parked_claim.owner, continuation_id=parked_claim.continuation_id),) if parked_claim is not None else ()
                 ),
@@ -1759,6 +1767,7 @@ class Core:
         status: SessionStatus | str | None = None,
         checkpoint_kind: CheckpointKind | str | None = None,
         checkpoint_payload: Mapping[str, object] | None = None,
+        run_id: str | None = None,
     ) -> None:
         target_status = SessionStatus(status) if isinstance(status, str) else (status or expected_session.status)
         target_checkpoint_kind = CheckpointKind(checkpoint_kind) if isinstance(checkpoint_kind, str) else checkpoint_kind
@@ -1766,7 +1775,7 @@ class Core:
             session_id,
             expected_sequence=expected_session.last_event_sequence,
             expected_run_id=expected_session.run_id,
-            run_id=expected_session.run_id or uuid4().hex,
+            run_id=run_id or expected_session.run_id or uuid4().hex,
             revision_id=self.revision_id,
             events=self._commit_pipeline.stamp_fact_owners(events),
             status=target_status,
@@ -1834,6 +1843,7 @@ class Core:
             checkpoint_payload: Mapping[str, object] | None = None
             checkpoint_kind: CheckpointKind | None = None
             new_status: SessionStatus | None = None
+            terminal_run_id: str | None = None
             if checkpoint is not None and checkpoint.kind is not CheckpointKind.TERMINAL and isinstance(checkpoint.payload, Mapping):
                 cursor = _Cursor.model_validate(json_wire_object(checkpoint.payload))
                 current_request = next((request for request in requests if request.sequence == cursor.deferred_sequence), None)
@@ -1872,6 +1882,17 @@ class Core:
                     if stop_cause is not None:
                         run_payload["stop_cause"] = stop_cause
                     terminal_events.append(EventDraft(EventType.RUN_INTERRUPTED, "core", "core", run_payload))
+                    terminal_run_id = expected_session.run_id or (checkpoint.run_id if checkpoint is not None else None) or uuid4().hex
+                    execution = _Execution(expected_session, cursor, events, terminal_run_id)
+                    terminal_events.extend(
+                        self._governance.lifecycle_events(
+                            execution,
+                            self.snapshot,
+                            "session_end",
+                            status="interrupted",
+                            error=reason,
+                        )
+                    )
                     cursor.batch_sequence = None
                     cursor.next_call = 0
                     cursor.intent_sequence = None
@@ -1893,6 +1914,7 @@ class Core:
                     status=new_status,
                     checkpoint_kind=checkpoint_kind,
                     checkpoint_payload=checkpoint_payload,
+                    run_id=terminal_run_id,
                 )
                 return
             except SequenceConflict:
@@ -2112,6 +2134,11 @@ class Core:
         error: str | None = None,
     ) -> tuple[EventDraft, ...]:
         return self._governance.lifecycle_events(execution, snapshot, kind, status=status, error=error)
+
+    def commit_hook_events(self, execution: _Execution, events: tuple[EventDraft, ...]) -> None:
+        """Append hook bookkeeping events without advancing the execution checkpoint."""
+        if events:
+            self.commit(execution, execution.session.status, None, *events)
 
     def settle_unsettled_dispatches(self, execution: _Execution) -> None:
         self._fact_delivery.settle_unsettled_dispatches(execution)

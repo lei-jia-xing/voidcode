@@ -40,6 +40,10 @@ class EventType(StrEnum):
     ACTIVATION_REQUESTED = "core.activation_requested"
     ACTIVATION_COMMITTED = "core.activation_committed"
     ACTIVATION_FAILED = "core.activation_failed"
+    #: One lifecycle hook invocation and its bounded note/failure, or one mutating
+    #: pre-tool gate skipped by the effective read-only stance.
+    HOOK_INVOKED = "core.hook_invoked"
+    HOOK_SKIPPED = "core.hook_skipped"
     OBSERVER_ERROR = "core.observer_error"
     MODEL_QUERY = "core.model_query"
 

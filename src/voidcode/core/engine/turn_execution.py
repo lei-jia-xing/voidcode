@@ -972,6 +972,18 @@ class TurnDriver:
             cursor.intent_sequence = None
             cursor.approval_sequence = None
         terminal_events.append(stop_event)
+        # A stop is this run's terminal event too: the hook outcome rides the same atomic
+        # commit as RUN_INTERRUPTED, and the durable per-run guard prevents a duplicate
+        # end when this session is later resumed under a new run identity.
+        terminal_events.extend(
+            self._host.lifecycle_events(
+                execution,
+                self._host.snapshot,
+                "session_end",
+                status="interrupted",
+                error=message,
+            )
+        )
         if deliberate and cursor.continuation_id is not None:
             self._host.commit(
                 execution,

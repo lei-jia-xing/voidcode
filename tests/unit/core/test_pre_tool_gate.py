@@ -8,10 +8,11 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from tests.fixtures.core_factory import register_core
-from tests.fixtures.reload_plugin import PROBE_TOOL, write_reload_plugin
+from tests.fixtures.reload_plugin import DEACTIVATE_TOOL, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
+from voidcode.core.events import EventType
 
 PLUGIN_ID = "reload-fixture"
 
@@ -27,10 +28,23 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
     )
 
 
-def _run_with_gate(tmp_path: Path, gate: str) -> tuple[Core, list[Mapping[str, object]]]:
+def _run_with_gate(
+    tmp_path: Path,
+    gate: str,
+    *,
+    read_only: bool = False,
+    mutating: bool = False,
+    tool_name: str = PROBE_TOOL,
+) -> tuple[Core, list[Mapping[str, object]]]:
     source = tmp_path / "plugin"
-    write_reload_plugin(source, tool_output="v1", pre_tool_gate=gate)
-    replies = [_turn(_call("probe-1", PROBE_TOOL)), _turn(output="done")]
+    write_reload_plugin(
+        source,
+        tool_output="v1",
+        pre_tool_gate=gate,
+        pre_tool_match=(tool_name,),
+        pre_tool_mutating=mutating,
+    )
+    replies = [_turn(_call("probe-1", tool_name)), _turn(output="done")]
     server = OpenAILoopbackServer(replies)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
@@ -41,7 +55,7 @@ def _run_with_gate(tmp_path: Path, gate: str) -> tuple[Core, list[Mapping[str, o
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},
-                "policy": {"approval_mode": "yolo"},
+                "policy": {"approval_mode": "yolo", "read_only": read_only},
                 "providers": {
                     "endpoint": {
                         "api_key": "loopback-secret-not-for-storage",
@@ -99,3 +113,24 @@ def test_allowing_gate_is_transparent(tmp_path: Path) -> None:
     assert results[0]["status"] == "ok", results[0]
     state = {row.owner: row for row in core.store.plugin_state_rows("session", "sess-gate")}
     assert state[PLUGIN_ID].payload.get("note") == "v1"
+
+
+def test_mutating_gate_skip_is_visible_without_denying_under_read_only(tmp_path: Path) -> None:
+    # "explode" would deny if asked: proving the skipped gate was never invoked.
+    core, results = _run_with_gate(
+        tmp_path,
+        "explode",
+        read_only=True,
+        mutating=True,
+        tool_name=DEACTIVATE_TOOL,
+    )
+    assert len(results) == 1 and results[0]["status"] == "ok", results
+    skips = [event for event in core.events_after("sess-gate") if event.event_type == EventType.HOOK_SKIPPED]
+    assert len(skips) == 1
+    payload = skips[0].payload
+    assert payload["kind"] == "pre_tool"
+    assert payload["owner"] == PLUGIN_ID
+    assert payload["reason"] == "read_only"
+    assert payload["tool_name"] == DEACTIVATE_TOOL
+    assert payload["tool_call_id"] == "probe-1"
+    assert isinstance(payload["logical_turn"], str)

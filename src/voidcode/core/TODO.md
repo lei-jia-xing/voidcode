@@ -29,8 +29,9 @@
   - `propose_turn` 使用 `run_with_retry`，但默认启用的 `stream_turn`/`stream_provider_turn` 声明单次尝试完全不重试；且 `stream_provider_turn` 收到 `event.kind == "error"` 时硬编码 `retryable=False`，丢弃重试与 `retry_after` 信息，导致 429 限流或瞬时断连直接失败。
 - [ ] **支持只读工具批次并发执行。**
   - `TurnExecutionManager.drive` 目前串行执行同一轮 `tool_calls`，多文件 `read`/`grep`/`web_fetch` 无法并发，成为代理检索延时瓶颈。
-- [ ] **补齐中断路径 `session_end` 钩子并停止静默吞错。**
-  - `TurnExecutionManager.stop`（`RUN_INTERRUPTED`）未像 `drive`/`fail` 那样触发 `session_end`；`ToolGovernance.lifecycle_events` 使用 `except Exception: pass` 静默吞掉钩子失败并丢弃返回值。
+- [x] **生命周期钩子结果持久化并补齐中断路径。**
+  - `ToolGovernance.lifecycle_events` 现为每个 owner/run 追加有界 `core.hook_invoked` 事件（note、failure 或 silent），按 run 身份去重；`TurnExecutionManager.stop` 的终态提交原子携带 `session_end(status="interrupted")`，completed/failed 路径保持一次。钩子失败只记录，不改变运行决定。
+  - 只读/计划模式下被跳过的 mutating pre-tool gate 追加尽力而为的 `core.hook_skipped` 事件，拒绝语义不变；post-tool note 保持原 output 类型、parts、bounds/reference 与其余 `ToolSuccess` 字段。
 - [ ] **在 `UsageFact` 中向观测器暴露当前模型上下文窗口。**
   - `compaction` 等观测器目前拿不到 `context_window`，导致自动压缩默认不触发（配套见 `sdk/TODO.md`、`plugins/TODO.md`）。
 

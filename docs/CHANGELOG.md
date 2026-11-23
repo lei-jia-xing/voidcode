@@ -4,6 +4,14 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Durable hook outcomes and result-preserving notes
+- Lifecycle hooks now keep their evidence: every `session_start`/`session_end` invocation appends one bounded `core.hook_invoked` event per owner and run, carrying the returned note, a bounded failure, or an explicit `silent` outcome. The event field set is `kind`, `owner`, `logical_turn`, `status`, `outcome`, and optional bounded `note`/`failure` (with `*_truncated` flags); the durable record is also the exactly-once guard, so a same-run re-entry cannot ask an owner twice. A hook failure never changes the run's decision.
+- `session_end` now rides the terminal commit for `completed`, `failed`, and `interrupted` runs, including `stop`/user stop, owner cancel, limit reached, shutdown, parked approval cancellation, and a terminal background tool-wait interruption. The interrupted record carries `status="interrupted"` and the stop reason as `error`. There is no second end record on failure paths.
+- Post-tool hook notes append without flattening the result: `TextOutput.text` is extended, `CompositeOutput` gains one trailing `TextPart` with all original parts/bounds intact, and `EmptyOutput`/`AttachmentOutput` extend `presentation`. `body`, `coverage`, `changes`, `steering_context`, `result_reference`, and output bounds/references survive. An output outside the closed SDK union is refused visibly instead of being replaced by text.
+- Mutating pre-tool gates skipped under read-only/plan now append a best-effort `core.hook_skipped` event (`kind`, `owner`, `reason`, `tool_name`, `tool_call_id`, `logical_turn`). Denial semantics are unchanged: the skip is visibility, not a refusal.
+- SDK: `RunLifecycle` and `Plugin` documentation now state the durable-event shape, once-per-run guard, and interrupted/failed end statuses.
+- Verification: lifecycle/hook-output/pre-gate/post-hook/artifact/lease/ask/background/turn/tool/SDK and hooks-plugin integration suites = **316 passed**; `ruff check`, `ruff format --check`, and `ty check src` green on the changed files.
+
 ### Visible child delivery and strict child facts
 - `send_child` receipts now distinguish `parked` from `queued`: a recoverably interrupted child keeps the follow-up durable but cannot claim it without an explicit resume, so the receipt no longer promises future consumption. A claim conflict whose continuation is no longer durable fails visibly.
 - Child terminal facts are decoded strictly: required child/run identity and terminal status must be present and exact, optional strings are no longer coerced, and a malformed/missing run id can no longer match an arbitrary run. Recovery publications record a verbatim `output_error` when the provider result cannot decode instead of silently publishing `output=None`.
@@ -733,9 +741,10 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - Lifecycle hooks: `hooks: [{kind: "session_start"|"session_end"}]` with
   `Plugin.session_start/session_end(lifecycle: RunLifecycle, context, services) -> str | None`.
   `session_start` fires once per run immediately before that run's first provider dispatch and
-  `session_end` fires with the run's terminal commit (completed or failed), each on a `hook=True`
+  `session_end` fires with the run's terminal commit (completed, failed, or interrupted/stopped),
+  each on a `hook=True`
   read-only lease; the owner's note (or its failure) is recorded in one durable
-  `kernel.hook_invoked` event per owner and run, and a second run fires the pair again for its own
+  `core.hook_invoked` event per owner and run, and a second run fires the pair again for its own
   run id. Firing is guarded by that same durable record, so a resume cannot duplicate it, and a
   hook failure never changes what the run decided. Context injection deliberately stays with the
   context contribution: lifecycle hooks are notifications with evidence, not context.

@@ -96,10 +96,14 @@ class Plugin:
     #: outside any model turn. The context (never a lease) is what the driver keeps.
     background_action: Callable[[BackgroundContext], None] | None = None
     #: Lifecycle notifications: run once at the start and once at the end of each run.
+    #: The end notification covers completed, failed, and interrupted/stopped runs; each
+    #: call's note or failure is durable as ``core.hook_invoked``.
     session_start: Callable[[RunLifecycle, ToolContext, PluginServices], str | None] | None = None
     session_end: Callable[[RunLifecycle, ToolContext, PluginServices], str | None] | None = None
     #: Pre-tool gate: runs before the invocation is admitted. Returning a reason DENIES the
     #: call, and so does a gate failure (fail-closed): a gate can only refuse, never widen.
+    #: A mutating gate is skipped under read-only/plan; that skip is recorded durably as
+    #: ``core.hook_skipped`` (best effort) and never denies the call.
     pre_tool: Callable[[ToolIntent, ToolContext, PluginServices], str | None] | None = None
     #: Tool names this gate matches; ignored when ``pre_tool`` is absent.
     pre_tool_match: tuple[str, ...] = ("*",)

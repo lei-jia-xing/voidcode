@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any, Literal, Protocol
 
 import jsonschema
@@ -13,19 +14,111 @@ from ...sdk.hooks import RequestWindow, WindowSegment
 from ...sdk.json_values import json_wire_object
 from ...sdk.provider import ProviderMessage
 from ...sdk.tools import (
+    AttachmentOutput,
+    CompositeOutput,
+    EmptyOutput,
     TextOutput,
+    TextPart,
     ToolCall,
     ToolDefinition,
     ToolEffect,
     ToolFailure,
+    ToolOutput,
     ToolResult,
-    ToolSuccess,
+    composite_ordered_text,
     denied_under_restriction,
     has_external_mutations,
 )
+from ..events import EventType
 from ..execution import _Execution
 from ..plugins import PluginRuntime
 from ..storage.store import EventDraft, SqliteStore, canonical_json
+
+#: A hook note/failure is durable evidence, not a result body: bound it so a broken or
+#: verbose hook cannot grow an event without limit. The plugin's own 2000-character
+#: note bound stays authoritative for what it returns; this is the core's last line.
+_HOOK_EVENT_TEXT_BYTES = 8192
+_HOOK_EVENT_TRUNCATION = "\n[truncated]"
+
+
+def _bounded_hook_text(text: str) -> tuple[str, bool]:
+    """Return UTF-8-bounded text and whether it was clipped for the durable event."""
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= _HOOK_EVENT_TEXT_BYTES:
+        return encoded.decode("utf-8"), False
+    clipped = encoded[:_HOOK_EVENT_TEXT_BYTES].decode("utf-8", errors="ignore")
+    return f"{clipped}{_HOOK_EVENT_TRUNCATION}", True
+
+
+def _append_output_note(output: ToolOutput, note: str) -> ToolOutput:
+    """Append one hook note without changing a result output's type or content.
+
+    Every member of the closed ``ToolOutput`` union has a safe note slot: text results
+    append text, composite results append one ``TextPart`` (never dropping media, table,
+    or JSON parts), and presentation-only results extend their presentation. Bounds and
+    references stay attached to the original output. An output outside that union is a
+    producer contract violation; refuse it visibly instead of flattening it to text.
+    """
+    if isinstance(output, TextOutput):
+        return replace(output, text=f"{output.text}\n\n{note}" if output.text else note)
+    if isinstance(output, CompositeOutput):
+        return replace(output, parts=(*output.parts, TextPart(note)))
+    if isinstance(output, (EmptyOutput, AttachmentOutput)):
+        return replace(output, presentation=f"{output.presentation}\n\n{note}" if output.presentation else note)
+    raise TypeError(f"post-tool hook cannot append a note to output type {type(output).__name__}")
+
+
+def _hook_observation_text(output: ToolOutput) -> str:
+    """The readable result text one post-tool hook observes; never a hook's own note."""
+    if isinstance(output, TextOutput):
+        return output.text
+    if isinstance(output, CompositeOutput):
+        return composite_ordered_text(output)
+    return output.presentation or ""
+
+
+def _lifecycle_hook_recorded(execution: _Execution, kind: str, owner: str) -> bool:
+    """Whether this run already has a durable lifecycle record for this owner and kind.
+
+    The event is written after the hook runs, so it is exactly the guard that prevents a
+    same-run continuation/crash re-entry from firing a side effect twice.
+    """
+    return any(
+        event.event_type == EventType.HOOK_INVOKED
+        and event.run_id == execution.run_id
+        and event.payload.get("kind") == kind
+        and event.payload.get("owner") == owner
+        for event in execution.events
+    )
+
+
+def _hook_event(
+    execution: _Execution,
+    kind: str,
+    owner: str,
+    *,
+    outcome: Literal["noted", "silent", "failed"],
+    note: str = "",
+    failure: str = "",
+    status: str = "",
+) -> EventDraft:
+    """Build one durable hook outcome event with bounded text fields."""
+    payload: dict[str, object] = {
+        "kind": kind,
+        "owner": owner,
+        "logical_turn": execution.cursor.logical_turn,
+        "status": status,
+        "outcome": outcome,
+    }
+    if note:
+        bounded, truncated = _bounded_hook_text(note)
+        payload["note"] = bounded
+        payload["note_truncated"] = truncated
+    if failure:
+        bounded, truncated = _bounded_hook_text(failure)
+        payload["failure"] = bounded
+        payload["failure_truncated"] = truncated
+    return EventDraft(EventType.HOOK_INVOKED, "core", "plugin", payload)
 
 
 def tool_schema_characters(tools: tuple[ToolDefinition, ...]) -> int:
@@ -132,6 +225,14 @@ class GovernanceHost(Protocol):
     @property
     def snapshot(self) -> GovernanceSnapshot | None: ...
 
+    def commit_hook_events(self, execution: _Execution, events: tuple[EventDraft, ...]) -> None:
+        """Commit hook bookkeeping events without advancing the checkpoint.
+
+        Lifecycle hooks are observational: their outcome must be durable before the
+        run continues, but must not change the run's decision or checkpoint.
+        """
+        ...
+
 
 class ToolGovernance:
     """Enforces tool visibility, pre-tool gates, approval modes, and post-tool hooks."""
@@ -233,6 +334,31 @@ class ToolGovernance:
         gates = [hook for hook in snapshot.plugin_runtime.pre_tool_hooks if call.tool_name in hook[1] or "*" in hook[1]]
         for owner, _match, mutating in gates:
             if mutating and readonly:
+                # A mutating gate is not asked under a restrictive stance. Record the skip
+                # durably (best effort) because a denial cannot carry a non-denial note:
+                # returning a skip string here would refuse the call and change semantics.
+                try:
+                    self._host.commit_hook_events(
+                        execution,
+                        (
+                            EventDraft(
+                                EventType.HOOK_SKIPPED,
+                                "core",
+                                "core",
+                                {
+                                    "kind": "pre_tool",
+                                    "owner": owner,
+                                    "reason": "read_only",
+                                    "tool_name": call.tool_name,
+                                    "tool_call_id": call.tool_call_id,
+                                    "logical_turn": execution.cursor.logical_turn,
+                                },
+                            ),
+                        ),
+                    )
+                except Exception:
+                    # Visibility is best effort; the gate outcome (allow) is unchanged.
+                    pass
                 continue
             try:
                 reason = snapshot.plugin_runtime.pre_tool(
@@ -267,7 +393,7 @@ class ToolGovernance:
         """
         if isinstance(result, ToolFailure):
             return result
-        text = result.output.text if isinstance(result.output, TextOutput) else (result.output.presentation or "")
+        text = _hook_observation_text(result.output)
         candidates = [hook for hook in snapshot.plugin_runtime.post_tool_hooks if call.tool_name in hook[1] or "*" in hook[1]]
         if not candidates:
             return result
@@ -298,14 +424,10 @@ class ToolGovernance:
                 notes.append(note)
         if not notes:
             return result
-        return ToolSuccess(
-            result.tool_name,
-            TextOutput("\n\n".join((text, *notes)), bounds=result.output.bounds),
-            result.body,
-            result.coverage,
-            result.changes,
-            steering_context=result.steering_context,
-        )
+        # The hook observes a settled result: its note is appended, never substituted. Keep
+        # the output type, all typed parts, bounds/references, body, coverage, changes,
+        # steering context, and result_reference exactly as the tool produced them.
+        return replace(result, output=_append_output_note(result.output, "\n\n".join(notes)))
 
     def lifecycle_events(
         self,
@@ -316,11 +438,22 @@ class ToolGovernance:
         status: Literal["completed", "failed", "interrupted", ""] = "",
         error: str | None = None,
     ) -> tuple[EventDraft, ...]:
-        """Notify declared lifecycle hooks."""
+        """Notify declared lifecycle hooks and make each outcome durable.
+
+        A hook's note or failure never changes the run's decision. Every invocation
+        appends one ``core.hook_invoked`` event (bounded) carrying the note, the failure,
+        or ``silent``; an owner/kind already recorded for this run is never asked again.
+        ``session_start`` events are committed immediately because no terminal commit
+        may ever follow. ``session_end`` events are returned for the caller's terminal
+        commit so the end record and the run's terminal fact are one atomic append.
+        """
         hooks = [owner for owner, hook_kind in snapshot.plugin_runtime.lifecycle_hooks if hook_kind == kind]
+        drafts: list[EventDraft] = []
         for owner in hooks:
+            if _lifecycle_hook_recorded(execution, kind, owner):
+                continue
             try:
-                snapshot.plugin_runtime.run_lifecycle(
+                note = snapshot.plugin_runtime.run_lifecycle(
                     owner,
                     kind,
                     session_id=execution.session.session_id,
@@ -329,6 +462,30 @@ class ToolGovernance:
                     status=status,
                     error=error,
                 )
-            except Exception:
-                pass
-        return ()
+            except Exception as exc:
+                drafts.append(
+                    _hook_event(
+                        execution,
+                        kind,
+                        owner,
+                        outcome="failed",
+                        failure=f"{type(exc).__name__}: {exc}",
+                        status=status,
+                    )
+                )
+                continue
+            drafts.append(
+                _hook_event(
+                    execution,
+                    kind,
+                    owner,
+                    outcome="noted" if note else "silent",
+                    note=note or "",
+                    status=status,
+                )
+            )
+        if kind == "session_start":
+            if drafts:
+                self._host.commit_hook_events(execution, tuple(drafts))
+            return ()
+        return tuple(drafts)

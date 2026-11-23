@@ -49,6 +49,7 @@ def write_reload_plugin(
     post_tool_spill: bool = False,
     pre_tool_gate: str = "",
     pre_tool_match: tuple[str, ...] = (),
+    pre_tool_mutating: bool = False,
     lifecycle_hooks: bool = False,
 ) -> Path:
     """Write (or rewrite) the plugin source directory and return it."""
@@ -77,6 +78,7 @@ def write_reload_plugin(
         post_tool_spill=post_tool_spill,
         pre_tool_gate=pre_tool_gate,
         pre_tool_match=pre_tool_match,
+        pre_tool_mutating=pre_tool_mutating,
         lifecycle_hooks=lifecycle_hooks,
     )
     (source / ".crashed").unlink(missing_ok=True)
@@ -117,6 +119,7 @@ def _plugin_code(
     post_tool_spill: bool,
     pre_tool_gate: str,
     pre_tool_match: tuple[str, ...],
+    pre_tool_mutating: bool,
     lifecycle_hooks: bool,
 ) -> str:
     deactivate_body = {
@@ -628,6 +631,7 @@ def create_plugin(config):
         post_tool_mutating=True if {post_tool_hook!r} else False,
         pre_tool=pre_tool,
         pre_tool_match={pre_tool_match or (PROBE_TOOL,)!r} if {pre_tool_gate!r} else ("*",),
+        pre_tool_mutating={pre_tool_mutating!r},
         session_start=session_start,
         session_end=session_end,
         state=StateSchema(version={state_schema_version!r}, schema={state_schema!r}),

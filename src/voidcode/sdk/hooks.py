@@ -384,9 +384,17 @@ class ToolIntent:
 class RunLifecycle:
     """One lifecycle point of a governed run, offered to a session_start/session_end hook.
 
-    Lifecycle hooks are notifications with evidence: the core records what each one reported
-    (or how it failed) as a durable event. They cannot inject context — context travels through
-    the context contribution — and their return value is a note, never a decision.
+    Lifecycle hooks are notifications with evidence: each invocation appends one durable
+    ``core.hook_invoked`` event carrying the returned note, a bounded failure, or an
+    explicit ``silent`` outcome, and one owner/phase runs at most once per run id. They
+    cannot inject context — context travels through the context contribution — and their
+    return value is a note, never a decision. A failure is recorded and never changes what
+    the run decided.
+
+    ``session_start`` fires once before the run's first provider dispatch. ``session_end``
+    fires with the run's terminal commit for ``completed``, ``failed``, and
+    ``interrupted`` (user stop, owner cancel, limit reached, shutdown); ``error`` carries
+    the failure or stop reason when one exists. The event's ``status`` mirrors this field.
     """
 
     phase: Literal["start", "end"]
