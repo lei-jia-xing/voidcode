@@ -11,13 +11,28 @@ import httpx
 import pytest
 
 from voidcode.plugins.web import create_plugin
-from voidcode.plugins.web.web_search import WebSearchItem, WebSearchResultBody, WebSearchTool
+from voidcode.plugins.web.web_search import (
+    MAX_SEARCH_RESPONSE_BYTES,
+    WebSearchItem,
+    WebSearchResultBody,
+    WebSearchTool,
+)
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.tools import ToolCall, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import ConfirmedStop, ToolCall, ToolFailure, ToolResult, ToolSuccess
 
 
 class _DummyServices:
     """Core service bag stand-in: web_search never touches core services."""
+
+
+class _AbortSignal:
+    def __init__(self, *, cancelled: bool = False) -> None:
+        self.cancelled = cancelled
+        self.reason: str | None = None
+
+    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
+        self.cancelled = value
+        self.reason = reason if value else None
 
 
 _SERVICES = cast(Any, _DummyServices())
@@ -111,6 +126,12 @@ def test_websearch_rejects_invalid_arguments_before_http(tool_context: ToolConte
         _run_search(tool_context, arguments)
 
 
+def test_web_tool_descriptions_label_untrusted_content() -> None:
+    tools = {tool.definition.name: tool for tool in create_plugin({}).tools}
+    assert "untrusted" in tools["web_search"].definition.description
+    assert "untrusted" in tools["web_fetch"].definition.description
+
+
 @pytest.mark.parametrize(
     ("arguments", "expected_num_results"),
     [({"query": "test", "numResults": 5}, 5), ({"query": "test"}, 8)],
@@ -129,6 +150,7 @@ def test_websearch_tool_returns_structured_exa_results(
         if (
             request.method == "POST"
             and request_body.get("query") == "test"
+            and request_body.get("numResults") == expected_num_results
             and request_body.get("type") == "auto"
             and request_body.get("contents") == {"highlights": True}
         ):
@@ -143,8 +165,10 @@ def test_websearch_tool_returns_structured_exa_results(
 
     assert result.status == "ok"
     assert isinstance(result.body, WebSearchResultBody)
-    assert result.body.num_results == expected_num_results
+    assert result.body.num_results == 1
     assert result.body.source == "exa"
+    assert result.body.effective_query == "test"
+    assert result.body.query_truncated is False
     assert result.body.results == (WebSearchItem(1, "Example", "https://example.com", snippet),)
     assert result.output.bounds.source == "exa"
 
@@ -249,21 +273,29 @@ def test_websearch_tool_returns_structured_deepseek_results(
     )
 
 
-def test_websearch_tool_truncates_deepseek_query_to_128_chars(
+def test_websearch_tool_discloses_deepseek_query_truncation(
     tool_context: ToolContext,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
     seen: dict[str, object] = {}
+    long_query = "x" * 200
 
     def handle(request: httpx.Request) -> httpx.Response:
         seen.update(json.loads(request.content))
         return _json_response({"results": []}, request)
 
     _mock_transport(monkeypatch, handle)
-    _run_search(tool_context, {"query": "x" * 200})
+    result = _run_search(tool_context, {"query": long_query})
 
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, WebSearchResultBody)
     assert seen["query"] == "x" * 128
+    assert result.body.query == long_query
+    assert result.body.effective_query == "x" * 128
+    assert result.body.query_truncated is True
+    assert result.output.text.startswith("Note: the DeepSeek backend accepts at most 128 characters;")
+    assert '"' + "x" * 128 + '"' in result.output.text
 
 
 def test_websearch_tool_returns_structured_tinyfish_results(
@@ -479,11 +511,14 @@ def test_websearch_tool_uses_keyless_jina_without_any_credential(
         )
 
     _mock_transport(monkeypatch, handle)
+    result = _run_search(tool_context, {"query": "test"})
+
     _assert_single_result(
-        _run_search(tool_context, {"query": "test"}),
-        "jina",
+        result,
+        "jina (keyless)",
         WebSearchItem(1, "Keyless Jina", "https://example.com/keyless", "No key needed."),
     )
+    assert "Search source: jina (keyless)" in result.output.text
 
 
 def test_websearch_tool_reports_keyless_jina_refusal_without_fallback(
@@ -499,7 +534,8 @@ def test_websearch_tool_reports_keyless_jina_refusal_without_fallback(
 
     assert isinstance(result, ToolFailure)
     assert isinstance(result.body, WebSearchResultBody)
-    assert result.body.source == "jina"
+    assert result.body.source == "jina (keyless)"
+    assert "Search source: jina (keyless)" in result.output.text
 
 
 def test_websearch_tool_winner_failure_is_final(
@@ -519,6 +555,7 @@ def test_websearch_tool_winner_failure_is_final(
     assert isinstance(result, ToolFailure)
     assert isinstance(result.body, WebSearchResultBody)
     assert result.body.source == "exa"
+    assert result.timeout_seconds is None
 
 
 def test_websearch_tool_bounds_error_messages(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -532,6 +569,120 @@ def test_websearch_tool_bounds_error_messages(tool_context: ToolContext, monkeyp
 
     assert isinstance(result, ToolFailure)
     assert "internal-socket-detail" not in result.error
+    assert result.timeout_seconds is None
+
+
+def test_websearch_tool_sets_timeout_metadata_only_for_timeouts(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXA_API_KEY", "test-key")
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow")
+
+    _mock_transport(monkeypatch, fail)
+    result = _run_search(tool_context, {"query": "test"})
+
+    assert isinstance(result, ToolFailure)
+    assert result.timeout_seconds == 30
+
+
+def test_websearch_tool_bounds_oversized_response(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXA_API_KEY", "test-key")
+    calls: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return _json_response({"results": [], "padding": "x" * (MAX_SEARCH_RESPONSE_BYTES + 1024)}, request)
+
+    _mock_transport(monkeypatch, handle)
+    result = _run_search(tool_context, {"query": "test"})
+
+    assert isinstance(result, ToolFailure)
+    assert "byte limit" in result.error
+    assert calls == ["https://api.exa.ai/search"]
+
+
+def test_websearch_tool_bounds_malformed_configured_endpoint(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SEARXNG_ENDPOINT", "http://[::1")
+
+    def unexpected(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a malformed endpoint must not reach the transport")
+
+    _mock_transport(monkeypatch, unexpected)
+    result = _run_search(tool_context, {"query": "test"})
+
+    assert isinstance(result, ToolFailure)
+    assert "endpoint is not a valid URL" in result.error
+
+
+def test_websearch_tool_cancelled_before_provider_call(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXA_API_KEY", "test-key")
+    calls: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return _json_response({"results": []}, request)
+
+    _mock_transport(monkeypatch, handle)
+    context = ToolContext(
+        workspace=tool_context.workspace,
+        session_id="s",
+        run_id="r",
+        invocation_id="i",
+        revision_id="rev",
+        actor="model",
+        abort_signal=cast(Any, _AbortSignal(cancelled=True)),
+    )
+    result = _run_search(context, {"query": "test"})
+
+    assert isinstance(result, ToolFailure)
+    assert "cancelled" in result.error
+    assert isinstance(result.execution, ConfirmedStop)
+    assert result.execution.cancellation_signalled is True
+    assert calls == []
+
+
+def test_websearch_tool_cancelled_after_provider_call_discards_results(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXA_API_KEY", "test-key")
+    signal = _AbortSignal()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        signal.set_cancelled(True)
+        return _json_response({"results": [{"title": "Example", "url": "https://example.com", "highlights": []}]}, request)
+
+    _mock_transport(monkeypatch, handle)
+    context = ToolContext(
+        workspace=tool_context.workspace,
+        session_id="s",
+        run_id="r",
+        invocation_id="i",
+        revision_id="rev",
+        actor="model",
+        abort_signal=cast(Any, signal),
+    )
+    result = _run_search(context, {"query": "test"})
+
+    assert isinstance(result, ToolFailure)
+    assert "cancelled" in result.error
+    assert isinstance(result.execution, ConfirmedStop)
+    assert result.execution.cancellation_signalled is True
+
+
+def test_websearch_tool_filters_until_requested_valid_results(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXA_API_KEY", "test-key")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {"results": [{"title": "missing-url"}, {"title": "Valid", "url": "https://valid.example"}]},
+            request,
+        )
+
+    _mock_transport(monkeypatch, handle)
+    result = _run_search(tool_context, {"query": "test", "numResults": 1})
+
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, WebSearchResultBody)
+    assert result.body.num_results == 1
+    assert result.body.results == (WebSearchItem(1, "Valid", "https://valid.example", ""),)
 
 
 def test_websearch_tool_reports_empty_results(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -542,4 +693,7 @@ def test_websearch_tool_reports_empty_results(tool_context: ToolContext, monkeyp
 
     assert isinstance(result, ToolSuccess)
     assert isinstance(result.body, WebSearchResultBody)
+    assert result.body.num_results == 0
+    assert result.body.effective_query == "missing"
+    assert result.body.query_truncated is False
     assert result.body.results == ()

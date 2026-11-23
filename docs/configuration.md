@@ -137,6 +137,11 @@ supervisor observations. Reload carries no gate: new spawns use the current poli
 jobs keep the enforcement fixed at their spawn. Model-editing-config plus `yolo` reload
 is out of threat model.
 
+The bundled `web` tools run in the Core process, not as registry children: their egress
+is not covered by `sandbox.network`, `NETWORK` is not approval-gated, and they remain
+available under `read_only`/plan mode. Disable the `web` plugin (or install a pre-tool
+gate) when that egress is not wanted.
+
 ### `providers`
 
 Each key is a provider name matching `[a-z][a-z0-9_-]*`, and it must be declared by an admitted plugin — configuring a provider nobody declares is an error, not a no-op.

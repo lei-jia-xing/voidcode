@@ -7,7 +7,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import httpx
 import pytest
@@ -163,6 +163,10 @@ def test_webfetch_admitted_runtime_serves_snapshot_then_survives_web_removal(tmp
         {"url": "http://user:pass@example.com/"},
         {"url": "http:///no-host"},
         {"url": "not a url at all http://"},
+        {"url": "http://example.com/\n"},
+        {"url": "http://example.com/\x01"},
+        {"url": "http://example.com/\x7f"},
+        {"url": "http://[::1"},
     ],
 )
 def test_webfetch_rejects_bad_input_before_http(tool_context: ToolContext, arguments: dict[str, object]) -> None:
@@ -247,6 +251,21 @@ def test_webfetch_rejects_redirect_with_credentials(tool_context: ToolContext, m
     assert "pw" not in result.error
 
 
+def test_webfetch_rejects_redirect_location_with_controls(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(302, headers=[(b"location", b"http://example.com/\x01")], request=request)
+
+    _mock_transport(monkeypatch, handle)
+    result = _run(tool_context, FakeServices(), {"url": "http://example.com/start"})
+
+    assert isinstance(result, ToolFailure)
+    assert "malformed response or redirect" in result.error
+    assert seen == ["http://example.com/start"]
+
+
 def test_webfetch_enforces_decompressed_cap_not_content_length(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
     big = b"x" * (FETCH_MAX_BYTES + 1024)
     payload = gzip.compress(big)
@@ -323,6 +342,48 @@ def test_webfetch_rejects_non_text_charset(tool_context: ToolContext, monkeypatc
 
     assert isinstance(result, ToolFailure)
     assert "non-text charset" in result.error
+
+
+@pytest.mark.parametrize("charset", ["unicode_escape", "raw_unicode_escape"])
+def test_webfetch_rejects_escape_codecs_before_surrogate_encode(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch, charset: str) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"\\ud800", headers={"content-type": f"text/plain; charset={charset}"}, request=request)
+
+    _mock_transport(monkeypatch, handle)
+    services = FakeServices()
+    result = _run(tool_context, services, {"url": "http://example.com/surrogate"})
+
+    assert isinstance(result, ToolFailure)
+    assert "non-text charset" in result.error
+    assert services.artifacts == {}
+
+
+class _RejectingArtifactServices(FakeServices):
+    def spill_artifact(self, data: bytes | str, *, media_type: str = "text/plain; charset=utf-8") -> NoReturn:
+        raise ValueError("artifact media_type must be a short printable string")
+
+
+def test_webfetch_bounds_artifact_store_rejection(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"hello", headers={"content-type": "text/plain"}, request=request)
+
+    _mock_transport(monkeypatch, handle)
+    result = _run(tool_context, _RejectingArtifactServices(), {"url": "http://example.com/page"})
+
+    assert isinstance(result, ToolFailure)
+    assert "could not store the response" in result.error
+    assert "media_type" not in result.error
+
+
+def test_webfetch_bounds_unparsable_request_url(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_invalid(*args: object, **kwargs: object) -> None:
+        raise httpx.InvalidURL("unparsable")
+
+    monkeypatch.setattr(httpx.Client, "stream", raise_invalid)
+    result = _run(tool_context, FakeServices(), {"url": "http://example.com/page"})
+
+    assert isinstance(result, ToolFailure)
+    assert "could not parse the request URL" in result.error
 
 
 def test_webfetch_supports_json_body(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
