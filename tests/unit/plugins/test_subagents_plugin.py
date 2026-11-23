@@ -1,4 +1,4 @@
-"""Unit tests for the Delegation plugin: state contract, task control, and bounded batches."""
+"""Unit tests for the Subagents plugin: state contract, task control, and bounded batches."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.core.cancellation import Cancellation
 from voidcode.plugins.subagents import subagents_plugin
 from voidcode.plugins.subagents.agent_reader import read_agent_resource
 from voidcode.plugins.subagents.profiles.registry import load_agent_registry
 from voidcode.plugins.subagents.subagents_plugin import (
     CANCEL_REASON,
-    DEFAULT_JOIN_TIMEOUT_SECONDS,
     MAX_BATCH_SIZE,
     SCHEMA_VERSION,
     ChildRecord,
@@ -34,10 +34,15 @@ from voidcode.sdk.services import (
     DescendantNode,
     EventView,
 )
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
+from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess, UnconfirmedStop
 
 
-def _context(workspace: Path) -> ToolContext:
+def _context(
+    workspace: Path,
+    *,
+    origin_readonly: bool | None = None,
+    abort_signal: Cancellation | None = None,
+) -> ToolContext:
     return ToolContext(
         workspace=workspace,
         session_id="session-1",
@@ -46,6 +51,8 @@ def _context(workspace: Path) -> ToolContext:
         revision_id="rev-1",
         actor="model",
         logical_turn="turn-1",
+        origin_readonly=origin_readonly,
+        abort_signal=abort_signal,
     )
 
 
@@ -92,6 +99,29 @@ def _custom_workspace(tmp_path: Path, filename: str, markdown: str) -> Path:
 def _task_at(services: FakeServices, workspace: Path, arguments: Mapping[str, object]) -> ToolResult:
     call = ToolCall(tool_name="task", arguments=arguments, tool_call_id="call-1")
     return TaskTool().invoke(call, context=_context(workspace), services=services)
+
+
+def _task_with_context(services: FakeServices, context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
+    call = ToolCall(tool_name="task", arguments=arguments, tool_call_id="call-1")
+    return TaskTool().invoke(call, context=context, services=services)
+
+
+def _batch_at(services: FakeServices, workspace: Path, arguments: Mapping[str, object]) -> ToolResult:
+    call = ToolCall(tool_name="task_batch", arguments=arguments, tool_call_id="call-2")
+    return TaskBatchTool().invoke(call, context=_context(workspace), services=services)
+
+
+def _batch_with_context(services: FakeServices, context: ToolContext, arguments: Mapping[str, object]) -> ToolResult:
+    call = ToolCall(tool_name="task_batch", arguments=arguments, tool_call_id="call-2")
+    return TaskBatchTool().invoke(call, context=context, services=services)
+
+
+_RESULT_SCHEMA = {
+    "type": "object",
+    "required": ["ok"],
+    "properties": {"ok": {"type": "boolean"}},
+    "additionalProperties": False,
+}
 
 
 # --- State contract ---
@@ -212,7 +242,7 @@ def test_synchronous_spawn_joins_and_returns_the_child_outcome(tmp_path: Path) -
     services = FakeServices()
     res = _task(services, tmp_path, {"prompt": "do the work", "run_in_background": False, "timeout": 2_500})
     assert isinstance(res, ToolSuccess)
-    assert services.join_calls == [("child-1", 2.5)]
+    assert services.join_calls == [("child-1", 1.0)]
     payload = _payload(res)
     assert payload["status"] == "completed"
     assert payload["output"] == "result of do the work"
@@ -221,10 +251,31 @@ def test_synchronous_spawn_joins_and_returns_the_child_outcome(tmp_path: Path) -
     assert _stored(services).children == {"child-1": ChildRecord()}
 
 
-def test_synchronous_spawn_without_timeout_uses_the_default(tmp_path: Path) -> None:
+def test_synchronous_join_slices_preserve_the_caller_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    services = FakeServices()
+    calls: list[float] = []
+
+    def join_slices(child_id: str, *, timeout_seconds: float) -> ChildOutcome:
+        calls.append(timeout_seconds)
+        status = "running" if len(calls) < 3 else "completed"
+        return ChildOutcome(
+            child_session_id=child_id,
+            status=status,
+            output="finished" if status == "completed" else None,
+            run_id="run-child-1",
+        )
+
+    monkeypatch.setattr(services, "join_child", join_slices)
+    res = _task(services, tmp_path, {"prompt": "work", "run_in_background": False, "timeout": 2_500})
+    assert isinstance(res, ToolSuccess)
+    assert calls == [1.0, 1.0, 0.5]
+    assert _payload(res)["status"] == "completed"
+
+
+def test_synchronous_spawn_without_timeout_uses_short_slices(tmp_path: Path) -> None:
     services = FakeServices()
     _task(services, tmp_path, {"prompt": "work", "run_in_background": False})
-    assert services.join_calls == [("child-1", DEFAULT_JOIN_TIMEOUT_SECONDS)]
+    assert services.join_calls == [("child-1", 1.0)]
 
 
 # --- task: profile selection ---
@@ -365,6 +416,78 @@ def test_unsupported_profile_model_is_refused_before_spawning(tmp_path: Path) ->
     assert services.spawn_calls == []
 
 
+@pytest.mark.parametrize("subagent_type", [None, "execute"])
+def test_readonly_parent_spawns_readonly_child(tmp_path: Path, subagent_type: str | None) -> None:
+    services = FakeServices()
+    arguments: dict[str, object] = {"prompt": "work"}
+    if subagent_type is not None:
+        arguments["subagent_type"] = subagent_type
+    result = _task_with_context(services, _context(tmp_path, origin_readonly=True), arguments)
+
+    assert isinstance(result, ToolSuccess)
+    assert services.spawn_calls[0]["readonly"] is True
+    assert _stored(services).children == {"child-1": ChildRecord(subagent_type=subagent_type)}
+
+
+def test_writable_parent_keeps_the_child_writable(tmp_path: Path) -> None:
+    services = FakeServices()
+    result = _task_with_context(services, _context(tmp_path, origin_readonly=False), {"prompt": "work"})
+
+    assert isinstance(result, ToolSuccess)
+    assert services.spawn_calls[0]["readonly"] is False
+
+
+def test_spawn_cancelled_before_creating_does_not_spawn(tmp_path: Path) -> None:
+    services = FakeServices()
+    abort = Cancellation()
+    abort.set_cancelled(True, reason="test stop")
+    result = _task_with_context(services, _context(tmp_path, abort_signal=abort), {"prompt": "work"})
+
+    assert isinstance(result, ToolFailure)
+    assert result.execution == UnconfirmedStop(cancellation_signalled=True)
+    assert services.spawn_calls == []
+    assert "task_id" not in _payload(result)
+    assert services.staged_events == []
+    assert services.get_state("session") == (None, 0)
+
+
+def test_spawn_cancelled_after_creation_records_the_mapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    services = FakeServices()
+    abort = Cancellation()
+    spawn = services.spawn_child
+
+    def spawn_then_stop(*args: object, **kwargs: object) -> str:
+        child_id = spawn(*args, **kwargs)  # type: ignore[arg-type]
+        abort.set_cancelled(True, reason="test stop")
+        return child_id
+
+    monkeypatch.setattr(services, "spawn_child", spawn_then_stop)
+    result = _task_with_context(services, _context(tmp_path, abort_signal=abort), {"prompt": "work"})
+
+    assert isinstance(result, ToolFailure)
+    assert result.execution == UnconfirmedStop(cancellation_signalled=True)
+    assert _payload(result)["task_id"] == "child-1"
+    assert _stored(services).children == {"child-1": ChildRecord()}
+    assert services.staged_events == [("task_spawned", {"task_id": "child-1", "label": "", "group_id": None})]
+
+
+def test_spawn_store_failure_reports_the_created_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    services = FakeServices()
+
+    def refuse_state(*args: object, **kwargs: object) -> int:
+        raise RuntimeError("state store is unavailable")
+
+    monkeypatch.setattr(services, "replace_state", refuse_state)
+    result = _task(services, tmp_path, {"prompt": "work"})
+
+    assert isinstance(result, ToolFailure)
+    assert "child session was created" in result.error
+    assert "could not be saved" in result.error
+    assert _payload(result)["task_id"] == "child-1"
+    assert len(services.spawn_calls) == 1
+    assert services.staged_events == []
+
+
 # --- task: control ---
 
 
@@ -372,9 +495,9 @@ def test_output_joins_with_the_requested_timeout_and_surfaces_running(tmp_path: 
     services = FakeServices()
     _task(services, tmp_path, {"prompt": "long work", "label": "long"})
     services.roster["child-1"] = ChildOutcome(child_session_id="child-1", status="running")
-    res = _task(services, tmp_path, {"operation": "output", "task_id": "child-1", "timeout": 5_000})
+    res = _task(services, tmp_path, {"operation": "output", "task_id": "child-1", "timeout": 500})
     assert isinstance(res, ToolSuccess)
-    assert services.join_calls == [("child-1", 5.0)]
+    assert services.join_calls == [("child-1", 0.5)]
     payload = _payload(res)
     assert payload == {
         "operation": "output",
@@ -390,6 +513,31 @@ def test_output_joins_with_the_requested_timeout_and_surfaces_running(tmp_path: 
     zero = _task(services, tmp_path, {"operation": "output", "task_id": "child-1", "timeout": 0})
     assert services.join_calls[-1] == ("child-1", 0.0)
     assert _payload(zero)["status"] == "running"
+
+
+def test_output_join_observes_parent_stop_between_slices(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    services = FakeServices()
+    _task(services, tmp_path, {"prompt": "long work"})
+    abort = Cancellation()
+    calls: list[float] = []
+
+    def join_then_stop(child_id: str, *, timeout_seconds: float) -> ChildOutcome:
+        calls.append(timeout_seconds)
+        abort.set_cancelled(True, reason="test stop")
+        return ChildOutcome(child_session_id=child_id, status="running", run_id="run-child-1")
+
+    monkeypatch.setattr(services, "join_child", join_then_stop)
+    result = _task_with_context(
+        services,
+        _context(tmp_path, abort_signal=abort),
+        {"operation": "output", "task_id": "child-1", "timeout": 10_000},
+    )
+
+    assert isinstance(result, ToolFailure)
+    assert result.execution == UnconfirmedStop(cancellation_signalled=True)
+    assert calls == [1.0]
+    assert _payload(result)["task_id"] == "child-1"
+    assert "cancelled with the parent task" in result.error
 
 
 def test_output_reports_the_terminal_child_outcome(tmp_path: Path) -> None:
@@ -464,6 +612,84 @@ def test_output_preserves_typed_capture_errors_without_relabeling(tmp_path: Path
     assert output_cause in res.output.text
     assert history_cause in res.output.text
     assert "partial result…" in res.output.text
+
+
+def test_foreground_spawn_validates_a_declared_result_schema(tmp_path: Path) -> None:
+    services = FakeServices()
+    services.join_output = '{"ok": true}'
+    result = _task(
+        services,
+        tmp_path,
+        {"prompt": "shape the answer", "run_in_background": False, "result_schema": _RESULT_SCHEMA},
+    )
+
+    assert isinstance(result, ToolSuccess)
+    payload = _payload(result)
+    assert payload["data"] == {"ok": True}
+    assert "parse_error" not in payload
+    assert "structured: ok" in result.output.text
+
+
+def test_foreground_spawn_reports_a_structured_parse_error(tmp_path: Path) -> None:
+    services = FakeServices()
+    services.join_output = '{"ok": "yes"}'
+    result = _task(
+        services,
+        tmp_path,
+        {"prompt": "shape the answer", "run_in_background": False, "result_schema": _RESULT_SCHEMA},
+    )
+
+    assert isinstance(result, ToolSuccess)
+    payload = _payload(result)
+    assert "data" not in payload
+    assert isinstance(payload["parse_error"], Mapping)
+    assert payload["parse_error"]["kind"] == "schema_violation"
+    assert "structured: schema_violation" in result.output.text
+
+
+def test_output_surfaces_the_unavailable_structured_cause_in_the_body(tmp_path: Path) -> None:
+    services = FakeServices()
+    _task(services, tmp_path, {"prompt": "work", "result_schema": _RESULT_SCHEMA})
+    cause = "ArtifactStoreError: quota exceeded"
+    services.roster["child-1"] = ChildOutcome(
+        child_session_id="child-1",
+        status="completed",
+        output=None,
+        run_id="run-capped",
+        output_error=cause,
+    )
+
+    result = _task(services, tmp_path, {"operation": "output", "task_id": "child-1"})
+
+    payload = _payload(result)
+    assert payload["structured_unavailable"] == cause
+    assert "data" not in payload
+    assert "parse_error" not in payload
+    assert f"structured: unavailable ({cause})" in result.output.text
+
+
+def test_structured_validation_refuses_full_output_above_the_byte_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    services = FakeServices()
+    reference = services.spill_artifact('{"ok": true}')
+    _task(services, tmp_path, {"prompt": "work", "result_schema": _RESULT_SCHEMA})
+    services.roster["child-1"] = ChildOutcome(
+        child_session_id="child-1",
+        status="completed",
+        output_sha256=reference.sha256,
+        output_bytes=reference.bytes,
+        run_id="run-capped",
+    )
+    monkeypatch.setattr(subagents_plugin, "MAX_STRUCTURED_OUTPUT_BYTES", 4)
+
+    result = _task(services, tmp_path, {"operation": "output", "task_id": "child-1"})
+
+    payload = _payload(result)
+    cause = payload["structured_unavailable"]
+    assert isinstance(cause, str)
+    assert "above the 4-byte cap" in cause
+    assert "data" not in payload
+    assert "parse_error" not in payload
+    assert "structured: unavailable" in result.output.text
 
 
 def test_agent_reader_shows_only_the_publication_run_own_errors(tmp_path: Path) -> None:
@@ -547,6 +773,22 @@ def test_send_maps_the_receipt_without_claiming_consumption(tmp_path: Path) -> N
     assert isinstance(queued.output, TextOutput)
     assert "queued behind the child's current work" in queued.output.text
     assert "does not mean the child read or finished it" in queued.output.text
+
+
+def test_parked_send_receipt_requires_resume_and_never_promises_consumption(tmp_path: Path) -> None:
+    services = FakeServices()
+    _task(services, tmp_path, {"prompt": "work"})
+    services.send_result = ChildSendReceipt(child_session_id="child-1", delivery="parked", child_status="interrupted")
+
+    result = _task(services, tmp_path, {"operation": "send", "task_id": "child-1", "prompt": "resume this"})
+
+    assert isinstance(result, ToolSuccess)
+    assert _payload(result)["delivery"] == "parked"
+    assert isinstance(result.output, TextOutput)
+    assert "durably accepted but not claimable now" in result.output.text
+    assert "explicit resume" in result.output.text
+    assert "does not mean the child read or finished it" in result.output.text
+    assert "next safe boundary" not in result.output.text
 
 
 def test_history_pages_through_the_cursor_without_loss(tmp_path: Path) -> None:
@@ -678,6 +920,36 @@ def test_core_spawn_refusal_is_reported_as_a_failure(tmp_path: Path) -> None:
     res = _task(services, tmp_path, {"prompt": "work", "tool_allowlist": ["nope"]})
     assert isinstance(res, ToolFailure)
     assert res.error == "tool_allowlist names an unknown tool: nope"
+    assert services.get_state("session") == (None, 0)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"prompt": "x", "bogus": 1}, "task field 'bogus' is not supported"),
+        ({"prompt": "x", "timeout": 1_000}, "does not apply to a background spawn"),
+        ({"prompt": "x", "output_offset": 1}, "does not apply to a background spawn"),
+        ({"prompt": "x", "output_limit": 10}, "does not apply to a background spawn"),
+        ({"prompt": "x", "after_sequence": 1}, "does not apply to a background spawn"),
+        ({"prompt": "x", "run_in_background": False, "after_sequence": 1}, "does not apply to a foreground spawn"),
+        ({"operation": "output", "task_id": "child-1", "label": "x"}, 'does not apply to operation="output"'),
+        ({"operation": "cancel", "task_id": "child-1", "max_steps": 2}, 'does not apply to operation="cancel"'),
+        ({"operation": "cancel", "task_id": "child-1", "run_in_background": True}, 'does not apply to operation="cancel"'),
+        ({"operation": "send", "task_id": "child-1", "prompt": "p", "timeout": 10}, 'does not apply to operation="send"'),
+        ({"operation": "history", "task_id": "child-1", "output_limit": 10}, 'does not apply to operation="history"'),
+    ],
+)
+def test_task_rejects_unknown_or_mode_irrelevant_fields(
+    tmp_path: Path,
+    arguments: Mapping[str, object],
+    message: str,
+) -> None:
+    services = FakeServices()
+    result = _task(services, tmp_path, arguments)
+    assert isinstance(result, ToolFailure)
+    assert message in result.error
+    assert services.spawn_calls == []
+    assert services.staged_events == []
     assert services.get_state("session") == (None, 0)
 
 
@@ -818,6 +1090,84 @@ def test_batch_with_no_created_child_fails(tmp_path: Path) -> None:
     assert services.roster == {}
     assert services.staged_events == []
     assert services.get_state("session") == (None, 0)
+
+
+def test_unprofiled_batch_does_not_load_the_agent_registry(tmp_path: Path) -> None:
+    workspace = _custom_workspace(
+        tmp_path,
+        "broken.md",
+        "---\nname: broken\ndescription: Broken helper\nmodel: endpoint/other\n---\nBroken.\n",
+    )
+    services = FakeServices()
+    res = _batch_at(services, workspace, {"tasks": [{"prompt": "one"}, {"prompt": "two"}]})
+    assert isinstance(res, ToolSuccess)
+    assert len(services.spawn_calls) == 2
+
+
+def test_profiled_batch_still_reports_a_malformed_agent_registry(tmp_path: Path) -> None:
+    workspace = _custom_workspace(
+        tmp_path,
+        "broken.md",
+        "---\nname: broken\ndescription: Broken helper\nmodel: endpoint/other\n---\nBroken.\n",
+    )
+    services = FakeServices()
+    res = _batch_at(services, workspace, {"tasks": [{"prompt": "one", "subagent_type": "execute"}]})
+    assert isinstance(res, ToolFailure)
+    assert "agent profile registry is unavailable" in res.error
+    assert services.spawn_calls == []
+
+
+def test_batch_parent_stop_preserves_created_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    services = FakeServices()
+    abort = Cancellation()
+    spawn = services.spawn_child
+
+    def spawn_then_stop(*args: object, **kwargs: object) -> str:
+        child_id = spawn(*args, **kwargs)  # type: ignore[arg-type]
+        abort.set_cancelled(True, reason="test stop")
+        return child_id
+
+    monkeypatch.setattr(services, "spawn_child", spawn_then_stop)
+    result = _batch_with_context(
+        services,
+        _context(tmp_path, abort_signal=abort),
+        {"tasks": [{"prompt": "one"}, {"prompt": "two"}, {"prompt": "three"}]},
+    )
+
+    assert isinstance(result, ToolFailure)
+    assert result.execution == UnconfirmedStop(cancellation_signalled=True)
+    payload = _payload(result)
+    group_id = str(payload["parallel_group_id"])
+    assert payload["partial"] is True
+    assert payload["task_ids"] == ["child-1"]
+    assert payload["created"] == [{"index": 0, "task_id": "child-1", "agent_uri": "agent://child-1"}]
+    assert payload["failed"] == [
+        {"index": 1, "error": "not started: the parent task was cancelled"},
+        {"index": 2, "error": "not started: the parent task was cancelled"},
+    ]
+    assert len(services.spawn_calls) == 1
+    state = _stored(services)
+    assert state.groups == {group_id: ("child-1",)}
+    assert set(state.children) == {"child-1"}
+    assert services.staged_events == [("task_batch_spawned", {"parallel_group_id": group_id, "task_ids": ["child-1"]})]
+
+
+def test_batch_store_failure_reports_created_children(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    services = FakeServices()
+
+    def refuse_state(*args: object, **kwargs: object) -> int:
+        raise RuntimeError("state store is unavailable")
+
+    monkeypatch.setattr(services, "replace_state", refuse_state)
+    result = _batch(services, tmp_path, {"tasks": [{"prompt": "one"}, {"prompt": "two"}]})
+
+    assert isinstance(result, ToolFailure)
+    assert "2 child session(s)" in result.error
+    assert "group mapping could not be saved" in result.error
+    payload = _payload(result)
+    assert payload["partial"] is True
+    assert payload["task_ids"] == ["child-1", "child-2"]
+    assert services.staged_events == []
 
 
 def test_batch_group_read_separates_ready_results_and_pending_runs(tmp_path: Path) -> None:

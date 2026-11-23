@@ -1,4 +1,4 @@
-"""End-to-end integration test for the Delegation plugin on the real core stack.
+"""End-to-end integration test for the Subagents plugin on the real core stack.
 
 Drives the real core, plugin runtime, loopback provider and durable storage: a parent run whose
 model calls ``task(prompt=..., run_in_background=false)`` spawns a real child session, the child's
@@ -20,11 +20,12 @@ import pytest
 from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
-from voidcode.core.engine import Core
+from voidcode.core.engine import Core, CoreResult
 from voidcode.core.events import child_completion_notice_id
 from voidcode.plugins.subagents.profiles.builtin import EXPLORE_AGENT
 from voidcode.plugins.subagents.subagents_plugin import OUTPUT_PAGE_BYTES
 from voidcode.sdk.codec import decode_tool_result
+from voidcode.sdk.tools import ToolFailure
 
 _SUBAGENTS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
@@ -37,7 +38,7 @@ def _admitted_source(tmp_path: Path) -> Path:
     return _SUBAGENTS_PLUGIN_ROOT
 
 
-def _core(tmp_path: Path, server: OpenAILoopbackServer, *, minimal: bool = False) -> Core:
+def _core(tmp_path: Path, server: OpenAILoopbackServer, *, minimal: bool = False, read_only: bool = False) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -47,7 +48,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, minimal: bool = False
         "model": {"model": "endpoint/test-model"},
         # Spawning is an external mutation: approval_mode "ask" would park the parent on an
         # approval request instead of running the delegated child.
-        "policy": {"approval_mode": "yolo"},
+        "policy": {"approval_mode": "yolo", "read_only": read_only},
         "providers": {
             "endpoint": {
                 "api_key": "loopback-test-key",
@@ -254,6 +255,101 @@ def test_profile_child_inherits_parent_scope_or_uses_explicit_narrowing(tmp_path
         children = payload["children"]
         assert isinstance(children, Mapping)
         assert children[child_id]["subagent_type"] == "explore"
+
+
+def test_readonly_parent_spawns_a_default_child_readonly(tmp_path: Path) -> None:
+    replies: list[dict[str, object]] = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [_task_call("call-task-readonly", {"prompt": "inspect the guide", "run_in_background": False})],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "child answer: inspected"}, finish="stop"),
+        openai_response(message={"role": "assistant", "content": "read-only delegation complete"}, finish="stop"),
+    ]
+    with loopback_server(replies) as server:
+        core = _core(tmp_path, server, minimal=True, read_only=True)
+        parent = core.create_session("parent").session_id
+        result = core.run("delegate read-only work", session_id=parent)
+
+        assert result.status == "completed", result.error
+        child_id = next(event.payload["child_session_id"] for event in core.events_after(parent) if event.event_type == "core.child_spawned")
+        assert core.store.session_overlays(child_id) == ("read-only",), "a read-only parent's stance reaches an unprofiled child"
+        assert core.session(child_id).status == "completed"
+        tool_messages = [message for message in _messages(server.requests[2]) if message.get("role") == "tool"]
+        assert len(tool_messages) == 1
+        assert '"status":"ok"' in str(tool_messages[0]["content"])
+
+
+def test_parent_cancel_during_foreground_join_keeps_mapping_and_stops_promptly(tmp_path: Path) -> None:
+    child_requested = Event()
+    release_child = Event()
+    child_reply = openai_response(message={"role": "assistant", "content": "child answer: done"}, finish="stop")
+
+    def before_reply(payload: dict[str, object], index: int) -> dict[str, object] | None:
+        _ = index
+        if any(message.get("content") == "child work" for message in _messages(payload)):
+            child_requested.set()
+            assert release_child.wait(10), "the child reply gate was never released"
+            return child_reply
+        return None
+
+    replies: list[dict[str, object]] = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [_task_call("call-cancel-1", {"prompt": "child work", "run_in_background": False})],
+            },
+            finish="tool_calls",
+        ),
+        child_reply,
+        openai_response(message={"role": "assistant", "content": "unexpected continuation"}, finish="stop"),
+    ]
+    with loopback_server(replies) as server:
+        server.before_reply = before_reply
+        core = _core(tmp_path, server, minimal=True)
+        parent = core.create_session("parent").session_id
+        outcome: dict[str, object] = {}
+
+        def drive() -> None:
+            outcome["result"] = core.run("delegate child work", session_id=parent)
+
+        worker = Thread(target=drive, daemon=True)
+        worker.start()
+        try:
+            assert child_requested.wait(10), "the child never reached the provider"
+            assert core.cancel_session(parent, "test stop") is True
+        finally:
+            release_child.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive(), "the parent stop waited out the join instead of returning within a slice"
+
+        result = outcome.get("result")
+        assert isinstance(result, CoreResult)
+        assert result.status == "interrupted"
+        events = list(core.events_after(parent))
+        child_id = next(event.payload["child_session_id"] for event in events if event.event_type == "core.child_spawned")
+        interrupted = [
+            event
+            for event in events
+            if event.event_type == "core.tool_interrupted" and event.payload.get("call", {}).get("tool_call_id") == "call-cancel-1"
+        ]
+        assert len(interrupted) == 1
+        decoded = decode_tool_result(interrupted[0].payload["result"])
+        assert isinstance(decoded, ToolFailure)
+        assert decoded.execution is not None and decoded.execution.cancellation_signalled is True
+        assert decoded.body is not None
+        assert decoded.body.as_payload()["task_id"] == child_id
+
+        stored = core.store.plugin_state("subagents", "session", parent)
+        assert stored is not None
+        children = stored[0]["children"]
+        assert isinstance(children, Mapping)
+        assert child_id in children, "the created child mapping survived the parent stop"
 
 
 def test_standard_markdown_agent_applies_its_prompt_and_turn_cap(tmp_path: Path) -> None:

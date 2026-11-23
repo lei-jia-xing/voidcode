@@ -24,9 +24,6 @@ class AgentRegistry:
     def get(self, name: str) -> AgentDefinition | None:
         return self.agents.get(name)
 
-    def list_agents(self) -> tuple[AgentDefinition, ...]:
-        return tuple(self.agents.values())
-
 
 def user_agent_dir(env: Mapping[str, str] | None = None) -> Path:
     environment = os.environ if env is None else env

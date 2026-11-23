@@ -44,6 +44,7 @@ from voidcode.sdk.tools import (
     ToolFailure,
     ToolResult,
     ToolSuccess,
+    UnconfirmedStop,
 )
 
 from .profiles.registry import AgentRegistry, load_agent_registry
@@ -51,17 +52,52 @@ from .profiles.registry import AgentRegistry, load_agent_registry
 SCHEMA_VERSION = 1
 DEFAULT_JOIN_TIMEOUT_MS = 300_000
 DEFAULT_JOIN_TIMEOUT_SECONDS = DEFAULT_JOIN_TIMEOUT_MS / 1000.0
+#: One join slice keeps a parent stop observable without waiting out the caller's whole bound.
+JOIN_SLICE_SECONDS = 1.0
 MAX_BATCH_SIZE = 100
 CANCEL_REASON = "parent cancellation via task tool"
 #: One output page keeps the result body + text well under the core's 50 KiB projection.
 OUTPUT_PAGE_BYTES = 8 * 1024
 MAX_OUTPUT_PAGE_BYTES = 16 * 1024
+#: Full-output structured validation never reads more than this many artifact bytes.
+MAX_STRUCTURED_OUTPUT_BYTES = 4 * 1024 * 1024
+_STRUCTURED_READ_PAGE_BYTES = 64 * 1024
 #: Live history is read in event pages; the renderer bounds the rendered page independently.
 DEFAULT_HISTORY_EVENTS = 100
 MAX_HISTORY_EVENTS = 200
 
 _TASK_OPERATIONS: tuple[str, ...] = ("output", "cancel", "send", "history")
 _BATCH_OPERATIONS: tuple[str, ...] = ("output",)
+_TASK_INPUT_KEYS: frozenset[str] = frozenset(
+    {
+        "prompt",
+        "label",
+        "subagent_type",
+        "tool_allowlist",
+        "max_steps",
+        "result_schema",
+        "run_in_background",
+        "operation",
+        "task_id",
+        "timeout",
+        "output_offset",
+        "output_limit",
+        "after_sequence",
+        "history_offset",
+        "limit",
+    }
+)
+_TASK_FIELD_INPUT_NAMES: Mapping[str, str] = {"timeout_seconds": "timeout", "history_limit": "limit"}
+_SPAWN_INPUT_KEYS: frozenset[str] = frozenset(
+    {"prompt", "label", "tool_allowlist", "max_steps", "run_in_background", "subagent_type", "result_schema", "operation"}
+)
+_FOREGROUND_SPAWN_INPUT_KEYS: frozenset[str] = _SPAWN_INPUT_KEYS | {"timeout", "output_offset", "output_limit"}
+_CONTROL_INPUT_KEYS: Mapping[str, frozenset[str]] = {
+    "output": frozenset({"operation", "task_id", "timeout", "output_offset", "output_limit"}),
+    "cancel": frozenset({"operation", "task_id"}),
+    "send": frozenset({"operation", "task_id", "prompt"}),
+    "history": frozenset({"operation", "task_id", "after_sequence", "history_offset", "limit"}),
+}
 _CHILD_KEYS: frozenset[str] = frozenset({"label", "group_id", "subagent_type", "result_schema"})
 _ITEM_KEYS: frozenset[str] = frozenset({"prompt", "label", "tool_allowlist", "max_steps", "subagent_type", "result_schema"})
 _BATCH_KEYS: frozenset[str] = frozenset({"tasks", "operation", "parallel_group_id", "context"})
@@ -279,7 +315,7 @@ def _resolve_subagent(registry: AgentRegistry, subagent_type: str, *, where: str
 
 
 class TaskArgsModel(BaseModel):
-    model_config = ConfigDict(extra="ignore", strict=True, frozen=True)
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     prompt: str | None = None
     label: str = ""
@@ -296,6 +332,15 @@ class TaskArgsModel(BaseModel):
     after_sequence: int = 0
     history_offset: int = 0
     history_limit: int = Field(default=DEFAULT_HISTORY_EVENTS, alias="limit")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _known_fields(cls, data: object) -> object:
+        if isinstance(data, Mapping):
+            unknown = sorted(str(key) for key in data if key not in _TASK_INPUT_KEYS)
+            if unknown:
+                raise ValueError(f"task field '{unknown[0]}' is not supported")
+        return data
 
     @field_validator("prompt", mode="before")
     @classmethod
@@ -414,6 +459,16 @@ class TaskArgsModel(BaseModel):
                 raise ValueError("task tool_allowlist applies to a spawn only")
             if self.result_schema is not None:
                 raise ValueError("task result_schema declares the delivery shape and applies to a spawn only")
+        if self.operation is None:
+            allowed = _SPAWN_INPUT_KEYS if self.run_in_background else _FOREGROUND_SPAWN_INPUT_KEYS
+            mode = "a background spawn" if self.run_in_background else "a foreground spawn"
+        else:
+            allowed = _CONTROL_INPUT_KEYS[self.operation]
+            mode = f'operation="{self.operation}"'
+        supplied = {_TASK_FIELD_INPUT_NAMES.get(field, field) for field in self.model_fields_set}
+        irrelevant = sorted(supplied - allowed)
+        if irrelevant:
+            raise ValueError(f"task field '{irrelevant[0]}' does not apply to {mode}")
         return self
 
 
@@ -526,7 +581,7 @@ class BatchArgsModel(BaseModel):
 
 
 class WaitArgsModel(BaseModel):
-    """task_wait takes no arguments; any supplied key fails closed."""
+    """``wait`` takes no arguments; any supplied key fails closed."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -592,6 +647,9 @@ class TaskBody:
     #: undelivered, or uncaptured — never valid, never a guess.
     data: Mapping[str, object] | None = None
     parse_error: Mapping[str, object] | None = None
+    #: Committed cause when a declared schema could not be checked against full output
+    #: (no captured text, or the text exceeded the structured-read byte cap).
+    structured_unavailable: str | None = None
     #: Current status/latest published output; distinct from the transcript.
     agent_uri: str | None = None
     #: Live transcript and immutable saved-history references.
@@ -627,6 +685,7 @@ class TaskBody:
             "history_error",
             "data",
             "parse_error",
+            "structured_unavailable",
             "agent_uri",
             "history_uri",
             "history_sha256",
@@ -685,6 +744,81 @@ class BatchBody:
         return payload
 
 
+def _stopped_failure(tool_name: str, message: str, *, body: TaskBody | BatchBody | None = None) -> ToolFailure:
+    """A parent-stop failure that keeps created-child facts visible and commits staged work."""
+    return ToolFailure(
+        tool_name=tool_name,
+        error=message,
+        output=TextOutput(text=message),
+        body=body,
+        execution=UnconfirmedStop(cancellation_signalled=True),
+    )
+
+
+def _join_child_abortable(
+    services: ChildServices,
+    child_id: str,
+    timeout_seconds: float,
+    context: ToolContext,
+) -> ChildOutcome | None:
+    """Join one child run in short slices; ``None`` means the parent was stopped.
+
+    The slice bounds sum to the caller's timeout, so a parent stop is observed within one
+    slice and never held for the whole default 300-second wait.
+    """
+    remaining = timeout_seconds
+    while True:
+        if _parent_stopped(context):
+            return None
+        slice_seconds = min(JOIN_SLICE_SECONDS, remaining)
+        outcome = services.join_child(child_id, timeout_seconds=slice_seconds)
+        if _parent_stopped(context):
+            return None
+        if outcome.status != "running" or remaining <= slice_seconds:
+            return outcome
+        remaining -= slice_seconds
+
+
+def _spawn_body(
+    args: TaskArgsModel,
+    child_id: str | None,
+    *,
+    status: str | None = None,
+    run_id: str | None = None,
+    error: str | None = None,
+) -> TaskBody:
+    """The spawn fact body; a created id survives even when the call is cancelled."""
+    return TaskBody(
+        operation="spawn",
+        task_id=child_id,
+        label=args.label,
+        status=status,
+        subagent_type=args.subagent_type,
+        run_id=run_id,
+        error=error,
+        agent_uri=None if child_id is None else _agent_uri(child_id),
+        history_uri=None if child_id is None else _transcript_uri(child_id),
+    )
+
+
+def _batch_body(
+    group_id: str,
+    created: Sequence[_BatchChild],
+    failed: Sequence[tuple[int, str]],
+    *,
+    partial: bool = True,
+) -> BatchBody:
+    """The group spawn body; created ids survive a partial or cancelled call."""
+    return BatchBody(
+        operation="spawn",
+        parallel_group_id=group_id,
+        task_ids=tuple(entry.task_id for entry in created),
+        partial=partial or bool(failed),
+        created=tuple(entry.as_payload() for entry in created),
+        failed=tuple({"index": index, "error": message} for index, message in failed),
+    )
+
+
 # --- Rendering ---
 
 
@@ -704,16 +838,17 @@ def _spawn_child(
     profile: AgentDefinition | None,
     tool_allowlist: tuple[str, ...] | None,
     notify_on_completion: bool,
+    origin_readonly: bool | None,
     result_schema: Mapping[str, object] | None = None,
 ) -> str:
-    """Apply profile text and stance; only the caller narrows the inherited scope."""
+    """Apply profile text and stance; a read-only parent keeps the child read-only."""
     body, readonly, tool_allowlist, max_steps = apply_agent_profile(profile, prompt, tool_allowlist, max_steps)
     child_id = services.spawn_child(
         body,
         label=label,
         tool_allowlist=tool_allowlist,
         max_steps=max_steps,
-        readonly=readonly,
+        readonly=readonly or origin_readonly is True,
         notify_on_completion=notify_on_completion,
         result_schema=result_schema,
     )
@@ -726,6 +861,12 @@ def agent_definition(request: AgentDefinitionRequest, caller: PluginQueryCaller)
     except (ValueError, OSError) as exc:
         raise ValueError(f"agent profile registry is unavailable: {exc}") from exc
     return registry.get(request.name)
+
+
+def _parent_stopped(context: ToolContext) -> bool:
+    """Whether this invocation's parent run was cancelled; checked between side effects."""
+    signal = context.abort_signal
+    return signal is not None and signal.cancelled
 
 
 def _failure(tool_name: str, message: str) -> ToolResult:
@@ -754,11 +895,6 @@ class _OutputFacts:
     output_bytes: int | None = None
     next_output_offset: int | None = None
     output_preview: str | None = None
-    output_error: str | None = None
-    history_error: str | None = None
-    history_uri: str | None = None
-    history_sha256: str | None = None
-    run_id: str | None = None
 
 
 def _resource_caller(context: ToolContext) -> ResourceReadCaller:
@@ -772,7 +908,6 @@ def _resource_caller(context: ToolContext) -> ResourceReadCaller:
 
 
 def _artifact_output_facts(
-    outcome: ChildOutcome,
     services: ArtifactServices,
     caller: ResourceReadCaller,
     digest: str,
@@ -808,11 +943,6 @@ def _artifact_output_facts(
         output_offset=offset,
         output_bytes=total_bytes,
         next_output_offset=next_offset,
-        history_uri=_transcript_uri(outcome.child_session_id),
-        history_sha256=outcome.history_sha256,
-        run_id=outcome.run_id,
-        output_error=outcome.output_error,
-        history_error=outcome.history_error,
     )
 
 
@@ -825,30 +955,20 @@ def _output_facts(
 ) -> _OutputFacts:
     """The bounded page plus its durable references; never a megabyte of inline output."""
     if outcome.output_sha256 is not None:
-        return _artifact_output_facts(outcome, services, caller, outcome.output_sha256, offset, limit)
+        return _artifact_output_facts(services, caller, outcome.output_sha256, offset, limit)
     if outcome.output is not None:
         raw = outcome.output.encode("utf-8")
         if offset > 0 or len(raw) > limit:
             reference = services.spill_artifact(raw, media_type="text/plain; charset=utf-8")
-            return _artifact_output_facts(outcome, services, caller, reference.sha256, offset, limit)
+            return _artifact_output_facts(services, caller, reference.sha256, offset, limit)
         return _OutputFacts(
             output=outcome.output,
             output_offset=0,
             output_bytes=len(raw),
-            history_uri=_transcript_uri(outcome.child_session_id),
-            history_sha256=outcome.history_sha256,
-            run_id=outcome.run_id,
-            output_error=outcome.output_error,
-            history_error=outcome.history_error,
         )
     return _OutputFacts(
         output_preview=outcome.output_preview,
         output_bytes=outcome.output_bytes,
-        history_uri=_transcript_uri(outcome.child_session_id),
-        history_sha256=outcome.history_sha256,
-        run_id=outcome.run_id,
-        output_error=outcome.output_error,
-        history_error=outcome.history_error,
     )
 
 
@@ -860,8 +980,9 @@ class _StructuredFacts:
     validated against full captured text. All-``None`` means either undeclared
     (the caller held no schema, so no reading was attempted) or undelivered
     (a schema is declared but the run is not completed, so status governs).
-    ``unavailable`` is set only when a schema was declared, the run completed,
-    but no full text was captured — the committed capture cause, never a guess.
+    ``unavailable`` is set when a schema was declared and the run completed, but
+    no full text was captured or the text exceeded the structured-read byte cap;
+    it carries the committed capture cause or the measured oversize cause.
     """
 
     data: dict[str, object] | None = None
@@ -869,23 +990,40 @@ class _StructuredFacts:
     unavailable: str | None = None
 
 
-def _full_output_text(services: ArtifactServices, outcome: ChildOutcome) -> str | None:
-    """Full terminal text for structured validation; ``None`` when uncaptured.
+@dataclass(frozen=True, slots=True)
+class _FullOutput:
+    """Full terminal text or the typed reason it was not read."""
 
-    Artifact-backed output is joined as bytes and decoded once as strict
-    UTF-8; inline output is already whole. Preview bytes are never returned.
+    text: str | None = None
+    error: str | None = None
+
+
+def _full_output_text(services: ArtifactServices, outcome: ChildOutcome) -> _FullOutput:
+    """Full terminal text for structured validation, bounded by ``MAX_STRUCTURED_OUTPUT_BYTES``.
+
+    Artifact-backed output is joined as bytes and decoded once as strict UTF-8; inline
+    output is already whole. Preview bytes are never returned, and an artifact over the
+    cap is refused before the read can grow without bound.
     """
     if outcome.output_sha256 is not None:
         chunks: list[bytes] = []
         offset = 0
         while True:
-            page = services.read_artifact(outcome.output_sha256, offset=offset, limit=65536)
+            page = services.read_artifact(outcome.output_sha256, offset=offset, limit=_STRUCTURED_READ_PAGE_BYTES)
+            if not page.data and not page.eof:
+                return _FullOutput(error="structured validation failed: artifact read made no progress")
+            if offset + len(page.data) > MAX_STRUCTURED_OUTPUT_BYTES:
+                return _FullOutput(
+                    error=(
+                        f"structured validation skipped: full output is {page.artifact.bytes} bytes, above the {MAX_STRUCTURED_OUTPUT_BYTES}-byte cap"
+                    )
+                )
             chunks.append(bytes(page.data))
             if page.eof:
                 break
             offset += len(page.data)
-        return b"".join(chunks).decode("utf-8")
-    return outcome.output
+        return _FullOutput(text=b"".join(chunks).decode("utf-8"))
+    return _FullOutput(text=outcome.output)
 
 
 def _structured_facts(
@@ -898,10 +1036,12 @@ def _structured_facts(
         return _StructuredFacts()
     if outcome.status != "completed":
         return _StructuredFacts()
-    full_text = _full_output_text(services, outcome)
-    if full_text is None:
+    full = _full_output_text(services, outcome)
+    if full.error is not None:
+        return _StructuredFacts(unavailable=full.error)
+    if full.text is None:
         return _StructuredFacts(unavailable=outcome.output_error or "no full output was captured")
-    data, error = validate_child_text(result_schema, full_text)
+    data, error = validate_child_text(result_schema, full.text)
     if error is not None:
         return _StructuredFacts(parse_error=error)
     assert data is not None
@@ -1004,6 +1144,7 @@ def _outcome_entry(
         history_error=outcome.history_error,
         data=structured.data,
         parse_error=None if structured.parse_error is None else structured.parse_error.as_payload(),
+        structured_unavailable=structured.unavailable,
         agent_uri=_agent_uri(task_id),
         history_uri=_transcript_uri(task_id),
         history_sha256=outcome.history_sha256,
@@ -1145,10 +1286,14 @@ TASK_DESCRIPTION = (
     "- subagent_type runs the child under a profile: a builtin (execute, review, explore, "
     "research, plan) or a workspace custom profile. The child's prompt becomes that profile's "
     "text plus your prompt, its tools inherit your scope, and a read-only profile "
-    "keeps the child read-only.\n"
+    "keeps the child read-only. Your own read-only stance is always inherited; a profile can "
+    "only keep the child read-only, never widen it.\n"
     "- tool_allowlist narrows the child's tools and can never widen your own scope; it can be combined with "
     "subagent_type.\n"
     "- max_steps is an optional explicit provider-turn cap for the child.\n"
+    "- result_schema optionally declares one JSON Schema object the child's final result must "
+    "match. Reads then report validated data or a parse_error, never a guess; when full output "
+    "is unavailable or over the structured-read cap, structured_unavailable carries the cause.\n"
     "- run_in_background=true (default) starts the child and returns its task_id immediately. Its "
     "completion is then delivered to this session automatically as an untrusted notice; use the "
     "no-argument wait tool to receive the first undelivered owned child results.\n"
@@ -1162,9 +1307,10 @@ TASK_DESCRIPTION = (
     "Page large output with output_offset/output_limit; the full output stays in an immutable "
     'artifact. operation="output" consumes that exact run\'s completion notice atomically.\n'
     '- operation="send" with task_id and prompt adds a follow-up in the SAME child session. The '
-    "receipt says started or queued; it never claims consumption or completion. A running or "
-    "approval-parked child takes the message at its next safe boundary. Your tool scope and "
-    "read-only stance cannot widen the child.\n"
+    "receipt says started, queued, or parked; it never claims consumption or completion. A "
+    "running child may claim a queued message at its next safe boundary, while a parked or "
+    "interrupted child needs an explicit resume (or cancellation) before a parked message can be "
+    "consumed. Your tool scope and read-only stance cannot widen the child.\n"
     '- operation="history" with task_id pages the readable persisted child transcript (user, '
     "assistant, tool calls/results, progress) without a separate resource read. Pass "
     "after_sequence and history_offset from the previous page; pass limit for more events per page. "
@@ -1172,8 +1318,8 @@ TASK_DESCRIPTION = (
     '- operation="cancel" with task_id requests cancellation of a child this session started, '
     "including its queued follow-ups.\n"
     "\n"
-    "There is no roster listing, keep-alive, retry, structured-output validation, or child-to-parent "
-    "chat. Do not relaunch equivalent work. Example follow-up: "
+    "There is no roster listing, keep-alive, retry, or child-to-parent chat. Do not relaunch "
+    "equivalent work. Example follow-up: "
     'task(operation="send", task_id="<id>", prompt="Now check the north entrance only").'
 )
 
@@ -1183,8 +1329,9 @@ TASK_BATCH_DESCRIPTION = (
     "\n"
     "Usage:\n"
     "- Pass tasks with 1-100 items. Every item requires prompt and accepts optional label, "
-    "tool_allowlist, max_steps, and subagent_type (a builtin or workspace custom child "
-    "profile).\n"
+    "tool_allowlist, max_steps, subagent_type (a builtin or workspace custom child "
+    "profile), and result_schema (one JSON Schema object the child's final result must match; "
+    "reads report validated data, parse_error, or structured_unavailable).\n"
     "- Pass context with optional shared background declared once for the whole group. It is "
     'merged into every item\'s prompt under fixed "Shared context" and "Task" labels; an '
     "absent or blank context leaves item prompts byte-identical. Context applies to a spawn "
@@ -1314,8 +1461,17 @@ class TaskTool:
 
     def _spawn(self, args: TaskArgsModel, state: DelegationState, version: int, context: ToolContext, services: PluginServices) -> ToolResult:
         prompt = args.prompt or ""
+        if _parent_stopped(context):
+            message = "task not started: the parent task was cancelled before a child was spawned."
+            return _stopped_failure(self.definition.name, message, body=_spawn_body(args, None, error=message))
         try:
             profile = _load_profile(context, args.subagent_type, where="task")
+        except (ValueError, PermissionError, RuntimeError) as exc:
+            return _failure(self.definition.name, str(exc))
+        if _parent_stopped(context):
+            message = "task not started: the parent task was cancelled before a child was spawned."
+            return _stopped_failure(self.definition.name, message, body=_spawn_body(args, None, error=message))
+        try:
             child_id = _spawn_child(
                 services,
                 prompt=prompt,
@@ -1324,20 +1480,38 @@ class TaskTool:
                 profile=profile,
                 tool_allowlist=args.tool_allowlist,
                 notify_on_completion=args.run_in_background,
+                origin_readonly=context.origin_readonly,
                 result_schema=args.result_schema,
             )
         except (ValueError, PermissionError, RuntimeError) as exc:
             return _failure(self.definition.name, str(exc))
-        _store(services).save(
-            _with_children(
-                state,
-                ((child_id, ChildRecord(label=args.label, subagent_type=args.subagent_type, result_schema=args.result_schema)),),
-                group_id=None,
-            ),
-            version,
-        )
-        services.stage_event("task_spawned", {"task_id": child_id, "label": args.label, "group_id": None})
+        record = ChildRecord(label=args.label, subagent_type=args.subagent_type, result_schema=args.result_schema)
+        try:
+            _store(services).save(_with_children(state, ((child_id, record),), group_id=None), version)
+        except Exception as exc:
+            message = (
+                f"{_header(child_id, args.label, args.subagent_type)} child session was created, "
+                f"but its mapping could not be saved: {type(exc).__name__}: {exc}"
+            )
+            body = _spawn_body(args, child_id, error=message)
+            if _parent_stopped(context):
+                return _stopped_failure(self.definition.name, message, body=body)
+            return ToolFailure(tool_name=self.definition.name, error=message, output=TextOutput(text=message), body=body)
+        try:
+            services.stage_event("task_spawned", {"task_id": child_id, "label": args.label, "group_id": None})
+        except Exception as exc:
+            message = (
+                f"{_header(child_id, args.label, args.subagent_type)} child session was created and its mapping was saved, "
+                f"but its roster event could not be staged: {type(exc).__name__}: {exc}"
+            )
+            body = _spawn_body(args, child_id, error=message)
+            if _parent_stopped(context):
+                return _stopped_failure(self.definition.name, message, body=body)
+            return ToolFailure(tool_name=self.definition.name, error=message, output=TextOutput(text=message), body=body)
         if args.run_in_background:
+            if _parent_stopped(context):
+                message = f"{_header(child_id, args.label, args.subagent_type)} was created, then the parent task was cancelled."
+                return _stopped_failure(self.definition.name, message, body=_spawn_body(args, child_id, error=message))
             text = (
                 f"{_header(child_id, args.label, args.subagent_type)} started in the background.\n"
                 "Its completion will be delivered to this session automatically as an untrusted notice.\n"
@@ -1358,13 +1532,40 @@ class TaskTool:
                 ),
             )
         try:
-            outcome = services.join_child(child_id, timeout_seconds=args.timeout_seconds)
+            outcome = _join_child_abortable(services, child_id, args.timeout_seconds, context)
+        except Exception as exc:
+            message = (
+                f"{_header(child_id, args.label, args.subagent_type)} child session was created, "
+                f"but joining its current run failed: {type(exc).__name__}: {exc}"
+            )
+            body = _spawn_body(args, child_id, error=message)
+            if _parent_stopped(context):
+                return _stopped_failure(self.definition.name, message, body=body)
+            return ToolFailure(tool_name=self.definition.name, error=message, output=TextOutput(text=message), body=body)
+        if outcome is None:
+            message = f"{_header(child_id, args.label, args.subagent_type)} was created, then the parent task was cancelled."
+            return _stopped_failure(self.definition.name, message, body=_spawn_body(args, child_id, error=message))
+        try:
             budget_exhaustion = _budget_exhaustion_payload(outcome)
             facts = _output_facts(outcome, services, _resource_caller(context), args.output_offset, args.output_limit)
             structured = _structured_facts(args.result_schema, outcome, services)
             _acknowledge(outcome, services)
         except (ValueError, PermissionError, RuntimeError) as exc:
+            if _parent_stopped(context):
+                message = str(exc)
+                return _stopped_failure(
+                    self.definition.name,
+                    message,
+                    body=_spawn_body(args, child_id, status=outcome.status, run_id=outcome.run_id, error=message),
+                )
             return _failure(self.definition.name, str(exc))
+        if _parent_stopped(context):
+            message = f"{_header(child_id, args.label, args.subagent_type)} was created, then the parent task was cancelled."
+            return _stopped_failure(
+                self.definition.name,
+                message,
+                body=_spawn_body(args, child_id, status=outcome.status, run_id=outcome.run_id, error=message),
+            )
         return ToolSuccess(
             self.definition.name,
             TextOutput(
@@ -1398,6 +1599,7 @@ class TaskTool:
                 history_error=outcome.history_error,
                 data=structured.data,
                 parse_error=None if structured.parse_error is None else structured.parse_error.as_payload(),
+                structured_unavailable=structured.unavailable,
                 agent_uri=_agent_uri(child_id),
                 history_uri=_transcript_uri(child_id),
                 history_sha256=outcome.history_sha256,
@@ -1463,9 +1665,15 @@ class TaskTool:
                 f"started in the same session (run {receipt.run_id or 'unknown'}); "
                 'the result will arrive as a completion or via task(operation="output").'
             )
+        elif receipt.delivery == "queued":
+            detail = (
+                "queued behind the child's current work; a safe boundary may claim it later. "
+                "This receipt does not mean the child read or finished it."
+            )
         else:
             detail = (
-                "queued behind the child's current work; it is consumed at the next safe boundary. "
+                "durably accepted but not claimable now: the child is interrupted/parked and needs "
+                "an explicit resume (or cancellation) before it can consume the message. "
                 "This receipt does not mean the child read or finished it."
             )
         text = "\n".join(
@@ -1550,11 +1758,43 @@ class TaskTool:
         context: ToolContext,
         services: PluginServices,
     ) -> ToolResult:
-        outcome = services.join_child(task_id, timeout_seconds=args.timeout_seconds)
+        outcome = _join_child_abortable(services, task_id, args.timeout_seconds, context)
+        if outcome is None:
+            message = f"{_header(task_id, label, subagent_type)} join was cancelled with the parent task."
+            return _stopped_failure(
+                self.definition.name,
+                message,
+                body=TaskBody(
+                    operation="output",
+                    task_id=task_id,
+                    label=label,
+                    subagent_type=subagent_type,
+                    error=message,
+                    agent_uri=_agent_uri(task_id),
+                    history_uri=_transcript_uri(task_id),
+                ),
+            )
         facts = _output_facts(outcome, services, _resource_caller(context), args.output_offset, args.output_limit)
         budget_exhaustion = _budget_exhaustion_payload(outcome)
         structured = _structured_facts(result_schema, outcome, services)
         _acknowledge(outcome, services)
+        if _parent_stopped(context):
+            message = f"{_header(task_id, label, subagent_type)} result was ready, then the parent task was cancelled."
+            return _stopped_failure(
+                self.definition.name,
+                message,
+                body=TaskBody(
+                    operation="output",
+                    task_id=task_id,
+                    label=label,
+                    status=outcome.status,
+                    run_id=outcome.run_id,
+                    subagent_type=subagent_type,
+                    error=message,
+                    agent_uri=_agent_uri(task_id),
+                    history_uri=_transcript_uri(task_id),
+                ),
+            )
         return ToolSuccess(
             self.definition.name,
             TextOutput(
@@ -1588,6 +1828,7 @@ class TaskTool:
                 history_error=outcome.history_error,
                 data=structured.data,
                 parse_error=None if structured.parse_error is None else structured.parse_error.as_payload(),
+                structured_unavailable=structured.unavailable,
                 agent_uri=_agent_uri(task_id),
                 history_uri=_transcript_uri(task_id),
                 history_sha256=outcome.history_sha256,
@@ -1693,15 +1934,28 @@ class TaskBatchTool:
         group_id = uuid4().hex
         created: list[_BatchChild] = []
         failed: list[tuple[int, str]] = []
-        try:
-            registry = _load_registry(context)
-            resolved = tuple(
-                _resolve_subagent(registry, item.subagent_type, where=f"task_batch item {index}") if item.subagent_type is not None else None
-                for index, item in enumerate(items)
-            )
-        except ValueError as exc:
-            return _failure(self.definition.name, str(exc))
+        if _parent_stopped(context):
+            failed = [(index, "not started: the parent task was cancelled") for index in range(len(items))]
+            message = f"task_batch did not start: the parent task was cancelled before spawning in group {group_id}."
+            return _stopped_failure(self.definition.name, message, body=_batch_body(group_id, created, failed))
+        resolved: tuple[AgentDefinition | None, ...]
+        if any(item.subagent_type is not None for item in items):
+            try:
+                registry = _load_registry(context)
+                resolved = tuple(
+                    _resolve_subagent(registry, item.subagent_type, where=f"task_batch item {index}") if item.subagent_type is not None else None
+                    for index, item in enumerate(items)
+                )
+            except ValueError as exc:
+                return _failure(self.definition.name, str(exc))
+        else:
+            resolved = (None,) * len(items)
+        stopped_early = False
         for index, (item, profile) in enumerate(zip(items, resolved, strict=True)):
+            if _parent_stopped(context):
+                stopped_early = True
+                failed.extend((rest, "not started: the parent task was cancelled") for rest in range(index, len(items)))
+                break
             effective_prompt = _merge_batch_prompt(shared_context, item.prompt)
             try:
                 child_id = _spawn_child(
@@ -1712,6 +1966,7 @@ class TaskBatchTool:
                     profile=profile,
                     tool_allowlist=item.tool_allowlist,
                     notify_on_completion=True,
+                    origin_readonly=context.origin_readonly,
                     result_schema=item.result_schema,
                 )
             except (ValueError, PermissionError, RuntimeError) as exc:
@@ -1719,38 +1974,58 @@ class TaskBatchTool:
                 continue
             created.append(_BatchChild(index=index, task_id=child_id, subagent_type=item.subagent_type))
         if not created:
+            if _parent_stopped(context):
+                message = "task_batch created no child session: the parent task was cancelled during the group spawn."
+                return _stopped_failure(self.definition.name, message, body=_batch_body(group_id, created, failed))
             return _failure(self.definition.name, f"task_batch created no child session: {failed[0][1]}")
-        _store(services).save(
-            _with_children(
-                state,
-                tuple(
-                    (
-                        entry.task_id,
-                        ChildRecord(
-                            label=items[entry.index].label,
-                            group_id=group_id,
-                            subagent_type=entry.subagent_type,
-                            result_schema=items[entry.index].result_schema,
-                        ),
-                    )
-                    for entry in created
+        try:
+            _store(services).save(
+                _with_children(
+                    state,
+                    tuple(
+                        (
+                            entry.task_id,
+                            ChildRecord(
+                                label=items[entry.index].label,
+                                group_id=group_id,
+                                subagent_type=entry.subagent_type,
+                                result_schema=items[entry.index].result_schema,
+                            ),
+                        )
+                        for entry in created
+                    ),
+                    group_id=group_id,
                 ),
-                group_id=group_id,
-            ),
-            version,
-        )
-        services.stage_event("task_batch_spawned", {"parallel_group_id": group_id, "task_ids": [entry.task_id for entry in created]})
+                version,
+            )
+        except Exception as exc:
+            message = (
+                f"task_batch created {len(created)} child session(s) in group {group_id}, "
+                f"but the group mapping could not be saved: {type(exc).__name__}: {exc}"
+            )
+            body = _batch_body(group_id, created, failed)
+            if _parent_stopped(context):
+                return _stopped_failure(self.definition.name, message, body=body)
+            return ToolFailure(tool_name=self.definition.name, error=message, output=TextOutput(text=message), body=body)
+        try:
+            services.stage_event("task_batch_spawned", {"parallel_group_id": group_id, "task_ids": [entry.task_id for entry in created]})
+        except Exception as exc:
+            message = (
+                f"task_batch created {len(created)} child session(s) in group {group_id} and saved the group mapping, "
+                f"but its roster event could not be staged: {type(exc).__name__}: {exc}"
+            )
+            body = _batch_body(group_id, created, failed)
+            if _parent_stopped(context):
+                return _stopped_failure(self.definition.name, message, body=body)
+            return ToolFailure(tool_name=self.definition.name, error=message, output=TextOutput(text=message), body=body)
+        partial = bool(failed) or stopped_early
+        if _parent_stopped(context):
+            message = f"task_batch started {len(created)} child session(s) in group {group_id}, then the parent task was cancelled."
+            return _stopped_failure(self.definition.name, message, body=_batch_body(group_id, created, failed, partial=partial))
         return ToolSuccess(
             self.definition.name,
             TextOutput(_batch_text(group_id, created, failed)),
-            body=BatchBody(
-                operation="spawn",
-                parallel_group_id=group_id,
-                task_ids=tuple(entry.task_id for entry in created),
-                partial=bool(failed),
-                created=tuple(entry.as_payload() for entry in created),
-                failed=tuple({"index": index, "error": message} for index, message in failed),
-            ),
+            body=_batch_body(group_id, created, failed, partial=partial),
         )
 
     def _group_output(

@@ -1,4 +1,4 @@
-"""Shared named-agent definition contract, independent of the delegation plugin.
+"""Shared named-agent definition contract, independent of the subagents plugin.
 
 QueryUnavailable means no implementation; None means no such agent.
 Malformed answers are contract violations, never an unknown agent.
