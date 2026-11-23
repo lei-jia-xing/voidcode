@@ -51,6 +51,11 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[Obse
         logical_turn = intent_ev.payload.get("logical_turn")
         if not isinstance(provider_name, str) or not provider_name or not isinstance(model_name, str) or not model_name:
             raise ValueError(f"provider intent at {disp_seq_val} lacks an authentic provider/model identity")
+        allocation = intent_ev.payload.get("projection_allocation")
+        raw_limit = allocation.get("limit_tokens") if isinstance(allocation, Mapping) else None
+        # The allocation is the sizing decision the request was actually assembled with.
+        # Absent, null, or malformed is unknown -- never zero or a guessed window.
+        input_limit_tokens = raw_limit if isinstance(raw_limit, int) and not isinstance(raw_limit, bool) and raw_limit > 0 else None
         ms = ev.payload.get("elapsed_ms")
         elapsed_sec = (ms / 1000.0) if ms is not None and isinstance(ms, (int, float)) else None
         usage_payload: Mapping[str, object] | None = None
@@ -69,6 +74,7 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[Obse
             "provider_name": provider_name,
             "model_name": model_name,
             "usage": usage_payload,
+            "input_limit_tokens": input_limit_tokens,
             "elapsed_seconds": elapsed_sec,
             "cost_usd": cost_usd,
         }

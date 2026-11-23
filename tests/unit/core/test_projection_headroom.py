@@ -31,7 +31,7 @@ from voidcode.core.coverage import (
 from voidcode.core.engine import Core, _Cursor, _Execution
 from voidcode.core.storage.store import StoredEvent
 from voidcode.sdk.codec import decode_tool_result, encode_provider_result
-from voidcode.sdk.hooks import RequestWindow, WindowSegment
+from voidcode.sdk.hooks import RequestWindow, UsageFact, WindowSegment
 from voidcode.sdk.provider import ModelContextLimits, ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.tools import TOOL_OUTPUT_BYTES
 from voidcode.sdk.transcript import TranscriptDispatch, decode_transcript_content, encode_transcript_content
@@ -491,6 +491,24 @@ def test_registered_provider_delegates_limits_without_network() -> None:
 
 
 # --- Dispatch: adaptive shrink with intact identities (A) + first-dispatch fixed (C) ---
+
+
+def test_usage_fact_exposes_the_persisted_effective_input_limit(tmp_path: Path) -> None:
+    source = _write_fixture(tmp_path / "plugin")
+    script = [_output_reply("done", 10)]
+    workspace, _evidence, _ = _configure(
+        tmp_path,
+        source,
+        script=script,
+        limits={"context_window": 6000, "max_output_tokens": 1000},
+    )
+    with open_core(workspace, state_dir=tmp_path / "state") as core:
+        result = core.run("summarize the fixture", session_id="sess-fact-limit")
+        assert result.status == "completed", result.error
+        usage = [fact for fact in core.plugin_runtime.fact_page(result.session_id, 0, 200).facts if isinstance(fact, UsageFact)]
+        assert len(usage) == 1
+        # 6_000 window - 1_000 advertised output = the persisted allocation's input limit.
+        assert usage[0].input_limit_tokens == 5000
 
 
 def test_tight_window_dispatch_shrinks_tool_text_with_intact_identities(tmp_path: Path) -> None:

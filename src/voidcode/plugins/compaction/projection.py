@@ -129,13 +129,15 @@ def resolve_threshold_tokens(
     reserve_tokens: int | None = None,
     floor: int = DEFAULT_CONTEXT_RESERVE_TOKENS,
 ) -> int:
-    """An explicit fixed threshold (clamped ``[1, cw-1]``) beats the derived one.
+    """An explicit fixed threshold (clamped ``[1, limit-1]``) beats the derived one.
 
-    ``threshold_tokens=0`` is the explicit "off" value and resolves to ``0`` ("unsized")
-    with or without a catalog window; it never becomes a usable one-token threshold.
-    An explicit positive threshold is authoritative even without a catalog window: only
-    the reserve-derived threshold needs one. No window and no explicit threshold leaves
-    nothing to size a threshold with, which also resolves to ``0``.
+    ``context_window`` is the budget basis: a catalog context window, or the core's
+    already-computed effective input limit from the dispatch's persisted projection
+    allocation. ``threshold_tokens=0`` is the explicit "off" value and resolves to ``0``
+    ("unsized") with or without a basis; it never becomes a usable one-token threshold.
+    An explicit positive threshold is authoritative even without a basis: only the
+    reserve-derived threshold needs one. No basis and no explicit threshold leaves nothing
+    to size a threshold with, which also resolves to ``0``.
     """
     fixed = _coerce_threshold_int(threshold_tokens)
     if fixed is not None:
@@ -187,9 +189,10 @@ def resolve_compaction_budget(
     reserve that leaves no usable threshold.
 
     ``threshold_tokens=0`` is consistently "off" and resolves to an unsized gate. Without an
-    explicit threshold the derived legacy value *is* the threshold (``context_window -
-    reserve``, the reserve already taken out), so it is used as-is rather than
-    double-subtracted.
+    explicit threshold the derived legacy value *is* the threshold (``basis - reserve``,
+    the reserve already taken out), so it is used as-is rather than double-subtracted. The
+    basis is a catalog window or the core's effective input limit; the compaction observer
+    passes the latter from ``UsageFact.input_limit_tokens``.
     """
     window = _usable_window(context_window)
     threshold = resolve_threshold_tokens(

@@ -204,7 +204,7 @@ def _context() -> ToolContext:
     )
 
 
-def _usage(sequence: int, *, input_tokens: int | None) -> UsageFact:
+def _usage(sequence: int, *, input_tokens: int | None, input_limit_tokens: int | None = None) -> UsageFact:
     return UsageFact(
         session_id=SESSION_ID,
         run_id=RUN_ID,
@@ -215,6 +215,7 @@ def _usage(sequence: int, *, input_tokens: int | None) -> UsageFact:
         provider_name="endpoint",
         model_name="test-model",
         usage=None if input_tokens is None else ProviderTokenUsage(input_tokens=input_tokens),
+        input_limit_tokens=input_limit_tokens,
     )
 
 
@@ -690,6 +691,31 @@ def test_observer_projects_once_the_measured_dispatch_crosses_the_trigger() -> N
     compaction_observer(_usage(8, input_tokens=9_000), _context(), services, config=config)
     assert len(services.projections) == 1
     assert len(services.staged) == 1
+
+
+def test_observer_uses_the_persisted_input_limit_without_an_explicit_threshold() -> None:
+    services = FakeServices(_session_events(), model_answer="the parser work, summarized")
+    config = CompactionConfig(keep_recent_tokens=0)
+    # 200_000 - the default 15% reserve = a 170_000 trigger; 180_000 crosses it.
+    compaction_observer(_usage(8, input_tokens=180_000, input_limit_tokens=200_000), _context(), services, config=config)
+    assert len(services.projections) == 1
+    assert compaction_plugin._store(services).load()[0].last_projection is not None
+
+
+def test_observer_absent_input_limit_stays_off_without_an_explicit_threshold() -> None:
+    services = FakeServices(_session_events())
+    compaction_observer(_usage(8, input_tokens=10**9), _context(), services, config=CompactionConfig(keep_recent_tokens=0))
+    assert services.projections == []
+    assert services.state is None
+
+
+def test_observer_explicit_threshold_still_wins_with_a_persisted_limit() -> None:
+    services = FakeServices(_session_events(), model_answer="the parser work, summarized")
+    config = CompactionConfig(threshold_tokens=100_000, reserve_tokens=0, keep_recent_tokens=0)
+    # The derived gate for 1_000_000 would be 850_000; the explicit threshold compacts at
+    # 100_000, so 200_000 measured input still projects.
+    compaction_observer(_usage(8, input_tokens=200_000, input_limit_tokens=1_000_000), _context(), services, config=config)
+    assert len(services.projections) == 1
 
 
 def test_observer_stays_idle_below_the_trigger_without_or_unmeasured() -> None:

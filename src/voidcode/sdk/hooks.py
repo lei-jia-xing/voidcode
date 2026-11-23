@@ -61,6 +61,11 @@ class UsageFact:
     usage: ProviderTokenUsage | None
     elapsed_seconds: float | None = None
     cost_usd: float | None = None
+    #: The core's effective input limit for this dispatch, read from the durable
+    #: ``PROVIDER_INTENT.projection_allocation.limit_tokens`` the request was assembled
+    #: with. ``None`` means the allocation is absent or the limit is unknown; observers
+    #: must not substitute a live catalog probe or a guessed window.
+    input_limit_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

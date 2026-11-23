@@ -1729,6 +1729,7 @@ class PluginRuntime:
                 provider_name=_required_text(fact, "provider_name"),
                 model_name=_required_text(fact, "model_name"),
                 usage=usage_obj,
+                input_limit_tokens=_optional_positive_int(fact, "input_limit_tokens"),
                 elapsed_seconds=_optional_number(fact, "elapsed_seconds"),
                 cost_usd=_optional_number(fact, "cost_usd"),
             )
@@ -1877,6 +1878,16 @@ def _required_int(payload: Mapping[str, Any], key: str) -> int:
     value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"'{key}' must be an integer")
+    return value
+
+
+def _optional_positive_int(payload: Mapping[str, Any], key: str) -> int | None:
+    """Read an optional positive integer field, refusing booleans and coercions."""
+    value = payload.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"'{key}' must be a positive integer or null")
     return value
 
 

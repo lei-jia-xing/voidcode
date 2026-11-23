@@ -8,8 +8,9 @@ import pytest
 from voidcode.core.facts import fact_for_event
 from voidcode.core.plugins import LeaseContext, LeaseIdentity, PluginRuntime
 from voidcode.core.storage.store import EventDraft, SessionStatus, SqliteStore
-from voidcode.sdk.codec import decode_tool_result, encode_tool_result
+from voidcode.sdk.codec import decode_tool_result, encode_provider_result, encode_tool_result
 from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, UsageFact
+from voidcode.sdk.provider import ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.tools import Change, ReadObservation, TextOutput, ToolSuccess
 
 
@@ -92,7 +93,46 @@ def test_unknown_usage_is_visible_after_cursor_passes_inflight_intent(runtime):
     append(runtime, event("core.provider_interrupted", dispatch_sequence=1))
     fact = runtime.fact_page("session", first.next_sequence, 10).facts[0]
     assert isinstance(fact, UsageFact) and fact.usage is None
+    assert fact.input_limit_tokens is None
     assert fact.dispatch_sequence == 1 and fact.event_sequence == 2 and fact.elapsed_seconds is None
+
+
+def test_usage_fact_carries_the_persisted_projection_allocation_input_limit(runtime):
+    append(
+        runtime,
+        event(
+            "core.provider_intent",
+            provider="endpoint",
+            model="model",
+            logical_turn="turn",
+            dispatch_sequence=1,
+            request_window={"message_characters": 10, "tool_schema_characters": 2, "segments": [], "tool_count": 0},
+            projection_allocation={
+                "policy": "fixed",
+                "reason": "within_ceiling",
+                "limit_tokens": 150_000,
+                "limit_source": "max_input_tokens",
+                "rate_tokens_per_char": None,
+                "per_tool_max_bytes": None,
+                "tool_count": 0,
+            },
+        ),
+        event(
+            "core.model_turn",
+            dispatch_sequence=1,
+            result=encode_provider_result(ProviderTurnResult(output="ok", usage=ProviderTokenUsage(input_tokens=10))),
+        ),
+    )
+    page = runtime.fact_page("session", 0, 10)
+    assert len(page.facts) == 1
+    fact = page.facts[0]
+    assert isinstance(fact, UsageFact)
+    assert fact.input_limit_tokens == 150_000
+    assert asdict(fact)["input_limit_tokens"] == 150_000
+    # The historical page and the live observer decode the same committed intent.
+    source = runtime.require_store().events("session")[1]
+    kind, payload = fact_for_event(source, runtime.require_store().events("session"))
+    assert runtime._typed_fact(kind, payload, "session", "run", runtime.revision_id, str(payload.get("logical_turn", ""))) == fact
 
 
 def test_resource_changes_roundtrip_and_failures_cannot_claim_successful_changes():

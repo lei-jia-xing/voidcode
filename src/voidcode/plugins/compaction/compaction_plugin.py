@@ -305,8 +305,11 @@ def compaction_observer(
 ) -> None:
     """Project the covered prefix once the newest dispatch's measured prompt crossed the gate.
 
-    ``usage`` is the per-dispatch measurement and the timely trigger; ``run_finished`` catches
-    the end of a run, where the newest dispatch in the window supplies the same measurement.
+    ``usage`` is the per-dispatch measurement and the timely trigger; its budget basis is the
+    dispatch's persisted effective input limit (``UsageFact.input_limit_tokens``), so no live
+    catalog probe or guessed window is involved. ``run_finished`` catches the end of a run,
+    where the newest dispatch in the window supplies the measurement, but it has no allocation
+    of its own and therefore stays unsized unless an explicit ``threshold_tokens`` is set.
     A model summary that fails, comes back blank, or would not shrink the prefix raises, so
     the core records an owned ``core.observer_error`` instead of the observation silently
     doing nothing.
@@ -314,7 +317,12 @@ def compaction_observer(
     _ = context
     if not isinstance(fact, (UsageFact, RunFinishedFact)) or not config.enabled:
         return
-    budget = resolve_compaction_budget(None, threshold_tokens=config.threshold_tokens, reserve_tokens=config.reserve_tokens)
+    input_limit_tokens = fact.input_limit_tokens if isinstance(fact, UsageFact) else None
+    budget = resolve_compaction_budget(
+        input_limit_tokens,
+        threshold_tokens=config.threshold_tokens,
+        reserve_tokens=config.reserve_tokens,
+    )
     if budget.trigger_tokens <= 0:
         # An unsized gate can never fire. Do not read the session prefix just to measure a
         # value that cannot justify a projection (run_finished has no report of its own).
