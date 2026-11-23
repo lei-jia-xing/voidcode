@@ -28,7 +28,7 @@ from voidcode.sdk.tools import (
 )
 
 from ._common import MAX_RESULT_LIMIT, is_default_ignored, resolve_workspace_path, validate_glob_patterns, validate_non_empty
-from .errors import raise_tool_diagnostic
+from .errors import expected_failures, raise_tool_diagnostic
 from .gitignore import GitIgnoreMatcher
 
 MAX_MATCHES = 200
@@ -244,6 +244,7 @@ class GrepTool:
         except UnicodeDecodeError:
             return
 
+    @expected_failures
     def invoke(
         self,
         call: ToolCall,
@@ -255,11 +256,26 @@ class GrepTool:
         args = GrepArgs.model_validate(json_wire_object(call.arguments))
 
         workspace_root = workspace.resolve()
-        candidate, relative_path = resolve_workspace_path(workspace, args.path)
+        try:
+            candidate, relative_path = resolve_workspace_path(workspace, args.path)
+        except ValueError as exc:
+            raise_tool_diagnostic(
+                message=f"grep could not resolve the target path {args.path!r}: {exc}",
+                error_kind="tool_input_mismatch",
+                reason="invalid_path",
+                retry_guidance="Retry with a valid file or directory path.",
+                details={"path": args.path},
+            )
         is_external = not candidate.is_relative_to(workspace_root)
 
         if not candidate.exists():
-            raise ValueError(f"grep target does not exist: {args.path}")
+            raise_tool_diagnostic(
+                message=f"grep target does not exist: {args.path}",
+                error_kind="tool_input_mismatch",
+                reason="target_not_found",
+                retry_guidance="Retry with an existing file or directory path.",
+                details={"path": args.path},
+            )
 
         effective_root = candidate if is_external and candidate.is_dir() else workspace_root
 

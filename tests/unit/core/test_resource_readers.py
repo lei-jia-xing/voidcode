@@ -176,7 +176,7 @@ def test_byte_args_refused_for_files_and_non_byte_schemes(harness, tmp_path: Pat
     target.write_text("plain\n", encoding="utf-8")
     refused = _read(harness, "plain.txt", byte_offset=0)
     assert isinstance(refused, ToolFailure)
-    assert refused.error == "Tool read of files failed: byte_offset and byte_limit require a resource URI"
+    assert refused.error == "byte_offset and byte_limit require a resource URI"
 
     tool_refused = _read(harness, "tool://read", byte_offset=0)
     assert isinstance(tool_refused, ToolFailure)

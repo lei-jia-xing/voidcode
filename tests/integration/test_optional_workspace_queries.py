@@ -69,7 +69,7 @@ def test_file_tools_use_any_optional_workspace_provider(tmp_path: Path, mode: st
     server = OpenAILoopbackServer(
         [
             _turn("read", {"path": "note.txt"}),
-            _turn("apply_workspace_edit", {"edits": [edit]}),
+            _turn("edit", {"mode": "range", "edits": [edit]}),
             _turn(None),
         ]
     )

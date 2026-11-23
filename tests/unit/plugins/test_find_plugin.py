@@ -13,7 +13,6 @@ import pytest
 from tests.fixtures.fake_services import FakeServices
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
-from voidcode.capabilities.files.errors import ToolDiagnosticError
 from voidcode.capabilities.files.grep_tool import GrepTool
 from voidcode.capabilities.files.read_tool import ReadResultBody, ReadTool
 from voidcode.core.engine import Core
@@ -384,8 +383,80 @@ def test_long_line_diagnostic_propagates_typed(tmp_path: Path) -> None:
     scope = tmp_path / "workspace" / "sub"
     scope.mkdir(parents=True)
     (scope / "weird.py").write_text("quirkblurb " + "x" * 70000 + "\n", encoding="utf-8")
-    with pytest.raises(ToolDiagnosticError, match="exceeds"):
-        _invoke(tmp_path / "workspace", FakeServices(), {"query": "quirkblurb", "path": "sub"})
+    result = _invoke_raw(tmp_path / "workspace", FakeServices(), {"query": "quirkblurb", "path": "sub"})
+    assert isinstance(result, ToolFailure)
+    assert result.tool_name == "find"
+    assert result.diagnostics is not None and result.diagnostics.kind == "tool_execution_error"
+    assert "exceeds" in result.error
+
+
+def test_prescreen_tolerates_one_keyword_diagnostic_and_continues(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "discounts.py").write_text("def discount():\n    return 1\n", encoding="utf-8")
+    services = FakeServices(
+        structured_answer=_scripted(
+            [
+                {
+                    "candidate_id": 0,
+                    "path": "discounts.py",
+                    "verdict": "match",
+                    "line": 1,
+                    "rationale": "defines the discount behavior",
+                }
+            ]
+        )
+    )
+    from voidcode.sdk.tools import ToolDiagnostics
+
+    original_invoke = GrepTool.invoke
+
+    def selective_invoke(self, call, *, context, services):
+        if call.arguments.get("pattern") == "quirkblurb":
+            return ToolFailure(
+                "grep",
+                "forced prescreen failure",
+                diagnostics=ToolDiagnostics(kind="tool_execution_error", details={"reason": "forced_prescreen_failure"}),
+            )
+        return original_invoke(self, call, context=context, services=services)
+
+    monkeypatch.setattr(GrepTool, "invoke", selective_invoke)
+    body = _invoke(root, services, {"query": "quirkblurb discount"})
+    assert body.status == "ok"
+    assert [location.path for location in body.locations] == ["discounts.py"]
+    assert any("error" in note and note.get("keyword") == "quirkblurb" for note in body.coverage.prescreen)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"query": "needle", "mode": "literal"},
+        {"query": "the and or"},
+    ],
+)
+def test_literal_and_fallback_preserve_nested_diagnostics(tmp_path: Path, arguments: dict[str, object]) -> None:
+    root = _tree(tmp_path / "workspace")
+    result = _invoke_raw(root, FakeServices(), {**arguments, "path": "no-such-dir"})
+    assert isinstance(result, ToolFailure)
+    assert result.tool_name == "find"
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "target_not_found"
+    assert "does not exist" in result.error
+
+
+def test_empty_query_and_missing_path_are_typed_failures(tmp_path: Path) -> None:
+    root = _tree(tmp_path / "workspace")
+    empty = _invoke_raw(root, FakeServices(), {"query": "  "})
+    assert isinstance(empty, ToolFailure)
+    assert empty.tool_name == "find"
+    assert empty.diagnostics is not None and empty.diagnostics.kind == "tool_input_validation"
+    assert "query" in empty.error
+
+    missing = _invoke_raw(root, FakeServices(), {"query": "discount", "path": "no-such-dir"})
+    assert isinstance(missing, ToolFailure)
+    assert missing.tool_name == "find"
+    assert missing.diagnostics is not None and missing.diagnostics.details["reason"] == "target_not_found"
+    assert "does not exist" in missing.error
 
 
 def test_non_string_rationale_rejected_visibly(tmp_path: Path) -> None:
@@ -433,14 +504,6 @@ def test_snippet_caps_leave_visible_cuts_signal(tmp_path: Path) -> None:
     assert cut["matches_shown"] == 12
     assert cut["long_lines_cut"] == 1
     assert "caps" in str(cut["reason"])
-
-
-def test_empty_query_and_missing_path_raise(tmp_path: Path) -> None:
-    root = _tree(tmp_path / "workspace")
-    with pytest.raises(ValueError, match="query"):
-        _invoke(root, FakeServices(), {"query": "  "})
-    with pytest.raises(ValueError, match="does not exist"):
-        _invoke(root, FakeServices(), {"query": "discount", "path": "no-such-dir"})
 
 
 class _CoreJudgeServices(FakeServices):

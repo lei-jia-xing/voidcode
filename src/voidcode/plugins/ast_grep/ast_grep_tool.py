@@ -215,7 +215,9 @@ def _preflight_replace_targets(
                 message=f"ast_grep replace rejected because {display_path} changed since it was read (stale edit).",
                 error_kind="stale_edit",
                 reason="content_hash_mismatch",
-                retry_guidance="Read the file again, use the SHA-256 content hash shown in read output, then retry.",
+                retry_guidance=(
+                    "Read the file again (or call read with hash_only=true), use the SHA-256 content hash shown in read output, then retry."
+                ),
                 details={"expected_hash": args.expectedHash, "actual_hash": actual_hash, "path": display_path},
             )
 

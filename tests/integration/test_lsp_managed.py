@@ -2,7 +2,7 @@
 
 End-to-end proofs the unit suite cannot give: the read+execute lease fix lets a
 yolo `lsp` call spawn a real fixture server; the `workspace.document_version`
-query drives genuine `apply_workspace_edit` match/stale/None guards through the
+query drives genuine `edit` range-mode match/stale/None guards through the
 core; a session cancel during a blocked second use kills the actual server plus
 its TERM-ignoring descendant; graceful close and reload leave no service or
 descendant behind (detached background jobs survive); read_only refuses
@@ -176,7 +176,7 @@ def test_yolo_lsp_spawns_fixture_and_opens_document(tmp_path: Path) -> None:
         assert "textDocument/didOpen" in methods
 
 
-def test_apply_workspace_edit_version_match_and_stale_refusal(tmp_path: Path) -> None:
+def test_edit_range_version_match_and_stale_refusal(tmp_path: Path) -> None:
     record = tmp_path / "record.jsonl"
     (tmp_path / "workspace").mkdir(parents=True, exist_ok=True)
     content = "hello\n"
@@ -187,7 +187,8 @@ def test_apply_workspace_edit_version_match_and_stale_refusal(tmp_path: Path) ->
         _turn(
             _call(
                 "call-edit-1",
-                "apply_workspace_edit",
+                "edit",
+                mode="range",
                 edits=[
                     {
                         "path": "note.txt",
@@ -207,7 +208,8 @@ def test_apply_workspace_edit_version_match_and_stale_refusal(tmp_path: Path) ->
         _turn(
             _call(
                 "call-edit-2",
-                "apply_workspace_edit",
+                "edit",
+                mode="range",
                 edits=[
                     {
                         "path": "note.txt",

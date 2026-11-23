@@ -11,14 +11,15 @@ from typing import Any, cast
 
 import pytest
 
-from voidcode.capabilities.files.read_tool import ReadResultBody
+from voidcode.capabilities.files.read_tool import ReadHashBody, ReadResultBody
 from voidcode.capabilities.files.write_tool import WriteResultBody
+from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES
 from voidcode.plugins.files import create_plugin as _orig_create_plugin
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderAbortSignal
 from voidcode.sdk.services import ArtifactReference
-from voidcode.sdk.tools import ConfirmedStop, ReadObservation, ToolCall, ToolFailure, ToolSuccess
+from voidcode.sdk.tools import TOOL_OUTPUT_BYTES, ConfirmedStop, ReadObservation, ToolCall, ToolFailure, ToolSuccess
 
 
 class _DummyServices:
@@ -98,10 +99,11 @@ def _context(
 def test_files_tools_declare_their_effect_tiers() -> None:
     definitions = {tool.definition.name: tool.definition for tool in create_plugin({}).tools}
 
-    assert set(definitions) == {"read", "write", "edit", "apply_workspace_edit", "glob", "grep"}
+    assert set(definitions) == {"read", "write", "edit", "glob", "grep"}
     assert {effect.value for effect in definitions["read"].effects} == {"read"}
     assert {effect.value for effect in definitions["write"].effects} == {"write"}
     assert {effect.value for effect in definitions["edit"].effects} == {"write"}
+    assert definitions["edit"].path_argument_keys == ("path", "edits[].path")
     assert {effect.value for effect in definitions["glob"].effects} == {"read"}
     assert {effect.value for effect in definitions["grep"].effects} == {"read"}
 
@@ -111,7 +113,6 @@ def test_read_tool_reads_utf8_single_pass_with_offset_and_limit(tmp_path: Path) 
     read_tool = next(t for t in plugin.tools if t.definition.name == "read")
     content = "line1\nline2\nline3\nline4\n"
     (tmp_path / "test.txt").write_text(content, encoding="utf-8")
-    expected_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     result = read_tool.invoke(
         ToolCall(tool_name="read", arguments={"path": "test.txt", "offset": 2, "limit": 2}),
@@ -120,11 +121,33 @@ def test_read_tool_reads_utf8_single_pass_with_offset_and_limit(tmp_path: Path) 
     assert isinstance(result, ToolSuccess)
     assert "line2\nline3\n" in result.output.text  # type: ignore[union-attr]
     assert "line1\n" not in result.output.text  # type: ignore[union-attr]
-    assert expected_hash in result.output.text  # type: ignore[union-attr]
+    assert "SHA-256" not in result.output.text  # type: ignore[union-attr]
     body = result.body
     assert isinstance(body, ReadResultBody)
-    assert body.content_hash == expected_hash
+    assert body.content_hash is None
+    assert body.line_count is None
+    assert body.next_offset == 4
     assert body.whole_file is False
+    assert result.coverage == ()
+
+
+def test_read_tool_offset_page_reaching_eof_has_no_whole_file_hash(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    (tmp_path / "tail.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "tail.txt", "offset": 2, "limit": 10}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, ReadResultBody)
+    assert result.body.next_offset is None
+    assert result.body.content_hash is None
+    assert result.body.line_count == 3
+    assert result.body.whole_file is False
+    assert result.coverage == ()
+    assert "SHA-256" not in result.output.text  # type: ignore[union-attr]
 
 
 def test_read_tool_whole_file_observation_and_empty_file(tmp_path: Path) -> None:
@@ -182,10 +205,194 @@ def test_read_tool_bounds_contiguous_prefix_and_truncation(tmp_path: Path) -> No
     assert isinstance(result.body, ReadResultBody)
     assert result.body.whole_file is False
     assert result.body.next_offset == 1001
-    # Ensure total text output strictly does not exceed 50 KiB
-    assert len(result.output.text.encode("utf-8")) <= 50 * 1024  # type: ignore[union-attr]
+    assert result.body.content_hash is None
+    assert result.body.line_count is None
+    assert result.coverage == ()
+    # Ensure the page content stays inside the model projection budget.
+    assert len(result.output.text.encode("utf-8")) <= TOOL_OUTPUT_BYTES  # type: ignore[union-attr]
     # Check lines are contiguous starting from data-row-00000
     assert "data-row-00000" in result.output.text  # type: ignore[union-attr]
+
+
+def test_read_tool_near_budget_whole_file_is_not_projection_clipped(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    line = "x" * 1170 + "\n"
+    content = line * 40
+    assert len(content.encode("utf-8")) <= MAX_RESOURCE_PAGE_BYTES
+    (tmp_path / "near-budget.txt").write_text(content, encoding="utf-8")
+
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "near-budget.txt"}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, ReadResultBody)
+    assert result.body.whole_file is True
+    assert result.body.content_hash == hashlib.sha256(content.encode("utf-8")).hexdigest()
+    assert len(result.output.text.encode("utf-8")) <= TOOL_OUTPUT_BYTES  # type: ignore[union-attr]
+    assert "SHA-256" in result.output.text  # type: ignore[union-attr]
+
+    over_budget = line * 41
+    assert len(over_budget.encode("utf-8")) > MAX_RESOURCE_PAGE_BYTES
+    (tmp_path / "over-budget.txt").write_text(over_budget, encoding="utf-8")
+    partial = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "over-budget.txt"}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(partial, ToolSuccess)
+    assert isinstance(partial.body, ReadResultBody)
+    assert partial.body.whole_file is False
+    assert partial.body.content_hash is None
+    assert partial.body.next_offset == 41
+    assert len(partial.output.text.encode("utf-8")) <= TOOL_OUTPUT_BYTES  # type: ignore[union-attr]
+
+
+def test_read_tool_hash_only_streams_full_file_hash_without_a_page(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    content = "alpha\nbeta\n"
+    (tmp_path / "hash.txt").write_text(content, encoding="utf-8")
+    expected_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "hash.txt", "hash_only": True}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, ReadHashBody)
+    assert result.body.sha256 == expected_hash
+    assert result.body.bytes == len(content.encode("utf-8"))
+    assert expected_hash in result.output.text  # type: ignore[union-attr]
+    assert "alpha" not in result.output.text  # type: ignore[union-attr]
+    assert result.coverage == ()
+
+    hash_only_conflict = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "hash.txt", "hash_only": True, "offset": 1}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(hash_only_conflict, ToolFailure)
+    assert hash_only_conflict.diagnostics is not None
+    assert hash_only_conflict.diagnostics.details["reason"] == "hash_only_with_page_arguments"
+    assert "hash_only cannot be combined" in hash_only_conflict.error
+
+    # A partial page cannot supply expectedHash; hash_only is the explicit way to get it.
+    partial = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "hash.txt", "offset": 2, "limit": 1}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(partial, ToolSuccess)
+    assert partial.body.content_hash is None  # type: ignore[union-attr]
+    assert expected_hash not in partial.output.text  # type: ignore[union-attr]
+
+
+def test_read_tool_invalid_path_is_typed(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "bad\x00path"}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "invalid_path"
+
+
+def test_read_tool_partial_page_skips_unseen_invalid_utf8(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    (tmp_path / "mixed.txt").write_bytes(b"valid first line\n\xff\xfe invalid later line\n")
+
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "mixed.txt", "limit": 1}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert "valid first line" in result.output.text  # type: ignore[union-attr]
+    assert "invalid later" not in result.output.text  # type: ignore[union-attr]
+    assert isinstance(result.body, ReadResultBody)
+    assert result.body.content_hash is None
+    assert result.body.line_count is None
+    assert result.body.next_offset == 2
+    assert result.coverage == ()
+    assert "SHA-256" not in result.output.text  # type: ignore[union-attr]
+
+
+def test_read_tool_whole_file_page_still_rejects_invalid_utf8(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    (tmp_path / "invalid.txt").write_bytes(b"valid first line\n\xff\xfe invalid later line\n")
+
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "invalid.txt"}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "unsupported_encoding"
+    assert "only supports UTF-8" in result.error
+
+
+def test_read_tool_skips_overlong_line_before_offset_without_artifact(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    (tmp_path / "skipped-huge.txt").write_text("x" * (200_000) + "\nvisible\n", encoding="utf-8")
+
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "skipped-huge.txt", "offset": 2, "limit": 1}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, ReadResultBody)
+    assert "visible" in result.output.text  # type: ignore[union-attr]
+    assert "line truncated" not in result.output.text  # type: ignore[union-attr]
+    assert result.body.content_hash is None
+    assert result.body.line_count == 2
+    assert result.coverage == ()
+    assert result.output.bounds.reference is None  # type: ignore[union-attr]
+
+
+def test_read_tool_detects_file_change_between_page_and_artifact_pass(tmp_path: Path) -> None:
+    target = tmp_path / "changed.txt"
+    original = b"x" * (200_000) + b"\n"
+
+    class MutatingServices(_DummyServices):
+        def spill_artifact_stream(self, chunks, *, media_type="application/octet-stream"):
+            target.write_bytes(b"y" + b"x" * (len(original) - 2) + b"\n")
+            return super().spill_artifact_stream(chunks, media_type=media_type)
+
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    target.write_bytes(original)
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "changed.txt"}),
+        context=_context(tmp_path),
+        services=cast(Any, MutatingServices()),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "file_changed_during_recovery"
+    assert "file changed while preparing long-line recovery" in result.error
+
+
+def test_read_tool_rejects_recovery_artifact_that_does_not_match_the_read(tmp_path: Path) -> None:
+    class CorruptServices(_DummyServices):
+        def spill_artifact_stream(self, chunks, *, media_type="application/octet-stream"):
+            reference = super().spill_artifact_stream(chunks, media_type=media_type)
+            return ArtifactReference(sha256="0" * 64, bytes=reference.bytes, media_type=reference.media_type)
+
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    (tmp_path / "huge.txt").write_text("x" * (3 * 1024 * 1024) + "\n", encoding="utf-8")
+
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "huge.txt"}),
+        context=_context(tmp_path),
+        services=cast(Any, CorruptServices()),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "file_changed_during_recovery"
+    assert "file changed while preparing long-line recovery" in result.error
 
 
 def test_read_tool_handles_huge_lines_without_unbounded_allocation(tmp_path: Path) -> None:
@@ -200,10 +407,62 @@ def test_read_tool_handles_huge_lines_without_unbounded_allocation(tmp_path: Pat
         context=_context(tmp_path),
     )
     assert isinstance(result, ToolSuccess)
-    assert len(result.output.text.encode("utf-8")) <= 50 * 1024
+    assert len(result.output.text.encode("utf-8")) <= TOOL_OUTPUT_BYTES
     assert result.output.bounds.truncated is True
     assert result.body.whole_file is False
-    assert result.body.content_hash == hashlib.sha256(huge_line.encode("utf-8")).hexdigest()
+    assert result.body.content_hash is None
+    assert result.body.line_count == 2
+    assert result.coverage == ()
+    assert "line truncated" in result.output.text  # type: ignore[union-attr]
+    assert "second line" in result.output.text  # type: ignore[union-attr]
+    assert "artifact://" in result.output.text  # type: ignore[union-attr]
+    reference = result.output.bounds.reference  # type: ignore[union-attr]
+    assert isinstance(reference, ArtifactReference)
+    assert reference.bytes == len(huge_line.encode("utf-8"))
+
+
+def test_read_tool_clipped_page_with_more_lines_reports_known_line_count(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    content = ("x" * (3 * 1024 * 1024) + "\n") + "".join(f"line-{index:04d}\n" for index in range(3000))
+    (tmp_path / "huge-many.txt").write_text(content, encoding="utf-8")
+
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "huge-many.txt", "limit": 1000}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, ReadResultBody)
+    assert result.body.content_hash is None
+    assert result.body.line_count == 3001
+    assert result.body.next_offset == 1001
+    assert result.body.truncated is True
+    assert result.coverage == ()
+    assert result.output.bounds.reference is not None  # type: ignore[union-attr]
+
+
+def test_read_tool_page_boundary_probe_reports_next_offset(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.read_tool import _READ_CHUNK_BYTES
+
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    prefix = "".join("a" * 80 + "\n" for _ in range(99))
+    boundary_line = "b" * (_READ_CHUNK_BYTES - len(prefix) - 1) + "\n"
+    content = prefix + boundary_line + "next\n"
+    assert len((prefix + boundary_line).encode("utf-8")) == _READ_CHUNK_BYTES
+    (tmp_path / "boundary.txt").write_text(content, encoding="utf-8")
+
+    result = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "boundary.txt", "limit": 100}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, ReadResultBody)
+    assert result.body.content_hash is None
+    assert result.body.line_count is None
+    assert result.body.next_offset == 101
+    assert result.body.truncated is True
+    assert len(result.body.lines) == 100
 
 
 def test_read_tool_honors_cancellation_before_reading(tmp_path: Path) -> None:
@@ -673,7 +932,7 @@ def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_r
 
 
 class _VersionServices:
-    """Scripted `workspace.document_version` answers for `apply_workspace_edit`."""
+    """Scripted `workspace.document_version` answers for range edits."""
 
     def __init__(self, answer: dict | None = None, *, unanswered: bool = False) -> None:
         from voidcode.sdk.services import QueryUnavailable
@@ -695,14 +954,17 @@ def _apply_context(workspace: Path, target: Path, content_hash: str):  # type: i
     )
 
 
-def test_apply_explicit_utf8_coordinates_win_over_negotiated_utf16(tmp_path: Path) -> None:
+def _range_tool():  # type: ignore[no-untyped-def]
+    return next(t for t in create_plugin({}).tools if t.definition.name == "edit")
+
+
+def test_range_explicit_utf8_coordinates_win_over_negotiated_utf16(tmp_path: Path) -> None:
     """A caller may address a non-BMP line in UTF-8 units while LSP negotiated UTF-16.
 
     "𝄞" is one UTF-32 char, two UTF-16 units, four UTF-8 bytes: replacing the note that
     follows it needs character 6 in UTF-8 coordinates but character 4 in UTF-16 ones.
     """
-    plugin = create_plugin({})
-    tool = next(t for t in plugin.tools if t.definition.name == "apply_workspace_edit")
+    tool = _range_tool()
     target = tmp_path / "music.txt"
     target.write_text("𝄞ab\ncd\n", encoding="utf-8")
     content_hash = hashlib.sha256(target.read_bytes()).hexdigest()
@@ -714,8 +976,9 @@ def test_apply_explicit_utf8_coordinates_win_over_negotiated_utf16(tmp_path: Pat
     }
     result = tool.invoke(
         ToolCall(
-            tool_name="apply_workspace_edit",
+            tool_name="edit",
             arguments={
+                "mode": "range",
                 "positionEncoding": "utf-8",
                 "edits": [
                     {
@@ -736,12 +999,12 @@ def test_apply_explicit_utf8_coordinates_win_over_negotiated_utf16(tmp_path: Pat
     )
     assert isinstance(result, ToolSuccess), result
     assert target.read_text(encoding="utf-8") == "𝄞aB\ncd\n"
+    assert f"SHA-256 content hash (music.txt): {hashlib.sha256(target.read_bytes()).hexdigest()}" in result.output.text  # type: ignore[union-attr]
 
 
-def test_apply_omitted_encoding_uses_negotiated_default(tmp_path: Path) -> None:
+def test_range_omitted_encoding_uses_negotiated_default(tmp_path: Path) -> None:
     """Without `positionEncoding`, the opened document's negotiated encoding applies."""
-    plugin = create_plugin({})
-    tool = next(t for t in plugin.tools if t.definition.name == "apply_workspace_edit")
+    tool = _range_tool()
     target = tmp_path / "music.txt"
     target.write_text("𝄞ab\ncd\n", encoding="utf-8")
     content_hash = hashlib.sha256(target.read_bytes()).hexdigest()
@@ -753,8 +1016,9 @@ def test_apply_omitted_encoding_uses_negotiated_default(tmp_path: Path) -> None:
     }
     result = tool.invoke(
         ToolCall(
-            tool_name="apply_workspace_edit",
+            tool_name="edit",
             arguments={
+                "mode": "range",
                 "edits": [
                     {
                         "path": "music.txt",
@@ -776,9 +1040,8 @@ def test_apply_omitted_encoding_uses_negotiated_default(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "𝄞aB\ncd\n"
 
 
-def test_apply_matched_version_and_hash_only_succeed_with_correct_bytes(tmp_path: Path) -> None:
-    plugin = create_plugin({})
-    tool = next(t for t in plugin.tools if t.definition.name == "apply_workspace_edit")
+def test_range_matched_version_and_hash_only_succeed_with_correct_bytes(tmp_path: Path) -> None:
+    tool = _range_tool()
     target = tmp_path / "target.txt"
     target.write_text("alpha\nbeta\n", encoding="utf-8")
     first_hash = hashlib.sha256(target.read_bytes()).hexdigest()
@@ -790,8 +1053,9 @@ def test_apply_matched_version_and_hash_only_succeed_with_correct_bytes(tmp_path
     }
     matched = tool.invoke(
         ToolCall(
-            tool_name="apply_workspace_edit",
+            tool_name="edit",
             arguments={
+                "mode": "range",
                 "edits": [
                     {
                         "path": "target.txt",
@@ -815,8 +1079,9 @@ def test_apply_matched_version_and_hash_only_succeed_with_correct_bytes(tmp_path
     second_hash = hashlib.sha256(target.read_bytes()).hexdigest()
     hash_only = tool.invoke(
         ToolCall(
-            tool_name="apply_workspace_edit",
+            tool_name="edit",
             arguments={
+                "mode": "range",
                 "edits": [
                     {
                         "path": "target.txt",
@@ -837,17 +1102,17 @@ def test_apply_matched_version_and_hash_only_succeed_with_correct_bytes(tmp_path
     assert target.read_text(encoding="utf-8") == "omega\nBETA\n"
 
 
-def test_workspace_edit_accepts_successive_content_hashes_without_read_history(tmp_path: Path) -> None:
-    plugin = create_plugin({})
-    tool = next(t for t in plugin.tools if t.definition.name == "apply_workspace_edit")
+def test_range_accepts_successive_content_hashes_without_read_history(tmp_path: Path) -> None:
+    tool = _range_tool()
     target = tmp_path / "uni.py"
     target.write_text("VALUE = 1\n", encoding="utf-8")
     first_hash = hashlib.sha256(target.read_bytes()).hexdigest()
 
     first = tool.invoke(
         ToolCall(
-            tool_name="apply_workspace_edit",
+            tool_name="edit",
             arguments={
+                "mode": "range",
                 "edits": [
                     {
                         "path": "uni.py",
@@ -871,8 +1136,9 @@ def test_workspace_edit_accepts_successive_content_hashes_without_read_history(t
     both_versions = _context(tmp_path)
     second = tool.invoke(
         ToolCall(
-            tool_name="apply_workspace_edit",
+            tool_name="edit",
             arguments={
+                "mode": "range",
                 "edits": [
                     {
                         "path": "uni.py",
@@ -891,6 +1157,178 @@ def test_workspace_edit_accepts_successive_content_hashes_without_read_history(t
     )
     assert isinstance(second, ToolSuccess), second
     assert target.read_text(encoding="utf-8") == "VALUE = 3\n\n\n"
+
+
+def test_range_edits_multiple_files_and_reports_each_new_hash(tmp_path: Path) -> None:
+    tool = _range_tool()
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("alpha\n", encoding="utf-8")
+    second.write_text("beta\n", encoding="utf-8")
+    first_hash = hashlib.sha256(first.read_bytes()).hexdigest()
+    second_hash = hashlib.sha256(second.read_bytes()).hexdigest()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "first.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 6,
+                        "newText": "ALPHA",
+                        "expectedHash": first_hash,
+                    },
+                    {
+                        "path": "second.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 5,
+                        "newText": "BETA",
+                        "expectedHash": second_hash,
+                    },
+                ],
+            },
+        ),
+        context=_context(tmp_path),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(result, ToolSuccess), result
+    assert first.read_text(encoding="utf-8") == "ALPHA\n"
+    assert second.read_text(encoding="utf-8") == "BETA\n"
+    assert hashlib.sha256(first.read_bytes()).hexdigest() in result.output.text  # type: ignore[union-attr]
+    assert hashlib.sha256(second.read_bytes()).hexdigest() in result.output.text  # type: ignore[union-attr]
+
+
+def test_range_applies_multiple_non_overlapping_edits_to_one_file(tmp_path: Path) -> None:
+    tool = _range_tool()
+    target = tmp_path / "multi.txt"
+    target.write_text("alpha beta gamma\n", encoding="utf-8")
+    original_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "multi.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 6,
+                        "newText": "ALPHA",
+                        "expectedHash": original_hash,
+                    },
+                    {
+                        "path": "multi.txt",
+                        "startLine": 1,
+                        "startCharacter": 12,
+                        "endLine": 1,
+                        "endCharacter": 17,
+                        "newText": "GAMMA",
+                        "expectedHash": original_hash,
+                    },
+                ],
+            },
+        ),
+        context=_context(tmp_path),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(result, ToolSuccess), result
+    assert target.read_text(encoding="utf-8") == "ALPHA beta GAMMA\n"
+
+
+def test_range_rejects_overlapping_edits_before_writing(tmp_path: Path) -> None:
+    tool = _range_tool()
+    target = tmp_path / "overlap.txt"
+    target.write_text("alpha beta\n", encoding="utf-8")
+    original_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "overlap.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 7,
+                        "newText": "ALPHA ",
+                        "expectedHash": original_hash,
+                    },
+                    {
+                        "path": "overlap.txt",
+                        "startLine": 1,
+                        "startCharacter": 6,
+                        "endLine": 1,
+                        "endCharacter": 11,
+                        "newText": "BETA",
+                        "expectedHash": original_hash,
+                    },
+                ],
+            },
+        ),
+        context=_context(tmp_path),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "overlapping_edits"
+    assert target.read_text(encoding="utf-8") == "alpha beta\n"
+
+
+def test_range_preflight_refuses_external_path_before_any_commit(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    internal = workspace / "keep.txt"
+    internal.write_text("alpha\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    tool = _range_tool()
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "keep.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 6,
+                        "newText": "ALPHA",
+                        "expectedHash": hashlib.sha256(internal.read_bytes()).hexdigest(),
+                    },
+                    {
+                        "path": str(outside),
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 2,
+                        "newText": "S",
+                        "expectedHash": hashlib.sha256(outside.read_bytes()).hexdigest(),
+                    },
+                ],
+            },
+        ),
+        context=_context(workspace),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "outside_workspace"
+    assert result.changes == ()
+    assert internal.read_text(encoding="utf-8") == "alpha\n"
+    assert outside.read_text(encoding="utf-8") == "secret\n"
 
 
 @pytest.mark.parametrize("tool_name", ["glob", "grep"])
@@ -1020,8 +1458,8 @@ def test_write_failure_preserves_original_and_removes_temp_file(tmp_path: Path, 
     "invalid_fields",
     [{"startLine": True}, {"startCharacter": "1"}, {"version": False}, {"unexpected": "ignored-before"}],
 )
-def test_workspace_edit_rejects_invalid_batch_before_writing(tmp_path: Path, invalid_fields: dict) -> None:
-    from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
+def test_range_rejects_invalid_batch_before_writing(tmp_path: Path, invalid_fields: dict) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
 
     target = tmp_path / "target.txt"
     target.write_text("original", encoding="utf-8")
@@ -1034,37 +1472,42 @@ def test_workspace_edit_rejects_invalid_batch_before_writing(tmp_path: Path, inv
         "newText": "X",
         "expectedHash": hashlib.sha256(target.read_bytes()).hexdigest(),
     }
-    with pytest.raises(ValueError):
-        ApplyWorkspaceEditTool().invoke(
-            ToolCall(tool_name="apply_workspace_edit", arguments={"edits": [edit, {**edit, **invalid_fields}]}),
-            context=_context(tmp_path),
-            services=cast(Any, _VersionServices(unanswered=True)),
-        )
+    result = EditTool().invoke(
+        ToolCall(tool_name="edit", arguments={"mode": "range", "edits": [edit, {**edit, **invalid_fields}]}),
+        context=_context(tmp_path),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.kind == "tool_input_validation"
     assert target.read_text(encoding="utf-8") == "original"
 
 
-def test_workspace_edit_missing_hash_rejects_frozen_arguments(tmp_path: Path) -> None:
-    from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
+def test_range_missing_hash_rejects_frozen_arguments(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
 
-    with pytest.raises(ValueError, match="expectedHash"):
-        ApplyWorkspaceEditTool().invoke(
-            ToolCall(tool_name="apply_workspace_edit", arguments={"edits": [{"path": "target.txt"}]}),
-            context=_context(tmp_path),
-            services=_SERVICES,
-        )
+    result = EditTool().invoke(
+        ToolCall(tool_name="edit", arguments={"mode": "range", "edits": [{"path": "target.txt"}]}),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.kind == "tool_input_validation"
+    validation_errors = result.diagnostics.details["errors"]
+    assert isinstance(validation_errors, tuple)
+    assert any("expectedHash" in str(item) for item in validation_errors)
 
 
 @pytest.mark.parametrize("failure", ["replace", "concurrent_change"])
-def test_workspace_edit_failed_commit_preserves_target_and_cleans_temporary_file(tmp_path: Path, monkeypatch, failure: str) -> None:
-    from voidcode.capabilities.files import apply_workspace_edit
-    from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
+def test_range_failed_commit_preserves_target_and_cleans_temporary_file(tmp_path: Path, monkeypatch, failure: str) -> None:
+    from voidcode.capabilities.files import range_edit
+    from voidcode.capabilities.files.edit_tool import EditTool
 
     target = tmp_path / "target.txt"
     original = b"original\r\n"
     target.write_bytes(original)
     target.chmod(0o750)
 
-    original_replace = apply_workspace_edit.replace_file
+    original_replace = range_edit.replace_file
 
     def fail_replace(path, content, *, expected_content):
         if failure == "concurrent_change":
@@ -1077,11 +1520,12 @@ def test_workspace_edit_failed_commit_preserves_target_and_cleans_temporary_file
         def query(self, name, arguments=None):
             return None
 
-    monkeypatch.setattr(apply_workspace_edit, "replace_file", fail_replace)
-    result = ApplyWorkspaceEditTool().invoke(
+    monkeypatch.setattr(range_edit, "replace_file", fail_replace)
+    result = EditTool().invoke(
         ToolCall(
-            tool_name="apply_workspace_edit",
+            tool_name="edit",
             arguments={
+                "mode": "range",
                 "edits": [
                     {
                         "path": "target.txt",
@@ -1092,7 +1536,7 @@ def test_workspace_edit_failed_commit_preserves_target_and_cleans_temporary_file
                         "newText": "X",
                         "expectedHash": hashlib.sha256(original).hexdigest(),
                     }
-                ]
+                ],
             },
         ),
         context=_context(tmp_path),
@@ -1107,16 +1551,72 @@ def test_workspace_edit_failed_commit_preserves_target_and_cleans_temporary_file
     assert sorted(p.name for p in tmp_path.iterdir()) == ["target.txt"]
 
 
-def test_workspace_edit_preserves_executable_mode_and_crlf(tmp_path: Path) -> None:
-    from voidcode.capabilities.files.apply_workspace_edit import ApplyWorkspaceEditTool
+def test_range_reports_applied_prefix_when_a_later_file_fails(tmp_path: Path, monkeypatch) -> None:
+    from voidcode.capabilities.files import range_edit
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("alpha\n", encoding="utf-8")
+    second.write_text("beta\n", encoding="utf-8")
+    original_replace = range_edit.replace_file
+
+    def fail_second(path, content, *, expected_content):
+        if path == second:
+            raise OSError("injected second-file failure")
+        return original_replace(path, content, expected_content=expected_content)
+
+    monkeypatch.setattr(range_edit, "replace_file", fail_second)
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "first.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 6,
+                        "newText": "ALPHA",
+                        "expectedHash": hashlib.sha256(first.read_bytes()).hexdigest(),
+                    },
+                    {
+                        "path": "second.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 5,
+                        "newText": "BETA",
+                        "expectedHash": hashlib.sha256(second.read_bytes()).hexdigest(),
+                    },
+                ],
+            },
+        ),
+        context=_context(tmp_path),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.body.paths == ("first.txt",)
+    assert [change.path for change in result.changes] == ["first.txt"]
+    assert first.read_text(encoding="utf-8") == "ALPHA\n"
+    assert second.read_text(encoding="utf-8") == "beta\n"
+    assert "Applied prefix: ['first.txt SHA-256 " in result.error
+    assert hashlib.sha256(first.read_bytes()).hexdigest() in result.error
+
+
+def test_range_preserves_executable_mode_and_crlf(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
 
     target = tmp_path / "target.txt"
     target.write_bytes(b"original\r\n")
     target.chmod(0o750)
-    result = ApplyWorkspaceEditTool().invoke(
+    result = EditTool().invoke(
         ToolCall(
-            tool_name="apply_workspace_edit",
+            tool_name="edit",
             arguments={
+                "mode": "range",
                 "edits": [
                     {
                         "path": "target.txt",
@@ -1124,19 +1624,114 @@ def test_workspace_edit_preserves_executable_mode_and_crlf(tmp_path: Path) -> No
                         "startCharacter": 1,
                         "endLine": 1,
                         "endCharacter": 2,
-                        "newText": "X",
+                        "newText": "X\n",
                         "expectedHash": hashlib.sha256(target.read_bytes()).hexdigest(),
                     }
-                ]
+                ],
             },
         ),
         context=_context(tmp_path),
         services=cast(Any, _VersionServices(unanswered=True)),
     )
     assert isinstance(result, ToolSuccess)
-    assert target.read_bytes() == b"Xriginal\r\n"
+    assert target.read_bytes() == b"X\r\nriginal\r\n"
     assert target.stat().st_mode & 0o777 == 0o750
     assert sorted(p.name for p in tmp_path.iterdir()) == ["target.txt"]
+    assert f"SHA-256 content hash (target.txt): {hashlib.sha256(b'X\r\nriginal\r\n').hexdigest()}" in result.output.text  # type: ignore[union-attr]
+
+
+def test_range_preserves_lone_cr_and_reencodes_new_text(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    target = tmp_path / "cr.txt"
+    original = b"one\rtwo\rthree\r"
+    target.write_bytes(original)
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "cr.txt",
+                        "startLine": 2,
+                        "startCharacter": 1,
+                        "endLine": 2,
+                        "endCharacter": 4,
+                        "newText": "TWO\nX",
+                        "expectedHash": hashlib.sha256(original).hexdigest(),
+                    }
+                ],
+            },
+        ),
+        context=_context(tmp_path),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(result, ToolSuccess), result
+    assert target.read_bytes() == b"one\rTWO\rX\rthree\r"
+
+
+def test_range_preserves_missing_final_newline(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    target = tmp_path / "no-final.txt"
+    original = b"one\ntwo"
+    target.write_bytes(original)
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "no-final.txt",
+                        "startLine": 2,
+                        "startCharacter": 1,
+                        "endLine": 2,
+                        "endCharacter": 4,
+                        "newText": "TWO",
+                        "expectedHash": hashlib.sha256(original).hexdigest(),
+                    }
+                ],
+            },
+        ),
+        context=_context(tmp_path),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(result, ToolSuccess), result
+    assert target.read_bytes() == b"one\nTWO"
+
+
+def test_range_rejects_mixed_line_endings_without_writing(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    target = tmp_path / "mixed.txt"
+    original = b"one\r\ntwo\n"
+    target.write_bytes(original)
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "mixed.txt",
+                        "startLine": 2,
+                        "startCharacter": 1,
+                        "endLine": 2,
+                        "endCharacter": 4,
+                        "newText": "TWO",
+                        "expectedHash": hashlib.sha256(original).hexdigest(),
+                    }
+                ],
+            },
+        ),
+        context=_context(tmp_path),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "mixed_line_endings"
+    assert target.read_bytes() == original
 
 
 @pytest.mark.parametrize("batch", [False, True])
@@ -1164,10 +1759,12 @@ def test_edit_commit_preserves_bytes_permissions_and_concurrent_changes(tmp_path
         monkeypatch.setattr(edit_tool, "replace_file", fail_replace)
 
     tool = edit_tool.EditTool()
+    changed_hash = hashlib.sha256(b"changed\r\n").hexdigest()
     if failure is None:
         result = tool.invoke(ToolCall(tool_name="edit", arguments=arguments), context=_context(tmp_path), services=_SERVICES)
         assert isinstance(result, ToolSuccess)
-        assert result.body.content_hash == hashlib.sha256(b"changed\r\n").hexdigest()
+        assert result.body.content_hash == changed_hash
+        assert f"SHA-256 content hash: {changed_hash}" in result.output.text  # type: ignore[union-attr]
     else:
         with pytest.raises(OSError):
             tool.invoke(ToolCall(tool_name="edit", arguments=arguments), context=_context(tmp_path), services=_SERVICES)
@@ -1193,99 +1790,155 @@ def test_edit_replace_all_preserves_single_and_batch_result_counts(tmp_path: Pat
     assert result.body.match_count == 3
 
 
-@pytest.mark.parametrize("operation", ["add", "update", "delete", "move"])
-def test_marker_patch_commit_rejects_changes_after_preflight(tmp_path: Path, monkeypatch, operation: str) -> None:
-    from voidcode.capabilities.files import apply_patch
+def test_edit_matches_lf_old_string_in_crlf_file_and_preserves_crlf(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
 
-    source = tmp_path / "source.txt"
-    source.write_bytes(b"old\n")
-    destination = tmp_path / "destination.txt"
-    body = {
-        "add": "*** Add File: destination.txt\n+new\n",
-        "update": "*** Update File: source.txt\n@@\n-old\n+new\n",
-        "delete": "*** Delete File: source.txt\n",
-        "move": "*** Update File: source.txt\n*** Move to: destination.txt\n@@\n-old\n+new\n",
-    }[operation]
-    prepare = apply_patch._PreparedMarkerChange
-    changed = destination if operation in {"add", "move"} else source
-
-    def concurrent_writer(**kwargs):
-        prepared = prepare(**kwargs)
-        changed.write_bytes(b"concurrent writer\n")
-        return prepared
-
-    monkeypatch.setattr(apply_patch, "_PreparedMarkerChange", concurrent_writer)
-    result = apply_patch.execute_patch(
-        {"patch": f"*** Begin Patch\n{body}*** End Patch\n"},
+    target = tmp_path / "crlf.txt"
+    original = b"one\r\ntwo\r\n"
+    target.write_bytes(original)
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "crlf.txt", "oldString": "two", "newString": "TWO", "expectedHash": hashlib.sha256(original).hexdigest()},
+        ),
         context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    assert isinstance(result, ToolSuccess), result
+    assert target.read_bytes() == b"one\r\nTWO\r\n"
+    assert hashlib.sha256(target.read_bytes()).hexdigest() in result.output.text  # type: ignore[union-attr]
+
+
+def test_edit_new_text_uses_the_files_crlf_ending(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    target = tmp_path / "crlf.txt"
+    original = b"one\r\ntwo\r\n"
+    target.write_bytes(original)
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "crlf.txt", "oldString": "two\n", "newString": "new\nline\n", "expectedHash": hashlib.sha256(original).hexdigest()},
+        ),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    assert isinstance(result, ToolSuccess), result
+    assert target.read_bytes() == b"one\r\nnew\r\nline\r\n"
+
+
+def test_edit_preserves_lone_cr_line_endings(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    target = tmp_path / "cr.txt"
+    original = b"one\rtwo\rthree\r"
+    target.write_bytes(original)
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "cr.txt", "oldString": "two\n", "newString": "TWO\n", "expectedHash": hashlib.sha256(original).hexdigest()},
+        ),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    assert isinstance(result, ToolSuccess), result
+    assert target.read_bytes() == b"one\rTWO\rthree\r"
+
+
+def test_edit_preserves_pure_lf_bytes(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    target = tmp_path / "lf.txt"
+    original = b"one\ntwo\n"
+    target.write_bytes(original)
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "lf.txt", "oldString": "two", "newString": "TWO", "expectedHash": hashlib.sha256(original).hexdigest()},
+        ),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    assert isinstance(result, ToolSuccess), result
+    assert target.read_bytes() == b"one\nTWO\n"
+
+
+def test_edit_rejects_mixed_line_endings_without_writing(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    target = tmp_path / "mixed.txt"
+    original = b"one\r\ntwo\n"
+    target.write_bytes(original)
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "mixed.txt", "oldString": "two", "newString": "TWO", "expectedHash": hashlib.sha256(original).hexdigest()},
+        ),
+        context=_context(tmp_path),
+        services=_SERVICES,
     )
     assert isinstance(result, ToolFailure)
-    assert result.changes == ()
-    assert changed.read_bytes() == b"concurrent writer\n"
-    if operation in {"add", "move"}:
-        assert source.read_bytes() == b"old\n"
-    assert not list(tmp_path.glob(".voidcode_edit_*"))
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "mixed_line_endings"
+    assert target.read_bytes() == original
 
 
-@pytest.mark.parametrize("operation", ["add", "move"])
-def test_marker_patch_commits_new_destination_and_removes_source_only_for_move(tmp_path: Path, operation: str) -> None:
-    from voidcode.capabilities.files.apply_patch import execute_patch
+def test_write_rejects_external_target_with_typed_failure(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.write_tool import WriteTool
 
-    source = tmp_path / "source.txt"
-    source.write_bytes(b"old\n")
-    body = (
-        "*** Add File: destination.txt\n+new\n"
-        if operation == "add"
-        else "*** Update File: source.txt\n*** Move to: destination.txt\n@@\n-old\n+new\n"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    result = WriteTool().invoke(
+        ToolCall(tool_name="write", arguments={"path": str(outside), "content": "nope"}),
+        context=_context(workspace),
+        services=_SERVICES,
     )
-    result = execute_patch(
-        {"patch": f"*** Begin Patch\n{body}*** End Patch\n"},
-        context=_context(tmp_path),
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "outside_workspace"
+    assert not outside.exists()
+
+
+def test_write_distinguishes_invalid_path_from_outside_workspace(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.write_tool import WriteTool
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    result = WriteTool().invoke(
+        ToolCall(tool_name="write", arguments={"path": "bad\x00name", "content": "x"}),
+        context=_context(workspace),
+        services=_SERVICES,
     )
-    assert isinstance(result, ToolSuccess)
-    assert (tmp_path / "destination.txt").read_bytes() == (b"new" if operation == "add" else b"new\n")
-    assert source.exists() == (operation == "add")
-    assert not list(tmp_path.glob(".voidcode_edit_*"))
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "invalid_path"
 
 
-@pytest.mark.parametrize(
-    ("operations", "expected", "error"),
-    [
-        ("*** Add File: new.txt\n+temporary\n*** Delete File: new.txt\n", {"source.txt": b"old\n"}, None),
-        ("*** Delete File: source.txt\n*** Update File: source.txt\n@@\n-old\n+new\n", {"source.txt": b"old\n"}, "Failed to read file to update"),
-        ("*** Delete File: source.txt\n*** Add File: source.txt\n+replacement\n", {"source.txt": b"replacement"}, None),
-        (
-            "*** Update File: source.txt\n*** Move to: moved.txt\n@@\n-old\n+new\n*** Update File: moved.txt\n@@\n-new\n+final\n",
-            {"moved.txt": b"final\n"},
-            None,
+def test_edit_rejects_external_target_with_typed_failure(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    result = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "path": str(outside),
+                "oldString": "secret",
+                "newString": "changed",
+                "expectedHash": hashlib.sha256(outside.read_bytes()).hexdigest(),
+            },
         ),
-        ("*** Add File: new.txt\n+first\n*** Add File: ./new.txt\n+second\n", {"source.txt": b"old\n"}, "destination already exists"),
-        (
-            "*** Update File: source.txt\n@@\n-old\n+new\n*** Update File: ./source.txt\n@@\n-new\n+final\n",
-            {"source.txt": b"final\n"},
-            None,
-        ),
-    ],
-)
-def test_marker_patch_preflights_sequential_file_state(tmp_path: Path, operations: str, expected: dict, error: str | None) -> None:
-    from voidcode.capabilities.files.apply_patch import execute_patch
-
-    source = tmp_path / "source.txt"
-    source.write_bytes(b"old\n")
-    arguments = {
-        "patch": f"*** Begin Patch\n{operations}*** End Patch\n",
-    }
-    if error:
-        with pytest.raises(ValueError, match=error):
-            execute_patch(arguments, context=_context(tmp_path))
-    else:
-        assert isinstance(execute_patch(arguments, context=_context(tmp_path)), ToolSuccess)
-    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == expected
+        context=_context(workspace),
+        services=_SERVICES,
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "outside_workspace"
+    assert outside.read_text(encoding="utf-8") == "secret\n"
 
 
 def test_edit_schema_excludes_patch_and_strictly_requires_replacements(tmp_path: Path) -> None:
-    from pydantic import ValidationError
-
     from voidcode.capabilities.files.edit_tool import EditTool
 
     tool = EditTool()
@@ -1293,23 +1946,24 @@ def test_edit_schema_excludes_patch_and_strictly_requires_replacements(tmp_path:
     defs = schema.get("$defs", {})
     assert "_PatchEdit" not in defs
     assert "patch" not in schema.get("properties", {})
-    assert set(defs.keys()) == {"_SingleEdit", "_BatchEdit", "_Replacement"}
+    assert set(defs.keys()) == {"_SingleEdit", "_BatchEdit", "_Replacement", "_RangeEditArgs", "_RangeTextEdit"}
 
-    with pytest.raises(ValidationError):
-        tool.invoke(
-            ToolCall(
-                tool_name="edit",
-                arguments={"patch": "*** Begin Patch\n*** End Patch\n"},
-            ),
-            context=_context(tmp_path),
-            services=_SERVICES,
-        )
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"patch": "*** Begin Patch\n*** End Patch\n"},
+        ),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.kind == "tool_input_validation"
 
 
 def test_shared_primitives_path_and_diff(tmp_path: Path) -> None:
     from voidcode.capabilities.files._common import (
-        convert_line_endings,
-        detect_line_ending,
+        encode_line_endings,
+        line_ending_kinds,
         make_file_change,
         normalize_line_endings,
         resolve_workspace_path,
@@ -1349,7 +2003,11 @@ def test_shared_primitives_path_and_diff(tmp_path: Path) -> None:
     assert change.operation == "update"
     assert change.content_hash == "abc"
 
-    assert detect_line_ending("line1\r\nline2") == "\r\n"
-    assert detect_line_ending("line1\nline2") == "\n"
+    assert line_ending_kinds("line1\r\nline2") == frozenset({"\r\n"})
+    assert line_ending_kinds("line1\nline2") == frozenset({"\n"})
+    assert line_ending_kinds("line1\rline2") == frozenset({"\r"})
+    assert line_ending_kinds("line1\r\nline2\n") == frozenset({"\r\n", "\n"})
     assert normalize_line_endings("a\r\nb\rc\n") == "a\nb\nc\n"
-    assert convert_line_endings("a\nb\n", "\r\n") == "a\r\nb\r\n"
+    assert encode_line_endings("a\nb\n", "\r\n") == "a\r\nb\r\n"
+    assert encode_line_endings("a\nb\n", "\r") == "a\rb\r"
+    assert encode_line_endings("a\nb\n", None) == "a\nb\n"

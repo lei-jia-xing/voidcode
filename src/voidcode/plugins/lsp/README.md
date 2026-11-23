@@ -6,7 +6,7 @@ Code intelligence through workspace language servers, plus the document-state qu
 
 - Tool `lsp` (effects `READ` + `EXECUTE`) with `operation` `diagnostics` | `goToDefinition` | `findReferences` | `rename` | `codeAction` | `willRenameFiles` | `hover` | `documentSymbol` | `workspaceSymbol` | `goToImplementation` | `incomingCalls` | `outgoingCalls`. Required: `operation`, `path` (workspace-relative, also drives server resolution). Position ops need 1-based `line` + `character`; `rename` needs `newName`, `willRenameFiles` needs `newPath`; results page with `offset`/`limit` (≤ 50).
 - Command `/lsp`: selects a server resolved for this workspace. `/lsp <server>` shows status, language/extension filters, mode, configured enabled state, and last error. Empty or disabled inventories explain configuration recovery. Browsing never spawns a server. CLI/history retain readable inventory receipts.
-- Query `workspace.document_version`: answers the caller's already-opened document state (path, version, content hash, position encoding) without starting a server or sending `didOpen`/`didChange`. This is what `apply_workspace_edit` checks against.
+- Query `workspace.document_version`: answers the caller's already-opened document state (path, version, content hash, position encoding) without starting a server or sending `didOpen`/`didChange`. This is what `edit` range mode checks against.
 
 ## Configuration
 

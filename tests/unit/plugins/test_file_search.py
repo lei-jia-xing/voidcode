@@ -7,12 +7,19 @@ import pytest
 from voidcode.capabilities.files.glob_tool import GlobTool
 from voidcode.capabilities.files.grep_tool import GrepTool
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.tools import ToolCall
+from voidcode.sdk.tools import ToolCall, ToolFailure
 
 
 def invoke(tool, workspace, arguments):
     context = ToolContext(workspace=workspace, session_id="session", run_id="run", invocation_id="inv", revision_id="rev", actor="model")
     return tool.invoke(ToolCall(tool.definition.name, arguments), context=context, services=None)
+
+
+@pytest.mark.parametrize("tool", [GlobTool(), GrepTool()])
+def test_search_invalid_path_is_typed(tmp_path: Path, tool) -> None:
+    result = invoke(tool, tmp_path, {"pattern": "example", "path": "bad\x00path"})
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "invalid_path"
 
 
 @pytest.mark.parametrize("tool", [GlobTool(), GrepTool()])
@@ -29,8 +36,9 @@ def invoke(tool, workspace, arguments):
     ],
 )
 def test_search_rejects_invalid_arguments(tmp_path: Path, tool, extra):
-    with pytest.raises(ValueError):
-        invoke(tool, tmp_path, {"pattern": "example", **extra})
+    result = invoke(tool, tmp_path, {"pattern": "example", **extra})
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.kind == "tool_input_validation"
 
 
 def test_glob_defaults_to_workspace_and_returns_nested_matches(tmp_path: Path):
@@ -51,8 +59,10 @@ def test_glob_requires_directory_search_path(tmp_path: Path, external: bool):
     workspace.mkdir()
     target = (tmp_path if external else workspace) / "file.txt"
     target.write_text("text")
-    with pytest.raises(ValueError, match="path must be a directory"):
-        invoke(GlobTool(), workspace, {"pattern": "*", "path": str(target)})
+    result = invoke(GlobTool(), workspace, {"pattern": "*", "path": str(target)})
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "search_path_not_directory"
+    assert "path must be a directory" in result.error
 
 
 def test_glob_external_directory_returns_absolute_matches(tmp_path: Path):
@@ -93,8 +103,6 @@ def test_search_limit_reports_an_incomplete_page(tmp_path: Path, tool, pattern):
 
 @pytest.mark.parametrize("failure", ["walk", "read"])
 def test_grep_reports_io_failure_instead_of_empty_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
-    from voidcode.capabilities.files.errors import ToolDiagnosticError
-
     target = tmp_path / "input.txt"
     target.write_text("needle\n", encoding="utf-8")
     if failure == "walk":
@@ -113,9 +121,10 @@ def test_grep_reports_io_failure_instead_of_empty_search(tmp_path: Path, monkeyp
             return original_open(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "open", failed_open)
-    with pytest.raises(ToolDiagnosticError, match="grep search failed") as caught:
-        invoke(GrepTool(), tmp_path, {"pattern": "needle"})
-    assert caught.value.error_details["reason"] == "search_io_error"
+    result = invoke(GrepTool(), tmp_path, {"pattern": "needle"})
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "search_io_error"
+    assert "grep search failed" in result.error
 
 
 @pytest.mark.parametrize("pattern,expected", [("*.py", {"a.py"}), ("**/*.py", {"a.py", "sub/b.py"}), ("sub/*.py", {"sub/b.py"})])
@@ -144,8 +153,10 @@ def test_glob_reports_directory_scan_failure(tmp_path: Path, monkeypatch: pytest
 
 @pytest.mark.parametrize("pattern", ["../*.py", "/tmp/*.py"])
 def test_glob_requires_patterns_relative_to_search_directory(tmp_path: Path, pattern: str) -> None:
-    with pytest.raises(ValueError, match="must be relative"):
-        invoke(GlobTool(), tmp_path, {"pattern": pattern})
+    result = invoke(GlobTool(), tmp_path, {"pattern": pattern})
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.kind == "tool_input_validation"
+    assert "must be relative" in result.error
 
 
 def test_grep_and_glob_do_not_prematurely_truncate_on_output_bytes(tmp_path: Path) -> None:

@@ -22,6 +22,7 @@ from voidcode.sdk.tools import (
 )
 
 from ._common import MAX_RESULT_LIMIT, is_default_ignored, resolve_workspace_path
+from .errors import expected_failures, raise_tool_diagnostic
 from .gitignore import GitIgnoreMatcher
 
 LIMIT = 100
@@ -152,6 +153,7 @@ class GlobTool:
             return matched, False, str(exc)
         return matched, False, None
 
+    @expected_failures
     def invoke(
         self,
         call: ToolCall,
@@ -164,11 +166,32 @@ class GlobTool:
         pattern_value = args.pattern
         include_hidden, respect_gitignore, limit = args.include_hidden, args.respect_gitignore, args.limit
         workspace_root = workspace.resolve()
-        search_path, _ = resolve_workspace_path(workspace, args.path)
+        try:
+            search_path, _ = resolve_workspace_path(workspace, args.path)
+        except ValueError as exc:
+            raise_tool_diagnostic(
+                message=f"glob could not resolve the search path {args.path!r}: {exc}",
+                error_kind="tool_input_mismatch",
+                reason="invalid_path",
+                retry_guidance="Retry with a valid directory path.",
+                details={"path": args.path},
+            )
         if not search_path.exists():
-            raise ValueError(f"glob path does not exist: {args.path}")
+            raise_tool_diagnostic(
+                message=f"glob path does not exist: {args.path}",
+                error_kind="tool_input_mismatch",
+                reason="search_path_not_found",
+                retry_guidance="Retry with an existing directory path.",
+                details={"path": args.path},
+            )
         if not search_path.is_dir():
-            raise ValueError(f"glob path must be a directory: {args.path}")
+            raise_tool_diagnostic(
+                message=f"glob path must be a directory: {args.path}",
+                error_kind="tool_input_mismatch",
+                reason="search_path_not_directory",
+                retry_guidance="Retry with a directory path; glob searches directories, not single files.",
+                details={"path": args.path},
+            )
         effective_root = search_path if not search_path.is_relative_to(workspace_root) else workspace_root
         gitignore = GitIgnoreMatcher.load(effective_root) if respect_gitignore else None
         matched, truncated, search_error = self._find_files(

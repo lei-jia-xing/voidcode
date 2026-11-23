@@ -23,7 +23,9 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from ._common import make_file_change, resolve_workspace_path
+from ._common import PathEscapesWorkspaceError, make_file_change, resolve_workspace_path
+from .errors import expected_failures
+from .mutation import invalid_path_failure, outside_workspace_failure
 
 MAX_WRITE_BYTES = 64 * 1024  # Max single-file write 64 KiB to fit comfortably in 1 MiB wire frames
 
@@ -67,6 +69,7 @@ class WriteTool:
         replay_policy="never",
     )
 
+    @expected_failures
     def invoke(
         self,
         call: ToolCall,
@@ -100,10 +103,10 @@ class WriteTool:
 
         try:
             candidate, display_path = resolve_workspace_path(workspace, raw_path, allow_outside_workspace=False)
-        except ValueError as exc:
-            return ToolFailure(self.definition.name, error=str(exc))
-        except Exception as exc:
-            return ToolFailure(self.definition.name, error=f"Invalid path: {exc}")
+        except PathEscapesWorkspaceError:
+            return outside_workspace_failure(self.definition.name, raw_path)
+        except (OSError, ValueError) as exc:
+            return invalid_path_failure(self.definition.name, raw_path, detail=str(exc))
 
         if candidate.is_dir():
             return ToolFailure(self.definition.name, error=f"Cannot write to directory: {raw_path}")

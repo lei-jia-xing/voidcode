@@ -24,7 +24,7 @@ from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL, write_s5_plugin
 from tests.unit.core.test_nested_tools import _call, _turn
 from tests.unit.plugins.test_providers_auth_catalog import _JsonLoopback, _provider, _request
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
-from voidcode.capabilities.files.read_tool import ReadTool
+from voidcode.capabilities.files.read_tool import ReadResultBody, ReadTool
 from voidcode.core.artifacts import MAX_PAGE_BYTES, ArtifactNotFoundError, ArtifactStore
 from voidcode.core.coverage import MODEL_PROJECTION_MARKER, ProjectionRequiresReference, project_tool_result, read_artifact_content
 from voidcode.core.services import RuntimeServices
@@ -405,6 +405,41 @@ def test_real_core_openai_tool_image_uses_synthetic_without_silent_drop(tmp_path
             prefix, _, data = image_urls[0].partition(",")
             assert prefix == "data:image/png;base64"
             assert base64.b64decode(data) == png
+
+
+def test_near_budget_whole_file_read_is_not_projection_clipped(tmp_path: Path) -> None:
+    services = _ArtifactServices(tmp_path / "state")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original = ("x" * 1170 + "\n") * 40
+    content_budget = TOOL_OUTPUT_BYTES - 4096
+    assert content_budget - 512 < len(original.encode("utf-8")) <= content_budget
+    (workspace / "document.txt").write_text(original, encoding="utf-8")
+    context = ToolContext(
+        workspace=workspace,
+        session_id="session-near-budget",
+        run_id="run",
+        invocation_id="invocation",
+        revision_id="revision",
+        actor="model",
+    )
+    result = ReadTool().invoke(
+        ToolCall(tool_name="read", arguments={"path": "document.txt"}),
+        context=context,
+        services=services,
+    )
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, ReadResultBody)
+    assert result.body.whole_file is True
+
+    canonical = _canonical(services, result)
+    text, images, clipped = project_tool_result(canonical, max_bytes=TOOL_OUTPUT_BYTES, artifact_reader=services.page)
+    document = json.loads(text)
+    assert not clipped
+    assert document["text"] == result.output.text
+    assert "text_partial" not in document
+    assert document["body_omitted"] is True
+    assert images == ()
 
 
 def test_real_core_selected_file_page_preserves_coverage_and_allows_edit(tmp_path: Path) -> None:

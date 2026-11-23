@@ -11,12 +11,12 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, NoReturn
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from voidcode.capabilities.files._common import validate_glob_patterns, validate_non_empty
-from voidcode.capabilities.files.errors import ToolDiagnosticError
+from voidcode.capabilities.files.errors import ToolDiagnosticError, expected_failures
 from voidcode.capabilities.files.grep_tool import MAX_MATCHES, GrepResultBody, GrepResultMatch, GrepTool
 from voidcode.capabilities.files.read_tool import ReadResultBody, ReadTool
 from voidcode.sdk.icons import Icon
@@ -284,6 +284,29 @@ def _grep_arguments(args: FindArgs, *, pattern: str, limit: int, context: int, i
 # enter output.text or either nested tool gains a non-read effect.
 
 
+def _raise_nested_failure(result: ToolFailure, *, fallback_message: str) -> NoReturn:
+    """Re-raise a nested file-tool failure with its diagnostic payload intact.
+
+    The find boundary converts this to a ``find`` result, so the nested result
+    is never returned under the wrong tool name.
+    """
+    diagnostics = result.diagnostics
+    message = result.error or fallback_message
+    if diagnostics is not None and diagnostics.kind is not None:
+        raise ToolDiagnosticError(
+            message=message,
+            error_kind=diagnostics.kind,
+            error_details=dict(diagnostics.details),
+            retry_guidance=diagnostics.guidance,
+        )
+    raise ToolDiagnosticError(
+        message=message,
+        error_kind="tool_execution_error",
+        error_details={"reason": "nested_tool_failure", "tool": result.tool_name},
+        retry_guidance=None,
+    )
+
+
 def _run_grep(
     args: FindArgs,
     *,
@@ -293,7 +316,7 @@ def _run_grep(
     tool_context: ToolContext,
     services: PluginServices,
 ) -> GrepResultBody:
-    """Invoke the shared grep tool exactly as Core would; ValueError propagates like grep."""
+    """Invoke the shared grep tool exactly as Core would; nested diagnostics propagate."""
     result = GrepTool().invoke(
         ToolCall(tool_name="grep", arguments=_grep_arguments(args, pattern=pattern, limit=limit, context=context)),
         context=tool_context,
@@ -302,7 +325,7 @@ def _run_grep(
     if isinstance(result, ToolFailure):
         if _cancelled(tool_context):
             raise _FindCancelled(result.error or "grep search cancelled")
-        raise ValueError(result.error or "grep search failed")
+        _raise_nested_failure(result, fallback_message="grep search failed")
     body = result.body
     if not isinstance(body, GrepResultBody):
         raise ValueError("grep search returned no result body")
@@ -310,7 +333,7 @@ def _run_grep(
 
 
 def _read_segment(path: str, *, offset: int, limit: int, tool_context: ToolContext, services: PluginServices) -> ReadResultBody:
-    """Read an evidence segment through the shared read tool; ValueError propagates like read."""
+    """Read an evidence segment through the shared read tool; nested diagnostics propagate."""
     result = ReadTool().invoke(
         ToolCall(tool_name="read", arguments={"path": path, "offset": offset, "limit": limit}),
         context=tool_context,
@@ -319,7 +342,7 @@ def _read_segment(path: str, *, offset: int, limit: int, tool_context: ToolConte
     if isinstance(result, ToolFailure):
         if _cancelled(tool_context):
             raise _FindCancelled(result.error or "read cancelled")
-        raise ValueError(result.error or f"read failed for {path}")
+        _raise_nested_failure(result, fallback_message=f"read failed for {path}")
     if not isinstance(result.body, ReadResultBody):
         raise ValueError(f"read returned no file page for {path}")
     return result.body
@@ -375,6 +398,7 @@ class FindTool:
         path_argument_keys=("path",),
     )
 
+    @expected_failures
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         args = FindArgs.model_validate(dict(call.arguments))
         if _cancelled(context):
@@ -731,9 +755,17 @@ class FindTool:
         limit = (end_line - line + 1) + 2 * _EVIDENCE_CONTEXT_LINES
         try:
             page = _read_segment(candidate.path, offset=offset, limit=limit, tool_context=context, services=services)
-        except ValueError as exc:
-            return {"path": candidate.path, "line": line, "reason": "line_out_of_range", "error": str(exc)}
-        if end_line > page.line_count:
+        except ToolDiagnosticError as exc:
+            return {
+                "path": candidate.path,
+                "line": line,
+                "reason": "line_out_of_range",
+                "error": exc.message,
+                "error_kind": exc.error_kind,
+                "details": dict(exc.error_details),
+            }
+        shown_lines = {record.line for record in page.lines}
+        if line not in shown_lines or end_line not in shown_lines:
             return {"path": candidate.path, "line": line, "reason": "line_out_of_range"}
         return FindLocation(
             path=candidate.path,
@@ -763,8 +795,16 @@ class FindTool:
             limit = 1 + 2 * _EVIDENCE_CONTEXT_LINES
             try:
                 page = _read_segment(match.file, offset=offset, limit=limit, tool_context=context, services=services)
-            except ValueError as exc:
-                skipped.append({"path": match.file, "reason": "unreadable", "error": str(exc)})
+            except ToolDiagnosticError as exc:
+                skipped.append(
+                    {
+                        "path": match.file,
+                        "reason": "unreadable",
+                        "error": exc.message,
+                        "error_kind": exc.error_kind,
+                        "details": dict(exc.error_details),
+                    }
+                )
                 continue
             locations.append(
                 FindLocation(

@@ -111,7 +111,7 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 
 | Plugin | Contributes |
 |---|---|
-| `files` | `read`, `write`, `edit`, `glob`, `grep`, `apply_workspace_edit`; `tool://`, `artifact://`, `transcript://` resource readers |
+| `files` | `read`, `write`, `edit`, `glob`, `grep`; `tool://`, `artifact://`, `transcript://` resource readers |
 | `ast_grep` | `ast_grep` structural search |
 | `exec` | `shell_exec`, `background_process` |
 | `web` | `web_search` (multi-backend), `web_fetch` page snapshots, `web://` resource reader |
@@ -140,16 +140,25 @@ Model tools are SDK contracts plus owner-registered handlers: each plugin's
 the runtime serves them as the init catalog, and the
 core admits, validates, approves, dispatches, and records every call. The
 engine-owned model tool `core_reload` is not plugin-declared; `core.reload`
-is the corresponding user command. Product tools belong in plugins, not in a
-`edit` accepts exact text replacements (single replacement or ordered batch).
-File editing uses Python filesystem operations and does not require Git;
-unified diffs are output previews, not edit input.
+is the corresponding user command. Product tools belong in plugins, not in core.
+`edit` accepts exact text replacements (single replacement or ordered batch) and
+LSP-style range edits (`mode="range"`) across one or more files. File editing
+uses Python filesystem operations and does not require Git; unified diffs are
+output previews, not edit input. Text matching is EOL-insensitive, committed
+bytes use the file's one uniform ending, mixed-ending files are refused, and
+every successful edit reports the changed files' new SHA-256 hashes.
 
 `read` reads regular files and bounded resource URIs. It does not list directories
 or parse notebook, PDF, SQLite or archive formats; use shell tools for those
 operations and read their text output when needed. The only read arguments are
-`path`, `offset`, `limit`, `byte_offset` and `byte_limit` (byte cursors apply only
-to artifacts). Resource URIs use their own schemes, without legacy aliases:
+`path`, `offset`, `limit`, `byte_offset`, `byte_limit` (byte cursors apply only
+to artifacts), and `hash_only` (regular file paths). Only an untruncated page
+starting at `offset=1` and reaching EOF reports the file's SHA-256 and coverage;
+`offset>1` pages never do. Line count is reported whenever the read reaches EOF,
+including `offset>1` pages. Partial pages stop after the requested page plus an
+EOF probe and never decode unseen later lines; they may read ahead one raw chunk.
+`hash_only` streams the whole file to obtain the hash when a page was partial.
+Resource URIs use their own schemes, without legacy aliases:
  `tool://<name>` renders the definition the
 core's active dispatch snapshot advertises to this session (plugin plus reserved core tools,
 with profile scope and read-only stance applied); `transcript://<session>` composes a
@@ -159,10 +168,11 @@ core's lineage guard); `artifact://<id>` reads through
 `PluginServices.read_artifact(sha256, offset=..., limit=...)`. Producers return the
 SDK's immutable `ArtifactReference` directly in `OutputBounds.reference`; its URI
 is derived from its digest. Other resource references are URI strings. See
-[artifact contracts](./contracts/artifacts.md). `apply_workspace_edit` demands `expectedHash`, and version
+[artifact contracts](./contracts/artifacts.md). `edit` range mode demands `expectedHash`, and version
 constraints are checked against the LSP plugin's `workspace.document_version` query — a pure
 read of documents this session already opened (never a server start) — failing closed with a
-visible diagnostic when nothing is open. Language servers run as supervised runtime-generation
+visible diagnostic when nothing is open. Mutating targets must resolve inside the workspace;
+`read`/`glob`/`grep` keep external read access. Language servers run as supervised runtime-generation
 service processes (`spawn_service_process`, stdin piped, stdout/stderr spooled) so retirement,
 reload, cancellation, and hard core death all clean the owned tree; the `lsp` tool therefore
 declares `read`+`execute` and flows through the existing approval/read-only gates.
@@ -203,7 +213,7 @@ and its shared request/answer types.
 Both sides use the shared `bind` / `ask` helpers rather than duplicating dictionaries and validation. Any plugin
 can implement them. `QueryUnavailable` means no provider was admitted; `None` means the
 provider knows no such resource. Malformed answers and provider exceptions remain visible
-failures. Files can operate without skills or LSP; hash-only edits remain usable, and
+failures. Files can operate without skills or LSP; edits carrying only a content hash remain usable, and
 version-constrained edits fail closed without a document version. Discoverable
 rules advertise their source files and use ordinary file reads.
 This removes duplicated contract definitions, while retaining the explicit semantic dependency

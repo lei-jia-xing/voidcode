@@ -23,14 +23,16 @@ from voidcode.sdk.tools import (
 )
 
 from ._common import (
-    convert_line_endings,
-    detect_line_ending,
+    PathEscapesWorkspaceError,
+    encode_line_endings,
     make_file_change,
-    read_utf8_text,
+    normalize_line_endings,
     resolve_workspace_path,
     summarize_diff,
 )
-from .errors import ToolDiagnosticError, raise_tool_diagnostic
+from .errors import ToolDiagnosticError, expected_failures, raise_tool_diagnostic
+from .mutation import check_expected_hash, invalid_path_failure, load_text_state, outside_workspace_failure, uniform_line_ending
+from .range_edit import RangeEditResultBody, _RangeEditArgs, apply_range_edits
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,42 +111,49 @@ class _Replacement(BaseModel):
 
 class _SingleEdit(_Replacement):
     path: str = Field(min_length=1, pattern=r"\S")
-    expectedHash: str = Field(description="SHA-256 of the current file bytes, as reported by read.")
+    expectedHash: str = Field(description="SHA-256 of the current file bytes, as reported by read or read(hash_only=true).")
 
 
 class _BatchEdit(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
     path: str = Field(min_length=1, pattern=r"\S")
-    expectedHash: str = Field(description="SHA-256 of the current file bytes, as reported by read.")
+    expectedHash: str = Field(description="SHA-256 of the current file bytes, as reported by read or read(hash_only=true).")
     edits: list[_Replacement] = Field(min_length=1)
 
 
-_EDIT_ARGS = TypeAdapter(_SingleEdit | _BatchEdit)
+_EDIT_ARGS = TypeAdapter(_SingleEdit | _BatchEdit | _RangeEditArgs)
+
+_EDIT_DESCRIPTION = (
+    "Edit files. Text mode replaces exact current file text (single replacement or ordered batch). "
+    "Range mode (mode='range') applies 1-based line/character edits across one or more files, each checked "
+    "against expectedHash and optionally an LSP document version. "
+    "When constructing oldString from read output, omit any leading line-number prefix such as '42: ' and pass only the file's actual text. "
+    "Line endings are matched EOL-insensitively; mixed-ending files are refused."
+)
 
 
 class EditTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="edit",
         icon=Icon(glyph="✎"),
-        description=(
-            "Edit files by replacing text (single replacement or ordered batch). "
-            "Replacements require exact current file text. "
-            "When constructing oldString from read output, omit any leading line-number prefix such as '42: ' and pass only the file's actual text."
-        ),
+        description=_EDIT_DESCRIPTION,
         input_schema={"type": "object", **_EDIT_ARGS.json_schema()},
         effects=frozenset({ToolEffect.WRITE}),
-        path_argument_keys=("path",),
+        path_argument_keys=("path", "edits[].path"),
     )
 
+    @expected_failures
     def invoke(
         self,
         call: ToolCall,
         *,
         context: ToolContext,
-        services: PluginServices,  # noqa: ARG002 - required by the frozen Tool ABI
+        services: PluginServices,
     ) -> ToolResult:
         args = _EDIT_ARGS.validate_python(json_wire_object(call.arguments))
+        if isinstance(args, _RangeEditArgs):
+            return apply_range_edits(args, context=context, services=services)
         return self._invoke_replacements(args, context=context)
 
     def _invoke_replacements(self, args: _SingleEdit | _BatchEdit, *, context: ToolContext) -> ToolResult:
@@ -153,28 +162,35 @@ class EditTool:
         batch = isinstance(args, _BatchEdit)
         parsed_edits = args.edits if isinstance(args, _BatchEdit) else (args,)
 
-        candidate, display_path = resolve_workspace_path(workspace, path_value)
+        try:
+            candidate, display_path = resolve_workspace_path(workspace, path_value, allow_outside_workspace=False)
+        except PathEscapesWorkspaceError:
+            return outside_workspace_failure(self.definition.name, path_value)
+        except (OSError, ValueError) as exc:
+            return invalid_path_failure(self.definition.name, path_value, detail=str(exc))
         if not candidate.exists():
-            raise ValueError(f"edit target does not exist: {path_value}")
-        if not candidate.is_file():
-            raise ValueError(f"edit target is not a file: {path_value}")
-
-        expected_hash = args.expectedHash
-        content_before = read_utf8_text(candidate)
-        actual_hash = hashlib.sha256(content_before.encode("utf-8")).hexdigest()
-        if expected_hash != actual_hash:
             raise_tool_diagnostic(
-                message="Edit rejected because the file changed since it was read (stale edit).",
-                error_kind="stale_edit",
-                reason="content_hash_mismatch",
-                retry_guidance="Read the file again, use the SHA-256 content hash shown in read output, then retry the edit.",
-                details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
+                message=f"edit target does not exist: {path_value}",
+                error_kind="tool_input_mismatch",
+                reason="target_not_found",
+                retry_guidance="Retry with an existing workspace file path.",
+                details={"path": display_path},
+            )
+        if not candidate.is_file():
+            raise_tool_diagnostic(
+                message=f"edit target is not a file: {path_value}",
+                error_kind="tool_input_mismatch",
+                reason="not_a_regular_file",
+                retry_guidance="Retry with a regular file path.",
+                details={"path": display_path},
             )
 
-        ending = detect_line_ending(content_before)
+        state = load_text_state(candidate, display_path, tool_name=self.definition.name)
+        check_expected_hash(state, args.expectedHash, tool_name=self.definition.name)
+        ending = uniform_line_ending(state.text, display_path=display_path, tool_name=self.definition.name)
 
-        # Preflight all edits against exact current text entirely in memory.
-        current_content = content_before
+        # Preflight all edits against LF-normalized current text entirely in memory.
+        current_content = normalize_line_endings(state.text)
         total_matches = 0
 
         for idx, item in enumerate(parsed_edits, start=1):
@@ -187,8 +203,8 @@ class EditTool:
             try:
                 next_content, match_count = _replace(
                     current_content,
-                    item.oldString,
-                    item.newString,
+                    normalize_line_endings(item.oldString),
+                    normalize_line_endings(item.newString),
                     replace_all=item.replaceAll,
                 )
             except ValueError as exc:
@@ -225,12 +241,12 @@ class EditTool:
             current_content = next_content
             total_matches += match_count
 
-        final_text = convert_line_endings(current_content, ending)
+        final_text = encode_line_endings(current_content, ending)
         final_bytes = final_text.encode("utf-8")
         final_disk_hash = hashlib.sha256(final_bytes).hexdigest()
         diff, additions, deletions = summarize_diff(
             path=candidate,
-            before=content_before,
+            before=state.text,
             after=final_text,
         )
         # Prepare the complete result before the single commit.
@@ -240,7 +256,7 @@ class EditTool:
                 error="edit cancelled before committing file",
                 execution=ConfirmedStop(cancellation_signalled=True),
             )
-        replace_file(candidate, final_bytes, expected_content=content_before.encode("utf-8"))
+        replace_file(candidate, final_bytes, expected_content=state.raw)
 
         if batch:
             content = f"Applied {len(parsed_edits)} edits to {display_path}"
@@ -248,6 +264,7 @@ class EditTool:
             content = "Edit applied successfully."
             if match_count > 1:
                 content += f" ({match_count} occurrences replaced)"
+        content += f"\nSHA-256 content hash: {final_disk_hash}"
 
         return ToolSuccess(
             self.definition.name,
@@ -264,4 +281,4 @@ class EditTool:
         )
 
 
-__all__ = ["EditResultBody", "EditTool", "read_utf8_text", "summarize_diff"]
+__all__ = ["EditResultBody", "EditTool", "RangeEditResultBody", "summarize_diff"]

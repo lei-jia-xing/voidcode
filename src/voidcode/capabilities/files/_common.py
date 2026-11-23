@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 from io import StringIO
 from pathlib import Path, PurePath
 from typing import Literal
@@ -77,6 +78,10 @@ def to_display_path(path: Path, workspace_root: Path) -> str:
     return resolved_path.as_posix()
 
 
+class PathEscapesWorkspaceError(ValueError):
+    """A resolved path lies outside the workspace and the caller forbade it."""
+
+
 def resolve_workspace_path(
     workspace: Path,
     raw_path: str | Path,
@@ -94,7 +99,7 @@ def resolve_workspace_path(
     candidate = (requested if requested.is_absolute() else workspace_root / requested).resolve()
     is_external = not candidate.is_relative_to(workspace_root)
     if not allow_outside_workspace and is_external:
-        raise ValueError(f"Path escapes workspace: {raw_path}")
+        raise PathEscapesWorkspaceError(f"Path escapes workspace: {raw_path}")
     display_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
     return candidate, display_path
 
@@ -133,42 +138,35 @@ def summarize_diff(*, path: Path | str, before: str, after: str) -> tuple[str, i
     return diff, additions, deletions
 
 
+_LINE_ENDING_PATTERN = re.compile(r"\r\n|\r|\n")
+
+
 def normalize_line_endings(text: str) -> str:
     """Normalize CRLF and CR to standard LF."""
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def detect_line_ending(text: str) -> str:
-    """Detect whether text uses CRLF or LF line endings."""
-    if "\r\n" in text:
-        return "\r\n"
-    return "\n"
+def line_ending_kinds(text: str) -> frozenset[str]:
+    """The distinct line-ending tokens present: LF, CRLF, and/or lone CR."""
+    return frozenset(_LINE_ENDING_PATTERN.findall(text))
 
 
-def convert_line_endings(text: str, ending: str) -> str:
-    """Convert text to the given line ending (CRLF or LF)."""
-    normalized = normalize_line_endings(text)
-    return normalized if ending == "\n" else normalized.replace("\n", "\r\n")
-
-
-def read_utf8_text(path: Path, *, tool_name: str = "edit") -> str:
-    """Read a UTF-8 text file or raise ValueError."""
-    try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            return handle.read()
-    except UnicodeDecodeError as exc:
-        raise ValueError(f"{tool_name} only supports UTF-8 text files") from exc
+def encode_line_endings(text: str, ending: str | None) -> str:
+    """Re-encode LF text with one uniform file ending; ``None`` keeps LF."""
+    if ending is None or ending == "\n":
+        return text
+    return text.replace("\n", ending)
 
 
 __all__ = [
     "DEFAULT_IGNORE_PATTERNS",
     "MAX_RESULT_LIMIT",
-    "convert_line_endings",
-    "detect_line_ending",
+    "PathEscapesWorkspaceError",
+    "encode_line_endings",
     "is_default_ignored",
+    "line_ending_kinds",
     "make_file_change",
     "normalize_line_endings",
-    "read_utf8_text",
     "resolve_workspace_path",
     "summarize_diff",
     "to_display_path",

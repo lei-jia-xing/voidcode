@@ -738,7 +738,7 @@ def _render_lsp_output(
             e_character = end_point.get("character", 0) + 1
             lines.append(f"    line {s_line}:{s_character}-{e_line}:{e_character} -> {edit.get('newText', '')}")
         if operation == LspOperation.RENAME:
-            lines.append("\nNote: Preview only. To apply these edits, use apply_workspace_edit.")
+            lines.append('\nNote: Preview only. To apply these edits, use edit with mode="range".')
         return "\n".join(lines), count, start + len(page) < count
 
     if operation == LspOperation.CODE_ACTION:
@@ -762,7 +762,7 @@ def _render_lsp_output(
                 if isinstance(changes, dict) and changes:
                     paths = [_uri_to_rel_path(uri, workspace_root) for uri in changes]
                     lines.append(f"     affects: {', '.join(paths)}")
-        lines.append("\nNote: Preview only. To apply workspace edits, use apply_workspace_edit.")
+        lines.append('\nNote: Preview only. To apply workspace edits, use edit with mode="range".')
         return "\n".join(lines), count, start + len(page) < count
 
     if operation in (LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS):
