@@ -34,16 +34,54 @@ class RuleLimits:
 
 DEFAULT_RULE_LIMITS: Final = RuleLimits()
 
+#: Rule files/rules that are ignored still produce a bounded, visible diagnostic.
+MAX_RULE_DIAGNOSTICS = 8
+MAX_RULE_DIAGNOSTIC_CHARS = 240
+
 _RULE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 RuleApplication = Literal["always_apply", "discoverable"]
 RuleScope = Literal["workspace", "repo"]
 
 
+def _bounded_rule_message(message: object) -> str:
+    compact = " ".join(str(message).split())
+    if len(compact) <= MAX_RULE_DIAGNOSTIC_CHARS:
+        return compact
+    return compact[: MAX_RULE_DIAGNOSTIC_CHARS - 3].rstrip() + "..."
+
+
+def _add_diagnostic(diagnostics: list[str], message: object) -> None:
+    if len(diagnostics) > MAX_RULE_DIAGNOSTICS:
+        return
+    if len(diagnostics) == MAX_RULE_DIAGNOSTICS:
+        diagnostics.append("further rule diagnostics omitted")
+        return
+    diagnostics.append(_bounded_rule_message(message))
+
+
+class RuleDocumentError(ValueError):
+    """One rulebook document is structurally invalid; the rest of the catalog stands."""
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeFileRuleContext:
     path: str
     content: str
+
+
+@dataclass(frozen=True, slots=True)
+class FileRuleResult:
+    """Applicable file-rule contexts plus bounded diagnostics for ignored files."""
+
+    contexts: tuple[RuntimeFileRuleContext, ...] = ()
+    diagnostics: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _RuleCandidate:
+    path: Path
+    trusted_root: Path
 
 
 def _rule_file_in_directory(directory: Path) -> Path | None:
@@ -98,30 +136,56 @@ def runtime_file_rule_contexts(
     limits: RuleLimits = DEFAULT_RULE_LIMITS,
     include_workspace_root: bool = True,
 ) -> tuple[RuntimeFileRuleContext, ...]:
+    return runtime_file_rule_result(
+        workspace=workspace,
+        touched_paths=touched_paths,
+        limits=limits,
+        include_workspace_root=include_workspace_root,
+    ).contexts
+
+
+def runtime_file_rule_result(
+    *,
+    workspace: Path | None,
+    touched_paths: tuple[str, ...] = (),
+    limits: RuleLimits = DEFAULT_RULE_LIMITS,
+    include_workspace_root: bool = True,
+) -> FileRuleResult:
     if workspace is None or limits.max_rule_files < 1 or limits.max_total_rule_bytes < 0:
-        return ()
+        return FileRuleResult()
     workspace_root = workspace.resolve(strict=False)
+    project_root = _find_project_root(workspace_root)
     rule_paths = _applicable_rule_paths(
         workspace_root=workspace_root,
+        project_root=project_root,
         touched_paths=touched_paths,
         max_rule_files=limits.max_rule_files,
         include_workspace_root=include_workspace_root,
     )
+    diagnostics: list[str] = []
     if limits.max_total_rule_bytes == 0 and rule_paths:
-        first_path = rule_paths[0]
-        try:
-            rel_path = first_path.relative_to(workspace_root).as_posix()
-        except ValueError:
-            rel_path = Path(os.path.relpath(first_path, workspace_root)).as_posix()
-        return (RuntimeFileRuleContext(path=rel_path, content=""),)
+        first_path = rule_paths[0].path
+        return FileRuleResult(contexts=(RuntimeFileRuleContext(path=_display_path(first_path, workspace_root), content=""),))
     contexts: list[RuntimeFileRuleContext] = []
     remaining_bytes = limits.max_total_rule_bytes
-    for index, rule_path in enumerate(rule_paths):
+    for index, candidate in enumerate(rule_paths):
         if remaining_bytes == 0:
             break
+        rule_path = candidate.path
+        rel_path = _display_path(rule_path, workspace_root)
         try:
-            content = rule_path.read_text(encoding="utf-8")
-        except OSError, UnicodeDecodeError:
+            resolved_path = rule_path.resolve(strict=True)
+        except OSError as exc:
+            _add_diagnostic(diagnostics, f"{rel_path}: cannot resolve rule file ({exc}); skipped")
+            continue
+        trusted_root = candidate.trusted_root.resolve(strict=False)
+        if not resolved_path.is_relative_to(trusted_root):
+            _add_diagnostic(diagnostics, f"{rel_path}: resolves outside the trusted rule root; skipped")
+            continue
+        try:
+            content = resolved_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            _add_diagnostic(diagnostics, f"{rel_path}: unreadable rule file ({exc}); skipped")
             continue
         file_truncated = len(content) > limits.max_rule_file_chars
         content = content[: limits.max_rule_file_chars]
@@ -135,36 +199,40 @@ def runtime_file_rule_contexts(
         elif file_truncated:
             marker_bytes = marker if remaining_bytes - len(encoded) >= len(marker) else b""
             content += marker_bytes.decode("utf-8")
-        try:
-            rel_path = rule_path.relative_to(workspace_root).as_posix()
-        except ValueError:
-            rel_path = Path(os.path.relpath(rule_path, workspace_root)).as_posix()
         final_content = content.strip()
         used_bytes = len(final_content.encode("utf-8"))
         remaining_bytes -= used_bytes
         contexts.append(RuntimeFileRuleContext(path=rel_path, content=final_content))
         if budget_truncated or (remaining_bytes == 0 and index + 1 < len(rule_paths)):
             break
-    return tuple(contexts)
+    return FileRuleResult(contexts=tuple(contexts), diagnostics=tuple(diagnostics))
+
+
+def _display_path(path: Path, workspace_root: Path) -> str:
+    try:
+        return path.relative_to(workspace_root).as_posix()
+    except ValueError:
+        return Path(os.path.relpath(path, workspace_root)).as_posix()
 
 
 def _applicable_rule_paths(
     *,
     workspace_root: Path,
+    project_root: Path,
     touched_paths: tuple[str, ...],
     max_rule_files: int,
     include_workspace_root: bool,
-) -> tuple[Path, ...]:
-    baseline_rules: list[Path] = []
+) -> tuple[_RuleCandidate, ...]:
+    baseline_rules: list[_RuleCandidate] = []
     seen: set[Path] = set()
 
     if include_workspace_root:
         for rule_path in _project_hierarchy_rule_paths(workspace_root=workspace_root):
             if rule_path not in seen:
                 seen.add(rule_path)
-                baseline_rules.append(rule_path)
+                baseline_rules.append(_RuleCandidate(path=rule_path, trusted_root=project_root))
 
-    dynamic_rules: list[Path] = []
+    dynamic_rules: list[_RuleCandidate] = []
     for raw_path in touched_paths:
         touched_path = _workspace_path(workspace_root=workspace_root, raw_path=raw_path)
         if touched_path is None:
@@ -173,14 +241,18 @@ def _applicable_rule_paths(
             if rule_path in seen:
                 continue
             seen.add(rule_path)
-            dynamic_rules.append(rule_path)
+            dynamic_rules.append(_RuleCandidate(path=rule_path, trusted_root=workspace_root))
 
-    if len(baseline_rules) >= max_rule_files:
-        return tuple(baseline_rules[:max_rule_files])
-
-    allowed_dynamic_count = max_rule_files - len(baseline_rules)
-    retained_dynamic = dynamic_rules[-allowed_dynamic_count:] if len(dynamic_rules) > allowed_dynamic_count else dynamic_rules
-    return tuple(baseline_rules + retained_dynamic)
+    # The hierarchy is ordered outermost -> workspace-local. When it exceeds the cap,
+    # keep the nearest rules: dropping the outer project policy is safer than dropping
+    # the workspace's own instructions. Reserve part of the cap for touched-path rules
+    # whose directories are more specific than any baseline file.
+    dynamic_reserve = min(len(dynamic_rules), max(0, max_rule_files // 2))
+    baseline_budget = max(0, max_rule_files - dynamic_reserve)
+    retained_baseline = baseline_rules[-baseline_budget:] if baseline_budget else []
+    allowed_dynamic_count = max(0, max_rule_files - len(retained_baseline))
+    retained_dynamic = dynamic_rules[-allowed_dynamic_count:] if allowed_dynamic_count else []
+    return tuple(retained_baseline + retained_dynamic)
 
 
 def _workspace_path(*, workspace_root: Path, raw_path: str) -> Path | None:
@@ -226,6 +298,13 @@ def render_file_rules(contexts: tuple[RuntimeFileRuleContext, ...]) -> str:
     return "\n\n".join(rendered)
 
 
+def render_rule_diagnostics(diagnostics: tuple[str, ...]) -> str:
+    """Bounded visibility for rule files that could not be used."""
+    if not diagnostics:
+        return ""
+    return "Runtime rule diagnostics (some rule files were ignored):\n" + "\n".join(f"- {message}" for message in diagnostics)
+
+
 @dataclass(frozen=True, slots=True)
 class RuleMetadata:
     name: str
@@ -255,6 +334,7 @@ class RuleCatalogEntry:
 @dataclass(frozen=True, slots=True)
 class RuleCatalog:
     entries: tuple[RuleCatalogEntry, ...]
+    diagnostics: tuple[str, ...] = ()
 
     @property
     def always_apply(self) -> tuple[RuleCatalogEntry, ...]:
@@ -269,7 +349,7 @@ def _rule_sort_key(metadata: RuleMetadata) -> tuple[int, int, str]:
     return (0 if metadata.scope == "workspace" else 1, metadata.precedence, metadata.name)
 
 
-def _parse_rule_document(path: Path, text: str) -> RuleCatalogEntry | None:
+def _parse_rule_document(path: Path, text: str) -> RuleCatalogEntry:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     fields: dict[str, str] = {}
     body = normalized
@@ -277,7 +357,7 @@ def _parse_rule_document(path: Path, text: str) -> RuleCatalogEntry | None:
     if lines and lines[0].strip() == "---":
         end = next((index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"), None)
         if end is None:
-            return None
+            raise RuleDocumentError("frontmatter block is not closed with '---'")
         for line in lines[1:end]:
             if ":" not in line:
                 continue
@@ -287,55 +367,74 @@ def _parse_rule_document(path: Path, text: str) -> RuleCatalogEntry | None:
     raw_name = fields.get("name") or path.stem
     name = raw_name.strip()
     if _RULE_NAME_PATTERN.fullmatch(name) is None or "/" in name or "\\" in name:
-        return None
+        raise RuleDocumentError(f"invalid rule name {raw_name!r}")
     application_value = fields.get("application")
     if application_value == "always_apply":
         application: RuleApplication = "always_apply"
     elif application_value == "discoverable":
         application = "discoverable"
     else:
-        return None
+        raise RuleDocumentError("frontmatter 'application' must be 'always_apply' or 'discoverable'")
     scope_value = fields.get("scope", "workspace")
     if scope_value not in {"workspace", "repo"}:
-        return None
+        raise RuleDocumentError("frontmatter 'scope' must be 'workspace' or 'repo'")
     scope = scope_value
     try:
         precedence = int(fields.get("precedence", "100" if application == "always_apply" else "0"))
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise RuleDocumentError("frontmatter 'precedence' must be an integer") from exc
     if not 0 <= precedence <= 1_000:
-        return None
+        raise RuleDocumentError("frontmatter 'precedence' must be between 0 and 1000")
     content = body.strip()
-    if not content or len(content) > DEFAULT_RULE_LIMITS.max_rulebook_content_chars:
-        content = content[: DEFAULT_RULE_LIMITS.max_rulebook_content_chars].rstrip()
     if not content:
-        return None
+        raise RuleDocumentError("rule document has no body")
+    limit = DEFAULT_RULE_LIMITS.max_rulebook_content_chars
+    if len(content) > limit:
+        marker = "\n[Rule content truncated by runtime context policy]"
+        content = content[: max(0, limit - len(marker))].rstrip() + marker
     description = fields.get("description") or next((line.strip().lstrip("#").strip() for line in content.splitlines() if line.strip()), name)
     description = description[: DEFAULT_RULE_LIMITS.max_rulebook_metadata_chars].strip()
     metadata = RuleMetadata(name, description, application, scope, precedence, path.as_posix())
     return RuleCatalogEntry(metadata=metadata, content=content)
 
 
-def _rule_files(*, workspace_root: Path, rule_roots: tuple[str, ...]) -> tuple[Path, ...]:
+def _rule_files(*, workspace_root: Path, rule_roots: tuple[str, ...]) -> tuple[tuple[Path, ...], list[str]]:
     candidates: set[Path] = set()
+    diagnostics: list[str] = []
     for raw_root in rule_roots:
         root = (workspace_root / raw_root).resolve(strict=False)
         try:
             root.relative_to(workspace_root)
         except ValueError:
+            _add_diagnostic(diagnostics, f"rulebook root '{raw_root}' escapes the workspace; ignored")
             continue
         if not root.is_dir():
             continue
-        for candidate in root.rglob("*.md"):
-            if not candidate.is_file():
-                continue
-            resolved = candidate.resolve(strict=False)
+        try:
+            found = list(root.rglob("*.md"))
+        except OSError as exc:
+            _add_diagnostic(diagnostics, f"rulebook root '{raw_root}' cannot be scanned ({exc}); ignored")
+            continue
+        for candidate in found:
             try:
-                resolved.relative_to(workspace_root)
-            except ValueError:
+                resolved = candidate.resolve(strict=True)
+            except OSError as exc:
+                _add_diagnostic(diagnostics, f"{candidate}: cannot resolve rulebook file ({exc}); skipped")
+                continue
+            if not resolved.is_relative_to(workspace_root):
+                _add_diagnostic(diagnostics, f"{candidate}: resolves outside the workspace; skipped")
+                continue
+            if not resolved.is_file():
                 continue
             candidates.add(resolved)
-    return tuple(sorted(candidates, key=lambda path: path.relative_to(workspace_root).as_posix())[: DEFAULT_RULE_LIMITS.max_rulebook_files])
+    ordered = sorted(candidates, key=lambda path: path.relative_to(workspace_root).as_posix())
+    if len(ordered) > DEFAULT_RULE_LIMITS.max_rulebook_files:
+        _add_diagnostic(
+            diagnostics,
+            f"rulebook file cap {DEFAULT_RULE_LIMITS.max_rulebook_files} reached; extra files were ignored",
+        )
+        ordered = ordered[: DEFAULT_RULE_LIMITS.max_rulebook_files]
+    return tuple(ordered), diagnostics
 
 
 def build_rule_catalog(workspace: Path | None, *, rule_roots: tuple[str, ...] = (RULEBOOK_DIRECTORY,)) -> RuleCatalog:
@@ -343,18 +442,24 @@ def build_rule_catalog(workspace: Path | None, *, rule_roots: tuple[str, ...] = 
         return RuleCatalog(())
     workspace_root = workspace.resolve(strict=False)
     parsed: dict[str, RuleCatalogEntry] = {}
-    for path in _rule_files(workspace_root=workspace_root, rule_roots=rule_roots):
+    paths, diagnostics = _rule_files(workspace_root=workspace_root, rule_roots=rule_roots)
+    for path in paths:
+        rel_path = _display_path(path, workspace_root)
         try:
-            entry = _parse_rule_document(path, path.read_text(encoding="utf-8"))
-        except OSError, UnicodeDecodeError:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            _add_diagnostic(diagnostics, f"{rel_path}: unreadable rulebook file ({exc}); skipped")
             continue
-        if entry is None:
+        try:
+            entry = _parse_rule_document(path, text)
+        except RuleDocumentError as exc:
+            _add_diagnostic(diagnostics, f"{rel_path}: {exc}; skipped")
             continue
         previous = parsed.get(entry.metadata.name)
         if previous is None or _rule_sort_key(entry.metadata) > _rule_sort_key(previous.metadata):
             parsed[entry.metadata.name] = entry
     entries = tuple(sorted(parsed.values(), key=lambda entry: _rule_sort_key(entry.metadata)))
-    return RuleCatalog(entries)
+    return RuleCatalog(entries, tuple(diagnostics))
 
 
 def rulebook_prompt_context(catalog: RuleCatalog) -> str:
@@ -371,4 +476,12 @@ def rulebook_prompt_context(catalog: RuleCatalog) -> str:
             parts.append(
                 f"- {metadata.name}: {metadata.description} (scope={metadata.scope}, precedence={metadata.precedence}, path={metadata.path})"
             )
-    return "\n".join(parts)[: DEFAULT_RULE_LIMITS.max_rulebook_prompt_chars]
+    if catalog.diagnostics:
+        parts.append("\nRuntime rulebook diagnostics (some rule documents were ignored or truncated):")
+        parts.extend(f"- {message}" for message in catalog.diagnostics)
+    text = "\n".join(parts)
+    limit = DEFAULT_RULE_LIMITS.max_rulebook_prompt_chars
+    if len(text) <= limit:
+        return text
+    marker = "\n[Rulebook prompt truncated by runtime context policy]"
+    return text[: max(0, limit - len(marker))] + marker

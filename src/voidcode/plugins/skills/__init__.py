@@ -6,6 +6,7 @@ from voidcode.sdk.plugin import Plugin, StateSchema
 from voidcode.sdk.resources import ResourceReader
 
 from .skills_plugin import (
+    TOUCHED_PATHS_LIMIT,
     SkillReader,
     SkillsCommand,
     SkillsContextProvider,
@@ -33,7 +34,12 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                 "properties": {
                     "schema_version": {"type": "integer", "enum": [1]},
                     "cursor_sequence": {"type": "integer", "minimum": 0},
-                    "touched_paths": {"type": "array", "items": {"type": "string"}},
+                    "touched_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": TOUCHED_PATHS_LIMIT,
+                        "uniqueItems": True,
+                    },
                 },
             },
         ),

@@ -120,7 +120,7 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `providers` | turn providers for OpenAI-compatible, Anthropic, and Google families, plus `/model` and `/providers` panels |
 | `todo` | `todo` tool, `/todo`, `/todo clear` |
 | `plan` | `/plan`, `/plan off`, `/plan status` collaboration mode |
-| `skills` | `skill` tool and `/skills` |
+| `skills` | `skill://` reader (loaded through the `read` tool), `/skills`, `/skills.show`, and workspace rule context (`AGENTS.md` hierarchy + `.voidcode/rules`) |
 | `review` | `/review` |
 | `subagents` | `task`, `task_batch` (agent-facing delegation) plus `alt+a` subagent monitor |
 | `btw` | `/btw` side question |

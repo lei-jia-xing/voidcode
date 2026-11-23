@@ -20,8 +20,10 @@ from voidcode.plugins.skills.rules import (
     build_rule_catalog,
     render_file_rule_context,
     render_file_rules,
+    render_rule_diagnostics,
     rulebook_prompt_context,
     runtime_file_rule_contexts,
+    runtime_file_rule_result,
 )
 from voidcode.plugins.skills.skills_plugin import (
     TOUCHED_PATHS_LIMIT,
@@ -245,8 +247,10 @@ def test_unreadable_rule_file_is_skipped(tmp_path: Path, monkeypatch: pytest.Mon
         return original(self, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(Path, "read_text", flaky)
-    contexts = runtime_file_rule_contexts(workspace=tmp_path, touched_paths=("sub/file.txt",))
-    assert [context.path for context in contexts] == ["AGENTS.md"]
+    result = runtime_file_rule_result(workspace=tmp_path, touched_paths=("sub/file.txt",))
+    assert [context.path for context in result.contexts] == ["AGENTS.md"]
+    assert any("sub/AGENTS.md: unreadable rule file" in message for message in result.diagnostics)
+    assert "Runtime rule diagnostics" in render_rule_diagnostics(result.diagnostics)
 
 
 def test_render_file_rules_uses_the_legacy_framing(tmp_path: Path) -> None:
@@ -314,7 +318,9 @@ def test_rulebook_caps_files_content_and_metadata(tmp_path: Path) -> None:
         _rule_document(name="long", body="x" * (DEFAULT_RULE_LIMITS.max_rulebook_content_chars + 100), description="d" * 400),
     )
     entry = build_rule_catalog(other).entries[0]
-    assert entry.content == "x" * DEFAULT_RULE_LIMITS.max_rulebook_content_chars
+    marker = "\n[Rule content truncated by runtime context policy]"
+    assert entry.content == "x" * (DEFAULT_RULE_LIMITS.max_rulebook_content_chars - len(marker)) + marker
+    assert len(entry.content) == DEFAULT_RULE_LIMITS.max_rulebook_content_chars
     assert len(entry.metadata.description) == DEFAULT_RULE_LIMITS.max_rulebook_metadata_chars
 
 
@@ -345,7 +351,9 @@ def test_rulebook_prompt_context_is_verbatim_and_capped(tmp_path: Path) -> None:
     }
 
     huge = RuleCatalog((RuleCatalogEntry(metadata=style, content="z" * (DEFAULT_RULE_LIMITS.max_rulebook_prompt_chars * 2)),))
-    assert len(rulebook_prompt_context(huge)) == DEFAULT_RULE_LIMITS.max_rulebook_prompt_chars
+    huge_prompt = rulebook_prompt_context(huge)
+    assert len(huge_prompt) == DEFAULT_RULE_LIMITS.max_rulebook_prompt_chars
+    assert huge_prompt.endswith("[Rulebook prompt truncated by runtime context policy]")
     assert rulebook_prompt_context(RuleCatalog(())) == ""
 
 
@@ -369,6 +377,8 @@ def test_rules_state_round_trips_and_rejects_unknown_keys_and_bad_types() -> Non
         {"schema_version": 1, "cursor_sequence": -1, "touched_paths": []},
         {"schema_version": 1, "cursor_sequence": 0, "touched_paths": "a.txt"},
         {"schema_version": 1, "cursor_sequence": 0, "touched_paths": [1]},
+        {"schema_version": 1, "cursor_sequence": 0, "touched_paths": ["a.txt", "a.txt"]},
+        {"schema_version": 1, "cursor_sequence": 0, "touched_paths": [f"{index}.txt" for index in range(TOUCHED_PATHS_LIMIT + 1)]},
     ):
         with pytest.raises(ValueError):
             RulesState.from_payload(payload)
@@ -501,3 +511,93 @@ def test_context_contribution_keeps_rules_when_skills_are_disabled(tmp_path: Pat
     assert plugin.tools == ()
     assert [reader.scheme for reader in plugin.resource_readers] == ["skill"]
     assert [command.definition.name for command in plugin.commands] == ["skills", "skills.show"]
+
+
+# --- Baseline truncation, diagnostics and containment ---
+
+
+def test_deep_hierarchy_keeps_workspace_local_rules_under_the_cap(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    _write(project / RULE_FILE_NAME, "outer-root")
+    current = project
+    for name in "abcdefgh":
+        current = current / name
+        _write(current / RULE_FILE_NAME, f"{name} rules")
+    workspace = current
+
+    contexts = runtime_file_rule_contexts(workspace=workspace)
+    assert len(contexts) == DEFAULT_RULE_LIMITS.max_rule_files == 8
+    assert contexts[-1].path == "AGENTS.md"
+    assert contexts[-1].content == "h rules"
+    assert "outer-root" not in [context.content for context in contexts]
+
+
+def test_deep_hierarchy_reserves_a_touched_path_slot(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    _write(project / RULE_FILE_NAME, "outer-root")
+    current = project
+    for name in "abcdefgh":
+        current = current / name
+        _write(current / RULE_FILE_NAME, f"{name} rules")
+    workspace = current
+    sub_rule = _write(workspace / "sub" / RULE_FILE_NAME, "dynamic rules")
+
+    contexts = runtime_file_rule_contexts(workspace=workspace, touched_paths=("sub/file.txt",))
+    assert len(contexts) == DEFAULT_RULE_LIMITS.max_rule_files
+    assert contexts[-1].path == "sub/AGENTS.md"
+    assert contexts[-1].content == "dynamic rules"
+    assert "AGENTS.md" in [context.path for context in contexts]
+    assert "outer-root" not in [context.content for context in contexts]
+    assert sub_rule.is_file()
+
+
+def test_symlinked_rule_escaping_the_trusted_root_is_diagnosed(tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-rule.md"
+    outside.write_text("outside secret", encoding="utf-8")
+    (tmp_path / RULE_FILE_NAME).symlink_to(outside)
+
+    result = runtime_file_rule_result(workspace=tmp_path)
+    assert result.contexts == ()
+    assert any("outside the trusted rule root" in message for message in result.diagnostics)
+    assert "Runtime rule diagnostics" in render_rule_diagnostics(result.diagnostics)
+
+
+def test_rulebook_invalid_documents_produce_bounded_diagnostics(tmp_path: Path) -> None:
+    root = tmp_path / ".voidcode" / "rules"
+    _write(root / "unclosed.md", "---\nname: unclosed\nbody")
+    _write(root / "missing-application.md", "---\nname: missing\n---\nbody")
+    _write(root / "bad-name.md", "---\nname: Bad Name\napplication: always_apply\n---\nbody")
+    _write(root / "bad-scope.md", "---\nname: scope\napplication: always_apply\nscope: galaxy\n---\nbody")
+    _write(root / "bodyless.md", "---\nname: empty\napplication: always_apply\n---\n\n")
+
+    catalog = build_rule_catalog(tmp_path)
+    assert catalog.entries == ()
+    joined = " | ".join(catalog.diagnostics)
+    assert "frontmatter block is not closed" in joined
+    assert "application" in joined
+    assert "invalid rule name" in joined
+    assert "scope" in joined
+    assert "no body" in joined
+    prompt = rulebook_prompt_context(catalog)
+    assert "Runtime rulebook diagnostics" in prompt
+    assert len(prompt) <= DEFAULT_RULE_LIMITS.max_rulebook_prompt_chars
+
+
+def test_rulebook_unreadable_file_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _write(
+        tmp_path / ".voidcode" / "rules" / "style.md",
+        _rule_document(name="style", body="Use tabs."),
+    )
+    original = Path.read_text
+
+    def flaky(self: Path, *args: object, **kwargs: object) -> str:
+        if self == path.resolve():
+            raise OSError("unreadable")
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    catalog = build_rule_catalog(tmp_path)
+    assert catalog.entries == ()
+    assert any("unreadable rulebook file" in message for message in catalog.diagnostics)

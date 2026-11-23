@@ -3,22 +3,30 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from concurrent.futures import CancelledError
 from pathlib import Path
 
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES
 from voidcode.plugins.skills import create_plugin
 from voidcode.plugins.skills.skills_plugin import (
     DEFAULT_SKILL_SEARCH_PATHS,
+    MAX_SKILL_BODY_BYTES,
+    MAX_SKILL_CATALOG_BYTES,
+    MAX_SKILL_DESCRIPTION_CHARS,
+    MAX_SKILL_FILE_BYTES,
+    MAX_SKILL_NAME_CHARS,
+    MAX_SKILLS,
     SkillEnableRule,
-    SkillLoadError,
     SkillManifestParseError,
     SkillReader,
     SkillRegistry,
     SkillsCommand,
     SkillsConfig,
     SkillsContextProvider,
+    SkillShowCommand,
     build_registry,
     catalog_skill_context,
     loaded_skill_names,
@@ -93,21 +101,24 @@ def test_discovery_is_recursive_sorted_and_rejects_duplicates(tmp_path: Path) ->
 
 def test_missing_search_root_and_escaping_path(tmp_path: Path) -> None:
     assert SkillRegistry.discover(workspace=tmp_path).all() == ()
-    with pytest.raises(ValueError, match="escapes workspace"):
-        SkillRegistry.discover(workspace=tmp_path, search_paths=("../outside",))
+    registry = SkillRegistry.discover(workspace=tmp_path, search_paths=("../outside",))
+    assert registry.all() == ()
+    assert any("escapes workspace" in error for error in registry.config_errors)
 
 
-def test_unreadable_skill_file_fails_as_load_error(tmp_path: Path) -> None:
+def test_unreadable_skill_file_is_a_per_skill_failure(tmp_path: Path) -> None:
     root = tmp_path / ".voidcode" / "skills" / "boom"
     root.mkdir(parents=True)
     entry = root / "SKILL.md"
     entry.write_text("---\nname: boom\ndescription: d\n---\nbody\n", encoding="utf-8")
     entry.chmod(0o000)
     try:
-        with pytest.raises(SkillLoadError):
-            SkillRegistry.discover(workspace=tmp_path)
+        registry = SkillRegistry.discover(workspace=tmp_path)
     finally:
         entry.chmod(0o600)
+    assert registry.all() == ()
+    assert [failure.name for failure in registry.failures] == ["boom"]
+    assert "failed to read" in registry.failures[0].message
 
 
 # --- Registry rules ---
@@ -136,7 +147,7 @@ def test_enable_rules_by_name_and_path_and_resolution_errors(tmp_path: Path) -> 
 # --- Prompt context texts ---
 
 
-def test_catalog_text_lists_metadata_only_with_file_uri(tmp_path: Path) -> None:
+def test_catalog_text_lists_metadata_only_and_skill_uri_targets(tmp_path: Path) -> None:
     entry = _write_skill(tmp_path, name="alpha", description="a", body="A")
     registry = SkillRegistry.discover(workspace=tmp_path)
     catalog = catalog_skill_context(registry)
@@ -145,19 +156,24 @@ def test_catalog_text_lists_metadata_only_with_file_uri(tmp_path: Path) -> None:
         "Each entry is metadata only; the full SKILL.md body is NOT in your\n"
         "current context.\n"
         "Load a skill body ONLY when its description matches the active task.\n"
-        'Use the read tool: read(path="skill://..."). Do NOT speculatively load every\n'
+        'Use the read tool: read(path="skill://<name>"). Do NOT speculatively load every\n'
         "skill; lazy loading keeps the harness lightweight and the model focused.\n"
         "\n"
         "<available_skills>"
     )
     assert "    <name>alpha</name>" in catalog
     assert "    <description>a</description>" in catalog
-    assert f"    <location>{entry.resolve().as_uri()}</location>" in catalog
+    assert "    <location>skill://alpha</location>" in catalog
+    assert f"    <sourcePath>{entry.resolve().as_uri()}</sourcePath>" in catalog
     assert catalog.endswith("</available_skills>")
     assert "A" not in catalog.split("<available_skills>")[0]
 
     empty = SkillRegistry.from_skills(())
     assert catalog_skill_context(empty) == ""
+
+    unavailable = catalog_skill_context(registry, read_tool_available=False)
+    assert "the read tool is not available" in unavailable
+    assert "the read tool is not available" not in catalog
 
     registry.apply_config_rules((SkillEnableRule(name="alpha", enabled=False),))
     disabled = catalog_skill_context(registry)
@@ -255,11 +271,16 @@ def test_skill_reader_pages_long_renders_by_line(tmp_path: Path) -> None:
         _read(config, tmp_path, "skill://alpha", offset=36)
 
 
-def test_skill_reader_refuses_byte_args_and_empty_names(tmp_path: Path) -> None:
+def test_skill_reader_byte_pages_and_rejects_empty_names(tmp_path: Path) -> None:
     _write_skill(tmp_path, name="alpha", description="a", body="A")
     config = SkillsConfig(enabled=True)
-    with pytest.raises(ValueError, match="byte_offset and byte_limit are not supported"):
-        _read(config, tmp_path, "skill://alpha", byte_offset=0)
+    page = _read(config, tmp_path, "skill://alpha", byte_offset=0, byte_limit=16)
+    assert isinstance(page, ResourcePage)
+    assert page.body["offset_unit"] == "bytes"
+    assert page.body["next_byte_offset"] == 16
+    assert page.body["truncated"] is True
+    with pytest.raises(ValueError, match="out of range"):
+        _read(config, tmp_path, "skill://alpha", byte_offset=100_000)
     with pytest.raises(ValueError, match="requires a skill name"):
         _read(config, tmp_path, "skill://")
     with pytest.raises(ValueError, match="requires a skill name"):
@@ -276,12 +297,17 @@ def test_skill_reader_unknown_is_absence_while_disabled_fails(tmp_path: Path) ->
         _read(by_name, tmp_path, "skill://alpha")
 
 
-def test_skill_reader_propagates_malformed_skills(tmp_path: Path) -> None:
+def test_skill_reader_reports_malformed_skill_without_poisoning_siblings(tmp_path: Path) -> None:
     root = tmp_path / ".voidcode" / "skills" / "boom"
     root.mkdir(parents=True)
     (root / "SKILL.md").write_text("---\nname: boom\n---\nbody\n", encoding="utf-8")
-    with pytest.raises(SkillLoadError):
-        _read(SkillsConfig(enabled=True), tmp_path, "skill://boom")
+    _write_skill(tmp_path, name="good", description="ok", body="healthy")
+    config = SkillsConfig(enabled=True)
+    with pytest.raises(ValueError, match="skill 'boom' is unavailable: .*description"):
+        _read(config, tmp_path, "skill://boom")
+    healthy = _read(config, tmp_path, "skill://good")
+    assert isinstance(healthy, ResourcePage)
+    assert "healthy" in str(healthy.body["raw_content"])
 
 
 # --- Command and context ---
@@ -424,3 +450,255 @@ def test_skill_browser_adapts_emoji_pages_to_serialized_view_limit(tmp_path: Pat
         offset = next_page.arguments["offset"]
         arguments = dict(next_page.arguments)
     assert offset > 0
+
+
+# --- Fault isolation, bounds and containment ---
+
+
+def _write_raw_skill(workspace: Path, folder: str, contents: bytes) -> Path:
+    root = workspace / ".voidcode" / "skills" / folder
+    root.mkdir(parents=True, exist_ok=True)
+    entry = root / "SKILL.md"
+    entry.write_bytes(contents)
+    return entry
+
+
+@pytest.mark.parametrize(
+    ("folder", "contents", "message"),
+    [
+        ("yaml", b"---\nname: [unclosed\n---\nbody\n", "invalid YAML"),
+        ("unclosed", b"---\nname: broken\nbody\n", "must close"),
+        ("bodyless", b"---\nname: broken\ndescription: d\n---\n\n", "non-empty"),
+        ("utf8", b"---\nname: broken\ndescription: d\n---\n\xff\n", "not valid UTF-8"),
+    ],
+)
+def test_malformed_entries_are_isolated(tmp_path: Path, folder: str, contents: bytes, message: str) -> None:
+    _write_raw_skill(tmp_path, folder, contents)
+    _write_skill(tmp_path, name="good", description="healthy", body="healthy body")
+    plugin = create_plugin({"enabled": True})
+    registry = build_registry(workspace=tmp_path, config=SkillsConfig(enabled=True))
+    assert [skill.name for skill in registry.all()] == ["good"]
+    assert len(registry.failures) == 1
+    assert message in registry.failures[0].message
+
+    contribution = plugin.context(_context(tmp_path), FakeServices())  # type: ignore[arg-type]
+    assert contribution is not None
+    assert "<name>good</name>" in contribution.content
+    assert "<skill_diagnostics>" in contribution.content
+    assert registry.failures[0].name in contribution.content
+
+    listed = SkillsCommand(SkillsConfig(enabled=True)).invoke(CommandInvocation(_context(tmp_path), "skills"), FakeServices())
+    assert listed.status == "ok"
+    assert "[broken]" in str(listed.output)
+    assert "fix " in str(listed.output)
+
+    selector = SkillShowCommand(SkillsConfig(enabled=True)).prepare_input(CommandInvocation(_context(tmp_path), "skills.show"), FakeServices())
+    options = selector.data["fields"][0]["options"]  # type: ignore[index]
+    assert any(option["id"] == registry.failures[0].name for option in options)
+
+    broken = SkillShowCommand(SkillsConfig(enabled=True)).invoke(
+        CommandInvocation(_context(tmp_path), "skills.show", {"name": registry.failures[0].name}),
+        FakeServices(),
+    )
+    assert broken.status == "error" and "is broken" in str(broken.error) and "fix " in str(broken.error)
+
+    healthy = _read(SkillsConfig(enabled=True), tmp_path, "skill://good")
+    assert isinstance(healthy, ResourcePage)
+    assert "healthy body" in str(healthy.body["raw_content"])
+
+
+def test_disabled_broken_skill_is_quarantined(tmp_path: Path) -> None:
+    entry = _write_raw_skill(tmp_path, "broken", b"---\nname: [unclosed\n---\nbody\n")
+    config = SkillsConfig(
+        enabled=True,
+        rules=(SkillEnableRule(path=str(entry.parent), enabled=False),),
+    )
+    registry = build_registry(workspace=tmp_path, config=config)
+    assert registry.all() == ()
+    assert registry.failures == ()
+    assert registry.config_errors == []
+    assert _read(config, tmp_path, "skill://broken") is None
+    catalog = catalog_skill_context(registry)
+    assert catalog == ""
+
+
+def test_skill_file_and_metadata_caps_are_per_skill_diagnostics(tmp_path: Path) -> None:
+    _write_raw_skill(tmp_path, "oversize-file", b"x" * (MAX_SKILL_FILE_BYTES + 1))
+    _write_raw_skill(
+        tmp_path,
+        "oversize-body",
+        f"---\nname: big\ndescription: d\n---\n\n{'x' * (MAX_SKILL_BODY_BYTES + 1)}\n".encode(),
+    )
+    _write_raw_skill(
+        tmp_path,
+        "oversize-name",
+        f"---\nname: {'n' * 129}\ndescription: d\n---\nbody\n".encode(),
+    )
+    _write_raw_skill(
+        tmp_path,
+        "oversize-description",
+        f"---\nname: long\ndescription: {'d' * (MAX_SKILL_DESCRIPTION_CHARS + 1)}\n---\nbody\n".encode(),
+    )
+    registry = build_registry(workspace=tmp_path, config=SkillsConfig(enabled=True))
+    messages = " | ".join(failure.message for failure in registry.failures)
+    assert "exceeds the" in messages and "byte cap" in messages
+    assert f"body must not exceed {MAX_SKILL_BODY_BYTES} bytes" in messages
+    assert "skill name must not exceed" in messages
+    assert "skill description must not exceed" in messages
+    assert len(registry.failures) == 4
+
+
+def test_discovery_count_cap_emits_per_skill_diagnostics(tmp_path: Path) -> None:
+    for index in range(MAX_SKILLS + 2):
+        _write_skill(tmp_path, name=f"skill-{index:03d}", description="d", body="body")
+    registry = build_registry(workspace=tmp_path, config=SkillsConfig(enabled=True))
+    assert len(registry.all()) == MAX_SKILLS
+    assert len(registry.failures) == 2
+    assert all("discovery cap" in failure.message for failure in registry.failures)
+
+
+def test_exact_cap_values_are_accepted(tmp_path: Path) -> None:
+    name = "n" * MAX_SKILL_NAME_CHARS
+    description = "d" * MAX_SKILL_DESCRIPTION_CHARS
+    body = "x" * MAX_SKILL_BODY_BYTES
+    _write_raw_skill(
+        tmp_path,
+        "boundary",
+        f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n".encode(),
+    )
+    registry = build_registry(workspace=tmp_path, config=SkillsConfig(enabled=True))
+    assert registry.failures == ()
+    skill = registry.skills[name]
+    assert len(skill.description) == MAX_SKILL_DESCRIPTION_CHARS
+    assert len(skill.content.encode("utf-8")) == MAX_SKILL_BODY_BYTES
+
+
+def test_count_cap_boundary_loads_exactly_the_maximum(tmp_path: Path) -> None:
+    for index in range(MAX_SKILLS):
+        _write_skill(tmp_path, name=f"skill-{index:03d}", description="d", body="body")
+    registry = build_registry(workspace=tmp_path, config=SkillsConfig(enabled=True))
+    assert len(registry.all()) == MAX_SKILLS
+    assert registry.failures == ()
+
+
+def test_catalog_byte_cap_omits_entries_with_a_visible_notice(tmp_path: Path) -> None:
+    for index in range(20):
+        _write_skill(tmp_path, name=f"skill-{index:02d}", description="d" * 900, body="body")
+    registry = build_registry(workspace=tmp_path, config=SkillsConfig(enabled=True))
+    catalog = catalog_skill_context(registry)
+    assert len(catalog.encode("utf-8")) <= MAX_SKILL_CATALOG_BYTES
+    assert "catalog byte cap" in catalog
+    assert "</available_skills>" in catalog
+    assert catalog.count("<skill>") < len(registry.all())
+
+
+def test_skill_page_byte_bounds_a_single_huge_line(tmp_path: Path) -> None:
+    _write_skill(tmp_path, name="huge", description="huge", body="x" * (MAX_RESOURCE_PAGE_BYTES + 500))
+    config = SkillsConfig(enabled=True)
+    page = _read(config, tmp_path, "skill://huge", offset=6, limit=1)
+    assert isinstance(page, ResourcePage)
+    assert page.body["offset_unit"] == "bytes"
+    assert page.body["truncated"] is True
+    assert page.body["next_byte_offset"] is not None
+    assert len(str(page.body["raw_content"]).encode("utf-8")) <= MAX_RESOURCE_PAGE_BYTES
+    final = page
+    for _ in range(10):
+        next_byte_offset = final.body["next_byte_offset"]
+        if next_byte_offset is None:
+            break
+        final = _read(config, tmp_path, "skill://huge", byte_offset=int(next_byte_offset))
+        assert isinstance(final, ResourcePage)
+        assert len(str(final.body["raw_content"]).encode("utf-8")) <= MAX_RESOURCE_PAGE_BYTES
+    assert final.body["next_byte_offset"] is None
+
+
+def test_skill_read_honors_abort_signal(tmp_path: Path) -> None:
+    class AbortSignal:
+        cancelled = True
+        reason = "cancelled by test"
+
+        def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
+            _ = (value, reason)
+
+    _write_skill(tmp_path, name="alpha", description="a", body="A")
+    caller = ResourceReadCaller(
+        session_id="session-1",
+        workspace=tmp_path,
+        revision_id="rev-1",
+        run_id="run-1",
+        abort_signal=AbortSignal(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(CancelledError):
+        SkillReader(SkillsConfig(enabled=True)).read(
+            ResourceReadRequest(uri="skill://alpha"),
+            caller,
+            FakeServices(),  # type: ignore[arg-type]
+        )
+
+
+def test_config_rule_paths_resolve_against_the_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_skill(tmp_path, name="alpha", description="a", body="A")
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    config = SkillsConfig(
+        enabled=True,
+        rules=(SkillEnableRule(path=".voidcode/skills/alpha", enabled=False),),
+    )
+    registry = build_registry(workspace=tmp_path, config=config)
+    assert registry.skills["alpha"].enabled is False
+    assert registry.config_errors == []
+
+
+def test_config_rule_requires_exactly_one_selector_and_isolates_escapes(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="exactly one of 'name' or 'path'"):
+        parse_skills_config({"config": [{"name": "alpha", "path": "skills/alpha"}]})
+    with pytest.raises(ValueError, match="exactly one of 'name' or 'path'"):
+        parse_skills_config({"config": [{"enabled": False}]})
+
+    _write_skill(tmp_path, name="alpha", description="a", body="A")
+    config = SkillsConfig(
+        enabled=True,
+        rules=(SkillEnableRule(path="../outside", enabled=False),),
+    )
+    registry = build_registry(workspace=tmp_path, config=config)
+    assert registry.skills["alpha"].enabled is True
+    assert any("escapes the workspace" in error for error in registry.config_errors)
+    catalog = catalog_skill_context(registry)
+    assert "<config_errors>" not in catalog
+    assert "escapes the workspace" in catalog
+    assert "<name>alpha</name>" in catalog
+
+
+def test_symlinked_skill_entry_escaping_a_relative_root_is_rejected(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text("---\nname: evil\ndescription: d\n---\nsecret\n", encoding="utf-8")
+    link_dir = workspace / ".voidcode" / "skills" / "evil"
+    link_dir.mkdir(parents=True)
+    (link_dir / "SKILL.md").symlink_to(outside / "SKILL.md")
+
+    registry = build_registry(workspace=workspace, config=SkillsConfig(enabled=True))
+    assert registry.all() == ()
+    assert [failure.name for failure in registry.failures] == ["evil"]
+    assert "outside the workspace" in registry.failures[0].message
+    with pytest.raises(ValueError, match="outside the workspace"):
+        _read(SkillsConfig(enabled=True), workspace, "skill://evil")
+
+
+def test_duplicate_entries_reached_through_overlapping_roots_load_once(tmp_path: Path) -> None:
+    _write_skill(tmp_path, name="alpha", description="a", body="A", folder="group/alpha")
+    registry = SkillRegistry.discover(
+        workspace=tmp_path,
+        search_paths=(".voidcode/skills", ".voidcode/skills/group"),
+    )
+    assert [skill.name for skill in registry.all()] == ["alpha"]
+    assert registry.failures == ()
+
+
+def test_skills_command_keeps_healthy_output_shape(tmp_path: Path) -> None:
+    _write_skill(tmp_path, name="alpha", description="a", body="A")
+    result = SkillsCommand(SkillsConfig(enabled=True)).invoke(CommandInvocation(_context(tmp_path), "skills"), FakeServices())
+    assert result.output == f"- [enabled] alpha — a ({tmp_path / '.voidcode/skills/alpha/SKILL.md'})"

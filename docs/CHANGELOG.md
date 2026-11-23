@@ -538,8 +538,9 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - `read` serves its resource URI views end to end: `tool://<name>` renders the active
   revision's dispatch definition with this session's scope/stance applied (plugin and reserved
   core tools, no second catalog); `transcript://<session>` composes a bounded,
-  payload-stripped page for the caller's own session or its own descendants; `rule://`
-  is answered by the skills plugin's rulebook semantics. URI failures return model-visible text.
+  payload-stripped page for the caller's own session or its own descendants; discoverable
+  workspace rules are not a resource scheme — the skills plugin publishes their real paths
+  for ordinary file tools. URI failures return model-visible text.
 - `PluginServices` gains neutral `query`/`tool_definition`/`spawn_service_process` (plus typed
   `QueryUnavailable`); `Plugin` gains host-local read-only `queries`. Child-event reads are
   narrowed to true descendants (siblings, parents, unrelated roots, foreign workspaces refused).

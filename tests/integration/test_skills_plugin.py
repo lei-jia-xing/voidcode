@@ -129,8 +129,9 @@ def test_skill_catalog_context_and_on_demand_body_on_the_real_stack(tmp_path: Pa
         assert "<available_skills>" in catalog_text
         assert "<name>release</name>" in catalog_text
         assert "<description>Cut a release</description>" in catalog_text
+        assert "<location>skill://release</location>" in catalog_text
         assert entry.resolve().as_uri() in catalog_text
-        assert 'read(path="skill://...")' in catalog_text
+        assert 'read(path="skill://<name>")' in catalog_text
 
         tool_messages = [message for message in _messages(server.requests[1]) if message.get("role") == "tool"]
         assert len(tool_messages) == 1
@@ -142,6 +143,52 @@ def test_skill_catalog_context_and_on_demand_body_on_the_real_stack(tmp_path: Pa
         assert listed.status == "ok"
         assert listed.output is not None
         assert "[enabled] release — Cut a release" in listed.output
+
+
+def test_broken_skill_does_not_break_catalog_rules_or_reads(tmp_path: Path) -> None:
+    replies = [
+        openai_response(
+            message={"role": "assistant", "content": "plain answer"},
+            finish="stop",
+            usage={"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        )
+    ]
+    with loopback_server(replies) as server:
+        core = _core(tmp_path, server, skill_plugin_enabled=True, skills_enabled=True)
+        workspace = tmp_path / "workspace"
+        entry = _write_skill(workspace, name="release", description="Cut a release", body="steps")
+        broken = workspace / ".voidcode" / "skills" / "broken" / "SKILL.md"
+        broken.parent.mkdir(parents=True)
+        broken.write_text("---\nname: [unclosed\n---\nbody\n", encoding="utf-8")
+        (workspace / "AGENTS.md").write_text("root-rule-marker\n", encoding="utf-8")
+        session_id = core.create_session().session_id
+
+        assert core.run("hello", session_id=session_id).status == "completed"
+        prompt = "\n".join(str(message.get("content", "")) for message in _messages(server.requests[0]))
+        assert "<name>release</name>" in prompt
+        assert "<skill_diagnostics>" in prompt
+        assert "root-rule-marker" in prompt
+
+        listed = core.invoke_command(session_id, "skills", {}, expected_revision=core.command_catalog().revision_id)
+        assert listed.status == "ok"
+        assert listed.output is not None
+        assert "[enabled] release" in listed.output
+        assert "[broken] broken" in listed.output
+
+        context = ToolContext(
+            workspace=workspace,
+            session_id=session_id,
+            run_id="run-broken-skill",
+            invocation_id="inv-broken-skill",
+            revision_id=core.plugin_runtime.revision_id,
+            actor="model",
+        )
+        served = core.plugin_runtime.invoke(ToolCall("read", {"path": "skill://release"}), context=context)
+        assert isinstance(served, ToolSuccess)
+        assert f"sourcePath: {entry}" in str(getattr(served.output, "text", ""))
+        failed = core.plugin_runtime.invoke(ToolCall("read", {"path": "skill://broken"}), context=context)
+        assert isinstance(failed, ToolFailure)
+        assert "unavailable" in failed.error and "invalid YAML" in failed.error
 
 
 def test_disabled_skills_plugin_contributes_nothing(tmp_path: Path) -> None:

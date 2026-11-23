@@ -52,7 +52,8 @@ def format_resource_text(
     return TextOutput(text, bounds=OutputBounds(truncated=truncated, partial=partial))
 
 
-def _check_cancelled(caller: ResourceReadCaller) -> None:
+def raise_if_cancelled(caller: ResourceReadCaller) -> None:
+    """The shared cancellation check for every scheme reader/page renderer."""
     if caller.abort_signal is not None and caller.abort_signal.cancelled:
         raise CancelledError("read cancelled")
 
@@ -74,10 +75,10 @@ def render_stored_artifact_page(
     Only genuine absence maps to ``None``; permission, storage, bound, and
     contract errors propagate so the runtime reports them visibly.
     """
-    _check_cancelled(caller)
+    raise_if_cancelled(caller)
 
     def _window(byte_start: int, byte_length: int = MAX_RESOURCE_PAGE_BYTES) -> ArtifactPage:
-        _check_cancelled(caller)
+        raise_if_cancelled(caller)
         return services.read_artifact(digest, offset=byte_start, limit=byte_length)
 
     head: ArtifactPage | None = None
