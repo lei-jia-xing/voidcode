@@ -22,6 +22,7 @@ from voidcode.plugins.compaction.compaction_plugin import (
     apply_projection,
     compaction_observer,
     parse_compaction_config,
+    prepare_compaction_deactivation,
 )
 from voidcode.plugins.compaction.projection import (
     CONTINUITY_SUMMARY_SYSTEM_PROMPT,
@@ -34,6 +35,7 @@ from voidcode.plugins.compaction.projection import (
     measured_dispatch_input_tokens,
     measured_tokens_per_character,
     plan_projection,
+    provider_visible_characters,
     recent_tail_character_budget,
     render_model_replacement,
     resolve_budget_reserve_tokens,
@@ -80,7 +82,28 @@ def _event(sequence: int, event_type: str, payload: Mapping[str, object] | None)
     )
 
 
-def _intent(sequence: int, *, message_characters: int = 400, tool_schema_characters: int = 100) -> EventView:
+def _intent(
+    sequence: int,
+    *,
+    message_characters: int = 400,
+    tool_schema_characters: int = 100,
+    image_count: int = 0,
+) -> EventView:
+    segments = (
+        [
+            {
+                "role": "user",
+                "characters": 10,
+                "sha256": "0" * 64,
+                "tool_calls": 0,
+                "reasoning_characters": 0,
+                "image_count": image_count,
+                "image_bytes": 100 if image_count else 0,
+            }
+        ]
+        if image_count
+        else []
+    )
     return _event(
         sequence,
         "core.provider_intent",
@@ -90,7 +113,7 @@ def _intent(sequence: int, *, message_characters: int = 400, tool_schema_charact
             "request_window": {
                 "message_characters": message_characters,
                 "tool_schema_characters": tool_schema_characters,
-                "segments": [],
+                "segments": segments,
                 "tool_count": 2,
             },
         },
@@ -215,7 +238,9 @@ def test_threshold_clamps_an_explicit_value_and_derives_the_default_one() -> Non
     assert resolve_threshold_tokens(200_000, threshold_tokens=120_000) == 120_000
     # The explicit threshold is clamped to [1, window - 1], never past the window itself.
     assert resolve_threshold_tokens(200_000, threshold_tokens=999_999) == 199_999
-    assert resolve_threshold_tokens(200_000, threshold_tokens=0) == 1
+    # Zero is the explicit "off" spelling with or without a window; it never becomes 1.
+    assert resolve_threshold_tokens(200_000, threshold_tokens=0) == 0
+    assert resolve_threshold_tokens(None, threshold_tokens=0) == 0
     assert resolve_threshold_tokens(200_000, threshold_tokens=None) == 200_000 - 30_000
     # No window and no explicit threshold leaves nothing to size a threshold with.
     assert resolve_threshold_tokens(None, threshold_tokens=None) == 0
@@ -233,10 +258,23 @@ def test_trigger_subtracts_the_reserve_from_an_explicit_threshold() -> None:
     assert derived.threshold_tokens == 170_000
     assert derived.trigger_tokens == 170_000
     assert derived.explicit_threshold is False
-    # Nothing to size an unsized gate: it never fires.
+    # Nothing to size an unsized gate: it never fires, with or without a window.
     unsized = resolve_compaction_budget(None)
     assert unsized.trigger_tokens == 0
     assert should_compact(10**9, unsized) is False
+    zero = resolve_compaction_budget(200_000, threshold_tokens=0)
+    assert zero.trigger_tokens == 0
+    assert should_compact(10**9, zero) is False
+    # A defaulted reserve that cannot fit under an explicit threshold is dropped, not
+    # allowed to collapse the trigger to 1.
+    small = resolve_compaction_budget(None, threshold_tokens=10_000)
+    assert small.reserve_tokens == 0
+    assert small.trigger_tokens == 10_000
+    with pytest.raises(ValueError, match="reserve_tokens must be smaller than threshold_tokens"):
+        resolve_compaction_budget(None, threshold_tokens=10_000, reserve_tokens=10_000)
+    # An explicit reserve that leaves no usable derived threshold is refused.
+    with pytest.raises(ValueError, match="no usable compaction threshold"):
+        resolve_compaction_budget(200_000, reserve_tokens=199_999)
 
 
 def test_should_compact_compares_measured_tokens_against_the_trigger() -> None:
@@ -258,10 +296,15 @@ def test_plan_carries_the_coverage_and_the_summary_material() -> None:
     assert plan.covered_bytes == sum(_size(event) for event in _session_events())
     assert plan.covered_tool_result_count == 2
     assert plan.retained_tool_result_count == 0
+    assert plan.summary_truncated is False
     material = "\n\n".join(plan.summary_material)
     assert _USER_MESSAGE in material
-    assert "tool=write status=ok\nwrote 42 bytes to src/parser.py" in material
-    assert "tool=read status=error\n\nmissing file" in material
+    assert "tool=write status=ok" in material
+    assert "args=" in material
+    assert "src/parser.py" in material
+    assert "wrote 42 bytes to src/parser.py" in material
+    assert "tool=read status=error" in material
+    assert "missing file" in material
 
 
 def test_a_todo_result_reaches_the_summary_material_without_per_tool_discard() -> None:
@@ -277,6 +320,39 @@ def test_a_todo_result_reaches_the_summary_material_without_per_tool_discard() -
     material = "\n\n".join(_plan(events).summary_material)
     assert "tool=todo status=ok" in material
     assert "2 phases, 1 in progress" in material
+
+
+def test_a_long_prefix_keeps_the_earliest_constraints_and_the_newest_work() -> None:
+    write_call = ToolCall(
+        "write",
+        {"path": "src/parser.py", "content": "ALLOCATION-FREE-CONTENT"},
+        "call-write",
+    )
+    events = [
+        _event(1, "core.user_message", {"content": _USER_MESSAGE}),
+        _intent(2),
+        _model_turn(3, dispatch_sequence=2, tool_calls=(write_call,)),
+        _tool_completed(4, batch_sequence=3, call=write_call, content="wrote 42 bytes to src/parser.py"),
+    ]
+    for index in range(30):
+        output = f"WORK-{index:02d}: " + ("x" * 2_500)
+        if index == 29:
+            output = "NEWEST-COVERED-WORK " + ("x" * 2_500)
+        events.append(_model_turn(5 + index, dispatch_sequence=2, output=output, input_tokens=9_000))
+    plan = _plan(tuple(events), keep_recent_tokens=0)
+    assert plan.summary_truncated is True
+    prompt = summary_prompt(plan)
+    # The earliest constraint survives, even though the material is a sample.
+    assert _USER_MESSAGE in prompt
+    # The intent a result line alone would lose reaches the summarizer.
+    assert "src/parser.py" in prompt
+    assert "ALLOCATION-FREE-CONTENT" in prompt
+    # The newest covered work survives, not only the oldest handful of events.
+    assert "NEWEST-COVERED-WORK" in prompt
+    # Omitted material and the trust boundary are disclosed.
+    assert "omitted" in prompt
+    assert "untrusted data" in prompt
+    assert len(prompt.encode("utf-8")) <= 64 * 1024
 
 
 # --- Boundary selection: never split a call/result pair ---
@@ -321,20 +397,54 @@ def test_large_payloads_remain_coverable_without_silent_truncation() -> None:
     assert plan.covered_bytes == sum(_size(event) for event in events)
 
 
-def test_retention_keeps_the_newest_content_raw_at_the_measured_rate() -> None:
+def test_retention_spends_the_tail_budget_in_provider_visible_characters() -> None:
     events = _session_events()
     # 9_000 prompt tokens for 600 measured characters: 15 tokens per character.
     assert measured_tokens_per_character(_records(events)) == 15.0
     assert measured_dispatch_input_tokens(_records(events)) == 9_000
     assert recent_tail_character_budget(_records(events), keep_recent_tokens=1_500, reached_end=True) == 100
     covered = _plan(events, keep_recent_tokens=1_500)
-    # The last model turn is bigger than 100 characters, so it stays raw and the boundary
-    # falls back to the last balanced sequence before it (the read batch's report).
-    assert covered.covered_to_sequence == 7
-    assert covered.retained_tool_result_count == 0
+    # The newest six events are 49 provider-visible characters; adding the 87-character
+    # user message exceeds the 100-character budget, so the prompt is covered and the
+    # recent intents/turns/tool results stay raw.
+    assert covered.covered_to_sequence == 1
+    assert covered.retained_tool_result_count == 2
     # Without a measurement there is no honest conversion: nothing is retained.
     assert recent_tail_character_budget(_records(events), keep_recent_tokens=1_500, reached_end=False) == 0
     assert recent_tail_character_budget(_records(events[:1]), keep_recent_tokens=1_500, reached_end=True) == 0
+
+
+def test_retention_counts_provider_visible_characters_not_payload_bytes() -> None:
+    multibyte = "解析器" * 30  # 90 characters, 270 UTF-8 bytes.
+    events = (
+        _event(1, "core.user_message", {"content": _USER_MESSAGE}),
+        _intent(2, message_characters=500),
+        _model_turn(3, dispatch_sequence=2, output="done", input_tokens=9_000),
+        _event(4, "core.user_message", {"content": multibyte}),
+    )
+    records = _records(events)
+    assert provider_visible_characters(records[3]) == 90
+    assert records[3].payload_bytes > 100, "payload bytes and provider-visible characters diverge"
+    assert recent_tail_character_budget(records, keep_recent_tokens=1_500, reached_end=True) == 100
+    covered = _plan(events, keep_recent_tokens=1_500)
+    # 90 + "done" (4) fits; adding the 87-character first prompt does not. The multibyte
+    # message is retained by character count even though its payload is over the budget.
+    assert covered.covered_to_sequence == 1
+
+
+def test_an_image_bearing_newest_dispatch_disables_the_retention_rate() -> None:
+    events = (
+        _event(1, "core.user_message", {"content": _USER_MESSAGE}),
+        _intent(2, image_count=1),
+        _model_turn(3, dispatch_sequence=2, output="done", input_tokens=9_000),
+    )
+    records = _records(events)
+    assert measured_tokens_per_character(records) is None
+    assert recent_tail_character_budget(records, keep_recent_tokens=1_500, reached_end=True) == 0
+    covered = _plan(events, keep_recent_tokens=1_500)
+    # With no honest rate the cut is the newest boundary: the prefix is covered as far as
+    # it can be rather than converting image tokens through a text-only character count.
+    assert covered.covered_to_sequence == 3
 
 
 # --- Plan no-ops ---
@@ -460,7 +570,10 @@ def test_model_summary_replaces_the_text_and_keeps_the_real_accounting() -> None
     assert len(services.queries) == 1
     prompt = services.queries[0]
     assert prompt.startswith(CONTINUITY_SUMMARY_SYSTEM_PROMPT)
-    assert "tool=write status=ok\nwrote 42 bytes to src/parser.py" in prompt
+    assert "tool=write status=ok" in prompt
+    assert "args=" in prompt
+    assert "src/parser.py" in prompt
+    assert "wrote 42 bytes to src/parser.py" in prompt
     assert "user\n" + _USER_MESSAGE in prompt
     assert len(prompt.encode("utf-8")) <= 64 * 1024
 
@@ -593,6 +706,25 @@ def test_observer_stays_idle_below_the_trigger_without_or_unmeasured() -> None:
     compaction_observer(_usage(8, input_tokens=9_000), _context(), disabled, config=CompactionConfig(enabled=False))
     assert disabled.projections == []
     assert disabled.state is None
+
+
+def test_observer_does_not_read_history_when_the_gate_is_unsized() -> None:
+    class _NoReadServices(FakeServices):
+        def read_context_history(self, *, limit: int = 600):
+            raise AssertionError("an unsized gate must not read the session prefix")
+
+    services = _NoReadServices(_session_events())
+    fact = RunFinishedFact(
+        session_id=SESSION_ID,
+        run_id=RUN_ID,
+        revision_id=REVISION_ID,
+        logical_turn="turn-1",
+        event_sequence=8,
+        status="completed",
+    )
+    compaction_observer(fact, _context(), services, config=CompactionConfig())
+    assert services.projections == []
+    assert services.state is None
 
 
 def test_observer_ignores_fact_kinds_it_does_not_subscribe_to() -> None:
@@ -742,6 +874,11 @@ def test_config_parsing_uses_legacy_defaults_and_rejects_unknown_keys() -> None:
     assert default.keep_recent_tokens == DEFAULT_KEEP_RECENT_TOKENS
     parsed = parse_compaction_config({"enabled": False, "threshold_tokens": 90_000, "reserve_tokens": 0, "keep_recent_tokens": 1_000})
     assert parsed == CompactionConfig(enabled=False, threshold_tokens=90_000, reserve_tokens=0, keep_recent_tokens=1_000)
+    # Zero is an explicit "off", so an otherwise large reserve is irrelevant.
+    assert parse_compaction_config({"threshold_tokens": 0, "reserve_tokens": 10_000}) == CompactionConfig(threshold_tokens=0, reserve_tokens=10_000)
+    # An explicit reserve at or above an explicit threshold is refused, not collapsed to 1.
+    with pytest.raises(ValueError, match="reserve_tokens must be smaller than threshold_tokens"):
+        parse_compaction_config({"threshold_tokens": 1_000, "reserve_tokens": 1_000})
     # The retired model flag is an unknown key now, not a knob.
     with pytest.raises(ValueError, match="summary_enabled"):
         parse_compaction_config({"summary_enabled": True})
@@ -767,10 +904,15 @@ def test_create_plugin_registers_the_command_and_the_observer() -> None:
     assert plugin.context is None
 
 
-def test_summary_material_ignores_raw_arguments_and_non_transcript_records() -> None:
+def test_summary_material_includes_bounded_declared_arguments_and_ignores_non_transcript_records() -> None:
     from voidcode.sdk.transcript import ContextRecord, TranscriptChild, TranscriptEntry, TranscriptTool
 
-    call = ToolCall("unrelated_name", {"targets": "actual.py", "path": "misleading.py", "command": "display text"}, "substitute")
+    long_value = "Z" * 2_000
+    call = ToolCall(
+        "unrelated_name",
+        {"targets": "actual.py", "path": "misleading.py", "command": "display text", "zpayload": long_value},
+        "substitute",
+    )
     result = ToolSuccess("unrelated_name", TextOutput("moved"), changes=(Change("actual.py", "move", "old.py"),))
     records = (
         ContextRecord(1, 1_000, True, TranscriptEntry(1, RUN_ID, REVISION_ID, "client", ProviderMessage("user", _USER_MESSAGE))),
@@ -780,10 +922,29 @@ def test_summary_material_ignores_raw_arguments_and_non_transcript_records() -> 
     plan = plan_projection(records, previous_covered_to_sequence=None, keep_recent_tokens=0, reached_end=True)
     assert plan.covered_tool_result_count == 1
     material = "\n\n".join(plan.summary_material)
-    assert "tool=unrelated_name status=ok\nmoved" in material
+    # Declared intent is included (bounded), while observed output and status stay separate.
+    assert "tool=unrelated_name status=ok" in material
+    assert "args=" in material
+    assert "misleading.py" in material
+    assert "display text" in material
+    assert "moved" in material
+    assert "Z" * 100 in material
+    assert long_value not in material
+    assert "[truncated]" in material
+    # Bookkeeping without a transcript entry never enters the summary material.
     assert "actual-child" not in material
-    assert "misleading.py" not in material
-    assert "display text" not in material
+
+
+def test_prepare_deactivation_clears_the_live_projection_but_keeps_the_cursor() -> None:
+    state = CompactionState(
+        cursor_sequence=12,
+        last_projection=LastProjection(1, 10, 9_000, 1_000, "model"),
+    ).to_payload()
+    prepared = prepare_compaction_deactivation(state, "session", SESSION_ID, 12)
+    assert prepared["schema_version"] == SCHEMA_VERSION
+    assert prepared["cursor_sequence"] == 12
+    assert prepared["last_projection"] is None
+    assert CompactionState.from_payload(prepared) == CompactionState(cursor_sequence=12)
 
 
 def test_interrupted_dispatch_cannot_reuse_an_older_usage_measurement():

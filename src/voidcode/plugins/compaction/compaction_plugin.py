@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from voidcode.capabilities.plugin_state import PluginStateStore
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
@@ -134,13 +134,24 @@ def _store(services: StateServices) -> PluginStateStore[CompactionState]:
 
 
 class CompactionConfig(BaseModel):
-    """The compaction knobs, resolved from the plugin's configuration block."""
+    """The compaction knobs, resolved from the plugin's configuration block.
+
+    ``threshold_tokens=0`` is the explicit "off" spelling (it never becomes a one-token
+    gate). An explicit reserve must fit below an explicit threshold; the resolver refuses
+    the contradiction instead of silently collapsing the trigger to ``1``.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
     enabled: bool = True
     threshold_tokens: int | None = Field(default=None, ge=0)
     reserve_tokens: int | None = Field(default=None, ge=0)
     keep_recent_tokens: int = Field(default=DEFAULT_KEEP_RECENT_TOKENS, ge=0)
+
+    @model_validator(mode="after")
+    def _reserve_fits_below_an_explicit_threshold(self) -> CompactionConfig:
+        if self.threshold_tokens and self.reserve_tokens is not None and self.reserve_tokens >= self.threshold_tokens:
+            raise ValueError("reserve_tokens must be smaller than threshold_tokens")
+        return self
 
 
 def parse_compaction_config(config: Mapping[str, object] | None) -> CompactionConfig:
@@ -304,6 +315,10 @@ def compaction_observer(
     if not isinstance(fact, (UsageFact, RunFinishedFact)) or not config.enabled:
         return
     budget = resolve_compaction_budget(None, threshold_tokens=config.threshold_tokens, reserve_tokens=config.reserve_tokens)
+    if budget.trigger_tokens <= 0:
+        # An unsized gate can never fire. Do not read the session prefix just to measure a
+        # value that cannot justify a projection (run_finished has no report of its own).
+        return
     measured: int | None = None
     if isinstance(fact, UsageFact):
         # A dispatch's own report decides its own gate, before the window is even read.
@@ -417,7 +432,7 @@ class CompactCommand:
         current = _row_accounting(services.window_projection())
         if current["covered_bytes"] is None:
             return _compact_receipt(
-                output="Nothing new to compact: no coverable prefix remains.",
+                output="Nothing new to compact: the visible prefix has no newly coverable batch boundary.",
                 data={"noop": True, "reason": outcome.reason, **current, "summary_kind": None, "covered_events": None},
             )
         return _compact_receipt(
@@ -441,15 +456,17 @@ def prepare_compaction_deactivation(
     scope_key: str,
     tip_sequence: int | None,
 ) -> Mapping[str, object]:
-    """Pure deactivation transform: bookkeeping survives; the projection row does not.
+    """Pure deactivation transform: clear the coverage that no longer exists.
 
-    The cursor and last-projection accounting are this plugin's own history, so the parked
-    copy keeps the payload untouched for re-enable. The live projection itself is core-owned
-    and the activation transaction already deletes it (the raw window becomes visible again),
-    so there is no live work for this transform to refuse.
+    The live projection row is core-owned and the activation transaction deletes it (the raw
+    window becomes visible again). Keeping ``last_projection`` would leave the parked state
+    describing a row that no longer exists: on re-enable, plan_projection would demand a new
+    provider-visible event beyond that stale coverage and manual compaction could no-op with
+    nothing to cover. The cursor is harmless bookkeeping and survives; the projection
+    accounting does not.
     """
     _ = (scope, scope_key, tip_sequence)
-    return state
+    return {**state, "last_projection": None}
 
 
 __all__ = [

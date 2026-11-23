@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Compaction budgets, summaries, and re-enable hardening
+- Budget: `threshold_tokens: 0` is consistently "off" with or without a catalog window; an explicit reserve at or above an explicit threshold is refused, and a defaulted reserve that cannot fit under an explicit threshold is dropped instead of collapsing the trigger to `1`. The observer returns before reading history when the gate is unsized.
+- Deactivation: the parked state clears `last_projection` (the cursor survives), so a re-enable can re-project immediately after the core deletes the row instead of waiting for a new provider-visible event.
+- Summaries: the material is now a bounded representative sample (earliest constraints plus newest covered work) with bounded declared tool-call arguments, omitted-image and truncated-material markers, and an explicit untrusted-data instruction. Tail retention counts provider-visible characters rather than JSON payload bytes; an image-bearing or unknown-image newest dispatch disables the rate instead of inflating it.
+- Docs: the "verifiable" compaction claim is removed; the 600-event read cap, the unsized default gate, the retention fallback, the no-op wording, and inner-vs-outer `enabled` are documented. The older "Model-only compaction" note that stored `deterministic` rows still validate is superseded: state v2 refuses that kind.
+
 ### Exec hardening: typed failures, cancellation cleanup, bounded stdin, honest ps/logs
 - The expected-failure boundary (`ToolDiagnosticError`, `raise_tool_diagnostic`, `expected_failures`) moved to the shared `capabilities/tool_errors.py` and now guards both exec tools as well as the files tools; only the diagnostic error and pydantic validation become results, while bare `ValueError`/`OSError`/programming errors propagate. Exec input/environment failures (invalid workspace, failed/duplicate start, unknown or foreign process id, corrupt process state, closed stdin, unconfirmed stop) are typed diagnostics.
 - `background_process start` checks cancellation after spawning, after persisting the identity, and after the readiness wait; it stops the process group and persists a confirmed exit instead of returning a cancelled success note. `send` is capped at 64 KiB and uses a non-blocking, deadline- and cancel-bounded core pipe write that reports partial writes exactly.
@@ -223,7 +229,7 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - Cancellation is run-bound through active signals, parked commits, and queued-work disarming. Old SDK invocations cannot register late child work after cancellation returns; completion notices do not automatically revive interrupted parents. Later explicit work remains legal.
 
 ### Model-only compaction (BREAKING)
-- The deterministic rendering path is deleted: every projection's replacement is the model's summary text, and a failed, blank, or unshrinkable summary fails loudly instead of falling back. The `summary_enabled` config key is removed (strict parsers refuse it); old stored `deterministic` rows still validate but nothing writes that kind again. `CompactionConfig` parsing is now pydantic (`strict=True`, `extra="forbid"`).
+- The deterministic rendering path is deleted: every projection's replacement is the model's summary text, and a failed, blank, or unshrinkable summary fails loudly instead of falling back. The `summary_enabled` config key is removed (strict parsers refuse it); old stored `deterministic` rows still validate but nothing writes that kind again. (Superseded: current state v2 refuses `deterministic`; see the Unreleased compaction entry.) `CompactionConfig` parsing is now pydantic (`strict=True`, `extra="forbid"`).
 
 ### Extensible resource readers (BREAKING)
 - The `tool://`, `artifact://`, `transcript://` renderers moved out of `read_tool.py` into shared capability modules registered by the files plugin (`capabilities/files/resource_readers.py`, sharing one bounded stored-artifact pager in `capabilities/resource_pages.py`); `read` imports no reader and holds no scheme table. Admission rejects duplicate schemes naming both owners; disabling a provider removes its scheme with no fallback.

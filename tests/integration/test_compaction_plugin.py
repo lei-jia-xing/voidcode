@@ -435,3 +435,51 @@ def test_a_blank_model_summary_fails_loudly_and_stages_nothing(tmp_path: Path) -
         stored, _ = core.store.plugin_state("compaction", "session", session_id)
         assert stored is None
         assert not [event for event in core.events_after(session_id) if event.event_type == "plugin.compaction.context_compacted"]
+
+
+def test_disable_and_reenable_clears_the_parked_coverage_and_reprojects(tmp_path: Path) -> None:
+    replies = [
+        _turn(_tool_call("call-1", _WRITE_TOOL, {"path": "notes.txt", "text": _NOTES_TEXT}), prompt_tokens=10),
+        _turn(output="notes written", prompt_tokens=10),
+        openai_response(message={"role": "assistant", "content": "the probe notes"}, finish="stop"),
+        openai_response(message={"role": "assistant", "content": "the probe notes after re-enable"}, finish="stop"),
+    ]
+    with loopback_server(replies) as server:
+        core = _core(tmp_path, server)
+        workspace = tmp_path / "workspace"
+        config_path = workspace / "voidcode.json"
+        session_id = core.create_session("sess-reenable").session_id
+        assert core.run("first prompt: write the notes", session_id=session_id).status == "completed"
+        projected = _command(core, session_id, "compact", {})
+        assert projected.status == "ok", projected
+        assert projected.data is not None and projected.data["noop"] is False
+        assert core.store.window_projection(session_id) is not None
+
+        # Removing the owner lets the activation transaction delete the projection row. The
+        # parked state must stop describing that row, or a re-enable would wait for a new
+        # provider-visible event before it could project again.
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["plugins"]["compaction"]["enabled"] = False
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        disabled = core.invoke_command(session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
+        assert disabled.status == "ok", disabled
+        assert core.store.window_projection(session_id) is None
+        parked, _ = core.store.plugin_state("compaction", "session", session_id)
+        assert isinstance(parked, Mapping)
+        assert parked["last_projection"] is None
+        assert parked["cursor_sequence"] >= 1
+
+        config["plugins"]["compaction"]["enabled"] = True
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        enabled = core.invoke_command(session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
+        assert enabled.status == "ok", enabled
+        assert core.store.window_projection(session_id) is None
+
+        # No new turn: the cleared coverage is what makes this immediate re-projection legal.
+        reprojected = _command(core, session_id, "compact", {})
+        assert reprojected.status == "ok", reprojected
+        assert reprojected.data is not None
+        assert reprojected.data["noop"] is False
+        row = core.store.window_projection(session_id)
+        assert row is not None
+        assert "the probe notes after re-enable" in row.replacement
