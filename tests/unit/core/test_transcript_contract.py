@@ -177,6 +177,64 @@ def test_context_history_validates_source_limit(tmp_path, limit):
         RuntimeServices(_runtime(()), lease).read_context_history(limit=limit)
 
 
+@pytest.mark.parametrize("after", [-1, "0", True])
+def test_context_history_validates_after_sequence(tmp_path, after):
+    lease = LeaseContext(LeaseIdentity("token", "owner", "session", tmp_path, "run", "revision", "invoke", True))
+    with pytest.raises(ValueError, match="after_sequence"):
+        RuntimeServices(_runtime(()), lease).read_context_history(after_sequence=after)
+
+
+def test_context_history_pages_are_prefix_certified_and_cover_the_whole_session():
+    events = tuple(_event(sequence, "plugin.probe.tick", {}) for sequence in range(1, 602))
+    runtime = _runtime(events)
+    first = PluginRuntime.context_history(runtime, "session", 600)
+    assert [record.sequence for record in first.records] == list(range(1, 601))
+    assert not first.reached_end
+    assert all(record.safe_boundary for record in first.records)
+    second = PluginRuntime.context_history(runtime, "session", 600, 600)
+    assert [record.sequence for record in second.records] == [601]
+    assert second.reached_end
+    assert second.records[0].safe_boundary
+    beyond = PluginRuntime.context_history(runtime, "session", 600, 601)
+    assert beyond.records == () and beyond.reached_end
+
+
+def test_context_history_real_store_pages_601_events_without_gaps(tmp_path):
+    from voidcode.core.storage.store import EventDraft, SqliteStore
+
+    with SqliteStore(":memory:") as store:
+        revision = store.put_revision({})
+        store.record_workspace_revision(str(tmp_path), revision)
+        store.create_session("session", str(tmp_path), revision)
+        store.commit_staged(
+            "session",
+            run_id="run",
+            revision_id=revision,
+            events=tuple(EventDraft("plugin.probe.tick", "core", "core", {}) for _ in range(601)),
+            status=SessionStatus.COMPLETED,
+        )
+        with PluginRuntime((), workspace=tmp_path, revision_id=revision, store=store) as runtime:
+            first = runtime.context_history("session", 600)
+            assert [record.sequence for record in first.records] == list(range(1, 601))
+            assert not first.reached_end
+            second = runtime.context_history("session", 600, 600)
+            assert [record.sequence for record in second.records] == [601]
+            assert second.reached_end
+            assert first.records[-1].safe_boundary and second.records[0].safe_boundary
+
+
+def test_context_history_page_boundary_never_certifies_a_page_suffix():
+    batch = _batch()
+    first = PluginRuntime.context_history(_runtime(batch), "session", 3)
+    assert [record.sequence for record in first.records] == [1, 2, 3]
+    assert not first.reached_end
+    assert not first.records[-1].safe_boundary
+    second = PluginRuntime.context_history(_runtime(batch), "session", 1, 3)
+    assert [record.sequence for record in second.records] == [4]
+    assert second.reached_end
+    assert second.records[0].safe_boundary
+
+
 def test_projection_admission_rechecks_ids_and_accepts_completed_deferred_work(tmp_path):
     from voidcode.core.storage.store import EventDraft, SqliteStore
 
@@ -214,10 +272,10 @@ def test_projection_admission_rechecks_ids_and_accepts_completed_deferred_work(t
 def test_context_history_service_is_readonly_session_scoped_and_revocable(tmp_path):
     lease = LeaseContext(LeaseIdentity("token", "owner", "session", tmp_path, "run", "revision", "invoke", True, hook=True))
     runtime = _runtime(())
-    runtime.context_history = lambda session_id, limit: (session_id, limit)
+    runtime.context_history = lambda session_id, limit, after_sequence=0: (session_id, limit, after_sequence)
     services = RuntimeServices(runtime, lease)
     assert services.owner == "owner"
-    assert services.read_context_history(limit=42) == ("session", 42)
+    assert services.read_context_history(after_sequence=7, limit=42) == ("session", 42, 7)
     lease.revoked = True
     with pytest.raises(PermissionError, match="revoked"):
         services.read_context_history()

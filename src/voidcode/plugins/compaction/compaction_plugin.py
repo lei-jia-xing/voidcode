@@ -35,9 +35,8 @@ SCHEMA_VERSION = 2
 #: manual) carrying core-measured accounting. Consumers count these events for the cumulative
 #: total; ``window_projection()`` is latest-only and never a substitute.
 CONTEXT_COMPACTED_EVENT = "context_compacted"
-#: How many event pages one observation may consume; the prefix is what matters, not the tail.
-_MAX_EVENT_PAGES = 3
-_EVENT_PAGE_SIZE = 200
+#: Source records per prefix page; the reader pages until the session end, with no fixed cap.
+_EVENT_PAGE_SIZE = 600
 
 _PROJECTION_KEYS: frozenset[str] = frozenset({"covered_from_sequence", "covered_to_sequence", "covered_bytes", "dropped_bytes", "summary_kind"})
 
@@ -194,8 +193,26 @@ class ProjectionOutcome:
 
 
 def _read_window(services: HistoryServices) -> tuple[tuple[ContextRecord, ...], bool]:
-    history = services.read_context_history(limit=_MAX_EVENT_PAGES * _EVENT_PAGE_SIZE)
-    return history.records, history.reached_end
+    """Read the complete committed prefix in prefix-certified pages, in order.
+
+    Every page's records start after the previous page's last sequence. A page that does
+    not reach the session end must contain records and advance the cursor; otherwise this
+    raises rather than silently truncating the prefix. The returned flag is the last
+    page's ``reached_end`` (true for every completed read).
+    """
+    records: list[ContextRecord] = []
+    after_sequence = 0
+    while True:
+        page = services.read_context_history(after_sequence=after_sequence, limit=_EVENT_PAGE_SIZE)
+        records.extend(page.records)
+        if page.reached_end:
+            return tuple(records), True
+        if not page.records:
+            raise ValueError("context history paging reached no records before the session end")
+        next_after = page.records[-1].sequence
+        if next_after <= after_sequence:
+            raise ValueError("context history paging did not advance")
+        after_sequence = next_after
 
 
 def _replacement_text(services: ToolServices, plan: ProjectionPlan) -> str:

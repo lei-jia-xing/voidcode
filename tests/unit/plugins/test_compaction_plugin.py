@@ -171,6 +171,10 @@ def _session_events() -> tuple[EventView, ...]:
     )
 
 
+def _message_events(count: int) -> tuple[EventView, ...]:
+    return tuple(_event(sequence, "core.user_message", {"content": f"message {sequence}"}) for sequence in range(1, count + 1))
+
+
 def _records(events):
     return context_records(
         tuple(StoredEvent(SESSION_ID, e.sequence, e.run_id, e.event_type, e.source, e.actor, e.revision_id, e.payload) for e in events)
@@ -387,6 +391,84 @@ def test_boundary_requires_every_call_of_a_multi_call_batch_to_be_answered() -> 
     full = _plan((*events, _tool_completed(5, batch_sequence=3, call=second_call, content="1 passed")))
     assert full.covered_to_sequence == 5
     assert full.covered_tool_result_count == 2
+
+
+@pytest.mark.parametrize("count", [601, 1201])
+def test_read_window_pages_to_the_session_end_without_duplicates_or_gaps(count: int) -> None:
+    records, reached_end = compaction_plugin._read_window(FakeServices(_message_events(count)))
+    assert reached_end is True
+    assert [record.sequence for record in records] == list(range(1, count + 1))
+    assert all(record.safe_boundary for record in records)
+
+
+def test_paging_across_a_native_batch_boundary_keeps_the_result_coverable() -> None:
+    late_call = ToolCall("read", {"path": "late.txt"}, "late-call")
+    events = (
+        *_message_events(598),
+        _intent(599),
+        _model_turn(600, dispatch_sequence=599, tool_calls=(late_call,)),
+        _tool_completed(601, batch_sequence=600, call=late_call, content="late read"),
+    )
+    records, reached_end = compaction_plugin._read_window(FakeServices(events))
+    assert reached_end is True
+    assert [record.sequence for record in records] == list(range(1, 602))
+    assert not records[599].safe_boundary
+    assert records[600].safe_boundary
+    plan = plan_projection(records, previous_covered_to_sequence=None, keep_recent_tokens=0, reached_end=reached_end)
+    assert plan is not None
+    assert plan.covered_to_sequence == 601
+
+
+def test_plan_covers_a_completed_batch_beyond_the_old_600_event_cap() -> None:
+    late_call = ToolCall("write", {"path": "late.txt", "content": "late content"}, "late-call")
+    events = (
+        *_message_events(600),
+        _intent(601),
+        _model_turn(602, dispatch_sequence=601, tool_calls=(late_call,)),
+        _tool_completed(603, batch_sequence=602, call=late_call, content="late result"),
+    )
+    records, reached_end = compaction_plugin._read_window(FakeServices(events))
+    assert reached_end is True
+    plan = plan_projection(records, previous_covered_to_sequence=None, keep_recent_tokens=0, reached_end=reached_end)
+    assert plan is not None
+    assert plan.covered_to_sequence == 603
+    material = "\n\n".join(plan.summary_material)
+    assert "late result" in material
+    assert "late.txt" in material
+
+
+def test_manual_compact_projects_beyond_600_events() -> None:
+    services = FakeServices(_message_events(601), model_answer="the long session, summarized")
+    command = CompactCommand(CompactionConfig(keep_recent_tokens=0))
+    result = command.invoke(CommandInvocation(context=_context(), name="compact", arguments={}), services)
+    assert result.status == "ok"
+    assert result.data is not None
+    assert result.data["noop"] is False
+    assert result.data["covered_to_sequence"] == 601
+    assert "message 601" in services.prompts[0]
+
+
+def test_run_finished_observes_beyond_600_events_with_an_explicit_threshold() -> None:
+    events = (
+        *_message_events(600),
+        _intent(601),
+        _model_turn(602, dispatch_sequence=601, output="done", input_tokens=9_000),
+    )
+    services = FakeServices(events, model_answer="the long session, summarized")
+    config = CompactionConfig(threshold_tokens=1_000, reserve_tokens=0, keep_recent_tokens=0)
+    fact = RunFinishedFact(
+        session_id=SESSION_ID,
+        run_id=RUN_ID,
+        revision_id=REVISION_ID,
+        logical_turn="turn-1",
+        event_sequence=602,
+        status="completed",
+    )
+    compaction_observer(fact, _context(), services, config=config)
+    assert len(services.projections) == 1
+    state = compaction_plugin._store(services).load()[0]
+    assert state.last_projection is not None
+    assert state.last_projection.covered_to_sequence == 602
 
 
 def test_large_payloads_remain_coverable_without_silent_truncation() -> None:
@@ -736,7 +818,7 @@ def test_observer_stays_idle_below_the_trigger_without_or_unmeasured() -> None:
 
 def test_observer_does_not_read_history_when_the_gate_is_unsized() -> None:
     class _NoReadServices(FakeServices):
-        def read_context_history(self, *, limit: int = 600):
+        def read_context_history(self, *, after_sequence: int = 0, limit: int = 600):
             raise AssertionError("an unsized gate must not read the session prefix")
 
     services = _NoReadServices(_session_events())

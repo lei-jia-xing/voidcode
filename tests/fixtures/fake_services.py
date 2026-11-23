@@ -225,8 +225,12 @@ class FakeServices(PluginServices):
         next_seq = getattr(page[-1], "event_sequence", getattr(page[-1], "sequence", after_sequence)) if page else after_sequence
         return FactPage(page, next_seq, len(remaining) > limit)
 
-    def read_context_history(self, *, limit: int = 600) -> ContextHistory:
-        events_slice = self.events[:limit]
+    def read_context_history(self, *, after_sequence: int = 0, limit: int = 600) -> ContextHistory:
+        start = 0
+        while start < len(self.events) and getattr(self.events[start], "sequence", 0) <= after_sequence:
+            start += 1
+        # Validate the fetched prefix from the first event, then return only this page.
+        prefix_events = self.events[: start + limit]
         records = context_records(
             tuple(
                 StoredEvent(
@@ -239,10 +243,10 @@ class FakeServices(PluginServices):
                     getattr(e, "revision_id", "rev-1"),
                     e.payload,  # type: ignore[attr-defined]
                 )
-                for e in events_slice
+                for e in prefix_events
             )
         )
-        return ContextHistory(records, len(self.events) <= limit)
+        return ContextHistory(records[start : start + limit], len(self.events) <= start + limit)
 
     def read_transcript(self, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
         _ = limit

@@ -102,7 +102,13 @@ class ContextRecord:
 
 @dataclass(frozen=True, slots=True)
 class ContextHistory:
-    """A bounded prefix starting at the session's first source record."""
+    """One page of the certified source prefix, in event order.
+
+    ``safe_boundary`` on each record certifies the prefix from the session's first source
+    record through that sequence, even when this page starts later. The core computes it
+    from the first record on every page; a page suffix is never certified by itself.
+    ``reached_end`` means this page reaches the session's current last source record.
+    """
 
     records: tuple[ContextRecord, ...]
     reached_end: bool

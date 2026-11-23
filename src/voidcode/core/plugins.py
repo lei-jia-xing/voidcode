@@ -922,10 +922,25 @@ class PluginRuntime:
                 facts.append(self._typed_fact(kind, payload, event.session_id, event.run_id, event.revision_id, str(payload.get("logical_turn", ""))))
         return FactPage(tuple(facts), page[-1].sequence if page else after, len(source) > limit)
 
-    def context_history(self, session_id: str, limit: int) -> ContextHistory:
-        source = self.require_store().events(session_id, after_sequence=0, limit=limit + 1)
-        sizes = self.require_store().event_payload_bytes(session_id, limit=limit)
-        return ContextHistory(context_records(source[:limit], sizes=sizes), len(source) <= limit)
+    def context_history(self, session_id: str, limit: int, after_sequence: int = 0) -> ContextHistory:
+        """One page of the certified prefix; safe boundaries are computed from record 1.
+
+        The fetch starts at the session's first event and ends one record past this page,
+        so a page suffix is never certified on its own. The slice is taken only after the
+        full fetched prefix has been validated.
+        """
+        if type(after_sequence) is not int or after_sequence < 0 or type(limit) is not int or not 1 <= limit <= 2000:
+            raise ValueError("after_sequence must be >= 0 and limit within 1..2000")
+        store = self.require_store()
+        source_limit = after_sequence + limit + 1
+        source = store.events(session_id, after_sequence=0, limit=source_limit)
+        sizes = store.event_payload_bytes(session_id, after_sequence=0, limit=source_limit)
+        prefix = context_records(source, sizes=sizes)
+        start = 0
+        while start < len(prefix) and prefix[start].sequence <= after_sequence:
+            start += 1
+        page = prefix[start : start + limit]
+        return ContextHistory(page, len(prefix) <= start + limit)
 
     def transcript_page(self, session_id: str, after: int, limit: int) -> TranscriptPage:
         source = self.require_store().events(session_id, after_sequence=after, limit=limit + 1)

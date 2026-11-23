@@ -1121,12 +1121,16 @@ class HistoryServices(Protocol):
         """
         ...
 
-    def read_context_history(self, *, limit: int = 600) -> ContextHistory:
-        """Read a certified source prefix (1..2000 records) for compaction.
+    def read_context_history(self, *, after_sequence: int = 0, limit: int = 600) -> ContextHistory:
+        """Read one page of the certified source prefix (1..2000 records) for compaction.
 
-        Includes bookkeeping sizes and safe prefix boundaries. Records are whole;
-        the bound counts source records, not bytes. The core revalidates any
-        declared projection independently when it is submitted.
+        ``after_sequence`` is exclusive: the page starts at the first source record after
+        it. Pages preserve event order and whole records; every ``safe_boundary`` certifies
+        the prefix from the session's first source record through that sequence, never a
+        page suffix. ``reached_end`` means the page reaches the session's current last
+        record. Advance with the last record's sequence; an empty page that is not at the
+        end is a contract violation. The core revalidates any declared projection
+        independently when it is submitted.
         """
         ...
 
