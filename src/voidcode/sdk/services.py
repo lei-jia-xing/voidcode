@@ -324,12 +324,14 @@ class ChildSendReceipt:
 
     A receipt reports only durable acceptance: ``started`` means a run identity was claimed and
     the turn is part of that run before this method returned; ``queued`` means the message is a
-    pending continuation and a later safe boundary will claim it. Neither means the child
-    consumed the message or finished; read the outcome with ``join_child`` or the notice.
+    pending continuation and a later safe boundary will claim it; ``parked`` means the message is
+    durable but the child is interrupted/parked and will not claim it without an explicit resume
+    (or cancellation). None of these values means the child consumed the message or finished;
+    read the outcome with ``join_child`` or the notice.
     """
 
     child_session_id: str
-    delivery: Literal["started", "queued"]
+    delivery: Literal["started", "queued", "parked"]
     child_status: str
     run_id: str | None = None
     message_id: str | None = None

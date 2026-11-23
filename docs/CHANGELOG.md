@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Visible child delivery and strict child facts
+- `send_child` receipts now distinguish `parked` from `queued`: a recoverably interrupted child keeps the follow-up durable but cannot claim it without an explicit resume, so the receipt no longer promises future consumption. A claim conflict whose continuation is no longer durable fails visibly.
+- Child terminal facts are decoded strictly: required child/run identity and terminal status must be present and exact, optional strings are no longer coerced, and a malformed/missing run id can no longer match an arbitrary run. Recovery publications record a verbatim `output_error` when the provider result cannot decode instead of silently publishing `output=None`.
+- Verification: focused Core collaboration/SDK receipt/fact-decoder tests; `ruff check`, `ruff format --check`, and `ty check src` green on the changed files.
+
 ### Plugin model-query accounting
 - `core.model_query` usage now participates in the session usage report and every active owner budget: a plugin-invoked query is charged once, attributed to the invoking owner, and missing usage/cost stays unknown. Budget admission runs before a side query and refuses an already-exhausted window with the same visible reason as a turn dispatch.
 - The usage commit is strict, so a billed query whose usage fact cannot be persisted fails the call instead of disappearing; a reply that unexpectedly carries tool calls still records its measured bill before the contract error is raised. No retries or fallbacks were added.

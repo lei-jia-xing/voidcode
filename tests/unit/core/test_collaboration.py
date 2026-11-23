@@ -1308,6 +1308,39 @@ def test_restart_republishes_an_uncommitted_child_fact_once_without_rerunning(
         _wait_for(lambda: reopened.store.continuation_status(notice_id) == "completed", what="the recovered notice consumption")
 
 
+def test_recovery_publication_surfaces_provider_result_decode_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovery publication whose provider result cannot decode records a capture error."""
+    replies = [_turn(output="unrecoverable output")]
+    with loopback_server(replies) as server:
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        with monkeypatch.context() as patch:
+            patch.setattr(core._delegation, "_publish_child_terminal", lambda *args, **kwargs: None)
+            child = core.spawn_child(parent, "child prompt", notify_on_completion=False)
+            _wait_for(lambda: core.session(child).status == "completed", what="the child's terminal commit")
+            run_id = core.session(child).run_id
+            assert run_id is not None
+            assert _child_facts(core, parent) == []
+
+        def fail_decode(_payload: Mapping[str, object]) -> object:
+            raise ValueError("provider result decode failed")
+
+        monkeypatch.setattr("voidcode.core.delegation.decode_provider_result", fail_decode)
+        core._delegation._recover_child_publications()
+
+        facts = _child_facts(core, parent)
+        assert len(facts) == 1 and facts[0]["run_id"] == run_id
+        assert facts[0]["status"] == "completed"
+        assert facts[0]["output"] is None
+        assert facts[0]["output_error"] == "ValueError: provider result decode failed"
+        outcome = core.join_child(parent, child, timeout_seconds=0)
+        assert (outcome.status, outcome.output) == ("completed", None)
+        assert outcome.output_error == "ValueError: provider result decode failed"
+
+
 def test_child_without_captured_root_fails_publication_visibly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2257,6 +2290,86 @@ def test_cancelled_child_accepts_a_later_explicit_followup_with_clean_attributio
             (followup.run_id, "followup answer", "completed"),
         ], "each run's fact attributes its own outcome"
         assert len(server.requests) == 3, "no run replayed; the cancel settled instead of rerunning"
+
+
+def test_send_receipt_is_queued_for_a_running_child(tmp_path: Path) -> None:
+    """A running child keeps the message durable behind its run; the receipt says queued."""
+    with loopback_server([]) as server:
+        child_started = threading.Event()
+        release_child = threading.Event()
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            if prompt == "running child":
+                child_started.set()
+                if not release_child.wait(timeout=30):
+                    raise TimeoutError("running child gate never released")
+                return _turn(output="first run answer")
+            if prompt is not None and "queued followup" in prompt:
+                return _turn(output="followup answer")
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        child = core.spawn_child(parent, "running child", notify_on_completion=False)
+        assert child_started.wait(timeout=15), "the child never dispatched its first turn"
+        try:
+            receipt = core.send_child(parent, child, "queued followup", notify_on_completion=False)
+            assert receipt.delivery == "queued", receipt
+            assert receipt.child_status == "running"
+            assert receipt.run_id is None, "a queued receipt claims no run"
+            assert receipt.message_id is not None
+        finally:
+            release_child.set()
+        _join(core, parent, child)
+        assert core.store.continuation_status(str(receipt.message_id)) in ("pending", "claimed", "completed")
+        core.cancel_child(parent, child, reason="test cleanup")
+
+
+def test_send_receipt_is_parked_for_a_recoverably_interrupted_child(tmp_path: Path) -> None:
+    """An interrupted child cannot claim a follow-up; the receipt says parked, never queued."""
+    replies = [_turn(_call("parked-probe", PROBE_TOOL))]
+    with loopback_server(replies) as server:
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        child = core.spawn_child(parent, "parked child", max_steps=1, notify_on_completion=False)
+        paused = core.join_child(parent, child, timeout_seconds=30)
+        assert paused.status == "interrupted", paused.as_payload()
+        assert paused.run_id is not None
+        assert core.store.checkpoint(child) is not None
+
+        receipt = core.send_child(parent, child, "durable but unclaimable", notify_on_completion=False)
+        assert receipt.delivery == "parked", receipt
+        assert receipt.child_status == "interrupted"
+        assert receipt.run_id is None, "a parked receipt claims no run"
+        assert receipt.message_id is not None
+        pending = [record for record in core.store.pending_continuations(child) if record.continuation_id == receipt.message_id]
+        assert len(pending) == 1, "the message stays durable while the child is parked"
+        assert core.session(child).run_id == paused.run_id, "the parked run was not replaced"
+        assert len(server.requests) == 1, "a parked child consumed no follow-up work"
+
+
+def test_send_receipt_starts_when_the_child_has_no_outstanding_work(tmp_path: Path) -> None:
+    """An open child reserves and starts a run; the receipt names that exact run."""
+    replies = [
+        _turn(output="first answer"),
+        _turn(output="followup answer"),
+    ]
+    with loopback_server(replies) as server:
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        child = core.spawn_child(parent, "first task", notify_on_completion=False)
+        first = _join(core, parent, child)
+        assert (first.status, first.output) == ("completed", "first answer")
+
+        receipt = core.send_child(parent, child, "next task", notify_on_completion=False)
+        assert receipt.delivery == "started", receipt
+        assert receipt.run_id is not None and receipt.run_id != first.run_id
+        second = _join(core, parent, child)
+        assert (second.status, second.output, second.run_id) == ("completed", "followup answer", receipt.run_id)
 
 
 def test_send_overlapping_cancel_linearizes_with_observed_run_attribution(tmp_path: Path) -> None:

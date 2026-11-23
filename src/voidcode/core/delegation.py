@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
 from ..sdk.child_schema import CHILD_PROMPT_MAX_BYTES, canonical_result_schema, compose_child_prompt
@@ -113,6 +113,77 @@ class _ChildRunFacts:
     label: str
     notify: bool
     budget_exhaustion: BudgetExhaustion | None
+    output_error: str | None = None
+
+
+_TERMINAL_CHILD_FACT_STATUSES: tuple[str, ...] = ("completed", "failed", "interrupted", "cancelled")
+
+
+def _required_fact_str(payload: Mapping[str, object], field: str, subject: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value:
+        raise StoreConflict(f"{subject} has no valid {field}: {value!r}")
+    return value
+
+
+def _optional_fact_str(payload: Mapping[str, object], field: str, subject: str) -> str | None:
+    value = payload.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise StoreConflict(f"{subject} has a non-string {field}: {value!r}")
+    return value
+
+
+def _optional_fact_int(payload: Mapping[str, object], field: str, subject: str) -> int | None:
+    value = payload.get(field)
+    if value is None:
+        return None
+    if type(value) is not int or value < 0:
+        raise StoreConflict(f"{subject} has an invalid {field}: {value!r}")
+    return value
+
+
+def _decode_child_outcome(child_id: str, payload: Mapping[str, object]) -> ChildOutcome:
+    """Decode one committed terminal fact strictly; malformed attribution fails visibly."""
+    subject = f"committed child completion fact for {child_id!r}"
+    fact_child = _required_fact_str(payload, "child_session_id", subject)
+    if fact_child != child_id:
+        raise StoreConflict(f"{subject} names child {fact_child!r}")
+    status = _required_fact_str(payload, "status", subject)
+    if status not in _TERMINAL_CHILD_FACT_STATUSES:
+        raise StoreConflict(f"{subject} has an unknown status: {status!r}")
+    run_id = _required_fact_str(payload, "run_id", subject)
+    stop_cause = _optional_fact_str(payload, "stop_cause", subject)
+    if stop_cause is not None and not is_stop_cause(stop_cause):
+        raise StoreConflict(f"{subject} has an unknown stop cause: {stop_cause!r}")
+    raw_history = payload.get("history")
+    if raw_history is None:
+        history: Mapping[str, object] = {}
+    elif isinstance(raw_history, Mapping):
+        history = raw_history
+    else:
+        raise StoreConflict(f"{subject} has a non-object history: {raw_history!r}")
+    truncated = history.get("truncated", False)
+    if type(truncated) is not bool:
+        raise StoreConflict(f"{subject} has a non-boolean history truncation: {truncated!r}")
+    return ChildOutcome(
+        child_session_id=child_id,
+        status=cast(Literal["completed", "failed", "interrupted", "cancelled"], status),
+        output=_optional_fact_str(payload, "output", subject),
+        error=_optional_fact_str(payload, "error", subject),
+        stop_cause=stop_cause,
+        run_id=run_id,
+        history_sha256=_optional_fact_str(history, "sha256", subject),
+        history_bytes=_optional_fact_int(history, "bytes", subject),
+        history_truncated=truncated,
+        output_preview=_optional_fact_str(payload, "output_preview", subject),
+        output_sha256=_optional_fact_str(payload, "output_sha256", subject),
+        output_bytes=_optional_fact_int(payload, "output_bytes", subject),
+        output_error=_optional_fact_str(payload, "output_error", subject),
+        history_error=_optional_fact_str(payload, "history_error", subject),
+        budget_exhaustion=BudgetExhaustion.from_payload(payload.get("budget_exhaustion")),
+    )
 
 
 class DelegationManager:
@@ -1086,9 +1157,11 @@ class DelegationManager:
         """Send one attributed follow-up to a direct child, in the child's own session.
 
         The message is a durable continuation, never a filesystem mutation or a user-authority
-        action. A running or parked child consumes it at its next committed batch boundary; an
-        open child reserves a run identity and starts. Scope and stance can never widen: a parent
-        that is now read-only may not steer a child that is not durably read-only.
+        action. A running or approval-waiting child consumes it at its next committed batch
+        boundary; an open child reserves a run identity and starts. A recoverably interrupted
+        child keeps the message durable but cannot claim it without an explicit resume, so the
+        receipt says ``parked`` instead of promising a boundary. Scope and stance can never widen:
+        a parent that is now read-only may not steer a child that is not durably read-only.
         """
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > CHILD_PROMPT_MAX_BYTES:
             raise ValueError(f"child prompt must be nonempty UTF-8 text within {CHILD_PROMPT_MAX_BYTES // 1024} KiB")
@@ -1133,7 +1206,7 @@ class DelegationManager:
         except FencedSubtree as exc:
             raise PermissionError(str(exc)) from exc
         outstanding = child.status in (SessionStatus.RUNNING, SessionStatus.WAITING)
-        delivery: Literal["started", "queued"] = "queued"
+        delivery: Literal["started", "queued", "parked"] = "queued"
         started_run: str | None = None
         if not outstanding:
             run_id = uuid4().hex
@@ -1152,8 +1225,18 @@ class DelegationManager:
                 # The fence won the race: the message stays queued and the
                 # canceller's disarm sweep owns it. The receipt honestly says queued.
                 pass
-            except StoreConflict:
-                pass
+            except StoreConflict as exc:
+                # A loss to a concurrent claim stays queued behind that run. An interrupted
+                # child with a non-terminal checkpoint cannot claim follow-ups without an
+                # explicit resume, so its receipt must not promise a future boundary.
+                current = self.core.store.session(child_id)
+                if current.status is SessionStatus.INTERRUPTED and not self.core.admits_fresh_work(current):
+                    delivery = "parked"
+                elif self.core.store.continuation_status(message_id) not in (
+                    ContinuationStatus.PENDING,
+                    ContinuationStatus.CLAIMED,
+                ):
+                    raise StoreConflict(f"follow-up {message_id!r} is no longer durably claimable") from exc
             else:
                 # The receipt names the run the store actually claimed, never an unused token.
                 delivery, started_run = "started", claimed.run_id
@@ -1201,6 +1284,7 @@ class DelegationManager:
                     label=facts.label,
                     notify=facts.notify,
                     budget_exhaustion=facts.budget_exhaustion,
+                    output_error=facts.output_error,
                     deliver=False,
                 )
         return cancelled or pending > 0
@@ -1423,6 +1507,7 @@ class DelegationManager:
                             notify=facts.notify,
                             deliver=False,
                             budget_exhaustion=facts.budget_exhaustion,
+                            output_error=facts.output_error,
                         )
             return CancelSubtreeReceipt(
                 target_session_id=target_session_id,
@@ -1578,30 +1663,7 @@ class DelegationManager:
         return ChildOutcome(child_session_id=child.session_id, status="running", run_id=child.run_id)
 
     def _child_outcome(self, child_id: str, payload: Mapping[str, object]) -> ChildOutcome:
-        status = str(payload.get("status", "failed"))
-        if status not in ("completed", "failed", "interrupted", "cancelled"):
-            status = "failed"
-        history = payload.get("history")
-        history_map = history if isinstance(history, Mapping) else {}
-        history_bytes = history_map.get("bytes")
-        output_bytes = payload.get("output_bytes")
-        return ChildOutcome(
-            child_session_id=child_id,
-            status=status,  # type: ignore[arg-type]
-            output=None if payload.get("output") is None else str(payload["output"]),
-            error=None if payload.get("error") is None else str(payload["error"]),
-            stop_cause=None if payload.get("stop_cause") is None else str(payload["stop_cause"]),
-            run_id=None if payload.get("run_id") is None else str(payload["run_id"]),
-            history_sha256=None if history_map.get("sha256") is None else str(history_map["sha256"]),
-            history_bytes=history_bytes if isinstance(history_bytes, int) else None,
-            history_truncated=bool(history_map.get("truncated", False)),
-            output_preview=None if payload.get("output_preview") is None else str(payload["output_preview"]),
-            output_sha256=None if payload.get("output_sha256") is None else str(payload["output_sha256"]),
-            output_bytes=output_bytes if isinstance(output_bytes, int) else None,
-            output_error=None if payload.get("output_error") is None else str(payload["output_error"]),
-            history_error=None if payload.get("history_error") is None else str(payload["history_error"]),
-            budget_exhaustion=BudgetExhaustion.from_payload(payload.get("budget_exhaustion")),
-        )
+        return _decode_child_outcome(child_id, payload)
 
     # --- Terminal publication -------------------------------------------------
 
@@ -1619,6 +1681,7 @@ class DelegationManager:
         notify: bool,
         deliver: bool,
         budget_exhaustion: BudgetExhaustion | None = None,
+        output_error: str | None = None,
     ) -> None:
         """Publish one terminal child run exactly once: fact + immutable history + notice.
 
@@ -1668,6 +1731,7 @@ class DelegationManager:
                 notify=notify,
                 notice_id=notice_id,
                 budget_exhaustion=budget_exhaustion,
+                output_error=output_error,
             )
             notice = None
             if notify and notice_id is not None and notice_root_id is not None:
@@ -1731,6 +1795,7 @@ class DelegationManager:
         notify: bool,
         notice_id: str | None,
         budget_exhaustion: BudgetExhaustion | None,
+        output_error: str | None = None,
     ) -> dict[str, object]:
         payload: dict[str, object] = {
             "child_session_id": child_id,
@@ -1745,6 +1810,8 @@ class DelegationManager:
             payload["budget_exhaustion"] = budget_exhaustion.as_payload()
         if notice_id is not None:
             payload["notice_id"] = notice_id
+        if output_error is not None:
+            payload["output_error"] = output_error
         if output is not None:
             encoded = output.encode("utf-8")
             payload["output_bytes"] = len(encoded)
@@ -1890,7 +1957,9 @@ class DelegationManager:
             if event.event_type != EventType.CHILD_FINISHED or event.payload.get("child_session_id") != child_id:
                 continue
             fact_run = event.payload.get("run_id")
-            if fact_run is None or str(fact_run) == run_id:
+            if not isinstance(fact_run, str) or not fact_run:
+                raise StoreConflict(f"committed child completion fact for {child_id!r} has no exact run identity")
+            if fact_run == run_id:
                 return dict(event.payload)
             # Another run's fact proves nothing about this run: keep scanning older facts.
             continue
@@ -1979,6 +2048,7 @@ class DelegationManager:
             return None
         status, terminal = terminal_fact
         output: str | None = None
+        output_error: str | None = None
         error: str | None = None
         stop_cause: StopCause = "completed" if status == "completed" else "error"
         if status == "completed":
@@ -1986,11 +2056,13 @@ class DelegationManager:
                 if event.event_type != EventType.MODEL_TURN:
                     continue
                 wire = event.payload.get("result")
-                if isinstance(wire, Mapping):
+                if not isinstance(wire, Mapping):
+                    output_error = f"committed provider result for child run {run_id!r} is not an object: {type(wire).__name__}"
+                else:
                     try:
                         output = decode_provider_result(wire).output
-                    except TypeError, ValueError:
-                        output = None
+                    except (TypeError, ValueError) as exc:
+                        output_error = f"{type(exc).__name__}: {exc}"
                 break
         elif status == "failed":
             error = str(terminal.payload.get("error") or "run failed")
@@ -2010,6 +2082,7 @@ class DelegationManager:
             label=self._child_run_label(parent_id, session.session_id, run_id, events),
             notify=self._notify_requested(session, events, run_id=run_id),
             budget_exhaustion=BudgetExhaustion.from_payload(terminal.payload.get("budget_exhaustion")),
+            output_error=output_error,
         )
 
     def _reconstruct_child_outcome(self, child: SessionRecord) -> _ChildRunFacts | None:
@@ -2054,6 +2127,7 @@ class DelegationManager:
                     notify=notify,
                     deliver=False,
                     budget_exhaustion=facts.budget_exhaustion,
+                    output_error=facts.output_error,
                 )
                 if notify:
                     notices.append((parent_id, child_completion_notice_id(parent_id, session.session_id, run_id)))

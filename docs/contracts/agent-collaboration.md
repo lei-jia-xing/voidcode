@@ -15,7 +15,7 @@ Delegated agent work is core-owned: a parent session starts child sessions, stee
 ## Join and steering
 
 - `join_child` waits for the child's CURRENT run. It is never satisfied by an older terminal fact: outcomes are remembered per run id, and a follow-up run owns a new run id.
-- `send_child` appends one attributed follow-up in the child's own session. A running or approval-parked child queues it; a child without outstanding work starts a new run immediately. The receipt (`started`/`queued`, status, optional run/message id) never claims consumption or completion. A running parent merges claimed messages into the SAME run at a committed batch boundary, never across an in-flight tool call, approval checkpoint, or token stream.
+- `send_child` appends one attributed follow-up in the child's own session. A running or approval-waiting child queues it; a child without outstanding work starts a new run immediately. A recoverably interrupted child keeps the message durable but cannot claim it without an explicit resume, so its receipt is `parked` instead of promising a boundary. The receipt (`started`/`queued`/`parked`, status, optional run/message id) never claims consumption or completion. A running parent merges claimed messages into the SAME run at a committed batch boundary, never across an in-flight tool call, approval checkpoint, or token stream.
 - Authorization follows the current stance: only the direct parent may send, and a parent that is read-only may not steer a child that is not durably read-only. Scope and stance can never widen across the lineage.
 
 ## Subagent monitor
@@ -96,7 +96,9 @@ scheduling coverage.
 - **One started run per session.** `claim_and_start_continuation` is one atomic transaction: it
   refuses a session that is running/waiting, already holds claimed work, has a nonterminal/parked
   checkpoint, or is an idle spawned child whose first run has not committed. A loser stays
-  durable and `queued`; its receipt names no run. A `started` receipt names the run id the store
+  durable and `queued`; its receipt names no run. A send to a recoverably interrupted child is
+  durable but `parked`; its receipt names no run and promises no future boundary until an explicit
+  resume or cancellation. A `started` receipt names the run id the store
   actually claimed. Recovering a claimed row requires the checkpoint to name that exact run and
   continuation; a mismatch fails the row visibly instead of driving another row's checkpoint.
   Terminal-interrupted sessions with a terminal checkpoint still admit a fresh explicit claim.

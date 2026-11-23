@@ -4,7 +4,7 @@ import pytest
 
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.provider import ProviderMessage
-from voidcode.sdk.services import BudgetExhaustion
+from voidcode.sdk.services import BudgetExhaustion, ChildSendReceipt
 from voidcode.sdk.tools import ToolCall, ToolDefinition, ToolEffect
 
 
@@ -46,6 +46,21 @@ def _budget_payload() -> dict[str, object]:
         "consumed": 10,
         "remaining": 0,
         "continue_with": "resume_with_max_steps",
+    }
+
+
+def test_child_send_receipt_preserves_parked_delivery_in_its_payload() -> None:
+    receipt = ChildSendReceipt(
+        child_session_id="child-1",
+        delivery="parked",
+        child_status="interrupted",
+        message_id="message-1",
+    )
+    assert receipt.as_payload() == {
+        "child_session_id": "child-1",
+        "delivery": "parked",
+        "child_status": "interrupted",
+        "message_id": "message-1",
     }
 
 
