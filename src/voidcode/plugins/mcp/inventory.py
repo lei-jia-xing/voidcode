@@ -20,6 +20,14 @@ from .types import McpCachedToolSurface, McpManager, McpManagerState, McpToolDes
 MAX_SERVERS = 32
 MAX_TOOLS_PER_SERVER = 50
 MAX_CONTEXT_BYTES = 4000
+#: Display-only bounds for untrusted, server-provided metadata. Raw names stay
+#: in the descriptor and are never rewritten for calls.
+MAX_TOOL_NAME_CHARS = 96
+MAX_DESCRIPTION_CHARS = 160
+MAX_DISABLED_REASON_CHARS = 160
+MAX_ERROR_CHARS = 800
+MAX_SERVER_NAME_CHARS = 120
+MCP_DISABLED_MESSAGE = "MCP support is disabled by configuration."
 
 
 class McpInventoryCommand:
@@ -43,6 +51,8 @@ class McpInventoryCommand:
         _ = services
         workspace = invocation.context.require_workspace()
         state = self._manager.current_state()
+        if _disabled_with_servers(state):
+            return _disabled_result()
         surface = self._manager.cached_surface(workspace=workspace)
         servers = _inventory_servers(state, surface)
         selected = invocation.arguments.get("server")
@@ -55,9 +65,13 @@ class McpInventoryCommand:
             if type(offset) is not int or not 0 <= offset <= len(tools):
                 return CommandResult(status="error", error="Tool offset is beyond the cached inventory; reopen /mcp.")
             known = server["tools_known"]
-            lines = [f"# {server['name'][:200]}", f"Status: {server['status']}", f"Tools: {'not discovered' if known is None else known}"]
+            lines = [
+                f"# {_display_text(str(server['name']), MAX_SERVER_NAME_CHARS)}",
+                f"Status: {server['status']}",
+                f"Tools: {'not discovered' if known is None else known}",
+            ]
             if server["error"]:
-                lines.append(f"Error: {str(server['error'])[:1500]}")
+                lines.append(f"Error: {server['error']}")
             for descriptor in tools[offset : offset + 10]:
                 tool = _tool_payload(descriptor)
                 status = "enabled" if tool["enabled"] else "disabled"
@@ -92,7 +106,9 @@ class McpInventoryCommand:
                 title="MCP servers",
                 view_type="choices",
                 data={
-                    "options": [{"id": row["name"], "label": f"{row['name'][:160]} · {row['status']}"} for row in servers],
+                    "options": [
+                        {"id": row["name"], "label": f"{_display_text(str(row['name']), MAX_SERVER_NAME_CHARS)} · {row['status']}"} for row in servers
+                    ],
                     "action": "mcp",
                     "argument_name": "server",
                 },
@@ -109,34 +125,62 @@ def context_contribution(manager: McpManager, context: ToolContext) -> ContextCo
     """Name the configured MCP servers and their known tools for the model."""
     workspace = context.require_workspace()
     state = manager.current_state()
+    if _disabled_with_servers(state):
+        return ContextContribution(content=f"{MCP_DISABLED_MESSAGE} Do not call the `mcp` tool.")
     surface = manager.cached_surface(workspace=workspace)
-    servers = _inventory_servers(state, surface)
+    servers = _inventory_servers(state, surface, include_tool_details=False)
     if not servers:
         return None
     lines = ["MCP servers (use the `mcp` tool with server and tool names):"]
     for server in servers:
         tools = server["tools"]
-        tool_names = ", ".join(tool["name"] for tool in tools) if tools else "no tools" if server["tools_known"] == 0 else "not discovered"
-        lines.append(f"- {server['name']} [{server['status']}]: {tool_names}")
-    text = "\n".join(lines)
-    while len(text.encode("utf-8")) > MAX_CONTEXT_BYTES and len(lines) > 1:
-        lines.pop()
-        text = "\n".join(lines)
-    return ContextContribution(content=text)
+        tool_names = ", ".join(str(tool["name"]) for tool in tools) if tools else "no tools" if server["tools_known"] == 0 else "not discovered"
+        line = f"- {_display_text(str(server['name']), MAX_SERVER_NAME_CHARS)} [{server['status']}]: {tool_names}"
+        if len("\n".join([*lines, line]).encode("utf-8")) > MAX_CONTEXT_BYTES:
+            break
+        lines.append(line)
+    return ContextContribution(content="\n".join(lines))
 
 
-def _inventory_servers(state: McpManagerState, surface: McpCachedToolSurface) -> list[dict[str, Any]]:
+def _disabled_with_servers(state: McpManagerState) -> bool:
+    return bool(state.configuration.servers) and state.configuration.configured_enabled is not True
+
+
+def _disabled_result() -> CommandResult:
+    return CommandResult(
+        status="ok",
+        output=MCP_DISABLED_MESSAGE,
+        data={"enabled": False},
+        presentation=CommandPresentation(
+            title="MCP servers",
+            view_type="notice",
+            data={"message": MCP_DISABLED_MESSAGE},
+        ),
+    )
+
+
+def _inventory_servers(
+    state: McpManagerState,
+    surface: McpCachedToolSurface,
+    *,
+    include_tool_details: bool = True,
+) -> list[dict[str, Any]]:
     configured = state.configuration.servers
     servers: list[dict[str, Any]] = []
     for name in sorted(set(configured) | set(surface.servers))[:MAX_SERVERS]:
         discovered = surface.servers.get(name, ())
         runtime = state.servers.get(name)
+        bounded = discovered[:MAX_TOOLS_PER_SERVER]
+        if include_tool_details:
+            tools: list[dict[str, object]] = [_tool_payload(tool) for tool in bounded]
+        else:
+            tools = [{"name": _display_text(tool.tool_name, MAX_TOOL_NAME_CHARS)} for tool in bounded]
         servers.append(
             {
                 "name": name,
                 "status": runtime.status if runtime is not None else "configured" if name in configured else "unknown",
-                "error": runtime.error if runtime is not None else None,
-                "tools": [_tool_payload(tool) for tool in discovered[:MAX_TOOLS_PER_SERVER]],
+                "error": _display_text(runtime.error, MAX_ERROR_CHARS) if runtime is not None and runtime.error else None,
+                "tools": tools,
                 "tools_known": len(discovered) if name in surface.servers else None,
             }
         )
@@ -145,11 +189,19 @@ def _inventory_servers(state: McpManagerState, surface: McpCachedToolSurface) ->
 
 def _tool_payload(tool: McpToolDescriptor) -> dict[str, object]:
     return {
-        "name": tool.tool_name,
-        "description": tool.description,
+        "name": _display_text(tool.tool_name, MAX_TOOL_NAME_CHARS),
+        "description": _display_text(tool.description, MAX_DESCRIPTION_CHARS),
         "enabled": tool.enabled,
-        "disabled_reason": tool.disabled_reason,
+        "disabled_reason": _display_text(tool.disabled_reason, MAX_DISABLED_REASON_CHARS) if tool.disabled_reason else None,
     }
+
+
+def _display_text(value: str, limit: int) -> str:
+    """One printable, single-line display value bounded by characters."""
+    cleaned = " ".join("".join(character if character.isprintable() else " " for character in value).split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(1, limit - 1)].rstrip() + "…"
 
 
 def _render_inventory(servers: list[dict[str, Any]]) -> str:
@@ -162,5 +214,6 @@ def _render_inventory(servers: list[dict[str, Any]]) -> str:
         rendered = ", ".join(str(tool["name"]) for tool in tools) if tools else "no tools" if known == 0 else "not discovered"
         suffix = f" (+{known - len(tools)} more)" if isinstance(known, int) and known > len(tools) else ""
         detail = f" error={server['error']}" if server["error"] else ""
-        lines.append(f"- {server['name']} [{server['status']}]: {rendered}{suffix}{detail}")
+        name = _display_text(str(server["name"]), MAX_SERVER_NAME_CHARS)
+        lines.append(f"- {name} [{server['status']}]: {rendered}{suffix}{detail}")
     return "\n".join(lines)

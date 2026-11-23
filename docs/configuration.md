@@ -204,12 +204,22 @@ connecting. For example:
 ```
 
 `stdio` is the default transport and requires a non-empty argv `command`; it may
-also declare a string-to-string `env` map. `remote-http` requires an absolute
-HTTP(S) `url` and does not accept `command` or `env`. A server entry has no other
-fields. `/mcp` reads the currently known inventory without connecting; tools are
-discovered when used. Discovery is remembered only for the current plugin runtime.
-Tool schemas use JSON Schema Draft 2020-12; local references work, while external
-schema references are never fetched during argument validation.
+also declare a string-to-string `env` map. The child inherits the core process
+environment, with configured entries overriding it. `remote-http` requires an
+absolute HTTP(S) `url` and does not accept `command` or `env`; it has no header
+or authentication configuration. A server entry has no other fields. `/mcp` reads
+the currently known inventory without connecting; tools are discovered when used.
+Discovery reads every `tools/list` page up to fixed page/tool caps and is
+remembered only for the current plugin runtime. Server-side tool changes require
+a restart or `/core reload`. Tool schemas use JSON Schema Draft 2020-12; local
+references work, while external schema references are never fetched during
+argument validation.
+
+Inner `plugins.mcp.config.enabled: false` keeps the plugin admitted but reports
+MCP support as disabled; use `plugins.mcp.enabled: false` to remove the tool and
+command. MCP is tools-only: resources and prompts are not exposed. Stdio servers
+are host-side and unconfined. Normal close/reload stops them; a core SIGKILL can
+leave a server that ignores stdin EOF, with no parent-death mechanism.
 
 ### LSP servers
 

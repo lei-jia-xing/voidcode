@@ -64,6 +64,19 @@ def test_failed_server_start_keeps_an_inspectable_error(tmp_path: Path) -> None:
         manager.shutdown()
 
 
+def test_unknown_server_discovery_is_a_visible_error(tmp_path: Path) -> None:
+    manager = build_mcp_manager(_mcp_config({"servers": {"demo": {"command": [sys.executable, "-c", "pass"]}}}))
+    try:
+        with pytest.raises(ValueError, match="server not found in configuration"):
+            manager.list_tools(workspace=tmp_path, server_name="missing")
+        state = manager.current_state().servers["missing"]
+        assert state.status == "failed"
+        assert "missing" in (state.error or "")
+        assert manager.cached_surface(workspace=tmp_path).servers == {}
+    finally:
+        manager.shutdown()
+
+
 def test_admitted_mcp_tool_reaches_the_model_and_updates_inventory(tmp_path: Path) -> None:
     source, _ = _server_source(tmp_path)
     workspace = tmp_path / "workspace"
@@ -144,6 +157,13 @@ def test_recoverable_rpc_error_keeps_connection_running(tmp_path: Path, monkeypa
     from mcp.shared.exceptions import MCPError
 
     source, pid_file = _server_source(tmp_path)
+    source.write_text(
+        source.read_text().replace(
+            "server.run()",
+            "@server.tool()\ndef bad() -> str:\n    return 'bad'\nserver.run()",
+        ),
+        encoding="utf-8",
+    )
     original = ClientSession.call_tool
 
     async def fail_bad_call(self, name, *args, **kwargs):

@@ -157,7 +157,7 @@ class McpManagerState:
 class McpServerRuntimeState:
     """Runtime-owned connection state for a configured MCP server."""
 
-    status: Literal["running", "stopped", "failed"] = "stopped"
+    status: Literal["starting", "running", "stopped", "failed"] = "stopped"
     error: str | None = None
 
 
