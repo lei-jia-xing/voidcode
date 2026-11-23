@@ -2,9 +2,11 @@
 
 from collections.abc import Mapping
 
-from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.plugin import Plugin, StateSchema
 
 from .goal_plugin import (
+    GOAL_STATE_SCHEMA,
+    SCHEMA_VERSION,
     CreateGoalTool,
     GetGoalTool,
     GoalClearCommand,
@@ -24,7 +26,10 @@ from .goal_plugin import (
 )
 
 
-def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
+def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
+    unknown = sorted(set(config or {}) - {"providers"})
+    if unknown:
+        raise ValueError(f"goal config does not support field: {unknown[0]}")
     tools = (
         GetGoalTool(),
         CreateGoalTool(),
@@ -53,6 +58,7 @@ def create_plugin(_config: Mapping[str, object] | None = None) -> Plugin:
         context=goal_context,
         observer=goal_observer,
         observed_facts=("usage", "invocation_finished", "run_finished"),
+        state=StateSchema(version=SCHEMA_VERSION, schema=GOAL_STATE_SCHEMA),
         prepare_deactivate=prepare_goal_deactivation,
         close=None,
     )

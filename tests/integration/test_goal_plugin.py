@@ -279,3 +279,86 @@ def test_long_model_goal_round_trips_after_restart_without_workspace_writes(tmp_
         assert loaded.status == "ok", loaded.error
         assert loaded.data["objective"] == objective
         assert {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*") if path.is_file()} == before
+
+
+def test_goal_creation_and_completed_run_leave_one_pending_pursuit(tmp_path: Path) -> None:
+    """One create call plus the run-finished auto-enqueue must leave one pending pursuit."""
+    create_call = {
+        "id": "call-create-once",
+        "type": "function",
+        "function": {"name": "create_goal", "arguments": json.dumps({"objective": "Keep pursuing this goal"})},
+    }
+    replies = [
+        openai_response(
+            message={"role": "assistant", "content": None, "tool_calls": [create_call]},
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "Goal created."}, finish="stop"),
+    ]
+    with _loopback_server(replies) as server:
+        core = _core_with_loopback(tmp_path, server)
+        core.auto_drain = False
+        session_id = core.create_session().session_id
+        result = core.run("Create the explicitly requested goal.", session_id=session_id)
+        assert result.status == "completed", result
+
+        pending = core.store.pending_continuations(session_id, limit=10)
+        assert len(pending) == 1
+        assert pending[0].owner == "goal"
+        assert pending[0].payload["action"] == "pursue_goal"
+        shown = _invoke(core, session_id, "goal", {})
+        assert shown.data["goal"]["status"] == "active"
+
+
+def test_goal_state_schema_survives_hot_reload_with_live_and_cleared_state(tmp_path: Path) -> None:
+    """Hot activation validates live goal state and the explicit cleared {} row."""
+    with _loopback_server([]) as server:
+        core = _core_with_loopback(tmp_path, server)
+        core.auto_drain = False
+        session_id = core.create_session().session_id
+
+        created = _invoke(core, session_id, "goal.set", {"objective": "Survive hot reload", "token_budget": 10_000})
+        assert created.status == "ok", created.error
+        goal_id = created.data["goal"]["goal_id"]
+
+        reloaded = _invoke(core, session_id, "core.reload", {})
+        assert reloaded.status == "ok", reloaded.error
+        after = _invoke(core, session_id, "goal", {})
+        assert after.data["goal"]["goal_id"] == goal_id
+        assert after.data["goal"]["status"] == "active"
+        assert after.data["goal"]["objective"] == "Survive hot reload"
+
+        cleared = _invoke(core, session_id, "goal.clear", {})
+        assert cleared.status == "ok", cleared.error
+        reloaded_cleared = _invoke(core, session_id, "core.reload", {})
+        assert reloaded_cleared.status == "ok", reloaded_cleared.error
+        assert _invoke(core, session_id, "goal", {}).data["goal"] is None
+
+
+def test_completed_automatic_pursuit_run_queues_exactly_one_next_pursuit(tmp_path: Path) -> None:
+    """A run claimed from the goal queue must still be able to queue its successor once."""
+    create_call = {
+        "id": "call-create-chain",
+        "type": "function",
+        "function": {"name": "create_goal", "arguments": json.dumps({"objective": "Keep going"})},
+    }
+    replies = [
+        openai_response(message={"role": "assistant", "content": None, "tool_calls": [create_call]}, finish="tool_calls"),
+        openai_response(message={"role": "assistant", "content": "Created."}, finish="stop"),
+        openai_response(message={"role": "assistant", "content": "Furthered the goal."}, finish="stop"),
+    ]
+    with _loopback_server(replies) as server:
+        core = _core_with_loopback(tmp_path, server)
+        core.auto_drain = False
+        session_id = core.create_session().session_id
+        first = core.run("Create the explicitly requested goal.", session_id=session_id)
+        assert first.status == "completed", first
+        assert len(core.store.pending_continuations(session_id, limit=10)) == 1
+
+        drained = core.drain_continuations(session_id, limit=1)
+        assert len(drained) == 1
+        assert drained[0].owner == "goal"
+        assert drained[0].run_status == "completed"
+        pending = core.store.pending_continuations(session_id, limit=10)
+        assert len(pending) == 1
+        assert pending[0].payload["action"] == "pursue_goal"

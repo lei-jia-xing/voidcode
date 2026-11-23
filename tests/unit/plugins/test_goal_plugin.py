@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import time
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.core.activation import plan_state_copies, validate_state_payload
+from voidcode.core.storage.records import PluginStateRow
 from voidcode.plugins.goal import create_plugin, goal_plugin
 from voidcode.plugins.goal.goal_plugin import (
+    SCHEMA_VERSION,
     ActiveWindow,
     CreateGoalTool,
     GetGoalTool,
     GoalClearCommand,
+    GoalDetailsView,
     GoalEditCommand,
     GoalLoadObjectiveCommand,
     GoalPauseCommand,
@@ -32,6 +38,7 @@ from voidcode.sdk.commands import CommandInvocation, ConfirmationRequest
 from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.provider import ProviderTokenUsage
+from voidcode.sdk.services import SessionUsageReport
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
 
 
@@ -1312,6 +1319,717 @@ def test_goal_details_offer_applicable_actions_without_mutation(tmp_path: Path, 
     detail = MarkdownViewData.from_payload(result.presentation.data)
     assert {action.action for action in detail.actions} == expected
     assert next(action for action in detail.actions if action.action == "goal.edit").prepare_input
-    assert "Unknown" in detail.content
+    assert "Unbounded" in detail.content
     assert "Objective preview" in detail.content
     assert services.get_state("session") == before
+
+
+# --- 7. Accounting, State-Schema, and Lifecycle Regressions ---
+
+
+@dataclass
+class _ClosedSpendServices(FakeServices):
+    """Fake core usage whose closed-window spend is fixed for budget-edit tests."""
+
+    closed_spend: int = 0
+
+    def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:
+        return SessionUsageReport(
+            session_id=self.session_id,
+            input_tokens=self.closed_spend,
+            output_tokens=0,
+            cache_read_tokens=0,
+            uncached_input_tokens=0,
+            has_unknown_usage=False,
+            through_sequence=self.through_sequence,
+            since_sequence=since_sequence,
+            until_sequence=until_sequence,
+        )
+
+
+@dataclass
+class _QueueServices(FakeServices):
+    """Fake continuation queue that honours cancel-then-enqueue and keyed dedupe."""
+
+    pending_pursuits: dict[str, tuple[dict[str, object], str]] = field(default_factory=dict)
+
+    def stage_continuation(
+        self,
+        payload: Mapping[str, object],
+        *,
+        idempotency_key: str | None = None,
+        role: str = "system",
+    ) -> str:
+        key = idempotency_key or f"anonymous-{len(self.staged_continuations)}"
+        if key not in self.pending_pursuits:
+            self.pending_pursuits[key] = (dict(payload), role)
+            self.staged_continuations.append((dict(payload), idempotency_key, role))
+        return key
+
+    enqueue_continuation = stage_continuation
+
+    def cancel_continuations(self, *, continuation_id: str | None = None) -> None:
+        self.cancelled_continuations.append(continuation_id)
+        if continuation_id is None:
+            self.pending_pursuits.clear()
+        else:
+            self.pending_pursuits.pop(continuation_id, None)
+
+
+class _StateCopySource:
+    def __init__(self, row: PluginStateRow) -> None:
+        self._row = row
+
+    def plugin_state_rows(self, scope: str, scope_key: str) -> tuple[PluginStateRow, ...]:
+        return (self._row,) if (scope, scope_key) == ("session", "session-1") else ()
+
+    def session(self, session_id: str) -> SimpleNamespace:
+        _ = session_id
+        return SimpleNamespace(last_event_sequence=10)
+
+
+def _deactivate_copy(owner: str, payload: Mapping[str, object], scope: str, scope_key: str, tip: int | None) -> Mapping[str, object]:
+    _ = (owner, scope, scope_key, tip)
+    return payload
+
+
+@pytest.mark.parametrize("new_budget", [900, 1000], ids=["below-spend", "equal-to-spend"])
+def test_goal_edit_refuses_finite_budget_at_or_below_closed_spend(tmp_path: Path, new_budget: int) -> None:
+    services = _ClosedSpendServices(through_sequence=20, closed_spend=1000)
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        token_budget=2000,
+        tokens_used=1000,
+        window_tokens_used=0,
+        window_allowance=1000,
+        active_windows=(ActiveWindow(0, 10), ActiveWindow(10)),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    before = services.get_state()
+    result = GoalEditCommand().invoke(
+        CommandInvocation(context=_make_context(tmp_path), name="goal.edit", arguments={"token_budget": new_budget}),
+        services,
+    )
+    assert result.status == "error"
+    assert "at or below already spent tokens" in result.error
+    assert services.get_state() == before
+    assert services.budget is None
+    assert not services.staged_events
+
+
+def test_goal_edit_refuses_finite_budget_underfunding_the_open_window(tmp_path: Path) -> None:
+    services = _ClosedSpendServices(through_sequence=20, closed_spend=500)
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        token_budget=1000,
+        tokens_used=800,
+        window_tokens_used=300,
+        window_allowance=500,
+        active_windows=(ActiveWindow(0, 10), ActiveWindow(10)),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    before = services.get_state()
+    result = GoalEditCommand().invoke(
+        CommandInvocation(context=_make_context(tmp_path), name="goal.edit", arguments={"token_budget": 800}),
+        services,
+    )
+    assert result.status == "error"
+    assert "no tokens for the current open window" in result.error
+    assert services.get_state() == before
+    assert services.budget is None
+
+    accepted = GoalEditCommand().invoke(
+        CommandInvocation(context=_make_context(tmp_path), name="goal.edit", arguments={"token_budget": 900}),
+        services,
+    )
+    assert accepted.status == "ok"
+    assert services.budget is not None
+    assert services.budget.max_total_tokens == 400
+    assert services.budget.since_sequence == 10
+    state, _ = services.get_state("session")
+    assert state is not None
+    assert state["status"] == "active"
+    assert state["window_allowance"] == 400
+
+
+def test_goal_edit_non_active_budget_edit_matches_resume_refusal_and_allowance(tmp_path: Path) -> None:
+    services = _ClosedSpendServices(through_sequence=20, closed_spend=800)
+    goal = GoalState(
+        goal_id="g1",
+        status="paused",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        token_budget=1000,
+        tokens_used=800,
+        window_tokens_used=0,
+        window_allowance=200,
+        active_windows=(ActiveWindow(0, 10),),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    refused = GoalEditCommand().invoke(
+        CommandInvocation(context=_make_context(tmp_path), name="goal.edit", arguments={"token_budget": 800}),
+        services,
+    )
+    assert refused.status == "error"
+    assert "at or below already spent tokens" in refused.error
+
+    accepted = GoalEditCommand().invoke(
+        CommandInvocation(context=_make_context(tmp_path), name="goal.edit", arguments={"token_budget": 1000}),
+        services,
+    )
+    assert accepted.status == "ok"
+    state, _ = services.get_state("session")
+    assert state is not None
+    assert state["status"] == "paused"
+    assert state["window_allowance"] == 200
+    assert services.budget is None
+
+
+def test_create_then_run_finished_leaves_one_pending_pursuit(tmp_path: Path) -> None:
+    services = _QueueServices(through_sequence=3)
+    ctx = _make_context(tmp_path)
+    created = CreateGoalTool().invoke(
+        ToolCall(tool_name="create_goal", arguments={"objective": "Task"}),
+        context=ctx,
+        services=services,
+    )
+    assert isinstance(created, ToolSuccess)
+    assert len(services.pending_pursuits) == 1
+
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="run-1",
+            revision_id="rev-1",
+            logical_turn="turn-1",
+            event_sequence=9,
+            status="completed",
+            stop_cause="completed",
+        ),
+        ctx,
+        services,
+    )
+    assert len(services.pending_pursuits) == 1
+    payload, _role = next(iter(services.pending_pursuits.values()))
+    assert payload["action"] == "pursue_goal"
+
+
+def test_busy_set_and_resume_leave_one_pending_pursuit(tmp_path: Path) -> None:
+    services = _QueueServices(through_sequence=5)
+    ctx_user = _make_context(tmp_path, actor="user")
+    set_cmd = GoalSetCommand()
+    assert set_cmd.invoke(CommandInvocation(context=ctx_user, name="goal.set", arguments={"objective": "Base"}), services).status == "ok"
+    assert len(services.pending_pursuits) == 1
+
+    replaced = set_cmd.invoke(CommandInvocation(context=ctx_user, name="goal.set", arguments={"objective": "Replacement"}), services)
+    assert replaced.status == "ok"
+    assert len(services.pending_pursuits) == 1
+
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="run-1",
+            revision_id="rev-1",
+            logical_turn="turn-busy",
+            event_sequence=12,
+            status="completed",
+            stop_cause="completed",
+        ),
+        _make_context(tmp_path),
+        services,
+    )
+    assert len(services.pending_pursuits) == 1
+
+    assert GoalPauseCommand().invoke(CommandInvocation(context=ctx_user, name="goal.pause"), services).status == "ok"
+    assert services.pending_pursuits == {}
+    resumed = GoalResumeCommand().invoke(CommandInvocation(context=ctx_user, name="goal.resume"), services)
+    assert resumed.status == "ok"
+    assert len(services.pending_pursuits) == 1
+    assert services.pending_pursuits[next(iter(services.pending_pursuits))][0]["action"] == "pursue_goal"
+
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="run-2",
+            revision_id="rev-1",
+            logical_turn="turn-resumed",
+            event_sequence=15,
+            status="completed",
+            stop_cause="completed",
+        ),
+        _make_context(tmp_path),
+        services,
+    )
+    assert len(services.pending_pursuits) == 1
+
+
+def test_goal_state_schema_matches_version_and_allows_cleared_state() -> None:
+    plugin = create_plugin({})
+    assert plugin.state.version == SCHEMA_VERSION
+    assert plugin.state.schema is not None
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        active_windows=(ActiveWindow(0),),
+    )
+    payload = goal.to_dict()
+    assert validate_state_payload(payload, plugin.state) == payload
+    assert validate_state_payload({}, plugin.state) == {}
+
+    with pytest.raises(ValueError, match="declared state schema"):
+        validate_state_payload({**payload, "extra_field": True}, plugin.state)
+    missing = dict(payload)
+    del missing["goal_id"]
+    with pytest.raises(ValueError, match="declared state schema"):
+        validate_state_payload(missing, plugin.state)
+
+
+def test_hot_activation_validates_goal_state_and_cleared_state() -> None:
+    plugin = create_plugin({})
+    goal = GoalState(
+        goal_id="g1",
+        status="paused",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        active_windows=(ActiveWindow(0, 5),),
+    )
+    for payload in (goal.to_dict(), {}):
+        row = PluginStateRow(
+            owner="goal",
+            scope="session",
+            scope_key="session-1",
+            payload=payload,
+            version=1,
+            schema_version=SCHEMA_VERSION,
+            revision_id="rev-1",
+        )
+        plan = plan_state_copies(
+            store=_StateCopySource(row),
+            workspace="/workspace",
+            session_ids=("session-1",),
+            old_states={"goal": plugin.state},
+            candidate_states={"goal": plugin.state},
+            deactivate=_deactivate_copy,
+        )
+        assert plan.updates == ()
+
+    malformed = PluginStateRow(
+        owner="goal",
+        scope="session",
+        scope_key="session-1",
+        payload={"schema_version": SCHEMA_VERSION, "goal_id": "g1"},
+        version=1,
+        schema_version=SCHEMA_VERSION,
+        revision_id="rev-1",
+    )
+    with pytest.raises(ValueError, match="declared state schema"):
+        plan_state_copies(
+            store=_StateCopySource(malformed),
+            workspace="/workspace",
+            session_ids=("session-1",),
+            old_states={"goal": plugin.state},
+            candidate_states={"goal": plugin.state},
+            deactivate=_deactivate_copy,
+        )
+
+
+@pytest.mark.parametrize(
+    "window, match",
+    [
+        ({"start_sequence": 1}, "end_sequence"),
+        ({"end_sequence": 1}, "start_sequence"),
+        ({"start_sequence": -1, "end_sequence": None}, "non-negative"),
+        ({"start_sequence": 2, "end_sequence": -1}, "non-negative"),
+        ({"start_sequence": 5, "end_sequence": 4}, "precedes"),
+    ],
+)
+def test_active_window_requires_complete_non_negative_ordered_bounds(window: dict[str, object], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        ActiveWindow.from_dict(window)
+
+
+def test_parse_goal_windows_enforces_order_single_open_and_no_overlap() -> None:
+    with pytest.raises(ValueError, match="ascending start_sequence"):
+        goal_plugin._parse_goal_windows([{"start_sequence": 10, "end_sequence": 20}, {"start_sequence": 5, "end_sequence": 6}])
+    with pytest.raises(ValueError, match="overlap"):
+        goal_plugin._parse_goal_windows([{"start_sequence": 0, "end_sequence": 10}, {"start_sequence": 5, "end_sequence": 20}])
+    with pytest.raises(ValueError, match="at most one open window"):
+        goal_plugin._parse_goal_windows([{"start_sequence": 0, "end_sequence": None}, {"start_sequence": 5, "end_sequence": None}])
+    with pytest.raises(ValueError, match="at most one open window"):
+        goal_plugin._parse_goal_windows([{"start_sequence": 0, "end_sequence": None}, {"start_sequence": 5, "end_sequence": 10}])
+    assert goal_plugin._parse_goal_windows(
+        [
+            {"start_sequence": 0, "end_sequence": 5},
+            {"start_sequence": 5, "end_sequence": 10},
+            {"start_sequence": 10, "end_sequence": None},
+        ]
+    ) == (ActiveWindow(0, 5), ActiveWindow(5, 10), ActiveWindow(10))
+    # A zero-length window and a re-open at the same tip are the pause/resume boundary.
+    assert goal_plugin._parse_goal_windows([{"start_sequence": 5, "end_sequence": 5}, {"start_sequence": 5, "end_sequence": None}]) == (
+        ActiveWindow(5, 5),
+        ActiveWindow(5),
+    )
+
+
+@pytest.mark.parametrize("bad", [[], "", 0, False])
+def test_goal_state_distinguishes_cleared_state_from_falsey_non_mappings(bad: object) -> None:
+    assert GoalState.from_dict(None) is None
+    assert GoalState.from_dict({}) is None
+    with pytest.raises(ValueError, match="mapping"):
+        GoalState.from_dict(bad)  # type: ignore[arg-type]
+
+
+def test_state_parse_requires_window_end_key() -> None:
+    now = int(time.time() * 1000)
+    payload = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Task",
+        created_at=now,
+        updated_at=now,
+        active_windows=(ActiveWindow(0),),
+    ).to_dict()
+    windows = payload["active_windows"]
+    assert isinstance(windows, list)
+    window = dict(windows[0])
+    del window["end_sequence"]
+    with pytest.raises(ValueError, match="end_sequence"):
+        GoalState.from_dict({**payload, "active_windows": [window]})
+
+
+def test_update_goal_rejects_blocked_from_complete_and_paused(tmp_path: Path) -> None:
+    tool = UpdateGoalTool()
+    ctx = _make_context(tmp_path)
+    for status in ("complete", "paused"):
+        services = FakeServices(through_sequence=10)
+        goal = GoalState(
+            goal_id="g1",
+            status=status,
+            objective="Task",
+            created_at=1,
+            updated_at=1,
+            active_windows=(ActiveWindow(0, 5),),
+        )
+        services.replace_state(goal.to_dict(), expected_version=0)
+        before = services.get_state()
+        result = tool.invoke(ToolCall(tool_name="update_goal", arguments={"status": "blocked"}), context=ctx, services=services)
+        assert isinstance(result, ToolFailure)
+        assert "cannot mark" in result.error
+        assert services.get_state() == before
+        assert not services.staged_events
+
+
+def test_update_goal_repeated_same_status_is_idempotent(tmp_path: Path) -> None:
+    tool = UpdateGoalTool()
+    ctx = _make_context(tmp_path)
+
+    complete_services = FakeServices(through_sequence=10)
+    complete = GoalState(goal_id="g1", status="complete", objective="Done", created_at=1, updated_at=1)
+    complete_services.replace_state(complete.to_dict(), expected_version=0)
+    before = complete_services.get_state()
+    result = tool.invoke(ToolCall(tool_name="update_goal", arguments={"status": "complete"}), context=ctx, services=complete_services)
+    assert isinstance(result, ToolSuccess)
+    assert result.body.as_payload()["mutated"] is False
+    assert complete_services.get_state() == before
+    assert not complete_services.staged_events
+
+    blocked_services = FakeServices(through_sequence=10)
+    blocked = GoalState(
+        goal_id="g2",
+        status="blocked",
+        objective="Stuck",
+        created_at=1,
+        updated_at=1,
+        blocked_turns_count=3,
+        last_blocked_logical_turn="turn-3",
+    )
+    blocked_services.replace_state(blocked.to_dict(), expected_version=0)
+    before_blocked = blocked_services.get_state()
+    result_blocked = tool.invoke(ToolCall(tool_name="update_goal", arguments={"status": "blocked"}), context=ctx, services=blocked_services)
+    assert isinstance(result_blocked, ToolSuccess)
+    assert result_blocked.body.as_payload()["mutated"] is False
+    assert blocked_services.get_state() == before_blocked
+    assert not blocked_services.staged_events
+
+
+@pytest.mark.parametrize("status", ["complete", "paused"])
+def test_run_finished_noop_does_not_churn_state_or_release_budget(tmp_path: Path, status: GoalStatus) -> None:
+    services = FakeServices(through_sequence=10)
+    services.set_budget(since_sequence=0, max_total_tokens=1000)
+    goal = GoalState(
+        goal_id="g1",
+        status=status,
+        objective="Task",
+        created_at=1,
+        updated_at=123,
+        token_budget=1000,
+        window_allowance=900,
+        active_windows=(ActiveWindow(0, 5),),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    before = services.get_state()
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="run-1",
+            revision_id="rev-1",
+            logical_turn="turn-noop",
+            event_sequence=20,
+            status="completed",
+            stop_cause="completed",
+        ),
+        _make_context(tmp_path),
+        services,
+    )
+    assert services.get_state() == before
+    assert services.budget is not None
+    assert services.budget.max_total_tokens == 1000
+    assert not services.cancelled_continuations
+    assert not services.staged_events
+
+
+def test_budget_only_edit_preserves_blocked_audit_but_objective_edit_resets_it(tmp_path: Path) -> None:
+    services = FakeServices(through_sequence=10)
+    goal = GoalState(
+        goal_id="g1",
+        status="paused",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        blocked_turns_count=2,
+        last_blocked_logical_turn="turn-2",
+        active_windows=(ActiveWindow(0, 5),),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    edit_cmd = GoalEditCommand()
+
+    budget_edit = edit_cmd.invoke(
+        CommandInvocation(context=_make_context(tmp_path), name="goal.edit", arguments={"token_budget": 5000}),
+        services,
+    )
+    assert budget_edit.status == "ok"
+    state, _ = services.get_state("session")
+    assert state is not None
+    assert state["blocked_turns_count"] == 2
+    assert state["last_blocked_logical_turn"] == "turn-2"
+
+    objective_edit = edit_cmd.invoke(
+        CommandInvocation(context=_make_context(tmp_path), name="goal.edit", arguments={"objective": "Updated task"}),
+        services,
+    )
+    assert objective_edit.status == "ok"
+    state, _ = services.get_state("session")
+    assert state is not None
+    assert state["blocked_turns_count"] == 0
+    assert state["last_blocked_logical_turn"] is None
+    assert state["objective_edited"] is True
+
+
+@pytest.mark.parametrize(
+    "status, expected_status",
+    [
+        ("active", "paused"),
+        ("paused", "paused"),
+        ("complete", "complete"),
+        ("usage-limited", "usage-limited"),
+        ("budget-limited", "budget-limited"),
+    ],
+)
+def test_user_stop_only_transitions_and_releases_an_active_goal(tmp_path: Path, status: GoalStatus, expected_status: GoalStatus) -> None:
+    services = FakeServices(through_sequence=10)
+    services.set_budget(since_sequence=0, max_total_tokens=1000)
+    goal = GoalState(
+        goal_id="g1",
+        status=status,
+        objective="Task",
+        created_at=1,
+        updated_at=123,
+        token_budget=1000,
+        tokens_used=100,
+        window_allowance=900,
+        active_windows=(ActiveWindow(0),),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    before = services.get_state()
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="run-1",
+            revision_id="rev-1",
+            logical_turn="turn-stop",
+            event_sequence=30,
+            status="interrupted",
+            stop_cause="user_stop",
+        ),
+        _make_context(tmp_path),
+        services,
+    )
+    state, _ = services.get_state("session")
+    assert state is not None
+    assert state["status"] == expected_status
+    if status == "active":
+        assert state["active_windows"] == [{"start_sequence": 0, "end_sequence": 30}]
+        assert services.budget is None
+        assert services.cancelled_continuations
+        assert [event[0] for event in services.staged_events] == ["goal_paused"]
+    else:
+        assert services.get_state() == before
+        assert services.budget is not None
+        assert services.budget.max_total_tokens == 1000
+        assert not services.cancelled_continuations
+        assert not services.staged_events
+
+
+def test_goal_clear_without_goal_clears_stale_budget_and_queue(tmp_path: Path) -> None:
+    services = _QueueServices()
+    services.set_budget(since_sequence=0, max_total_tokens=500)
+    services.enqueue_continuation({"action": "pursue_goal", "goal_id": "stale"}, idempotency_key="stale")
+    assert services.pending_pursuits
+    result = GoalClearCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal.clear"), services)
+    assert result.status == "ok"
+    assert result.output == "No goal to clear"
+    assert services.budget is None
+    assert services.pending_pursuits == {}
+    assert services.cancelled_continuations
+
+
+def test_goal_clear_with_malformed_state_stays_fail_visible(tmp_path: Path) -> None:
+    services = FakeServices()
+    services.set_budget(since_sequence=0, max_total_tokens=500)
+    services.seed_state({"not_a_goal": True})
+    with pytest.raises(ValueError, match="unknown extra fields"):
+        GoalClearCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal.clear"), services)
+    assert services.budget is not None
+    assert not services.cancelled_continuations
+
+
+def test_goal_forms_agree_on_required_and_labels(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    form = next(view for view in plugin.views if view.name == "goal.form").render("session-1", FakeServices())
+    set_form = GoalSetCommand().prepare_input(CommandInvocation(context=_make_context(tmp_path), name="goal.set"), FakeServices())
+    assert form.data["fields"] == set_form.data["fields"]
+    fields = {field["name"]: field for field in form.data["fields"]}  # type: ignore[index]
+    assert fields["objective"]["label"] == "Objective"
+    assert fields["objective"]["required"] is True
+    assert fields["token_budget"]["label"] == "Token Budget"
+    assert fields["token_budget"]["required"] is False
+
+
+def test_goal_details_note_truncated_objective_and_pause_reports_remaining(tmp_path: Path) -> None:
+    services = FakeServices(through_sequence=5)
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="X" * 2000,
+        created_at=1,
+        updated_at=1,
+        token_budget=1000,
+        tokens_used=200,
+        window_tokens_used=200,
+        window_allowance=1000,
+        active_windows=(ActiveWindow(0),),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    details = GoalDetailsView().render("session-1", services)
+    rows = {row["label"]: row["value"] for row in details.data["rows"]}  # type: ignore[index]
+    assert "Objective preview" in rows["Objective"]
+    pause = GoalPauseCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal.pause"), services)
+    assert pause.status == "ok"
+    assert pause.data["remaining_tokens"] == 800
+
+
+def test_model_query_usage_fact_counts_open_window_once(tmp_path: Path) -> None:
+    services = FakeServices(through_sequence=10)
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        token_budget=100,
+        tokens_used=0,
+        window_tokens_used=0,
+        window_allowance=100,
+        active_windows=(ActiveWindow(10),),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    goal_observer(
+        UsageFact(
+            session_id="session-1",
+            run_id="run-1",
+            revision_id="rev-1",
+            logical_turn="turn-query",
+            event_sequence=12,
+            dispatch_sequence=12,
+            provider_name="endpoint",
+            model_name="find-judge",
+            usage=ProviderTokenUsage(input_tokens=20, output_tokens=5),
+        ),
+        _make_context(tmp_path),
+        services,
+    )
+    state, _ = services.get_state("session")
+    assert state is not None
+    assert state["tokens_used"] == 25
+    assert state["window_tokens_used"] == 25
+    assert state["status"] == "active"
+
+
+def test_model_query_usage_fact_does_not_double_count_closed_window_spend(tmp_path: Path) -> None:
+    services = _ClosedSpendServices(through_sequence=20, closed_spend=100)
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        token_budget=200,
+        tokens_used=75,
+        window_tokens_used=25,
+        window_allowance=100,
+        active_windows=(ActiveWindow(0, 10), ActiveWindow(10)),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    goal_observer(
+        UsageFact(
+            session_id="session-1",
+            run_id="run-1",
+            revision_id="rev-1",
+            logical_turn="turn-query",
+            event_sequence=5,
+            dispatch_sequence=5,
+            provider_name="endpoint",
+            model_name="find-judge",
+            usage=ProviderTokenUsage(input_tokens=20, output_tokens=5),
+        ),
+        _make_context(tmp_path),
+        services,
+    )
+    state, _ = services.get_state("session")
+    assert state is not None
+    # 75 lifetime + 25 from this model query, once; the closed-window total (100)
+    # already contains the query and must not be subtracted a second time.
+    assert state["tokens_used"] == 100
+    assert state["window_tokens_used"] == 25
+    assert state["window_allowance"] == 100
+    assert state["status"] == "active"
+
+
+def test_goal_plugin_rejects_unknown_config_but_accepts_injected_providers() -> None:
+    plugin = create_plugin({"providers": {"endpoint": {}}})
+    assert plugin.state.version == SCHEMA_VERSION
+    with pytest.raises(ValueError, match="does not support field"):
+        create_plugin({"endpoint": {}})

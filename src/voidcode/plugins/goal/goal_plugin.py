@@ -81,6 +81,52 @@ KNOWN_GOAL_STATE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+#: Activation validates stored copies against this schema before admitting the same owner.
+#: The cleared row is the explicit empty object the store writes for a cleared goal.
+GOAL_STATE_SCHEMA: Mapping[str, object] = {
+    "type": "object",
+    "anyOf": [
+        {"type": "object", "maxProperties": 0},
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(KNOWN_GOAL_STATE_FIELDS),
+            "properties": {
+                "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
+                "goal_id": {"type": "string", "minLength": 1},
+                "status": {"type": "string", "enum": sorted(VALID_GOAL_STATUSES)},
+                "objective": {"type": "string", "minLength": 1},
+                "objective_file_ref": {"type": ["string", "null"], "pattern": "^artifact://"},
+                "objective_file_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+                "token_budget": {"type": ["integer", "null"], "minimum": 1},
+                "tokens_used": {"type": ["integer", "null"], "minimum": 0},
+                "window_tokens_used": {"type": ["integer", "null"], "minimum": 0},
+                "window_allowance": {"type": ["integer", "null"], "minimum": 0},
+                "has_unknown_usage": {"type": "boolean"},
+                "time_used_seconds": {"type": ["number", "null"], "minimum": 0},
+                "cost_usd": {"type": ["number", "null"], "minimum": 0},
+                "created_at": {"type": "integer"},
+                "updated_at": {"type": "integer"},
+                "active_windows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["start_sequence", "end_sequence"],
+                        "properties": {
+                            "start_sequence": {"type": "integer", "minimum": 0},
+                            "end_sequence": {"type": ["integer", "null"], "minimum": 0},
+                        },
+                    },
+                },
+                "blocked_turns_count": {"type": "integer", "minimum": 0},
+                "last_blocked_logical_turn": {"type": ["string", "null"]},
+                "objective_edited": {"type": "boolean"},
+            },
+        },
+    ],
+}
+
 
 # --- State Models ---
 
@@ -112,12 +158,22 @@ class ActiveWindow:
         extra = set(data.keys()) - {"start_sequence", "end_sequence"}
         if extra:
             raise ValueError(f"ActiveWindow contains unknown extra keys: {sorted(extra)}")
-        start = data.get("start_sequence")
+        if "start_sequence" not in data:
+            raise ValueError("ActiveWindow requires start_sequence")
+        start = data["start_sequence"]
         if not isinstance(start, int) or isinstance(start, bool):
             raise ValueError(f"ActiveWindow start_sequence must be an integer: {start!r}")
-        end = data.get("end_sequence")
+        if "end_sequence" not in data:
+            raise ValueError("ActiveWindow requires end_sequence key (null when open)")
+        end = data["end_sequence"]
         if end is not None and (not isinstance(end, int) or isinstance(end, bool)):
             raise ValueError(f"ActiveWindow end_sequence must be an integer or None: {end!r}")
+        if start < 0:
+            raise ValueError(f"ActiveWindow start_sequence must be non-negative: {start!r}")
+        if end is not None and end < 0:
+            raise ValueError(f"ActiveWindow end_sequence must be non-negative or None: {end!r}")
+        if end is not None and end < start:
+            raise ValueError(f"ActiveWindow end_sequence {end!r} precedes start_sequence {start!r}")
         return cls(start_sequence=start, end_sequence=end)
 
 
@@ -147,10 +203,23 @@ def _parse_goal_windows(raw: object) -> tuple[ActiveWindow, ...]:
     if not isinstance(raw, (list, tuple)):
         raise ValueError("active_windows must be a list")
     windows: list[ActiveWindow] = []
+    previous: ActiveWindow | None = None
     for w in raw:
         if not isinstance(w, Mapping):
             raise ValueError("active_windows entries must be objects")
-        windows.append(ActiveWindow.from_dict(w))
+        window = ActiveWindow.from_dict(w)
+        if previous is not None:
+            if previous.end_sequence is None:
+                raise ValueError("active_windows may contain at most one open window, and it must be last")
+            if window.start_sequence < previous.start_sequence:
+                raise ValueError("active_windows must be ordered by ascending start_sequence")
+            if window.start_sequence < previous.end_sequence:
+                raise ValueError(
+                    f"active_windows overlap: window starting at {window.start_sequence} begins before "
+                    f"the previous window closes at {previous.end_sequence}"
+                )
+        windows.append(window)
+        previous = window
     return tuple(windows)
 
 
@@ -255,10 +324,13 @@ class GoalState:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object] | None) -> GoalState | None:
-        if not data:
+        if data is None:
             return None
         if not isinstance(data, Mapping):
             raise ValueError("GoalState data must be a mapping")
+        if not data:
+            # The cleared owner row is an explicit empty object, never a generic falsey value.
+            return None
         if "schema_version" not in data:
             raise ValueError("GoalState requires schema_version")
         schema_ver = data["schema_version"]
@@ -581,6 +653,20 @@ def _apply_budget(services: BudgetServices, *, since_sequence: int, max_total_to
         services.set_budget(since_sequence=since_sequence, max_total_tokens=max_total_tokens)
 
 
+def _enqueue_pursuit(services: PluginServices, *, goal_id: str, trigger: str) -> None:
+    """Queue at most one automatic pursue message for this goal.
+
+    Create/resume and a completed run can all ask for the next pursuit in the same run.
+    Replacing this owner's pending queue in the same core transaction keeps exactly one
+    message claimable; the trigger names the message for durable traceability.
+    """
+    services.cancel_continuations()
+    services.enqueue_continuation(
+        {"action": "pursue_goal", "goal_id": goal_id},
+        idempotency_key=f"goal:{goal_id}:pursue:{trigger}",
+    )
+
+
 class CreateGoalTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="create_goal",
@@ -671,10 +757,7 @@ class CreateGoalTool:
 
         _apply_budget(services, since_sequence=start_seq, max_total_tokens=token_budget)
 
-        services.enqueue_continuation(
-            {"action": "pursue_goal", "goal_id": goal_id},
-            idempotency_key=f"goal:{goal_id}:init",
-        )
+        _enqueue_pursuit(services, goal_id=goal_id, trigger=f"create:{context.invocation_id}")
         services.stage_event(
             "goal_created",
             {"goal_id": goal_id, "objective": prompt_obj, "token_budget": token_budget},
@@ -751,6 +834,24 @@ class UpdateGoalTool:
             )
 
         now = int(time.time() * 1000)
+
+        if status == current.status:
+            # Repeated identical updates are accepted idempotently; they stage no
+            # duplicate terminal event and never churn the state version.
+            payload = current.tool_payload(context.session_id)
+            return ToolSuccess(
+                tool_name=self.definition.name,
+                output=TextOutput(json.dumps(payload, indent=2)),
+                body=GoalResultBody(goal=current.to_dict(), op="update", mutated=False),
+            )
+
+        if status == "blocked" and current.status in {"complete", "paused"}:
+            reason = f"cannot mark a {current.status} goal blocked; only an active or limited goal may be blocked"
+            return ToolFailure(
+                tool_name=self.definition.name,
+                error=reason,
+                output=TextOutput(reason),
+            )
 
         if status == "blocked":
             current_turn = context.logical_turn
@@ -856,12 +957,18 @@ def _goal_presentation(goal: GoalState) -> CommandPresentation:
     objective = goal.objective[:1800]
     if len(goal.objective) > len(objective) or goal.objective_file_ref is not None:
         objective += "\n\nObjective preview; open Edit goal to load the full objective."
+    if goal.token_budget is None:
+        remaining = "Unbounded"
+    elif goal.tokens_used is None:
+        remaining = "Unknown"
+    else:
+        remaining = str(goal.remaining_tokens)
     lines = [
         f"Status: {goal.status}",
         objective,
         f"Token budget: {goal.token_budget if goal.token_budget is not None else 'Unbounded'}",
         f"Tokens used: {goal.tokens_used if goal.tokens_used is not None else 'Unknown'}",
-        f"Remaining tokens: {goal.remaining_tokens if goal.remaining_tokens is not None else 'Unknown'}",
+        f"Remaining tokens: {remaining}",
     ]
     actions: list[dict[str, object]] = [{"label": "Edit goal", "action": "goal.edit", "prepare_input": True}]
     if goal.status in {"active", "blocked", "usage-limited", "budget-limited"}:
@@ -930,8 +1037,8 @@ class GoalSetCommand:
             data={
                 "action": self.definition.name,
                 "fields": [
-                    {"name": "objective", "label": "Objective", "field_type": "multiline"},
-                    {"name": "token_budget", "label": "Token budget", "field_type": "integer", "required": False},
+                    {"name": "objective", "label": "Objective", "field_type": "multiline", "required": True},
+                    {"name": "token_budget", "label": "Token Budget", "field_type": "integer", "required": False},
                 ],
             },
         )
@@ -994,14 +1101,8 @@ class GoalSetCommand:
 
         _apply_budget(services, since_sequence=start_seq, max_total_tokens=token_budget)
 
-        # Cancel own prior work (a replaced goal's pending turns must not survive) and
-        # then enqueue the fresh pursue-continuation. Core guarantees cancel-then-enqueue
-        # keeps the newly enqueued continuation.
-        services.cancel_continuations()
-        services.enqueue_continuation(
-            {"action": "pursue_goal", "goal_id": goal_id},
-            idempotency_key=f"goal:{goal_id}:init",
-        )
+        # Replacing a goal retires the previous goal's queued pursuit in the same transaction.
+        _enqueue_pursuit(services, goal_id=goal_id, trigger=f"set:{invocation.context.invocation_id}")
         services.stage_event(
             "goal_created",
             {"goal_id": goal_id, "objective": prompt_obj, "token_budget": token_budget},
@@ -1101,17 +1202,46 @@ class GoalEditCommand:
                             "Cannot set finite budget when prior closed-window usage is unknown; uncap with token_budget=null or create a new goal"
                         ),
                     )
-                if goal.is_active:
-                    open_window = next((w for w in goal.active_windows if w.end_sequence is None), None)
-                    if open_window is not None:
-                        # Keep original open-window baseline, adjust allowance using actual closed-window spend
-                        rem = max(0, new_budget - closed_spend)
-                        _apply_budget(services, since_sequence=open_window.start_sequence, max_total_tokens=rem)
-                        window_allowance = rem
-                else:
-                    window_allowance = max(0, new_budget - closed_spend)
+                open_window = next((w for w in goal.active_windows if w.end_sequence is None), None)
+                if open_window is None and goal.is_active:
+                    return CommandResult(
+                        status="error",
+                        error="Cannot set finite budget on an active goal with no open accounting window; pause and resume the goal",
+                    )
+                remaining = new_budget - closed_spend
+                if remaining <= 0:
+                    return CommandResult(
+                        status="error",
+                        error=(
+                            f"Cannot set a finite budget at or below already spent tokens "
+                            f"(closed-window spend {closed_spend}, requested {new_budget}); raise the budget or create a new goal"
+                        ),
+                    )
+                if open_window is not None:
+                    if goal.window_tokens_used is None:
+                        return CommandResult(
+                            status="error",
+                            error=(
+                                "Cannot set a finite budget while current-window token usage is unknown; "
+                                "uncap with token_budget=null or create a new goal"
+                            ),
+                        )
+                    if remaining <= goal.window_tokens_used:
+                        return CommandResult(
+                            status="error",
+                            error=(
+                                f"Cannot set a finite budget that leaves no tokens for the current open window "
+                                f"(window already used {goal.window_tokens_used}, remaining after closed-window spend {remaining}); "
+                                "raise the budget or create a new goal"
+                            ),
+                        )
+                    if goal.is_active:
+                        # Keep the original open-window baseline and re-stage the constraint there.
+                        _apply_budget(services, since_sequence=open_window.start_sequence, max_total_tokens=remaining)
+                window_allowance = remaining
         if "objective" in invocation.arguments:
             prompt_obj, file_ref, sha256 = spill_objective_if_needed(services, objective)
+        # Only an objective edit resets the blocked audit; a budget-only edit is not progress.
         updated_goal = replace(
             goal,
             objective=prompt_obj,
@@ -1119,8 +1249,8 @@ class GoalEditCommand:
             objective_file_sha256=sha256,
             token_budget=new_budget,
             window_allowance=window_allowance,
-            blocked_turns_count=0,
-            last_blocked_logical_turn=None,
+            blocked_turns_count=0 if objective_changed else goal.blocked_turns_count,
+            last_blocked_logical_turn=None if objective_changed else goal.last_blocked_logical_turn,
             objective_edited=goal.objective_edited or objective_changed,
             updated_at=now,
         )
@@ -1173,7 +1303,12 @@ class GoalPauseCommand:
         services.cancel_continuations()
         _store(services).save(paused_goal, version)
         services.stage_event("goal_paused", {"goal_id": goal.goal_id})
-        return CommandResult(status="ok", output="Goal paused", data={"goal": paused_goal.to_dict()}, presentation=_goal_presentation(paused_goal))
+        return CommandResult(
+            status="ok",
+            output="Goal paused",
+            data={"goal": paused_goal.to_dict(), "remaining_tokens": paused_goal.remaining_tokens},
+            presentation=_goal_presentation(paused_goal),
+        )
 
 
 class GoalResumeCommand:
@@ -1237,12 +1372,7 @@ class GoalResumeCommand:
             updated_at=now,
         )
 
-        services.enqueue_continuation(
-            {"action": "pursue_goal", "goal_id": goal.goal_id},
-            # The invocation identity is unique per admitted command; a wall clock can repeat
-            # or step backwards and is not an identity.
-            idempotency_key=f"goal:{goal.goal_id}:resume:{invocation.context.invocation_id}",
-        )
+        _enqueue_pursuit(services, goal_id=goal.goal_id, trigger=f"resume:{invocation.context.invocation_id}")
         _store(services).save(resumed_goal, version)
         services.stage_event("goal_resumed", {"goal_id": goal.goal_id})
         return CommandResult(
@@ -1267,14 +1397,15 @@ class GoalClearCommand:
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         _ = invocation
         goal, version = _store(services).load()
+        # A missing goal can still own a stale constraint or queued pursuit; clear both.
+        services.clear_budget()
+        services.cancel_continuations()
         if goal is None:
             return CommandResult(
                 status="ok", output="No goal to clear", data={"cleared": True}, presentation=GoalSetCommand().prepare_input(invocation, services)
             )
-        goal_id = goal.goal_id if goal is not None else ""
+        goal_id = goal.goal_id
 
-        services.clear_budget()
-        services.cancel_continuations()
         _store(services).save(None, version)
         services.stage_event("goal_cleared", {"goal_id": goal_id})
         return CommandResult(
@@ -1361,9 +1492,12 @@ class GoalDetailsView:
                 view_type="fields",
                 data={"rows": [{"label": "Status", "value": "none"}]},
             )
+        objective = goal.objective[:120]
+        if len(goal.objective) > len(objective) or goal.objective_file_ref is not None:
+            objective += "\n\nObjective preview; open Edit goal to load the full objective."
         rows = [
             {"label": "Status", "value": goal.status},
-            {"label": "Objective", "value": goal.objective[:120]},
+            {"label": "Objective", "value": objective},
             {"label": "Budget", "value": str(goal.token_budget) if goal.token_budget is not None else "unbounded"},
             {"label": "Tokens Used", "value": str(goal.tokens_used) if goal.tokens_used is not None else "unknown"},
             {"label": "Time (s)", "value": f"{goal.time_used_seconds:.1f}" if goal.time_used_seconds is not None else "unknown"},
@@ -1503,6 +1637,9 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
             # with a current budget needs its open-window allowance tightened.
             open_window = next((w for w in goal.active_windows if w.end_sequence is None), None)
             if goal.is_active and open_window is not None and goal.token_budget is not None:
+                # The committed report already includes this fact (including a model-query
+                # UsageFact), so the allowance is derived from it once; lifetime totals are
+                # not subtracted again.
                 closed_spend = _get_closed_window_spend(services, goal.active_windows)
                 if closed_spend is None or updated.has_unknown_usage:
                     # Unknown spend cannot fund an invented remaining allowance; set once
@@ -1566,35 +1703,45 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
 
         new_status = goal.status
         updated_windows = goal.active_windows
-        if stop_cause == "user_stop":
-            if goal.is_active:
-                new_status = "paused"
-                stop_seq = fact.event_sequence
-                updated_windows = tuple(replace(w, end_sequence=stop_seq) if w.end_sequence is None else w for w in goal.active_windows)
-            services.clear_budget()
-            services.cancel_continuations()
-            services.stage_event("goal_paused", {"goal_id": goal.goal_id, "reason": "user_stop"})
+        paused_by_user_stop = stop_cause == "user_stop" and goal.is_active
+        if paused_by_user_stop:
+            new_status = "paused"
+            stop_seq = fact.event_sequence
+            updated_windows = tuple(replace(w, end_sequence=stop_seq) if w.end_sequence is None else w for w in goal.active_windows)
 
-        updated = replace(
-            goal,
-            status=new_status,
-            active_windows=updated_windows,
-            blocked_turns_count=new_blocked_count,
-            last_blocked_logical_turn=new_last_turn,
-            updated_at=now,
+        state_changed = (
+            new_status != goal.status
+            or updated_windows != goal.active_windows
+            or new_blocked_count != goal.blocked_turns_count
+            or new_last_turn != goal.last_blocked_logical_turn
         )
-        _store(services).save(updated, version)
+        if state_changed:
+            updated = replace(
+                goal,
+                status=new_status,
+                active_windows=updated_windows,
+                blocked_turns_count=new_blocked_count,
+                last_blocked_logical_turn=new_last_turn,
+                updated_at=now,
+            )
+            if paused_by_user_stop:
+                # A real active -> paused transition is the only stop that releases the
+                # retained constraint; a paused/complete/limited goal keeps its budget.
+                services.clear_budget()
+                services.cancel_continuations()
+                services.stage_event("goal_paused", {"goal_id": goal.goal_id, "reason": "user_stop"})
+            _store(services).save(updated, version)
+        else:
+            # No-op run facts (complete/paused goals, clean active turns) must not churn
+            # updated_at or the state version.
+            updated = goal
 
         # Do not auto-enqueue on interrupted/shutdown/owner_cancel/limit/error/failed
         if fact.status != "completed" or stop_cause not in {"completed", None}:
             return
 
         if updated.is_active:
-            continuation_key = f"goal:{goal.goal_id}:{fact.logical_turn}"
-            services.enqueue_continuation(
-                {"action": "pursue_goal", "goal_id": goal.goal_id},
-                idempotency_key=continuation_key,
-            )
+            _enqueue_pursuit(services, goal_id=goal.goal_id, trigger=f"run:{fact.event_sequence}")
 
 
 # --- Deactivation ---

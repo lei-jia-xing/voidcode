@@ -4,6 +4,15 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Goal accounting and state-transition hardening
+- Finite `goal.edit` budgets now refuse visibly when the requested budget is at/below closed-window spend or leaves no tokens for the current open window; non-active edits follow resume's remaining-spend rule, so an active goal is never left with a zero/underfunded Core allowance.
+- Create/set/resume and `RunFinished` use one single-pending pursuit path: the owner's queued pursue message is replaced in the same transaction, so a run cannot leave two pending pursue messages while repeated resume still starts work.
+- The plugin declares `StateSchema(version=SCHEMA_VERSION)`; hot activation validates state payloads and accepts the explicit cleared `{}` row. Windows now require an explicit `end_sequence` key, non-negative ordered bounds, no overlap, and at most one final open window; cleared state is distinguished from arbitrary falsey payloads.
+- `update_goal` is idempotent for the current status, refuses `blocked` from `complete`/`paused`, and stages no duplicate terminal event. `RunFinished` saves only on real state change, and only an objective edit resets the blocked audit.
+- `user_stop` pauses/clears/cancels only when it actually transitions an active goal; paused/complete/limited goals retain their Core budget and emit no false pause. `/goal clear` clears stale budget/continuations even when no goal exists (malformed state still fails visibly), and views/forms/results show the truncation note, `Unbounded` remaining, consistent required labels, and pause remaining tokens.
+- Goal accounting consumes model-query `UsageFact`s by dispatch sequence exactly once; a side-query bill is charged to its window without subtracting the closed-window report twice.
+- Residual: `limit_reached` stops still carry no typed goal budget-exhaustion source, so they are not labeled budget-limited; the Core owner may add `budget_exhaustion` later.
+
 ### Model-query spend reaches observers
 - A committed `core.model_query` now decodes as exactly one public `UsageFact` with `source="model_query"`, the invoking owner, exact event/dispatch sequence, provider/model, unknown-preserving usage, cost, and elapsed time. Live delivery reuses the frozen-eligibility/once-only receipt path, so `usage` observers (goal accounting, budgets, compaction) see side-query spend without a second session-report read; the session usage projection still bills the same event directly and is not doubled.
 - `RunFinishedFact` now carries the core's typed `budget_exhaustion` when a finite provider-turn or root-action cap stopped the run. Owner-budget admission still stops with `limit_reached` but records no typed exhaustion yet; that limit source remains residual rather than invented.
