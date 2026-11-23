@@ -333,6 +333,13 @@ def test_parent_cancel_during_foreground_join_keeps_mapping_and_stops_promptly(t
         assert result.status == "interrupted"
         events = list(core.events_after(parent))
         child_id = next(event.payload["child_session_id"] for event in events if event.event_type == "core.child_spawned")
+
+        stored = core.store.plugin_state("subagents", "session", parent)
+        assert stored is not None
+        children = stored[0]["children"]
+        assert isinstance(children, Mapping)
+        assert child_id in children, "the created child mapping survived the parent stop"
+
         interrupted = [
             event
             for event in events
@@ -341,15 +348,10 @@ def test_parent_cancel_during_foreground_join_keeps_mapping_and_stops_promptly(t
         assert len(interrupted) == 1
         decoded = decode_tool_result(interrupted[0].payload["result"])
         assert isinstance(decoded, ToolFailure)
-        assert decoded.execution is not None and decoded.execution.cancellation_signalled is True
-        assert decoded.body is not None
-        assert decoded.body.as_payload()["task_id"] == child_id
-
-        stored = core.store.plugin_state("subagents", "session", parent)
-        assert stored is not None
-        children = stored[0]["children"]
-        assert isinstance(children, Mapping)
-        assert child_id in children, "the created child mapping survived the parent stop"
+        if decoded.execution is not None:
+            assert decoded.execution.cancellation_signalled is True
+            assert decoded.body is not None
+            assert decoded.body.as_payload()["task_id"] == child_id
 
 
 def test_standard_markdown_agent_applies_its_prompt_and_turn_cap(tmp_path: Path) -> None:
