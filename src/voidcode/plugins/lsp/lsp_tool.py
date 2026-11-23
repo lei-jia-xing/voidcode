@@ -445,7 +445,7 @@ class LspTool:
             page_summary = "The server did not include an item list in this response."
         else:
             page_summary = f"No items on page offset {offset}; total item count {item_count}."
-        output_text = f'Full LSP JSON response: read(path="{artifact_uri}").\n{page_summary}'
+        output_text = f"Full LSP JSON response artifact: {artifact_uri}.\n{page_summary}"
         if next_offset is not None:
             output_text += f" More results available; next_offset={next_offset}."
         output_text += f"\n{document_summary}\n\n{rendered_text}"
@@ -783,7 +783,7 @@ def _render_lsp_output(
             e_character = end_point.get("character", 0) + 1
             lines.append(f"    line {s_line}:{s_character}-{e_line}:{e_character} -> {edit.get('newText', '')}")
         if operation == LspOperation.RENAME:
-            lines.append('\nNote: Preview only. To apply these edits, use edit with mode="range".')
+            lines.append("\nNote: Preview only. Apply with an available workspace-edit tool.")
         return "\n".join(lines), count, start + len(page) < count
 
     if operation == LspOperation.CODE_ACTION:
@@ -806,7 +806,7 @@ def _render_lsp_output(
                 paths = _workspace_edit_paths(edit, workspace_root)
                 if paths:
                     lines.append(f"     affects: {', '.join(paths)}")
-        lines.append('\nNote: Preview only. To apply workspace edits, use edit with mode="range".')
+        lines.append("\nNote: Preview only. Apply with an available workspace-edit tool.")
         return "\n".join(lines), count, start + len(page) < count
 
     if operation in (LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS):

@@ -864,7 +864,7 @@ def test_logs_scan_cap_guides_proc_byte_paging_without_spool_paths(tmp_path, mon
     assert isinstance(body, BackgroundProcessLogsBody)
     assert body.truncated is True
     assert "Only the first 4 bytes of stdout were scanned" in result.output.text
-    assert "read(proc://proc-cap, byte_offset=4)" in result.output.text
+    assert "continue from proc://proc-cap at byte_offset=4" in result.output.text
     assert handle.stdout_path not in result.output.text
 
 

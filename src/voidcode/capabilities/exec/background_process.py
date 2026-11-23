@@ -494,7 +494,7 @@ def _logs_guidance(*, running: bool, next_offsets: Mapping[str, int], capped: Se
         suffix = "/stderr" if stream == "stderr" else ""
         parts.append(
             f"Only the first {bytes_scanned} bytes of {stream} were scanned; "
-            f"continue with read(proc://{process_id}{suffix}, byte_offset={bytes_scanned})."
+            f"continue from proc://{process_id}{suffix} at byte_offset={bytes_scanned}."
         )
     return " ".join(parts)
 

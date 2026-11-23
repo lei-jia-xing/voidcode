@@ -45,5 +45,5 @@ get ranked file locations with evidence excerpts and why-matched rationales.
   prescreen finds nothing (`via: "grep_fallback"`, `model_calls: 0`).
 - No vector DB, no daemon index, no background threads; model access goes only
   through the existing `model_query_structured` plumbing with an explicit
-  per-call budget. Symbol navigation (definitions, references, rename scope)
-  stays with LSP and is out of scope here.
+  per-call budget. Symbol and semantic navigation (definitions, references,
+  rename scope) are out of scope here.

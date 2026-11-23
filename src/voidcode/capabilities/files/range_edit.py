@@ -61,7 +61,7 @@ class _RangeTextEdit(BaseModel):
     endCharacter: int = Field(ge=1)
     newText: str
     expectedHash: str = Field(description="SHA-256 content hash of the target file from read or read(hash_only=true).")
-    version: int | None = Field(default=None, description="LSP document version; must match the active document-state provider when supplied.")
+    version: int | None = Field(default=None, description="Document-state provider version; must match the active provider's answer when supplied.")
 
 
 class _RangeEditArgs(BaseModel):
@@ -69,7 +69,7 @@ class _RangeEditArgs(BaseModel):
 
     mode: Literal["range"]
     positionEncoding: Literal["utf-8", "utf-16", "utf-32"] | None = Field(
-        default=None, description="LSP position encoding; defaults to the document's negotiated encoding or UTF-16."
+        default=None, description="Document-state provider position encoding; defaults to the active provider's negotiated encoding or UTF-16."
     )
     edits: list[_RangeTextEdit] = Field(
         min_length=1, description="Multi-file text edits with 1-based line/character ranges, each checked against expectedHash."

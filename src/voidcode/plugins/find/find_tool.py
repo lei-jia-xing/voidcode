@@ -391,7 +391,7 @@ class FindTool:
             "Locate code by behavior: describe what the code does in natural language and get "
             "ranked file locations with evidence excerpts. Lexical prescreen plus one structured "
             "model judgment; every line is validated against a real file read. Literal mode "
-            "searches exact text via grep without any model call; symbol navigation stays with LSP."
+            "searches exact text without any model call. Symbol and semantic navigation are out of scope here."
         ),
         input_schema=FindArgs.model_json_schema(),
         effects=frozenset({ToolEffect.READ}),

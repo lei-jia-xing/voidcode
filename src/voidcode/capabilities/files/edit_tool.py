@@ -127,7 +127,7 @@ _EDIT_ARGS = TypeAdapter(_SingleEdit | _BatchEdit | _RangeEditArgs)
 _EDIT_DESCRIPTION = (
     "Edit files. Text mode replaces exact current file text (single replacement or ordered batch). "
     "Range mode (mode='range') applies 1-based line/character edits across one or more files, each checked "
-    "against expectedHash and optionally an LSP document version. "
+    "against expectedHash and, optionally, the active document-state provider's version. "
     "When constructing oldString from read output, omit any leading line-number prefix such as '42: ' and pass only the file's actual text. "
     "Line endings are matched EOL-insensitively; mixed-ending files are refused."
 )

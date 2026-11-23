@@ -145,7 +145,7 @@ def _match_result_output(
         artifact = services.spill_artifact(native_jsonl, media_type="text/x-ndjson; charset=utf-8")
     return (
         TextOutput(
-            f'Full native AST match JSONL: read(path="{artifact.uri}").\n{output}',
+            f"Full native AST match JSONL artifact: {artifact.uri}.\n{output}",
             bounds=OutputBounds(truncated=truncated, partial=truncated, reference=artifact, source="ast-grep:json-stream"),
         ),
         artifact,
@@ -215,9 +215,7 @@ def _preflight_replace_targets(
                 message=f"ast_grep replace rejected because {display_path} changed since it was read (stale edit).",
                 error_kind="stale_edit",
                 reason="content_hash_mismatch",
-                retry_guidance=(
-                    "Read the file again (or call read with hash_only=true), use the SHA-256 content hash shown in read output, then retry."
-                ),
+                retry_guidance=("Refresh the target file's SHA-256 content hash from a current file read, then retry."),
                 details={"expected_hash": args.expectedHash, "actual_hash": actual_hash, "path": display_path},
             )
 
