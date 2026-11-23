@@ -132,7 +132,10 @@ isolation is claimed.
 
 V1 boundary (honest, not hidden): hooks executor commands, review git diagnostics, and
 MCP stdio servers stay host-side with zero plugin changes and are NEVER claimed
-confined. File tools stay host-side and self-report; the engine dedups overlap with
+confined. Hook commands are trusted host-side code with the core process environment:
+they run unconfined, outside the sandbox supervisor and approval gate, and declare no
+tool effects (see the [hooks protocol](../src/voidcode/plugins/hooks/README.md)).
+File tools stay host-side and self-report; the engine dedups overlap with
 supervisor observations. Reload carries no gate: new spawns use the current policy, old
 jobs keep the enforcement fixed at their spawn. Model-editing-config plus `yolo` reload
 is out of threat model.

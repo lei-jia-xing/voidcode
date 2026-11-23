@@ -14,6 +14,8 @@ from typing import Literal
 
 import pytest
 
+from voidcode.plugins.hooks import create_plugin
+from voidcode.plugins.hooks.hook_config import MAX_TIMEOUT_SECONDS
 from voidcode.plugins.hooks.hooks_plugin import MAX_NOTE_CHARACTERS, ToolHooks, parse_hooks_config
 from voidcode.sdk.hooks import RunLifecycle, ToolIntent, ToolOutcome
 from voidcode.sdk.invocation import ToolContext
@@ -135,6 +137,10 @@ def test_config_parses_the_legacy_argv_shape_and_rejects_the_rest() -> None:
         parse_hooks_config({"enabled": "yes"})
     with pytest.raises(ValueError, match="field 'timeout_seconds' must be a positive number"):
         parse_hooks_config({"timeout_seconds": 0})
+    with pytest.raises(ValueError, match="field 'timeout_seconds' must be a positive number"):
+        parse_hooks_config({"timeout_seconds": float("nan")})
+    with pytest.raises(ValueError, match="field 'timeout_seconds' must be at most 600 seconds"):
+        parse_hooks_config({"timeout_seconds": MAX_TIMEOUT_SECONDS + 1})
     with pytest.raises(ValueError, match="field 'pre_tool' must be an array of commands"):
         parse_hooks_config({"pre_tool": "gate --strict"})
     with pytest.raises(ValueError, match="field 'pre_tool' must contain non-empty string arrays"):
@@ -245,6 +251,7 @@ def test_a_broken_gate_denies_and_never_allows(tmp_path: Path) -> None:
     failure = broken.pre_tool(_intent("write"), _context(tmp_path), _NoServices())
     assert failure is not None
     assert "pre-hook failed" in failure and "non-zero exit status 3" in failure
+    assert "stderr:\ngate exploded" in failure
 
     malformed = ToolHooks(parse_hooks_config({"pre_tool": [_malformed_command()]}))
     malformed_reason = malformed.pre_tool(_intent("write"), _context(tmp_path), _NoServices())
@@ -255,22 +262,124 @@ def test_a_broken_gate_denies_and_never_allows(tmp_path: Path) -> None:
     assert timeout_reason is not None and "timed out" in timeout_reason
 
 
-def test_note_appends_guidance_and_stays_quiet_when_the_hook_fails(tmp_path: Path) -> None:
+def test_note_appends_guidance_and_reports_post_failures_visibly(tmp_path: Path) -> None:
     guided = ToolHooks(parse_hooks_config({"post_tool": [_action_command({"action": "continue", "guidance": "file formatted"})]}))
     assert guided.post_tool(_outcome("write"), _context(tmp_path), _NoServices()) == "file formatted"
 
     quiet = ToolHooks(parse_hooks_config({"post_tool": [_quiet_command()]}))
     assert quiet.post_tool(_outcome("write"), _context(tmp_path), _NoServices()) is None
 
-    # Fail open: a post-tool hook can never fail the write it observes.
+    # Fail open: a post-tool hook can never fail the write it observes, but a
+    # broken note is visible and carries the command's bounded stderr.
     broken = ToolHooks(parse_hooks_config({"post_tool": [_fail_command("note exploded")]}))
-    assert broken.post_tool(_outcome("write"), _context(tmp_path), _NoServices()) is None
+    broken_note = broken.post_tool(_outcome("write"), _context(tmp_path), _NoServices())
+    assert broken_note is not None
+    assert "post-hook failed" in broken_note and "non-zero exit status 3" in broken_note
+    assert "stderr:\nnote exploded" in broken_note
+
     malformed = ToolHooks(parse_hooks_config({"post_tool": [_malformed_command()]}))
-    assert malformed.post_tool(_outcome("write"), _context(tmp_path), _NoServices()) is None
+    malformed_note = malformed.post_tool(_outcome("write"), _context(tmp_path), _NoServices())
+    assert malformed_note is not None and "malformed JSON" in malformed_note
+
+    timed_out = ToolHooks(parse_hooks_config({"timeout_seconds": 0.05, "post_tool": [_slow_command(1)]}))
+    timeout_note = timed_out.post_tool(_outcome("write"), _context(tmp_path), _NoServices())
+    assert timeout_note is not None and "timed out" in timeout_note
 
     long_note = ToolHooks(parse_hooks_config({"post_tool": [_action_command({"guidance": "x" * (MAX_NOTE_CHARACTERS * 2)})]}))
     note = long_note.post_tool(_outcome("write"), _context(tmp_path), _NoServices())
     assert note is not None and len(note) == MAX_NOTE_CHARACTERS + len("[truncated]") and note.endswith("[truncated]")
+
+    long_stderr = ToolHooks(parse_hooks_config({"post_tool": [_fail_command("e" * 5000)]}))
+    stderr_note = long_stderr.post_tool(_outcome("write"), _context(tmp_path), _NoServices())
+    assert stderr_note is not None
+    assert len(stderr_note) <= MAX_NOTE_CHARACTERS + len("[truncated]")
+    assert stderr_note.endswith("[truncated]")
+
+
+def test_post_failure_keeps_earlier_guidance_in_the_same_surface(tmp_path: Path) -> None:
+    hooks = ToolHooks(
+        parse_hooks_config(
+            {
+                "post_tool": [
+                    _action_command({"action": "continue", "guidance": "first note"}),
+                    _fail_command("second exploded"),
+                ]
+            }
+        )
+    )
+
+    note = hooks.post_tool(_outcome("write"), _context(tmp_path), _NoServices())
+    assert note is not None
+    assert note.startswith("first note")
+    assert "second exploded" in note
+
+
+def test_pre_denial_uses_only_the_cancelling_event_and_is_bounded(tmp_path: Path) -> None:
+    earlier = _action_command({"action": "continue", "diagnostic": "earlier info", "guidance": "earlier guidance"})
+    cancel_without_text = _action_command({"action": "cancel"})
+    hooks = ToolHooks(parse_hooks_config({"pre_tool": [earlier, cancel_without_text]}))
+
+    reason = hooks.pre_tool(_intent("write"), _context(tmp_path), _NoServices())
+    assert reason is not None
+    assert "cancelled by pre-tool hook" in reason
+    assert "earlier" not in reason
+
+    huge = _action_command({"action": "cancel", "diagnostic": "x" * (MAX_NOTE_CHARACTERS * 2)})
+    huge_reason = ToolHooks(parse_hooks_config({"pre_tool": [huge]})).pre_tool(_intent("write"), _context(tmp_path), _NoServices())
+    assert huge_reason is not None
+    assert len(huge_reason) <= MAX_NOTE_CHARACTERS + len("[truncated]")
+    assert huge_reason.endswith("[truncated]")
+
+
+def test_registration_wildcards_so_configured_globs_reach_the_executor() -> None:
+    plugin = create_plugin(
+        {
+            "pre_tool": [["gate"]],
+            "pre_tool_match": ["write*"],
+            "post_tool": [["note"]],
+            "post_tool_match": ["edit*"],
+        }
+    )
+
+    assert plugin.pre_tool_match == ("*",)
+    assert plugin.post_tool_match == ("*",)
+
+    disabled = create_plugin({"enabled": False, "pre_tool": [["gate"]], "pre_tool_match": ["write*"]})
+    assert disabled.pre_tool is None
+
+
+def test_tool_hooks_receive_the_bounded_payload_environment(tmp_path: Path) -> None:
+    recorder = tmp_path / "payload.json"
+    record = (
+        "import json, os, pathlib, sys; "
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "'surface': os.environ['VOIDCODE_HOOK_SURFACE'], "
+        "'session': os.environ['VOIDCODE_SESSION_ID'], "
+        "'payload': json.loads(os.environ['VOIDCODE_HOOK_PAYLOAD_JSON'])})); "
+        "print('{}')"
+    )
+    command = [sys.executable, "-c", record, str(recorder)]
+    hooks = ToolHooks(parse_hooks_config({"pre_tool": [command], "post_tool": [command]}))
+
+    assert hooks.pre_tool(_intent("write"), _context(tmp_path), _NoServices()) is None
+    pre = json.loads(recorder.read_text(encoding="utf-8"))
+    assert pre["surface"] == "pre_tool"
+    assert pre["session"] == "session-1"
+    assert pre["payload"] == {
+        "arguments": {"path": "note.txt"},
+        "arguments_truncated": False,
+        "phase": "pre",
+        "session_id": "session-1",
+        "tool_call_id": "call-1",
+        "tool_name": "write",
+    }
+
+    assert hooks.post_tool(_outcome("write"), _context(tmp_path), _NoServices()) is None
+    post = json.loads(recorder.read_text(encoding="utf-8"))
+    assert post["surface"] == "post_tool"
+    assert post["payload"]["status"] == "ok"
+    assert post["payload"]["result"] == "wrote note"
+    assert post["payload"]["result_truncated"] is False
 
 
 def test_disabled_config_runs_no_hook_command(tmp_path: Path) -> None:

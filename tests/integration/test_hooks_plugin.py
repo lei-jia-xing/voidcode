@@ -146,6 +146,11 @@ def _marker_command(marker: Path) -> list[str]:
     return [sys.executable, "-c", code, str(marker)]
 
 
+def _fail_command(message: str) -> list[str]:
+    """A post-hook command that fails after writing a diagnostic to stderr."""
+    return [sys.executable, "-c", f"import sys; sys.stderr.write({message!r}); sys.exit(3)"]
+
+
 def _read_replies() -> list[dict[str, object]]:
     return [
         openai_response(
@@ -184,7 +189,11 @@ def _model_messages(server: OpenAILoopbackServer) -> list[str]:
 def test_pre_tool_hook_denies_the_write_before_it_runs(tmp_path: Path) -> None:
     diagnostic = "hooks-rule: this workspace is frozen"
     with loopback_server(_write_replies()) as server:
-        core = _core(tmp_path, server, {"pre_tool": [_action_command({"action": "cancel", "diagnostic": diagnostic})]})
+        core = _core(
+            tmp_path,
+            server,
+            {"pre_tool": [_action_command({"action": "cancel", "diagnostic": diagnostic})], "pre_tool_match": ["write*"]},
+        )
         session_id = core.create_session().session_id
         assert core.run("write a note", session_id=session_id).status == "completed"
 
@@ -206,7 +215,7 @@ def test_post_tool_hook_appends_its_guidance_to_the_successful_result(tmp_path: 
         core = _core(
             tmp_path,
             server,
-            {"post_tool": [_action_command({"action": "continue", "guidance": guidance})], "post_tool_match": ["write"]},
+            {"post_tool": [_action_command({"action": "continue", "guidance": guidance})], "post_tool_match": ["write*"]},
         )
         session_id = core.create_session().session_id
         assert core.run("write a note", session_id=session_id).status == "completed"
@@ -288,22 +297,62 @@ def test_read_only_policy_skips_a_matching_gate_and_notes_it_on_the_result(tmp_p
         assert [event.event_type for event in core.events_after(session_id)].count("core.tool_completed") == 1
 
 
-def test_read_only_read_ignores_a_write_only_hook(tmp_path: Path) -> None:
+def test_post_tool_failure_is_a_visible_note_without_failing_the_write(tmp_path: Path) -> None:
+    stderr_text = "hooks-note: formatter exploded"
+    with loopback_server(_write_replies()) as server:
+        core = _core(
+            tmp_path,
+            server,
+            {"post_tool": [_fail_command(stderr_text)], "post_tool_match": ["write*"]},
+        )
+        session_id = core.create_session().session_id
+        assert core.run("write a note", session_id=session_id).status == "completed"
+
+        # The write still succeeded and the failed note is visible to the model.
+        assert (tmp_path / "workspace" / "note.txt").read_text(encoding="utf-8") == "hello"
+        texts = [json.loads(text)["text"] for text in _model_messages(server) if "wrote note" in text]
+        assert texts, _model_messages(server)
+        assert "post-hook failed" in texts[0]
+        assert stderr_text in texts[0]
+
+        completed = [dict(event.payload)["result"] for event in core.events_after(session_id) if event.event_type == "core.tool_completed"]
+        assert completed[0]["status"] == "ok"
+        assert stderr_text in json.dumps(completed[0], default=str)
+
+
+def test_glob_filter_keeps_a_non_matching_tool_unhooked(tmp_path: Path) -> None:
+    marker = tmp_path / "post-ran.txt"
+    with loopback_server(_read_replies()) as server:
+        core = _core(tmp_path, server, {"post_tool": [_marker_command(marker)], "post_tool_match": ["write*"]})
+        (tmp_path / "workspace" / "note.txt").write_text("note contents", encoding="utf-8")
+        session_id = core.create_session().session_id
+        assert core.run("read the note", session_id=session_id).status == "completed"
+
+        # The wildcard registration reaches the plugin, whose configured glob
+        # rejects this read before any command runs.
+        texts = [json.loads(text)["text"] for text in _model_messages(server) if "note contents" in text]
+        assert texts == ["note contents"], _model_messages(server)
+        assert not marker.exists()
+
+
+def test_read_only_read_skips_a_write_only_hook_and_notes_the_skip(tmp_path: Path) -> None:
     marker = tmp_path / "gate-ran.txt"
     with loopback_server(_read_replies()) as server:
         core = _core(
             tmp_path,
             server,
-            {"post_tool": [_marker_command(marker)], "post_tool_match": ["write"]},
+            {"post_tool": [_marker_command(marker)], "post_tool_match": ["write*"]},
             read_only=True,
         )
         (tmp_path / "workspace" / "note.txt").write_text("note contents", encoding="utf-8")
         session_id = core.create_session().session_id
         assert core.run("read the note", session_id=session_id).status == "completed"
 
-        # A write-only hook never touches a read: no note, no run, exact read text.
+        # Core matching only sees the wildcard registration, so it notes the
+        # mutating-hook skip even though the plugin's glob would exclude this
+        # read. The command itself never runs.
         texts = [json.loads(text)["text"] for text in _model_messages(server) if "note contents" in text]
-        assert texts == ["note contents"], _model_messages(server)
+        assert texts == ["note contents\n\n[hook hooks skipped: read-only policy]"], texts
         assert not marker.exists()
 
 

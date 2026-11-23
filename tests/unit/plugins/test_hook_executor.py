@@ -7,14 +7,20 @@ stdout JSON parsing, exit codes, timeouts, cancel handling and environment.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from voidcode.plugins.hooks.hook_config import RuntimeHooksConfig, hook_tool_matches
+from voidcode.plugins.hooks import hook_executor
+from voidcode.plugins.hooks.hook_config import MAX_TIMEOUT_SECONDS, RuntimeHooksConfig, hook_tool_matches
 from voidcode.plugins.hooks.hook_executor import (
+    MAX_CAPTURE_BYTES,
+    MAX_PAYLOAD_JSON_CHARACTERS,
     HookExecutionPolicy,
     HookExecutionRequest,
     LifecycleHookExecutionRequest,
@@ -38,6 +44,11 @@ def _tool_request(
     tool_name: str = "write_file",
     policy: HookExecutionPolicy | None = None,
     environment: dict[str, str] | None = None,
+    tool_call_id: str | None = "call-1",
+    arguments: dict[str, object] | None = None,
+    tool_status: str | None = None,
+    tool_text: str | None = None,
+    abort_signal: object = None,
 ) -> HookExecutionRequest:
     return HookExecutionRequest(
         hooks=hooks or RuntimeHooksConfig(),
@@ -48,6 +59,11 @@ def _tool_request(
         recursion_env_var=RECURSION_ENV_VAR,
         environment=environment or {},
         policy=policy or HookExecutionPolicy(),
+        tool_call_id=tool_call_id,
+        arguments=arguments or {},
+        tool_status=tool_status,  # type: ignore[arg-type]
+        tool_text=tool_text,
+        abort_signal=abort_signal,  # type: ignore[arg-type]
     )
 
 
@@ -403,3 +419,174 @@ def test_config_defaults() -> None:
     assert hooks.post_tool_match == ()
     assert hooks.on_session_start == ()
     assert hooks.on_session_end == ()
+
+
+# --- bounded execution, payload context, and process cleanup ------------------
+
+_PAYLOAD_RECORDER = (
+    "import json, os, pathlib, sys; "
+    "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+    "'surface': os.environ['VOIDCODE_HOOK_SURFACE'], "
+    "'session': os.environ['VOIDCODE_SESSION_ID'], "
+    "'payload': json.loads(os.environ['VOIDCODE_HOOK_PAYLOAD_JSON'])})); "
+    "print('{}')"
+)
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[2]
+    except OSError:
+        return False
+    return state != "Z"
+
+
+def test_hook_stdin_is_devnull(tmp_path: Path) -> None:
+    hook = (sys.executable, "-c", "import json, sys; print(json.dumps({'guidance': sys.stdin.read()}))")
+    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig(pre_tool=(hook,))))
+
+    assert outcome.failed_error is None
+    assert "guidance" not in outcome.events[0].payload
+
+
+def test_tool_hook_receives_the_bounded_context_payload(tmp_path: Path) -> None:
+    recorder = tmp_path / "payload.json"
+    command = (sys.executable, "-c", _PAYLOAD_RECORDER, str(recorder))
+    arguments = {"path": "a" * 5000, "nested": {"values": list(range(40))}}
+
+    pre = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig(pre_tool=(command,)), arguments=arguments, tool_call_id="call-9"))
+    assert pre.failed_error is None
+    recorded = json.loads(recorder.read_text(encoding="utf-8"))
+    assert recorded["surface"] == "pre_tool"
+    assert recorded["session"] == "sess-1"
+    pre_payload = recorded["payload"]
+    assert pre_payload["phase"] == "pre"
+    assert pre_payload["tool_name"] == "write_file"
+    assert pre_payload["tool_call_id"] == "call-9"
+    assert "status" not in pre_payload and "result" not in pre_payload
+    assert pre_payload["arguments_truncated"] is True
+    assert pre_payload["arguments"]["path"] == "a" * 1000 + "[truncated]"
+    assert pre_payload["arguments"]["nested"]["values"] == list(range(32))
+
+    post = run_tool_hooks(
+        _tool_request(
+            tmp_path,
+            hooks=RuntimeHooksConfig(post_tool=(command,)),
+            phase="post",
+            arguments=arguments,
+            tool_status="ok",
+            tool_text="r" * 5000,
+        )
+    )
+    assert post.failed_error is None
+    post_payload = json.loads(recorder.read_text(encoding="utf-8"))["payload"]
+    assert post_payload["phase"] == "post"
+    assert post_payload["status"] == "ok"
+    assert post_payload["result_truncated"] is True
+    assert post_payload["result"] == "r" * 4000 + "[truncated]"
+
+
+def test_tool_payload_stays_bounded_for_oversized_identity(tmp_path: Path) -> None:
+    recorder = tmp_path / "payload.json"
+    command = (
+        sys.executable,
+        "-c",
+        "import os, pathlib, sys; pathlib.Path(sys.argv[1]).write_text(os.environ['VOIDCODE_HOOK_PAYLOAD_JSON']); print('{}')",
+        str(recorder),
+    )
+    outcome = run_tool_hooks(
+        _tool_request(
+            tmp_path,
+            hooks=RuntimeHooksConfig(pre_tool=(command,)),
+            tool_call_id="c" * 50_000,
+            arguments={"blob": "x" * 50_000},
+        )
+    )
+
+    assert outcome.failed_error is None
+    raw_payload = recorder.read_text(encoding="utf-8")
+    assert len(raw_payload) <= MAX_PAYLOAD_JSON_CHARACTERS
+    payload = json.loads(raw_payload)
+    assert payload["tool_call_id"] == "c" * 1000 + "[truncated]"
+    assert payload["arguments"] == {"_omitted": "arguments exceeded the hook payload bound"}
+    assert payload["arguments_truncated"] is True
+
+
+def test_oversized_stdout_is_capped_and_fails_closed(tmp_path: Path) -> None:
+    hook = (sys.executable, "-c", "import json; print(json.dumps({'diagnostic': 'x' * 300000}))")
+    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig(pre_tool=(hook,))))
+
+    assert outcome.action == "cancel"
+    assert outcome.failed_error is not None
+    assert "malformed JSON" in outcome.failed_error
+    assert len(outcome.failed_error) < MAX_CAPTURE_BYTES
+
+
+def test_post_failure_includes_bounded_stderr(tmp_path: Path) -> None:
+    hook = (sys.executable, "-c", "import sys; sys.stderr.write('e' * 5000); sys.exit(7)")
+    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig(post_tool=(hook,)), phase="post"))
+
+    assert outcome.failed_error is not None
+    assert "returned non-zero exit status 7" in outcome.failed_error
+    _message, stderr = outcome.failed_error.split("stderr:\n", 1)
+    assert len(stderr) == 2000 + len("[truncated]")
+    assert stderr.endswith("[truncated]")
+
+
+def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
+    pid_file = tmp_path / "child.pid"
+    code = (
+        "import pathlib, subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); "
+        "time.sleep(30)"
+    )
+    hook = (sys.executable, "-c", code, str(pid_file))
+    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig(pre_tool=(hook,), timeout_seconds=0.5)))
+
+    assert outcome.action == "cancel"
+    assert outcome.failed_error is not None and "timed out" in outcome.failed_error
+    pid = int(pid_file.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 5.0
+    while _process_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _process_alive(pid)
+
+
+def test_surface_aggregate_timeout_bounds_every_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hook_executor, "MAX_SURFACE_TIMEOUT_SECONDS", 0.2)
+    slow = (sys.executable, "-c", "import time; time.sleep(0.4); print('{}')")
+    hooks = RuntimeHooksConfig(pre_tool=(slow,), timeout_seconds=MAX_TIMEOUT_SECONDS)
+
+    started = time.monotonic()
+    outcome = run_tool_hooks(_tool_request(tmp_path, hooks=hooks))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0
+    assert outcome.action == "cancel"
+    assert outcome.failed_error is not None
+    assert "hook surface timed out after 0.2 seconds" in outcome.failed_error
+
+
+def test_abort_signal_stops_the_running_hook(tmp_path: Path) -> None:
+    class _Signal:
+        cancelled = False
+
+    signal = _Signal()
+    hook = (sys.executable, "-c", "import time; time.sleep(30)")
+    timer = threading.Timer(0.1, lambda: setattr(signal, "cancelled", True))
+    timer.start()
+    try:
+        started = time.monotonic()
+        outcome = run_tool_hooks(_tool_request(tmp_path, hooks=RuntimeHooksConfig(pre_tool=(hook,), timeout_seconds=10), abort_signal=signal))
+        elapsed = time.monotonic() - started
+    finally:
+        timer.cancel()
+
+    assert elapsed < 2.0
+    assert outcome.action == "cancel"
+    assert outcome.failed_error is not None and "cancelled" in outcome.failed_error

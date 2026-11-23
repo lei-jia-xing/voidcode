@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from math import isfinite
 from typing import Literal
 
 from voidcode.sdk.hooks import RunLifecycle, ToolIntent, ToolOutcome
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 
-from .hook_config import RuntimeHooksConfig
+from .hook_config import MAX_TIMEOUT_SECONDS, RuntimeHooksConfig
 from .hook_executor import (
+    HookAbortSignal,
     HookExecutionOutcome,
     HookExecutionPolicy,
     HookExecutionRequest,
@@ -56,8 +58,10 @@ def _timeout_seconds(raw: Mapping[str, object]) -> float:
     value = raw.get("timeout_seconds")
     if value is None:
         return DEFAULT_TIMEOUT_SECONDS
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0:
         raise ValueError("hooks config field 'timeout_seconds' must be a positive number")
+    if value > MAX_TIMEOUT_SECONDS:
+        raise ValueError(f"hooks config field 'timeout_seconds' must be at most {MAX_TIMEOUT_SECONDS:g} seconds")
     return float(value)
 
 
@@ -133,19 +137,30 @@ def _bounded(text: str) -> str | None:
 
 
 def _cancel_reason(outcome: HookExecutionOutcome, *, default: str) -> str:
-    """First non-empty diagnostic/guidance/reason a cancelling hook command carried."""
-    for key in ("diagnostic", "guidance", "reason"):
-        texts = _declared_texts(outcome, key)
-        if texts:
-            return texts[0]
+    """Text declared by the event that actually cancelled: never an earlier command's."""
+    for event in reversed(outcome.events):
+        if event.payload.get("action") != "cancel":
+            continue
+        for key in ("diagnostic", "guidance"):
+            value = event.payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        break
     return default
 
 
 def _note(outcome: HookExecutionOutcome) -> str | None:
-    """Guidance to append to a successful result; a cancelling hook's diagnostic otherwise."""
+    """Guidance to append to a result, plus a visible failure or a cancelling diagnostic.
+
+    A failed post hook is fail-open for the tool but not silent: the bounded
+    failure text (including any bounded stderr) joins guidance from earlier
+    commands in the same surface.
+    """
     texts = _declared_texts(outcome, "guidance")
-    if not texts and outcome.action == "cancel":
-        # An advisory surface keeps a cancel's diagnostic and guidance: hand it over as the note.
+    if outcome.failed_error is not None:
+        texts.append(outcome.failed_error)
+    elif not texts and outcome.action == "cancel":
+        # An advisory surface keeps a cancel's diagnostic: hand it over as the note.
         texts = _declared_texts(outcome, "diagnostic")
     return _bounded("\n".join(texts))
 
@@ -165,22 +180,39 @@ class ToolHooks:
         _ = services  # the lease is read-only: this plugin reads nothing
         if not self._active(self._config.pre_tool):
             return None
-        outcome = self._run(context, tool_name=intent.tool_name, phase="pre")
+        outcome = self._run(
+            context,
+            tool_name=intent.tool_name,
+            phase="pre",
+            tool_call_id=intent.tool_call_id,
+            arguments=intent.arguments,
+            abort_signal=context.abort_signal,
+        )
         if outcome.failed_error is not None:
-            # Fail closed: a broken gate must never read as permission.
-            return outcome.failed_error
+            # Fail closed: a broken gate must never read as permission; the reason
+            # handed to the core (and therefore the model) stays bounded.
+            return _bounded(outcome.failed_error)
         if outcome.action == "cancel":
-            return f"tool '{intent.tool_name}' blocked: {_cancel_reason(outcome, default='cancelled by pre-tool hook')}"
+            reason = _cancel_reason(outcome, default="cancelled by pre-tool hook")
+            return _bounded(f"tool '{intent.tool_name}' blocked: {reason}")
         return None
 
     def post_tool(self, outcome: ToolOutcome, context: ToolContext, services: PluginServices) -> str | None:
         _ = services
         if not self._active(self._config.post_tool):
             return None
-        execution = self._run(context, tool_name=outcome.tool_name, phase="post")
-        if execution.failed_error is not None:
-            # Fail open: a broken note must not fail a write that already succeeded.
-            return None
+        execution = self._run(
+            context,
+            tool_name=outcome.tool_name,
+            phase="post",
+            tool_call_id=outcome.tool_call_id,
+            arguments=outcome.arguments,
+            tool_status=outcome.status,
+            tool_text=outcome.text,
+            abort_signal=context.abort_signal,
+        )
+        # Fail open: a broken note must not fail a write that already succeeded, but
+        # it is still a visible bounded note rather than silence.
         return _note(execution)
 
     def lifecycle(self, lifecycle: RunLifecycle, context: ToolContext, services: PluginServices) -> str | None:
@@ -199,7 +231,18 @@ class ToolHooks:
         """A surface with no enabled commands is a fast no-op, never a subprocess run."""
         return self._config.enabled is True and bool(commands)
 
-    def _run(self, context: ToolContext, *, tool_name: str, phase: Literal["pre", "post"]) -> HookExecutionOutcome:
+    def _run(
+        self,
+        context: ToolContext,
+        *,
+        tool_name: str,
+        phase: Literal["pre", "post"],
+        tool_call_id: str | None,
+        arguments: Mapping[str, object],
+        tool_status: Literal["ok", "error", "cancelled"] | None = None,
+        tool_text: str | None = None,
+        abort_signal: HookAbortSignal | None = None,
+    ) -> HookExecutionOutcome:
         return run_tool_hooks(
             HookExecutionRequest(
                 hooks=self._config,
@@ -210,6 +253,11 @@ class ToolHooks:
                 recursion_env_var=RECURSION_ENV_VAR,
                 environment=os.environ,
                 policy=HookExecutionPolicy(),
+                tool_call_id=tool_call_id,
+                arguments=arguments,
+                tool_status=tool_status,
+                tool_text=tool_text,
+                abort_signal=abort_signal,
             )
         )
 

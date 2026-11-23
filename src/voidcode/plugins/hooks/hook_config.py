@@ -6,6 +6,10 @@ import fnmatch
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+#: Hard ceiling for one configured hook command. The executor also clamps, so a
+#: directly constructed config can never turn into an unbounded wait.
+MAX_TIMEOUT_SECONDS = 600.0
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeHooksConfig:
@@ -35,6 +39,7 @@ def hook_tool_matches(patterns: Sequence[str], tool_name: str) -> bool:
 
 
 __all__ = [
+    "MAX_TIMEOUT_SECONDS",
     "RuntimeHooksConfig",
     "hook_tool_matches",
 ]
