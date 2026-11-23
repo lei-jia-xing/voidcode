@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Model-query spend reaches observers
+- A committed `core.model_query` now decodes as exactly one public `UsageFact` with `source="model_query"`, the invoking owner, exact event/dispatch sequence, provider/model, unknown-preserving usage, cost, and elapsed time. Live delivery reuses the frozen-eligibility/once-only receipt path, so `usage` observers (goal accounting, budgets, compaction) see side-query spend without a second session-report read; the session usage projection still bills the same event directly and is not doubled.
+- `RunFinishedFact` now carries the core's typed `budget_exhaustion` when a finite provider-turn or root-action cap stopped the run. Owner-budget admission still stops with `limit_reached` but records no typed exhaustion yet; that limit source remains residual rather than invented.
+- Model-query events written before this contract (no frozen `eligible_owners`) stay readable through `read_facts` but are not replayed to push observers, because no honest recipient list was recorded. A side query committed before a root session's first run stays pending until a run captures a root; child sessions use their birth record.
+- Verification: core facts/model-query/SDK-facts, btw, find, compaction, commit-pipeline, goal unit and goal integration suites = 202 passed plus 200 SDK tests; `ruff check`, `ruff format --check`, and `ty check src` green.
+
 ### Durable hook outcomes and result-preserving notes
 - Lifecycle hooks now keep their evidence: every `session_start`/`session_end` invocation appends one bounded `core.hook_invoked` event per owner and run, carrying the returned note, a bounded failure, or an explicit `silent` outcome. The event field set is `kind`, `owner`, `logical_turn`, `status`, `outcome`, and optional bounded `note`/`failure` (with `*_truncated` flags); the durable record is also the exactly-once guard, so a same-run re-entry cannot ask an owner twice. A hook failure never changes the run's decision.
 - `session_end` now rides the terminal commit for `completed`, `failed`, and `interrupted` runs, including `stop`/user stop, owner cancel, limit reached, shutdown, parked approval cancellation, and a terminal background tool-wait interruption. The interrupted record carries `status="interrupted"` and the stop reason as `error`. There is no second end record on failure paths.

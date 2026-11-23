@@ -8,6 +8,7 @@ from typing import Literal, TypeGuard
 
 from .json_values import own_json_object
 from .provider import ProviderTokenUsage
+from .services import BudgetExhaustion
 from .tools import Change, ReadObservation, ToolEffect
 
 ObservedFactKind = Literal[
@@ -66,6 +67,13 @@ class UsageFact:
     #: with. ``None`` means the allocation is absent or the limit is unknown; observers
     #: must not substitute a live catalog probe or a guessed window.
     input_limit_tokens: int | None = None
+    #: What produced this provider dispatch. A governed side query
+    #: (``core.model_query``) has no separate dispatch intent event: its own
+    #: committed event is the dispatch record, so ``dispatch_sequence`` equals
+    #: ``event_sequence`` there. A normal turn points at its ``PROVIDER_INTENT``.
+    source: Literal["turn", "model_query"] = "turn"
+    #: The invoking plugin owner for a model query; ``None`` for a turn.
+    owner: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +120,10 @@ class RunFinishedFact:
     status: RunStatus
     stop_cause: StopCause | None = None
     elapsed_seconds: float | None = None
+    #: The typed finite cap that stopped this run, when the core recorded one.
+    #: Absent means either no cap stopped it or the stop was untyped; this fact
+    #: never invents a dimension.
+    budget_exhaustion: BudgetExhaustion | None = None
 
 
 @dataclass(frozen=True, slots=True)

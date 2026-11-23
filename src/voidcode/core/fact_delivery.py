@@ -126,6 +126,10 @@ class FactDelivery:
                 if event.sequence not in completed_dispatches:
                     pending.append(event)
             elif event.event_type in FACT_EVENT_TYPES:
+                if event.event_type == EventType.MODEL_QUERY and "eligible_owners" not in event.payload:
+                    # Model-query usage predates this fact contract: its recipients
+                    # were never frozen, so there is no honest owner list to replay to.
+                    continue
                 pending.append(event)
         return pending
 
@@ -182,6 +186,13 @@ class FactDelivery:
             },
         )
 
+    def _has_observer_root(self, execution: _Execution) -> bool:
+        """Whether this execution has a recorded authorization observers can lease under."""
+        session = execution.session
+        if session.parent_session_id is not None:
+            return self._host.birth_record(session.session_id) is not None
+        return bool(execution.cursor.root_id)
+
     def _observer_root_authorization(self, execution: _Execution) -> tuple[str, int | None]:
         """Recorded root authorization for observer leases delivering this execution's facts.
 
@@ -224,6 +235,12 @@ class FactDelivery:
         defer_to_candidate: frozenset[str] = frozenset(),
     ) -> None:
         """Notify exactly the owners this event's revision registered, then persist those receipts."""
+        if ev.event_type == EventType.MODEL_QUERY and not self._has_observer_root(execution):
+            # A side query can commit before this root session ever ran, so it
+            # has no captured root to lease observers under. Keep the receipt
+            # absent: replay delivers the same fact exactly once after a run
+            # (or a child's birth record) supplies the root.
+            return
         fact = fact_for_event(ev, execution.events)
         if fact is None:
             return

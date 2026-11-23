@@ -16,7 +16,8 @@ Plugins depend on SDK contracts, rather than another plugin's tool names or the 
 | `RunRequestedFact.resumed` | An explicit resume request. A second user prompt is not a resume. |
 | `ApprovalRequestedFact` | One actual approval request. |
 | `ContextProjectedFact` | An applied core window projection with measured covered/dropped UTF-8 bytes. It does not depend on a compressor plugin id. |
-| `UsageFact`, `RunFinishedFact` | Existing truthful usage and terminal-run observations. |
+| `UsageFact` | One truthful provider dispatch: session/run/revision, logical turn, exact event and dispatch sequences, provider/model, usage (missing stays unknown), cost, elapsed time, `source` (`turn` or `model_query`), and the invoking owner for a side query. A governed model query has no separate provider intent, so its own committed event is the dispatch record and `dispatch_sequence == event_sequence`. |
+| `RunFinishedFact` | Terminal or paused run state with the canonical stop cause, measured elapsed time, and the typed `budget_exhaustion` cap when the core recorded one. |
 
 Tools declare governance effects (`ToolEffect`) on their definition; results carry observations (`coverage`, `changes`). The core freezes both into `fact_metadata` at commit time: owner, effects, measured envelope sizes, result bounds, diagnostic category, read/change observations, and declared resource paths. `InvocationFinishedFact.semantics` is a retained required metadata slot: the current engine records it empty for every invocation (the tool intent hardcodes `"semantics": []`), and consumers must treat it as opaque committed data, never re-derive it from the current catalog. There are no per-tool semantic declarations, predicates, or argument rules; `ast_grep` declares plain `WRITE` effects for all modes.
 
@@ -71,6 +72,8 @@ while True:
 Observers subscribe using `Plugin.observed_facts`. Their eligibility is frozen on source events, and their state/events plus per-owner receipt commit together. Newly staged projection facts are delivered after the callback's proposal commits. Child facts appended while a parent tool is running are delivered at the next governed commit after that callback returns. Startup replay settles undelivered facts; a committed receipt prevents repeat delivery. External effects inside observers are not made exactly-once by a SQLite receipt.
 
 A provider intent is in flight, not observed usage. New orphan dispatch settlements append an interruption event, so a cursor that passed the intent still sees unknown usage later.
+
+A committed `core.model_query` is a public usage fact: one governed side query produces exactly one `UsageFact` with `source="model_query"` and the invoking plugin owner. It is delivered to `usage` observers under the same frozen-eligibility/once-only receipt rule as a turn, so observer-maintained accounting includes side-query spend exactly once; the session usage report still derives the same bill directly from the event and neither path doubles it. A side query committed before the root session ever captured a run root has no authorization to lease observers under: its fact stays readable through `read_facts`, and delivery remains pending until a run captures a root (child sessions use their birth record). Model-query events written before this fact contract carry no frozen recipients and are not replayed to push observers.
 
 Installing a window projection is staged with the callback, and the verified projection and its core fact commit in the same SQLite transaction. A callback/commit failure applies neither. No database schema migration is needed.
 

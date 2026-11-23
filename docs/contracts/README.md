@@ -46,6 +46,8 @@ including its verified compaction summary and contributed plugin context. An unf
 native tool batch is omitted as a whole, so providers never receive dangling tool calls.
 The question and answer do not extend the main conversation; actual provider usage is
 recorded in `core.model_query`, attributed to the invoking owner, and charged once to
-the session usage report and active budgets. An exhausted budget refuses the query
-before dispatch; missing usage stays unknown. The bundled `/btw` command requests this
-contextual mode.
+the session usage report and active budgets. The same committed event is one public
+`UsageFact` (`source="model_query"`, `owner=<invoking plugin>`) delivered to `usage`
+observers once, so observer-maintained accounting includes side-query spend without
+re-reading the session report. An exhausted budget refuses the query before dispatch;
+missing usage stays unknown. The bundled `/btw` command requests this contextual mode.

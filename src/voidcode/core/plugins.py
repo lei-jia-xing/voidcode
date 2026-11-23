@@ -56,6 +56,7 @@ from voidcode.sdk.resources import ResourceContractError, ResourcePage, Resource
 from voidcode.sdk.services import (
     BackgroundActionStatus,
     BackgroundContext,
+    BudgetExhaustion,
     CancelSubtreeReceipt,
     ChildOutcome,
     ChildSendReceipt,
@@ -1749,6 +1750,17 @@ class PluginRuntime:
                     uncached_input_tokens=usage_payload.get("uncached_input_tokens"),
                     cost_usd=_optional_number(usage_payload, "cost_usd"),
                 )
+            raw_source = fact.get("source", "turn")
+            source: Literal["turn", "model_query"]
+            if raw_source == "turn":
+                source = "turn"
+            elif raw_source == "model_query":
+                source = "model_query"
+            else:
+                raise ValueError(f"Unknown usage fact source: {raw_source!r}")
+            owner = fact.get("owner")
+            if owner is not None and not isinstance(owner, str):
+                raise ValueError("'owner' must be a string or null")
             return UsageFact(
                 session_id=session_id,
                 run_id=run_id,
@@ -1762,6 +1774,8 @@ class PluginRuntime:
                 input_limit_tokens=_optional_positive_int(fact, "input_limit_tokens"),
                 elapsed_seconds=_optional_number(fact, "elapsed_seconds"),
                 cost_usd=_optional_number(fact, "cost_usd"),
+                source=source,
+                owner=owner,
             )
         if fact_type == "invocation_finished":
             call_id = fact.get("tool_call_id")
@@ -1802,6 +1816,7 @@ class PluginRuntime:
                 status=status_payload,
                 stop_cause=stop_cause_payload,
                 elapsed_seconds=_optional_number(fact, "elapsed_seconds"),
+                budget_exhaustion=BudgetExhaustion.from_payload(fact.get("budget_exhaustion")),
             )
         raise ValueError(f"Unknown fact_type: {fact_type}")
 

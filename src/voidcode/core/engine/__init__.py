@@ -77,6 +77,7 @@ from ..delegation import (
 from ..events import EventType
 from ..execution import _Cursor, _Execution, committed_event, wire_object
 from ..fact_delivery import BirthAuthorization, FactDelivery
+from ..facts import FACT_EVENT_TYPES
 from ..output_projection import ResultProjector
 from ..plugins import LeaseContext, PluginRuntime, PluginSource
 from ..processes import ProcessHost
@@ -2446,12 +2447,14 @@ class Core:
 
         A provider turn already happened when its usage event is written, so a
         failed accounting commit must fail the caller instead of leaving billed
-        spend silently unrecorded.
+        spend silently unrecorded. An accounted event that is also a public fact
+        (a governed model query) is delivered to its frozen owners exactly once.
         """
         session = self.store.session(session_id)
-        self.store.commit_staged(
+        before = session.last_event_sequence
+        committed = self.store.commit_staged(
             session_id,
-            expected_sequence=session.last_event_sequence,
+            expected_sequence=before,
             expected_run_id=session.run_id,
             run_id=session.run_id or uuid4().hex,
             revision_id=self.revision_id,
@@ -2461,6 +2464,13 @@ class Core:
             checkpoint_payload=None,
         )
         self.notify_commit()
+        if event.event_type in FACT_EVENT_TYPES and committed.last_event_sequence > before:
+            self._commit_pipeline.deliver_committed_facts(
+                session_id,
+                after_sequence=before,
+                upto_sequence=committed.last_event_sequence,
+                run_id=committed.run_id or uuid4().hex,
+            )
 
     def commit_control_event(self, session_id: str, event: EventDraft) -> None:
         """Append one best-effort diagnostic control fact; losing it never blocks owner work."""

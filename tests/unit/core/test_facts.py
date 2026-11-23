@@ -9,8 +9,9 @@ from voidcode.core.facts import fact_for_event
 from voidcode.core.plugins import LeaseContext, LeaseIdentity, PluginRuntime
 from voidcode.core.storage.store import EventDraft, SessionStatus, SqliteStore
 from voidcode.sdk.codec import decode_tool_result, encode_provider_result, encode_tool_result
-from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, UsageFact
+from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, RunFinishedFact, UsageFact
 from voidcode.sdk.provider import ProviderTokenUsage, ProviderTurnResult
+from voidcode.sdk.services import BudgetExhaustion
 from voidcode.sdk.tools import Change, ReadObservation, TextOutput, ToolSuccess
 
 
@@ -171,6 +172,74 @@ def test_corrupt_history_never_becomes_a_successful_or_anonymous_invocation(runt
     append(runtime, event("core.tool_completed", **payload))
     with pytest.raises(ValueError):
         runtime.fact_page("session", 0, 10)
+
+
+def test_model_query_event_is_one_truthful_usage_fact(runtime):
+    append(
+        runtime,
+        event(
+            "core.model_query",
+            provider="endpoint",
+            model="exact-model",
+            usage={
+                "input_tokens": 120,
+                "output_tokens": 45,
+                "cache_read_tokens": 30,
+                "cache_write_tokens": None,
+                "uncached_input_tokens": 90,
+                "cost_usd": 0.25,
+            },
+            cost_usd=0.25,
+            elapsed_ms=1500,
+            owner="find",
+        ),
+    )
+    page = runtime.fact_page("session", 0, 10)
+    assert len(page.facts) == 1
+    fact = page.facts[0]
+    assert isinstance(fact, UsageFact)
+    assert fact.source == "model_query" and fact.owner == "find"
+    # The side query's own event is its dispatch record; there is no provider intent.
+    assert fact.event_sequence == fact.dispatch_sequence == 1
+    assert fact.provider_name == "endpoint" and fact.model_name == "exact-model"
+    assert fact.usage is not None
+    assert (fact.usage.input_tokens, fact.usage.output_tokens, fact.usage.cache_read_tokens) == (120, 45, 30)
+    assert (fact.cost_usd, fact.elapsed_seconds, fact.input_limit_tokens) == (0.25, 1.5, None)
+
+    # Unknown usage stays unknown; the fact never substitutes a zero.
+    append(
+        runtime,
+        event("core.model_query", provider="endpoint", model="exact-model", usage=None, cost_usd=None, elapsed_ms=0, owner="btw"),
+    )
+    unknown = runtime.fact_page("session", 1, 10).facts[0]
+    assert isinstance(unknown, UsageFact)
+    assert unknown.source == "model_query" and unknown.owner == "btw"
+    assert unknown.usage is None and unknown.cost_usd is None and unknown.elapsed_seconds == 0.0
+
+
+def test_run_finished_fact_carries_typed_budget_exhaustion(runtime):
+    exhaustion = {
+        "dimension": "provider_turns",
+        "source": "max_steps",
+        "limit": 1,
+        "consumed": 1,
+        "remaining": 0,
+        "continue_with": "resume_with_max_steps",
+    }
+    append(
+        runtime,
+        event("core.run_interrupted", stop_cause="limit_reached", budget_exhaustion=exhaustion, elapsed_ms=1200),
+    )
+    fact = runtime.fact_page("session", 0, 10).facts[0]
+    assert isinstance(fact, RunFinishedFact)
+    assert fact.status == "interrupted" and fact.stop_cause == "limit_reached"
+    assert fact.elapsed_seconds == 1.2
+    assert fact.budget_exhaustion == BudgetExhaustion(**exhaustion)
+
+    append(runtime, event("core.run_completed", elapsed_ms=100))
+    completed = runtime.fact_page("session", 1, 10).facts[0]
+    assert isinstance(completed, RunFinishedFact)
+    assert completed.status == "completed" and completed.budget_exhaustion is None
 
 
 def test_wakeup_fact_retains_owner_identity_role_and_immutable_payload(runtime):

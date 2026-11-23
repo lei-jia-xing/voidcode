@@ -12,6 +12,7 @@ from .storage.store import StoredEvent
 _EVENT_KIND_MAP: dict[EventType, ObservedFactKind] = {
     EventType.MODEL_TURN: "usage",
     EventType.PROVIDER_INTERRUPTED: "usage",
+    EventType.MODEL_QUERY: "usage",
     EventType.TOOL_COMPLETED: "invocation_finished",
     EventType.TOOL_INTERRUPTED: "invocation_finished",
     EventType.RUN_COMPLETED: "run_finished",
@@ -35,6 +36,40 @@ def _mapping(value: object, label: str) -> Mapping[str, object]:
 
 
 def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[ObservedFactKind, dict[str, object]] | None:
+    if ev.event_type == EventType.MODEL_QUERY:
+        # A governed side query commits its own dispatch record: there is no
+        # separate PROVIDER_INTENT to point at, so the event sequence is the
+        # exact dispatch sequence observers can relate to their own windows.
+        provider_name = ev.payload.get("provider")
+        model_name = ev.payload.get("model")
+        if not isinstance(provider_name, str) or not provider_name or not isinstance(model_name, str) or not model_name:
+            raise ValueError(f"model query fact at sequence {ev.sequence} lacks an authentic provider/model identity")
+        raw_usage = ev.payload.get("usage")
+        if raw_usage is not None and not isinstance(raw_usage, Mapping):
+            raise ValueError(f"model query fact at sequence {ev.sequence} has a malformed usage record")
+        owner = ev.payload.get("owner")
+        if owner is not None and (not isinstance(owner, str) or not owner):
+            raise ValueError(f"model query fact at sequence {ev.sequence} has a malformed owner")
+        ms = ev.payload.get("elapsed_ms")
+        elapsed_sec = (ms / 1000.0) if isinstance(ms, (int, float)) and not isinstance(ms, bool) else None
+        raw_cost = ev.payload.get("cost_usd")
+        cost_usd = float(raw_cost) if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool) else None
+        return "usage", {
+            "session_id": ev.session_id,
+            "run_id": ev.run_id,
+            "revision_id": ev.revision_id,
+            "logical_turn": str(ev.payload.get("logical_turn", "")),
+            "event_sequence": ev.sequence,
+            "dispatch_sequence": ev.sequence,
+            "provider_name": provider_name,
+            "model_name": model_name,
+            "usage": raw_usage,
+            "input_limit_tokens": None,
+            "elapsed_seconds": elapsed_sec,
+            "cost_usd": cost_usd,
+            "source": "model_query",
+            "owner": owner,
+        }
     if ev.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
         d_seq = ev.payload.get("dispatch_sequence")
         disp_seq_val = int(d_seq) if isinstance(d_seq, (int, float)) else None
@@ -149,6 +184,7 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[Obse
             else "interrupted",
             "stop_cause": stop_cause,
             "elapsed_seconds": elapsed_seconds,
+            "budget_exhaustion": ev.payload.get("budget_exhaustion"),
         }
     kind = _EVENT_KIND_MAP.get(ev.event_type)
     if kind is None:

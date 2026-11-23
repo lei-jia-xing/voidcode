@@ -7,7 +7,7 @@ from tests.fixtures.core_factory import loopback_server
 from tests.unit.core.test_nested_tools import _call, _turn
 from voidcode.bootstrap import open_core
 from voidcode.core.storage.store import CheckpointKind, EventDraft, SessionStatus
-from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, RequestWindow
+from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, RequestWindow, RunFinishedFact
 from voidcode.sdk.json_values import json_wire_value
 
 PLUGIN = """
@@ -147,3 +147,32 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
             observed = [e.payload["fact"] for e in core.store.events("orphan") if e.event_type == "plugin.probe.seen"]
             assert json_wire_value(observed) == json_wire_value([asdict(fact) for fact in restored])
             assert [fact.event_sequence for fact in restored] == sorted(fact.event_sequence for fact in restored)
+
+
+def test_run_stop_fact_exposes_the_typed_cap_that_stopped_it(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    (workspace / "note.txt").write_text("content", encoding="utf-8")
+    with loopback_server([_turn(_call("read-note", "read", path="note.txt"))]) as server:
+        (workspace / "voidcode.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "model": {"model": "endpoint/exact-model"},
+                    "policy": {"approval_mode": "yolo"},
+                    "providers": {"endpoint": {"api_key": "test", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
+                    "plugins": {"files": {"enabled": True}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with open_core(workspace, state_dir=state_dir) as core:
+            result = core.run("read the note, then hit the turn cap", session_id="limit-facts", max_steps=1)
+            assert result.status == "interrupted", result.error
+            assert result.stop_cause == "limit_reached"
+            assert result.budget_exhaustion is not None
+            run_facts = [fact for fact in history(core, "limit-facts") if isinstance(fact, RunFinishedFact)]
+            assert len(run_facts) == 1
+            assert run_facts[0].status == "interrupted" and run_facts[0].stop_cause == "limit_reached"
+            assert run_facts[0].budget_exhaustion == result.budget_exhaustion

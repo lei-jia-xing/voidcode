@@ -13,6 +13,7 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import SessionStatus, StagedBudgetUpdate, StoreConflict
+from voidcode.sdk.hooks import UsageFact
 from voidcode.sdk.provider import ProviderExecutionError
 from voidcode.sdk.services import PluginBudget
 
@@ -246,6 +247,117 @@ def test_query_fails_when_its_usage_cannot_be_recorded(tmp_path: Path, monkeypat
         events = [event for event in core.events_after("sess-structured") if event.event_type == "core.model_query"]
     assert len(server.requests) == 1
     assert events == []
+
+
+def _command(core: Core, session_id: str, name: str, arguments: dict[str, object]):
+    return core.invoke_command(session_id, name, arguments, expected_revision=core.command_catalog().revision_id)
+
+
+def _goal_state(core: Core, session_id: str) -> Mapping[str, object]:
+    result = _command(core, session_id, "goal", {})
+    assert result.status == "ok", result.error
+    goal = result.data.get("goal")
+    assert isinstance(goal, Mapping)
+    return goal
+
+
+def _all_facts(core: Core, session_id: str):
+    cursor = 0
+    facts = []
+    while True:
+        page = core.plugin_runtime.fact_page(session_id, cursor, 200)
+        facts.extend(page.facts)
+        cursor = page.next_sequence
+        if not page.has_more:
+            return facts
+
+
+def test_goal_accounts_model_query_usage_once_and_closed_window_spend(tmp_path: Path) -> None:
+    replies = [
+        _usage_reply("goal setup turn", usage={"prompt_tokens": 100, "completion_tokens": 20}),
+        _usage_reply("side answer", usage={"prompt_tokens": 40, "completion_tokens": 10}),
+    ]
+    with loopback_server(replies) as server:
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        session = "sess-structured"
+        assert core.run("start a goal session", session_id=session).status == "completed"
+        created = _command(core, session, "goal.set", {"objective": "Ship the seam", "token_budget": 100})
+        assert created.status == "ok", created.error
+        assert core.governed_model_query(session, "check the seam", owner="btw") == "side answer"
+
+        state = _goal_state(core, session)
+        query_events = [event for event in core.events_after(session) if event.event_type == "core.model_query"]
+        report = core.usage(session)
+        facts = [fact for fact in _all_facts(core, session) if isinstance(fact, UsageFact) and fact.source == "model_query"]
+
+        assert state["status"] == "active"
+        assert state["tokens_used"] == 50
+        assert state["window_tokens_used"] == 50
+        assert state["window_allowance"] == 100
+        assert len(query_events) == 1
+        assert len(facts) == 1
+        assert facts[0].event_sequence == facts[0].dispatch_sequence == query_events[0].sequence
+        assert facts[0].owner == "btw"
+        assert facts[0].usage is not None
+        assert (facts[0].usage.input_tokens, facts[0].usage.output_tokens) == (40, 10)
+        # The session bill is exactly one main turn plus one side query, never doubled.
+        assert (report.input_tokens, report.output_tokens) == (140, 30)
+        assert report.turn_count == 2
+
+        # Closing and reopening the window bills the side query once: remaining 50, not 0.
+        assert _command(core, session, "goal.pause", {}).status == "ok"
+        resumed = _command(core, session, "goal.resume", {})
+        assert resumed.status == "ok", resumed.error
+        resumed_state = _goal_state(core, session)
+
+    assert resumed_state["tokens_used"] == 50
+    assert resumed_state["window_tokens_used"] == 0
+    assert resumed_state["window_allowance"] == 50
+
+
+def test_goal_marks_budget_limited_from_model_query_spend(tmp_path: Path) -> None:
+    replies = [
+        _usage_reply("goal setup turn", usage={"prompt_tokens": 10, "completion_tokens": 2}),
+        _usage_reply("side answer", usage={"prompt_tokens": 30, "completion_tokens": 5}),
+    ]
+    with loopback_server(replies) as server:
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        session = "sess-structured"
+        assert core.run("start a budgeted goal session", session_id=session).status == "completed"
+        assert _command(core, session, "goal.set", {"objective": "Stay within budget", "token_budget": 20}).status == "ok"
+        assert core.governed_model_query(session, "spend the budget", owner="btw") == "side answer"
+        state = _goal_state(core, session)
+    assert state["status"] == "budget-limited"
+    assert state["tokens_used"] == 35
+    assert state["window_tokens_used"] == 35
+    assert state["has_unknown_usage"] is False
+
+
+def test_goal_keeps_unknown_model_query_usage_unknown(tmp_path: Path) -> None:
+    replies = [
+        _usage_reply("goal setup turn", usage={"prompt_tokens": 10, "completion_tokens": 2}),
+        _usage_reply("side answer", usage=None),
+    ]
+    with loopback_server(replies) as server:
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        session = "sess-structured"
+        assert core.run("start a goal session", session_id=session).status == "completed"
+        assert _command(core, session, "goal.set", {"objective": "Keep unknowns honest", "token_budget": 100}).status == "ok"
+        assert core.governed_model_query(session, "unknown side usage", owner="btw") == "side answer"
+        state = _goal_state(core, session)
+        report = core.usage(session)
+        facts = [fact for fact in _all_facts(core, session) if isinstance(fact, UsageFact) and fact.source == "model_query"]
+    assert state["status"] == "usage-limited"
+    assert state["tokens_used"] is None
+    assert state["window_tokens_used"] is None
+    assert state["has_unknown_usage"] is True
+    assert len(facts) == 1 and facts[0].usage is None
+    assert report.input_tokens is None and report.output_tokens is None
+    assert report.has_unknown_usage is True
+    assert report.turn_count == 2
 
 
 def test_query_with_an_unexpected_tool_call_still_charges_its_usage(tmp_path: Path) -> None:
