@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -820,3 +823,114 @@ def test_cancelling_inflight_resource_log_read_preserves_its_service(
         assert "textDocument/hover" in methods
         assert "shutdown" in methods
         assert "exit" in methods
+
+
+def test_sigkill_core_leaves_language_server_orphan_until_explicit_cleanup(tmp_path: Path) -> None:
+    """A hard-killed core leaves its supervised LSP service running until someone reaps it.
+
+    The fixture records its own pid (through the grandchild hook) and hangs on the
+    first hover after initialize. That gives a deterministic in-flight barrier:
+    the core process is SIGKILLed only after the server has recorded the request.
+    """
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+    record = tmp_path / "record.jsonl"
+    workspace.mkdir()
+    (workspace / "note.txt").write_text("hard death\n", encoding="utf-8")
+    replies = [_turn(_call("hard-death-lsp", "lsp", operation="hover", path="note.txt", line=1, character=2))]
+    process: subprocess.Popen[str] | None = None
+    server_pid: int | None = None
+
+    def _recorded_server_pid() -> int | None:
+        for entry in _record_methods(record):
+            pid = entry.get("pid")
+            if entry.get("method") == "__grandchild__" and isinstance(pid, int) and not isinstance(pid, bool):
+                return pid
+        return None
+
+    def _wait_for_inflight_hover() -> None:
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            if any(entry.get("method") == "__hanging__" for entry in _record_methods(record)):
+                return
+            assert process is not None
+            if process.poll() is not None:
+                stdout, stderr = process.communicate(timeout=10)
+                pytest.fail(f"core exited before the LSP request hung: stdout={stdout} stderr={stderr}")
+            time.sleep(0.02)
+        pytest.fail("LSP fixture never recorded the in-flight hover barrier")
+
+    with loopback_server(replies) as provider:
+        config = {
+            "schema_version": 1,
+            "model": {"model": "endpoint/test-model"},
+            "policy": {"approval_mode": "yolo"},
+            "providers": {
+                "endpoint": {
+                    "api_key": "loopback-test-key",
+                    "base_url": f"http://127.0.0.1:{provider.server_port}/v1",
+                }
+            },
+            "plugins": {
+                "lsp": {
+                    "config": {
+                        "servers": {
+                            "echo": {
+                                "command": [
+                                    sys.executable,
+                                    str(_FIXTURE),
+                                    "--record",
+                                    str(record),
+                                    "--grandchild",
+                                    "true",
+                                    "--hang-after",
+                                    "1",
+                                ],
+                                "extensions": [".txt"],
+                                "languages": ["plaintext"],
+                            }
+                        }
+                    }
+                }
+            },
+        }
+        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "voidcode",
+                "--workspace",
+                str(workspace),
+                "--state-dir",
+                str(state),
+                "run",
+                "hard death hover",
+                "--session-id",
+                "lsp-hard-death",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            _wait_for_inflight_hover()
+            server_pid = _recorded_server_pid()
+            assert server_pid is not None, "fixture did not record its server pid"
+            assert process.poll() is None, "core must be alive before SIGKILL"
+            process.kill()
+            stdout, stderr = process.communicate(timeout=15)
+            assert process.returncode == -signal.SIGKILL, f"expected SIGKILL, got {process.returncode}: stdout={stdout} stderr={stderr}"
+            assert not _pid_gone(server_pid, timeout=1.0), "SIGKILLed core unexpectedly reaped its LSP service"
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate(timeout=10)
+            if server_pid is None:
+                server_pid = _recorded_server_pid()
+            if server_pid is not None:
+                try:
+                    os.kill(server_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                assert _pid_gone(server_pid, timeout=15), f"orphaned LSP server {server_pid} survived explicit cleanup"
