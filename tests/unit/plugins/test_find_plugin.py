@@ -20,6 +20,7 @@ from voidcode.plugins.find import create_plugin
 from voidcode.plugins.find.find_tool import (
     _MAX_MODEL_QUERY_PROMPT_BYTES,
     _STRUCTURED_QUERY_SUFFIX,
+    FindArgs,
     FindResultBody,
     FindTool,
 )
@@ -181,6 +182,25 @@ def test_find_declares_network_effect_and_never_replays() -> None:
     assert has_external_mutations(effects) is False
     assert denied_under_restriction(effects) is False
     assert is_read_tier(effects) is True
+
+
+def test_gitignore_is_honored_by_default_with_explicit_escape_hatch(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / ".gitignore").write_text("z_generated.py\n", encoding="utf-8")
+    (root / "a_visible.py").write_text("gitignoredmarker = 1\n", encoding="utf-8")
+    (root / "z_generated.py").write_text("gitignoredmarker = 2\n", encoding="utf-8")
+
+    assert FindArgs(query="x").respect_gitignore is True
+    default_body = _invoke(root, FakeServices(), {"query": "gitignoredmarker", "mode": "literal"})
+    assert default_body.status == "ok"
+    assert [location.path for location in default_body.locations] == ["a_visible.py"]
+    assert list(default_body.coverage.screened_files) == ["a_visible.py"]
+
+    escaped_body = _invoke(root, FakeServices(), {"query": "gitignoredmarker", "mode": "literal", "respect_gitignore": False})
+    assert escaped_body.status == "ok"
+    assert {location.path for location in escaped_body.locations} == {"a_visible.py", "z_generated.py"}
+    assert set(escaped_body.coverage.screened_files) == {"a_visible.py", "z_generated.py"}
 
 
 def test_auto_locates_behavior_with_read_verified_evidence(tmp_path: Path) -> None:

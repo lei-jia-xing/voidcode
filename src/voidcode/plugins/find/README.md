@@ -10,10 +10,10 @@ get file locations with evidence excerpts and why-matched rationales.
   also makes one provider judge turn, so the tool declares the union. Future
   per-operation effects are SDK design, not implemented here.
 - Input is a behavior description (`query`, at most 1000 characters) plus
-  optional path scope (`path`, `include`/`exclude` globs), `limit` (max
-  locations, default 10, max 50), `max_candidates` (files sent to the judge,
-  default 30, max 100), and the per-call judge budget (`model`,
-  `max_output_tokens`, default 2000, max 8000).
+  optional path scope (`path`, `include`/`exclude` globs,
+  `respect_gitignore`, default true), `limit` (max locations, default 10, max
+  50), `max_candidates` (files sent to the judge, default 30, max 100), and the
+  per-call judge budget (`model`, `max_output_tokens`, default 2000, max 8000).
 - Output is uniform: `status`, `locations` (each with `path`, `start_line` /
   `end_line`, `excerpt`, `rationale`, `via`, and re-readable `evidence`
   offset/limit), `coverage` (keywords screened, files with matches, judged and
@@ -70,11 +70,15 @@ Takes no plugin config; `create_plugin` ignores it. See
   fallback matching is case-sensitive; keyword prescreening is case-insensitive.
   If fallback grep matched but evidence could not be read, the detail says so
   rather than claiming both searches were empty.
-- `.gitignore` is not honored: the shared grep default is `respect_gitignore:
-  false`, and find exposes no override. Standard ignored directories (`.git`,
-  `node_modules`, `__pycache__`, build outputs, …) are still skipped. `read`,
-  `grep`, and therefore `find` keep external read access under the files
-  capability's documented path policy.
+- `respect_gitignore` defaults to true and is passed explicitly to every
+  shared-grep prescreen/literal/fallback call; set it to false to include
+  ignored files deliberately. The shared matcher loads only the search root's
+  `.gitignore`; nested ignore files, `.git/info/exclude`, and global excludes
+  are not read. An explicitly named file `path` is yielded by grep before its
+  ignore filter, so find inherits that exception. Standard ignored directories
+  (`.git`, `node_modules`, `__pycache__`, build outputs, …) are still skipped.
+  `read`, `grep`, and therefore `find` keep external read access under the
+  files capability's documented path policy.
 - No vector DB, no daemon index, no background threads; model access goes only
   through the existing `model_query_structured` plumbing with an explicit
   per-call output cap. Judge spend is recorded as `core.model_query`; it is not

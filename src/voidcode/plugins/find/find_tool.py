@@ -256,6 +256,7 @@ class FindArgs(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
     include: list[str] | None = None
     exclude: list[str] | None = None
+    respect_gitignore: bool = True
     max_candidates: int = Field(default=30, ge=1, le=100)
     model: str | None = None
     max_output_tokens: int = Field(default=2000, ge=1, le=_MAX_OUTPUT_TOKENS)
@@ -371,6 +372,7 @@ def _grep_arguments(args: FindArgs, *, pattern: str, limit: int, context: int, i
         "path": args.path,
         "ignore_case": ignore_case,
         "context": context,
+        "respect_gitignore": args.respect_gitignore,
         "limit": limit,
     }
     if args.include is not None:
@@ -568,7 +570,8 @@ class FindTool:
             "Locate code by behavior: describe what the code does in natural language and get "
             "file locations with evidence excerpts. Lexical prescreen plus one structured "
             "model judgment; every line is validated against a real file read. Literal mode "
-            "searches exact text without any model call. Symbol and semantic navigation are out of scope here."
+            "searches exact text without any model call. Symbol and semantic navigation are out of scope here. "
+            "Respects the search root's .gitignore by default; set respect_gitignore=false to include ignored files."
         ),
         input_schema=FindArgs.model_json_schema(),
         effects=frozenset({ToolEffect.READ, ToolEffect.NETWORK}),
