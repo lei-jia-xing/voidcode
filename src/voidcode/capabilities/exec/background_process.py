@@ -64,7 +64,8 @@ _READY_POLL_SECONDS = 0.03
 _STATE_VERSION = 1
 _EXTERNAL_MESSAGE = (
     "background process {process_id} is externally managed: this host does not supervise it "
-    "(it survived a host restart), so its logs, stdin, and process group are unavailable to this session"
+    "(it is not a retained job; it may have survived a host restart or been evicted after exit), so its logs, stdin, and "
+    "process group are unavailable to this session"
 )
 _UNKNOWN_MESSAGE = "unknown background process: {process_id}"
 _STOP_MESSAGE = "could not confirm background process {process_id} stopped; process group remains or termination is unconfirmed"

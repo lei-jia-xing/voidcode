@@ -243,17 +243,414 @@ class _Background:
         )
 
 
-class ProcessRegistry:
-    """Every child process the core started for a lease, plus its bounded capture."""
+#: Exited background entries retained per owner/session; live jobs are never evicted.
+MAX_EXITED_BACKGROUND_PER_SESSION: Final[int] = 64
 
-    def __init__(self) -> None:
-        # One-shot `run()` children only: supervised background jobs are owned by their bucket
-        # (they survive a generation swap), and service children live in their own sessions so a
-        # generation retire stops exactly its tree without touching the shared core group.
+
+def _refresh_tree(entry: _Background) -> tuple[int, ...]:
+    """Union the live descendant tree into this entry's recorded tree and return it.
+
+    Stale numbers are harmless: signals and liveness probes skip dead pids.
+    """
+    seen = set(entry.tree_pids)
+    seen.update(_descendant_pids(entry.pid))
+    seen.discard(entry.pid)
+    entry.tree_pids = tuple(sorted(seen))
+    return entry.tree_pids
+
+
+def _wait_owned_exit(entry: _Background, descendants: tuple[int, ...], drain_until: float) -> bool:
+    """Whether the leader and every recorded descendant exited before the deadline."""
+    while True:
+        alive = entry.process.poll() is None or _pid_alive(entry.pid)
+        survivors = [pid for pid in descendants if _pid_alive(pid)]
+        if not alive and not survivors:
+            return True
+        if time.monotonic() >= drain_until:
+            return False
+        time.sleep(_POLL_SECONDS)
+
+
+def _signal_entry(entry: _Background, descendants: tuple[int, ...], sig: int) -> None:
+    """Signal exactly what this entry owns: its own session group plus its recorded tree."""
+    if os.name == "posix":
+        try:
+            os.killpg(entry.pid, sig)
+        except ProcessLookupError, PermissionError:
+            pass
+    try:
+        entry.process.send_signal(sig)
+    except ProcessLookupError, PermissionError, OSError:
+        pass
+    for child_pid in descendants:
+        _signal_pid(child_pid, sig)
+    _signal_pid(entry.pid, sig)
+
+
+def _feed_frame(process: subprocess.Popen[Any], frame: bytes) -> None:
+    """Write one framed plan payload to the helper's stdin."""
+    pipe = process.stdin
+    if pipe is None:
+        raise ValueError("sandbox spawn lost its helper stdin pipe")
+    try:
+        pipe.write(frame)
+        pipe.flush()
+    except (BrokenPipeError, OSError, ValueError) as exc:
+        raise ValueError(f"sandbox spawn failed to deliver its plan: {exc}") from exc
+
+
+def _entry_effects(entry: _Background) -> ObservedEffects | None:
+    if entry.effects_path is None:
+        return None
+    return read_effects_file(entry.effects_path, backend=native_backend())
+
+
+def _write_entry(
+    process_id: str,
+    entry: _Background,
+    data: bytes,
+    *,
+    deadline: float | None,
+    cancel_event: threading.Event | None,
+) -> int:
+    """Write one supervised entry's stdin without an unbounded blocking write."""
+    _refresh_tree(entry)
+    pipe = entry.process.stdin
+    if pipe is None:
+        raise ValueError(f"background process {process_id} was started without a stdin pipe")
+    if entry.process.poll() is not None:
+        raise ValueError(f"background process {process_id} has exited")
+    try:
+        fd = pipe.fileno()
+        os.set_blocking(fd, False)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"background process {process_id} stdin is unavailable: {exc}") from exc
+    if deadline is None:
+        deadline = time.monotonic() + _WRITE_DEADLINE_SECONDS
+    payload = memoryview(data)
+    written = 0
+    try:
+        while written < len(payload):
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            if time.monotonic() >= deadline:
+                break
+            try:
+                count = os.write(fd, payload[written:])
+            except BlockingIOError:
+                # A full pipe is retried inside the deadline; no writer thread is ever parked.
+                time.sleep(_WRITE_POLL_SECONDS)
+                continue
+            except (BrokenPipeError, OSError, ValueError) as exc:
+                if written:
+                    # Bytes already accepted are a real side effect; report them honestly.
+                    break
+                raise ValueError(f"background process {process_id} is not reading its stdin: {exc}") from exc
+            if count <= 0:
+                break
+            written += count
+    finally:
+        try:
+            os.set_blocking(fd, True)
+        except OSError, ValueError:
+            pass
+    return written
+
+
+def _read_entry_output(
+    process_id: str,
+    entry: _Background,
+    *,
+    stream: str,
+    offset: int,
+    limit: int,
+) -> tuple[bytes, int, bool, bool]:
+    _refresh_tree(entry)
+    if stream not in ("stdout", "stderr"):
+        raise ValueError(f"unknown output stream: {stream!r}")
+    if offset < 0:
+        raise ValueError("process output offset must not be negative")
+    if limit <= 0 or limit > MAX_PAGE_BYTES:
+        raise ValueError(f"process output limit must be between 1 and {MAX_PAGE_BYTES}")
+    path = entry.stdout_path if stream == "stdout" else entry.stderr_path
+    try:
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            data = handle.read(limit)
+            total = handle.seek(0, os.SEEK_END)
+    except OSError as exc:
+        raise ValueError(f"background process {process_id} has no readable {stream}: {exc}") from exc
+    return data, total, offset + len(data) >= total, entry.running()
+
+
+def _cancel_entry(entry: _Background) -> bool:
+    """Stop one supervised entry and its owned descendants."""
+    descendants = _refresh_tree(entry)
+    leader_alive = entry.process.poll() is None or _pid_alive(entry.pid)
+    if leader_alive:
+        _signal_entry(entry, descendants, signal.SIGTERM)
+        drain_until = time.monotonic() + _STOP_GRACE_SECONDS
+        if not _wait_owned_exit(entry, descendants, drain_until):
+            _signal_entry(entry, descendants, signal.SIGKILL)
+            return _wait_owned_exit(entry, descendants, time.monotonic() + _STOP_GRACE_SECONDS)
+    elif descendants:
+        # The leader already exited: TERM-ignoring descendants are still owned, so sweep the
+        # recorded tree instead of declaring victory on dead pids.
+        _signal_entry(entry, descendants, signal.SIGKILL)
+        return _wait_owned_exit(entry, descendants, time.monotonic() + _STOP_GRACE_SECONDS)
+    return True
+
+
+def _stop_owned_group(entry: _Background, drain_until: float) -> None:
+    """TERM a job's whole group, then KILL every surviving member by pid scan.
+
+    Waiting on the leader alone would declare victory while a TERM-ignoring child still
+    runs in the same group, so the escalation enumerates live group members instead.
+    """
+    _kill_group(entry.process, signal.SIGTERM)
+    if _wait_group_gone(entry.pid, drain_until):
+        entry.process.poll()
+        return
+    for member in _group_pids(entry.pid):
+        _signal_pid(member, signal.SIGKILL)
+    _wait_group_gone(entry.pid, drain_until)
+    entry.process.poll()
+
+
+def _wait_group_gone(leader_pid: int, drain_until: float) -> bool:
+    """Whether the leader's process group has no live members left before the deadline."""
+    while True:
+        if not _group_pids(leader_pid):
+            return True
+        if time.monotonic() >= drain_until:
+            return False
+        time.sleep(_POLL_SECONDS)
+
+
+def _entry_settled(entry: _Background) -> bool:
+    """Whether an entry's leader and all recorded group members are gone."""
+    if entry.process.poll() is None:
+        return False
+    return not _group_pids(entry.pid)
+
+
+def _drain_bucket(lock: threading.Lock, bucket: dict[str, _Background]) -> list[_Background]:
+    with lock:
+        entries = list(bucket.values())
+        bucket.clear()
+    return entries
+
+
+class ProcessHost:
+    """Core-lifetime supervisor for detached background jobs.
+
+    A host outlives plugin runtime generations: every ``ProcessRegistry`` built by the same
+    Core shares it, so a reload neither loses a job nor its log paths. ``Core.close`` is the
+    owner shutdown that stops these jobs; generation close stops only one-shot children and
+    service processes.
+    """
+
+    def __init__(
+        self,
+        *,
+        spool_dir: Path | None = None,
+        max_exited_per_session: int = MAX_EXITED_BACKGROUND_PER_SESSION,
+    ) -> None:
+        self._jobs: dict[str, _Background] = {}
+        self._lock = threading.Lock()
+        self._spool_dir = None if spool_dir is None else Path(spool_dir)
+        self._max_exited_per_session = max_exited_per_session
+
+    @property
+    def spool_dir(self) -> Path:
+        """Stable runtime-owned log root, created lazily with owner-only permissions."""
+        with self._lock:
+            if self._spool_dir is None:
+                self._spool_dir = Path(tempfile.gettempdir()) / f"voidcode-process-{uuid4().hex}"
+            spool = self._spool_dir
+        spool.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(spool, 0o700)
+        except OSError:
+            pass
+        return spool
+
+    def existing(self, process_id: str) -> _Background | None:
+        """One background entry by id, ignoring ownership; used for duplicate-id checks."""
+        with self._lock:
+            return self._jobs.get(process_id)
+
+    def background(self, process_id: str, *, owner: str, session_id: str) -> _Background:
+        """One background job, visible only to the owner and session that started it."""
+        entry = self.existing(process_id)
+        if entry is None or entry.owner != owner or entry.session_id != session_id:
+            raise ValueError(f"unknown background process for this owner and session: {process_id}")
+        return entry
+
+    def spawn(
+        self,
+        argv: Sequence[str],
+        *,
+        owner: str,
+        session_id: str,
+        cwd: Path | None,
+        env: Mapping[str, str] | None,
+        stdin: bool,
+        stdout_path: Path,
+        stderr_path: Path,
+        process_id: str | None = None,
+        sandbox: SandboxBackend | None = None,
+        workspace: Path | None = None,
+    ) -> ProcessHandle:
+        """Start one detached background job whose identity and logs survive a reload."""
+        command = _decode_argv(argv, caller="spawn_process")
+        identifier = process_id or f"proc-{uuid4().hex[:16]}"
+        with self._lock:
+            existing = self._jobs.get(identifier)
+            if existing is not None and (existing.owner != owner or existing.session_id != session_id):
+                raise ValueError(f"background process id {identifier!r} belongs to another owner or session")
+            if existing is not None and not _entry_settled(existing):
+                raise ValueError(f"background process {identifier} is already running")
+        for path in (stdout_path, stderr_path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        frame: bytes | None = None
+        effects_path: Path | None = None
+        if sandbox is not None:
+            anchor = str(workspace.resolve()) if workspace is not None else str((cwd or Path.cwd()).resolve())
+            child_cwd = str(cwd.resolve()) if cwd is not None else anchor
+            # The supervisor's cumulative sidecar lives next to the logs (runtime-owned spool).
+            effects_path = stdout_path.parent / f"{identifier}.effects.json"
+            helper_argv, helper_cwd, helper_env, frame = build_plan(
+                sandbox,
+                argv=tuple(command),
+                cwd=child_cwd,
+                env_overrides={str(key): str(value) for key, value in dict(env or {}).items()},
+                workspace=anchor,
+                scratch=scratch_dir(anchor),
+                effects_path=str(effects_path),
+            )
+            command = list(helper_argv)
+            child_env: dict[str, str] | None = helper_env
+            cwd = Path(helper_cwd)
+        else:
+            child_env = None if env is None else {**os.environ, **{str(key): str(value) for key, value in env.items()}}
+        try:
+            # Logs are appended, never truncated: restarting the same process id keeps one history,
+            # which is what makes a readable log id useful across attempts.
+            with stdout_path.open("ab") as out, stderr_path.open("ab") as err:
+                process = subprocess.Popen(
+                    command,
+                    cwd=None if cwd is None else str(cwd),
+                    env=child_env,
+                    stdin=subprocess.PIPE if (stdin or frame is not None) else subprocess.DEVNULL,
+                    stdout=out,
+                    stderr=err,
+                    start_new_session=True,
+                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                )
+        except OSError as exc:
+            raise ValueError(f"failed to start background process: {exc}") from exc
+        if frame is not None:
+            _feed_frame(process, frame)
+            if not stdin:
+                # The frame was the only stdin the helper reads; close so a service-style
+                # helper never blocks waiting for more (a stdin=True caller keeps the pipe).
+                try:
+                    if process.stdin is not None:
+                        process.stdin.close()
+                except BrokenPipeError, OSError, ValueError:
+                    pass
+        entry = _Background(
+            process_id=identifier,
+            owner=owner,
+            session_id=session_id,
+            pid=process.pid,
+            start_time=process_start_identity(process.pid),
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            process=process,
+            own_group=True,
+            effects_path=effects_path,
+        )
+        with self._lock:
+            self._jobs.pop(identifier, None)
+            self._jobs[identifier] = entry
+            self._evict_exited(owner, session_id)
+        return entry.handle()
+
+    def write(
+        self,
+        process_id: str,
+        data: bytes,
+        *,
+        owner: str,
+        session_id: str,
+        deadline: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> int:
+        """Write stdin without ever blocking this thread past the deadline or cancellation."""
+        entry = self.background(process_id, owner=owner, session_id=session_id)
+        return _write_entry(process_id, entry, data, deadline=deadline, cancel_event=cancel_event)
+
+    def read_output(
+        self,
+        process_id: str,
+        *,
+        stream: str,
+        offset: int,
+        limit: int,
+        owner: str,
+        session_id: str,
+    ) -> tuple[bytes, int, bool, bool]:
+        entry = self.background(process_id, owner=owner, session_id=session_id)
+        return _read_entry_output(process_id, entry, stream=stream, offset=offset, limit=limit)
+
+    def cancel(self, process_id: str, *, owner: str, session_id: str) -> bool:
+        """Stop one owner- and session-scoped job and its owned descendants."""
+        entry = self.background(process_id, owner=owner, session_id=session_id)
+        return _cancel_entry(entry)
+
+    def list_background(self, *, owner: str, session_id: str) -> tuple[ProcessHandle, ...]:
+        with self._lock:
+            self._evict_exited(owner, session_id)
+            entries = [entry for entry in self._jobs.values() if entry.owner == owner and entry.session_id == session_id]
+        return tuple(entry.handle() for entry in entries)
+
+    def process_effects(self, process_id: str, *, owner: str, session_id: str) -> ObservedEffects | None:
+        """Cumulative supervisor sidecar for one owner- and session-scoped job; None when unconfined."""
+        return _entry_effects(self.background(process_id, owner=owner, session_id=session_id))
+
+    def stop_background(self) -> None:
+        """Stop every detached background job at owner shutdown; a reload never calls this."""
+        entries = _drain_bucket(self._lock, self._jobs)
+        for entry in entries:
+            # One grace per job: sharing a single deadline lets an earlier TERM-ignoring job
+            # consume the whole window and turns a later job's TERM into an immediate SIGKILL.
+            _stop_owned_group(entry, time.monotonic() + _READER_GRACE_SECONDS)
+
+    def _evict_exited(self, owner: str, session_id: str) -> None:
+        """Drop the oldest exited identities beyond the per-owner/session cap (caller holds lock)."""
+        exited = [
+            process_id
+            for process_id, entry in self._jobs.items()
+            if entry.owner == owner and entry.session_id == session_id and _entry_settled(entry)
+        ]
+        overflow = len(exited) - self._max_exited_per_session
+        for process_id in exited[: max(0, overflow)]:
+            del self._jobs[process_id]
+
+
+class ProcessRegistry:
+    """One runtime generation's processes: one-shot runs, services, and the shared host delegate."""
+
+    def __init__(self, host: ProcessHost | None = None) -> None:
+        # One-shot `run()` children only: detached background jobs are owned by the core-lifetime
+        # host (they survive a generation swap), and service children live in their own sessions so
+        # a generation retire stops exactly its tree without touching the shared core group.
         self._groups: dict[int, subprocess.Popen[Any]] = {}
-        self._background: dict[str, _Background] = {}
         self._services: dict[str, _Background] = {}
         self._lock = threading.Lock()
+        self._host = host if host is not None else ProcessHost()
 
     def live_group_count(self) -> int:
         with self._lock:
@@ -587,11 +984,11 @@ class ProcessRegistry:
         return True
 
     def reap_all(self) -> None:
-        """Kill and reap every one-shot `run()` group; supervised buckets are owned separately.
+        """Kill and reap every one-shot `run()` group; other supervisors own their children.
 
-        Background jobs survive a generation swap (stopped only by an explicit owner shutdown),
-        and service children are stopped by `stop_services` per owned tree. This registry still
-        leaves no *one-shot* child behind.
+        Detached background jobs live in the core-lifetime ``ProcessHost`` (stopped only by an
+        explicit owner shutdown), and service children are stopped by `stop_services` per owned
+        tree. This registry still leaves no *one-shot* child behind.
         """
         with self._lock:
             processes = list(self._groups.values())
@@ -624,18 +1021,27 @@ class ProcessRegistry:
     ) -> ProcessHandle:
         """Start one supervised process, streaming its output into the caller's paths.
 
-        ``service`` selects the lifetime: a service process belongs to this core generation
-        (it is stopped at generation retirement, in its own session so the shared core group
-        is never signalled), while a background process is a user job that survives a swap.
+        Detached background jobs are delegated to the shared core-lifetime ``ProcessHost`` so
+        they survive a generation swap. ``service=True`` starts a generation-owned helper in its
+        own session; a generation retire stops exactly that service tree.
         """
-        command = _decode_argv(argv, caller="spawn_service_process" if service else "spawn_process")
         identifier = process_id or f"{'svc' if service else 'proc'}-{uuid4().hex[:16]}"
-        with self._lock:
-            existing = self._background.get(identifier) or self._services.get(identifier)
-            if existing is not None and (existing.owner != owner or existing.session_id != session_id):
-                raise ValueError(f"background process id {identifier!r} belongs to another owner or session")
-            if existing is not None and existing.running():
-                raise ValueError(f"background process {identifier} is already running")
+        self._ensure_identifier_available(identifier, owner=owner, session_id=session_id)
+        if not service:
+            return self._host.spawn(
+                argv,
+                owner=owner,
+                session_id=session_id,
+                cwd=cwd,
+                env=env,
+                stdin=stdin,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                process_id=identifier,
+                sandbox=sandbox,
+                workspace=workspace,
+            )
+        command = _decode_argv(argv, caller="spawn_service_process")
         for path in (stdout_path, stderr_path):
             path.parent.mkdir(parents=True, exist_ok=True)
         frame: bytes | None = None
@@ -659,64 +1065,31 @@ class ProcessRegistry:
             cwd = Path(helper_cwd)
         else:
             child_env = None if env is None else {**os.environ, **{str(key): str(value) for key, value in env.items()}}
-        if service:
-            return self._spawn_service(
-                command,
-                identifier=identifier,
-                owner=owner,
-                session_id=session_id,
-                cwd=cwd,
-                child_env=child_env,
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-                frame=frame,
-                effects_path=effects_path,
-            )
-        try:
-            # Logs are appended, never truncated: restarting the same process id keeps one history,
-            # which is what makes a readable log id useful across attempts.
-            with stdout_path.open("ab") as out, stderr_path.open("ab") as err:
-                process = subprocess.Popen(
-                    command,
-                    cwd=None if cwd is None else str(cwd),
-                    env=child_env,
-                    stdin=subprocess.PIPE if (stdin or frame is not None) else subprocess.DEVNULL,
-                    stdout=out,
-                    stderr=err,
-                    start_new_session=True,
-                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-                )
-        except OSError as exc:
-            raise ValueError(f"failed to start background process: {exc}") from exc
-        if frame is not None:
-            self._feed_frame(process, frame)
-            if not stdin:
-                # The frame was the only stdin the helper reads; close so a service-style
-                # helper never blocks waiting for more (a stdin=True caller keeps the pipe).
-                try:
-                    if process.stdin is not None:
-                        process.stdin.close()
-                except BrokenPipeError, OSError, ValueError:
-                    pass
-        entry = _Background(
-            process_id=identifier,
+        return self._spawn_service(
+            command,
+            identifier=identifier,
             owner=owner,
             session_id=session_id,
-            pid=process.pid,
-            start_time=process_start_identity(process.pid),
+            cwd=cwd,
+            child_env=child_env,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
-            process=process,
-            own_group=True,
+            frame=frame,
             effects_path=effects_path,
         )
+
+    def _ensure_identifier_available(self, identifier: str, *, owner: str, session_id: str) -> None:
+        """Refuse an id that another owner/session holds or that is already running."""
+        background = self._host.existing(identifier)
         with self._lock:
-            replaced = self._background.get(identifier)
-            if replaced is not None and replaced.pid in self._groups:
-                # Defensive only: current spawns never register background pids here.
-                self._groups.pop(replaced.pid, None)
-            self._background[identifier] = entry
-        return entry.handle()
+            service = self._services.get(identifier)
+        for existing in (background, service):
+            if existing is None:
+                continue
+            if existing.owner != owner or existing.session_id != session_id:
+                raise ValueError(f"background process id {identifier!r} belongs to another owner or session")
+            if not _entry_settled(existing):
+                raise ValueError(f"background process {identifier} is already running")
 
     def _spawn_service(
         self,
@@ -750,7 +1123,7 @@ class ProcessRegistry:
         if frame is not None:
             # Services keep the stdin pipe (frame first, then caller bytes): the helper
             # reads its one frame and the supervisor forwards the rest to the child.
-            self._feed_frame(server, frame)
+            _feed_frame(server, frame)
         entry = _Background(
             process_id=identifier,
             owner=owner,
@@ -769,39 +1142,15 @@ class ProcessRegistry:
                 # Defensive only: current spawns never register service pids here.
                 self._groups.pop(replaced.pid, None)
             self._services[identifier] = entry
-        self._refresh_tree(entry)
+        _refresh_tree(entry)
         return entry.handle()
-
-    @staticmethod
-    def _feed_frame(process: subprocess.Popen[Any], frame: bytes) -> None:
-        """Write one framed plan payload to the helper's stdin."""
-        pipe = process.stdin
-        if pipe is None:
-            raise ValueError("sandbox spawn lost its helper stdin pipe")
-        try:
-            pipe.write(frame)
-            pipe.flush()
-        except (BrokenPipeError, OSError, ValueError) as exc:
-            raise ValueError(f"sandbox spawn failed to deliver its plan: {exc}") from exc
 
     def process_effects(self, process_id: str, *, owner: str, session_id: str) -> ObservedEffects | None:
         """Cumulative supervisor sidecar for one owner- and session-scoped process; None when unconfined."""
-        entry = self._supervised(process_id, owner=owner, session_id=session_id)
-        if entry.effects_path is None:
-            return None
-        return read_effects_file(entry.effects_path, backend=native_backend())
-
-    def _supervised(self, process_id: str, *, owner: str, session_id: str) -> _Background:
-        """One supervised entry, visible only to the owner and session that started it."""
-        with self._lock:
-            entry = self._background.get(process_id) or self._services.get(process_id)
-        if entry is None or entry.owner != owner or entry.session_id != session_id:
-            raise ValueError(f"unknown background process for this owner and session: {process_id}")
-        return entry
-
-    def background(self, process_id: str, *, owner: str, session_id: str) -> _Background:
-        """One supervised process, visible only to its owner and session."""
-        return self._supervised(process_id, owner=owner, session_id=session_id)
+        service = self.service_entry(process_id, owner=owner, session_id=session_id)
+        if service is not None:
+            return _entry_effects(service)
+        return self._host.process_effects(process_id, owner=owner, session_id=session_id)
 
     def service_entry(self, process_id: str, *, owner: str, session_id: str) -> _Background | None:
         """One generation service entry, or None when not owned by this owner and session."""
@@ -813,10 +1162,8 @@ class ProcessRegistry:
 
     def list_background(self, *, owner: str, session_id: str) -> tuple[ProcessHandle, ...]:
         with self._lock:
-            entries = [
-                entry for entry in (*self._background.values(), *self._services.values()) if entry.owner == owner and entry.session_id == session_id
-            ]
-        return tuple(entry.handle() for entry in entries)
+            services = [entry for entry in self._services.values() if entry.owner == owner and entry.session_id == session_id]
+        return (*self._host.list_background(owner=owner, session_id=session_id), *(entry.handle() for entry in services))
 
     def write(
         self,
@@ -830,51 +1177,20 @@ class ProcessRegistry:
     ) -> int:
         """Write stdin without ever blocking this thread past the deadline or cancellation.
 
-        Returns the exact bytes the pipe accepted; a cancelled, timed-out, or broken pipe
-        reports its honest partial count instead of claiming the whole payload was written.
+        A generation-owned service is written here; any other id is delegated to the shared
+        background host. The returned count is the exact bytes accepted.
         """
-        entry = self.background(process_id, owner=owner, session_id=session_id)
-        self._refresh_tree(entry)
-        pipe = entry.process.stdin
-        if pipe is None:
-            raise ValueError(f"background process {process_id} was started without a stdin pipe")
-        if entry.process.poll() is not None:
-            raise ValueError(f"background process {process_id} has exited")
-        try:
-            fd = pipe.fileno()
-            os.set_blocking(fd, False)
-        except (OSError, ValueError) as exc:
-            raise ValueError(f"background process {process_id} stdin is unavailable: {exc}") from exc
-        if deadline is None:
-            deadline = time.monotonic() + _WRITE_DEADLINE_SECONDS
-        payload = memoryview(data)
-        written = 0
-        try:
-            while written < len(payload):
-                if cancel_event is not None and cancel_event.is_set():
-                    break
-                if time.monotonic() >= deadline:
-                    break
-                try:
-                    count = os.write(fd, payload[written:])
-                except BlockingIOError:
-                    # A full pipe is retried inside the deadline; no writer thread is ever parked.
-                    time.sleep(_WRITE_POLL_SECONDS)
-                    continue
-                except (BrokenPipeError, OSError, ValueError) as exc:
-                    if written:
-                        # Bytes already accepted are a real side effect; report them honestly.
-                        break
-                    raise ValueError(f"background process {process_id} is not reading its stdin: {exc}") from exc
-                if count <= 0:
-                    break
-                written += count
-        finally:
-            try:
-                os.set_blocking(fd, True)
-            except OSError, ValueError:
-                pass
-        return written
+        service = self.service_entry(process_id, owner=owner, session_id=session_id)
+        if service is None:
+            return self._host.write(
+                process_id,
+                data,
+                owner=owner,
+                session_id=session_id,
+                deadline=deadline,
+                cancel_event=cancel_event,
+            )
+        return _write_entry(process_id, service, data, deadline=deadline, cancel_event=cancel_event)
 
     def read_output(
         self,
@@ -886,142 +1202,45 @@ class ProcessRegistry:
         owner: str,
         session_id: str,
     ) -> tuple[bytes, int, bool, bool]:
-        entry = self.background(process_id, owner=owner, session_id=session_id)
-        self._refresh_tree(entry)
-        if stream not in ("stdout", "stderr"):
-            raise ValueError(f"unknown output stream: {stream!r}")
-        if offset < 0:
-            raise ValueError("process output offset must not be negative")
-        if limit <= 0 or limit > MAX_PAGE_BYTES:
-            raise ValueError(f"process output limit must be between 1 and {MAX_PAGE_BYTES}")
-        path = entry.stdout_path if stream == "stdout" else entry.stderr_path
-        try:
-            with path.open("rb") as handle:
-                handle.seek(offset)
-                data = handle.read(limit)
-                total = handle.seek(0, os.SEEK_END)
-        except OSError as exc:
-            raise ValueError(f"background process {process_id} has no readable {stream}: {exc}") from exc
-        return data, total, offset + len(data) >= total, entry.running()
+        service = self.service_entry(process_id, owner=owner, session_id=session_id)
+        if service is None:
+            return self._host.read_output(
+                process_id,
+                stream=stream,
+                offset=offset,
+                limit=limit,
+                owner=owner,
+                session_id=session_id,
+            )
+        return _read_entry_output(process_id, service, stream=stream, offset=offset, limit=limit)
 
     def cancel(self, process_id: str, *, owner: str, session_id: str) -> bool:
         """Stop one owner- and session-scoped process and its owned descendants."""
-        entry = self.background(process_id, owner=owner, session_id=session_id)
-        descendants = self._refresh_tree(entry)
-        leader_alive = entry.process.poll() is None or _pid_alive(entry.pid)
-        if leader_alive:
-            self._signal_entry(entry, descendants, signal.SIGTERM)
-            drain_until = time.monotonic() + _STOP_GRACE_SECONDS
-            if not self._wait_owned_exit(entry, descendants, drain_until):
-                self._signal_entry(entry, descendants, signal.SIGKILL)
-                return self._wait_owned_exit(entry, descendants, time.monotonic() + _STOP_GRACE_SECONDS)
-        elif descendants:
-            # The leader already exited: TERM-ignoring descendants are still owned, so sweep the
-            # recorded tree instead of declaring victory on dead pids.
-            self._signal_entry(entry, descendants, signal.SIGKILL)
-            return self._wait_owned_exit(entry, descendants, time.monotonic() + _STOP_GRACE_SECONDS)
-        return True
-
-    def _refresh_tree(self, entry: _Background) -> tuple[int, ...]:
-        """Union the live descendant tree into this entry's recorded tree and return it.
-
-        Stale numbers are harmless: signals and liveness probes skip dead pids.
-        """
-        seen = set(entry.tree_pids)
-        seen.update(_descendant_pids(entry.pid))
-        seen.discard(entry.pid)
-        entry.tree_pids = tuple(sorted(seen))
-        return entry.tree_pids
-
-    def _wait_owned_exit(self, entry: _Background, descendants: tuple[int, ...], drain_until: float) -> bool:
-        """Whether the leader and every recorded descendant exited before the deadline."""
-        while True:
-            alive = entry.process.poll() is None or _pid_alive(entry.pid)
-            survivors = [pid for pid in descendants if _pid_alive(pid)]
-            if not alive and not survivors:
-                return True
-            if time.monotonic() >= drain_until:
-                return False
-            time.sleep(_POLL_SECONDS)
-
-    @staticmethod
-    def _signal_entry(entry: _Background, descendants: tuple[int, ...], sig: int) -> None:
-        """Signal exactly what this entry owns: its own session group plus its recorded tree."""
-        if os.name == "posix":
-            try:
-                os.killpg(entry.pid, sig)
-            except ProcessLookupError, PermissionError:
-                pass
-        try:
-            entry.process.send_signal(sig)
-        except ProcessLookupError, PermissionError, OSError:
-            pass
-        for child_pid in descendants:
-            _signal_pid(child_pid, sig)
-        _signal_pid(entry.pid, sig)
-
-    def stop_background(self) -> None:
-        """Stop every supervised background (user job) at the owner's shutdown; a swap keeps them running.
-
-        Each job owns its process group, so the stop sweeps the whole group — including
-        TERM-ignoring members after a dead leader — and only then reports. A swap never calls
-        this; the jobs keep running with their persisted identities.
-        """
-        entries = self._drain_bucket(self._background)
-        for entry in entries:
-            # One grace per job: sharing a single deadline lets an earlier TERM-ignoring job
-            # consume the whole window and turns a later job's TERM into an immediate SIGKILL.
-            self._stop_owned_group(entry, time.monotonic() + _READER_GRACE_SECONDS)
-
-    def _stop_owned_group(self, entry: _Background, drain_until: float) -> None:
-        """TERM a job's whole group, then KILL every surviving member by pid scan.
-
-        Waiting on the leader alone would declare victory while a TERM-ignoring child still
-        runs in the same group, so the escalation enumerates live group members instead.
-        """
-        _kill_group(entry.process, signal.SIGTERM)
-        if self._wait_group_gone(entry.pid, drain_until):
-            entry.process.poll()
-            return
-        for member in _group_pids(entry.pid):
-            _signal_pid(member, signal.SIGKILL)
-        self._wait_group_gone(entry.pid, drain_until)
-        entry.process.poll()
-
-    def _wait_group_gone(self, leader_pid: int, drain_until: float) -> bool:
-        """Whether the leader's process group has no live members left before the deadline."""
-        while True:
-            if not _group_pids(leader_pid):
-                return True
-            if time.monotonic() >= drain_until:
-                return False
-            time.sleep(_POLL_SECONDS)
+        service = self.service_entry(process_id, owner=owner, session_id=session_id)
+        if service is None:
+            return self._host.cancel(process_id, owner=owner, session_id=session_id)
+        return _cancel_entry(service)
 
     def stop_services(self) -> None:
         """Stop every service process this generation started, plus its recorded descendants.
 
         Called by the runtime's own cleanup on retire/reload/owner-shutdown. Each service owns
         its session, so the stop sweeps exactly its group plus the recorded tree — never the
-        shared core group.
+        shared core group. Detached background jobs belong to the core-lifetime host and are
+        never touched here.
         """
-        entries = self._drain_bucket(self._services)
+        entries = _drain_bucket(self._lock, self._services)
         drain_until = time.monotonic() + _READER_GRACE_SECONDS
         for entry in entries:
-            descendants = self._refresh_tree(entry)
+            descendants = _refresh_tree(entry)
             if entry.process.poll() is None or _pid_alive(entry.pid):
-                self._signal_entry(entry, descendants, signal.SIGTERM)
-                if not self._wait_owned_exit(entry, descendants, drain_until):
-                    self._signal_entry(entry, descendants, signal.SIGKILL)
-                    self._wait_owned_exit(entry, descendants, drain_until)
+                _signal_entry(entry, descendants, signal.SIGTERM)
+                if not _wait_owned_exit(entry, descendants, drain_until):
+                    _signal_entry(entry, descendants, signal.SIGKILL)
+                    _wait_owned_exit(entry, descendants, drain_until)
             elif descendants:
-                self._signal_entry(entry, descendants, signal.SIGKILL)
-                self._wait_owned_exit(entry, descendants, drain_until)
-
-    def _drain_bucket(self, bucket: dict[str, _Background]) -> list[_Background]:
-        with self._lock:
-            entries = list(bucket.values())
-            bucket.clear()
-        return entries
+                _signal_entry(entry, descendants, signal.SIGKILL)
+                _wait_owned_exit(entry, descendants, drain_until)
 
 
 def _write_stdin(process: subprocess.Popen[Any], payload: bytes | None) -> None:

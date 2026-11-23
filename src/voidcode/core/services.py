@@ -2,7 +2,8 @@
 
 One `RuntimeServices` instance is bound to one lease (owner + session + stance) for the
 duration of a single plugin callback. Artifact spills publish immutable byte streams;
-process management delegates to the core-owned `ProcessRegistry`.
+process management delegates to the generation `ProcessRegistry` and the shared core-lifetime
+`ProcessHost`.
 """
 
 from __future__ import annotations
@@ -123,25 +124,21 @@ class RuntimeServices:
         identifier: str,
         stdout_path: Path | str | None,
         stderr_path: Path | str | None,
-        spool: Path,
-        *,
-        service: bool,
     ) -> tuple[Path, Path]:
-        """Resolve log targets: runtime-generated spool under confinement, caller paths otherwise.
+        """Resolve log targets: generated paths use the stable host spool; caller paths win when unconfined.
 
         Under an active backend, custom stdout/stderr paths are REFUSED with a clear sandbox
         reason (a crafted target would become a parent-opened bypass FD); only
         runtime-generated spool files. Each generated path is resolved and checked before
         mkdir/open. Absent backend preserves today's custom-path behavior.
         """
+        root = self._runtime.process_host.spool_dir
         if self._runtime.sandbox_backend is not None:
             if stdout_path is not None or stderr_path is not None:
                 raise ValueError(
                     "sandbox refuses custom log paths: only runtime-generated spool files "
                     f"(got stdout_path={stdout_path!r} stderr_path={stderr_path!r})"
                 )
-            root = self._runtime.process_spool_dir or spool
-            root = Path(root)
             if not root.is_absolute():
                 raise ValueError(f"sandbox process spool root must be absolute: {root}")
             stdout_resolved = (root / f"{identifier}.stdout.log").resolve()
@@ -152,10 +149,9 @@ class RuntimeServices:
                 if resolved != root and root not in resolved.parents:
                     raise ValueError(f"sandbox process spool path escapes its root: {resolved}")
             return stdout_resolved, stderr_resolved
-        _ = service
         return (
-            Path(stdout_path) if stdout_path is not None else spool / f"{identifier}.stdout.log",
-            Path(stderr_path) if stderr_path is not None else spool / f"{identifier}.stderr.log",
+            Path(stdout_path) if stdout_path is not None else root / f"{identifier}.stdout.log",
+            Path(stderr_path) if stderr_path is not None else root / f"{identifier}.stderr.log",
         )
 
     def run_process(
@@ -236,7 +232,6 @@ class RuntimeServices:
         self._require_writable_stance("run background processes")
         lease = self._active_lease()
         identifier = process_id or f"proc-{uuid4().hex[:16]}"
-        spool = self._runtime.background_spool
         resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
         if cwd is not None and not resolved_cwd.is_dir():
             raise ValueError(f"spawn_process cwd is not a directory: {resolved_cwd}")
@@ -244,8 +239,6 @@ class RuntimeServices:
             identifier,
             stdout_path,
             stderr_path,
-            spool,
-            service=False,
         )
         return self._runtime.processes.spawn(
             argv,
@@ -272,7 +265,6 @@ class RuntimeServices:
         self._require_writable_stance("start service processes")
         lease = self._active_lease()
         identifier = process_id or f"svc-{uuid4().hex[:16]}"
-        spool = self._runtime.background_spool
         resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
         if cwd is not None and not resolved_cwd.is_dir():
             raise ValueError(f"spawn_service_process cwd is not a directory: {resolved_cwd}")
@@ -280,8 +272,6 @@ class RuntimeServices:
             identifier,
             None,
             None,
-            spool,
-            service=True,
         )
         handle = self._runtime.processes.spawn(
             argv,

@@ -34,6 +34,7 @@ from .core.activation import (
 from .core.engine import Core
 from .core.events import EventType
 from .core.plugins import PluginRuntime, PluginSource
+from .core.processes import ProcessHost
 from .core.sandbox import SandboxBackend, check_helper
 from .core.storage.store import (
     DATABASE_FILENAME,
@@ -443,6 +444,9 @@ def open_core(
             bundled_sources=bundled_sources(),
             config=config,
         )
+    # One core-lifetime host keeps detached jobs and their stable spool across reloads; a
+    # candidate/standalone runtime must create its own local host instead of sharing this one.
+    process_host = ProcessHost(spool_dir=state_dir / "process-spool")
     # The recorded configuration — not the live file — decides the backend: a restart
     # rebuilds the generation it recorded, and only an explicit reload changes it.
     return Core(
@@ -455,6 +459,7 @@ def open_core(
         admission=admission,
         admits=admit_callback,
         sandbox_backend=sandbox_backend_for(config=config, workspace=workspace, state_dir=state_dir, admission=admission),
+        process_host=process_host,
         config_filename=CONFIG_FILE_NAME,
     )
 

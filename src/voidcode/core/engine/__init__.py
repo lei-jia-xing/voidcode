@@ -74,6 +74,7 @@ from ..execution import _Cursor, _Execution, committed_event, wire_object
 from ..fact_delivery import BirthAuthorization, FactDelivery
 from ..output_projection import ResultProjector
 from ..plugins import LeaseContext, PluginRuntime, PluginSource
+from ..processes import ProcessHost
 from ..sandbox import SandboxBackend
 from ..storage.store import (
     DATABASE_FILENAME,
@@ -320,6 +321,7 @@ class Core:
         admission: Admission | None = None,
         admits: Callable[..., Admission] | None = None,
         sandbox_backend: SandboxBackend | None = None,
+        process_host: ProcessHost | None = None,
         # Product-owned config filename (e.g. voidcode.json): the product layer
         # passes its own name in; the core never spells it, only guards it.
         config_filename: str = "voidcode.json",
@@ -358,6 +360,11 @@ class Core:
         self._observer_eligibility: dict[tuple[str, str], tuple[str, ...]] = {}
         self._state_dir = state_dir
         self._admits = admits
+        # One host for this Core's lifetime: every runtime generation shares it, so background
+        # jobs and their stable log paths survive reloads. Core.close() stops them. Materialize
+        # the root now so sandbox protected-path setup always names an existing directory.
+        self._process_host = process_host if process_host is not None else ProcessHost(spool_dir=self._process_spool_dir())
+        _ = self._process_host.spool_dir
         self._delegation = DelegationManager(self)
         self._artifacts = ArtifactStore(state_dir / "artifacts")
         with ExitStack() as resources:
@@ -767,11 +774,10 @@ class Core:
         # draining every session lock now waits only for work that was already admitted.
         self._drain_session_locks()
         self._background.quiesce("core shutdown")
-        snapshot = self._snapshot
-        if snapshot is not None:
-            # The core's own shutdown is an owner shutdown: supervised background processes end
-            # with it. A reload keeps them: the runtime swap is not the owner going away.
-            snapshot.plugin_runtime.stop_background_processes()
+        # The core's own shutdown is an owner shutdown: every background job, including ones
+        # started by an earlier generation, ends here. A reload is not an owner shutdown and
+        # never calls this; the shared host keeps those jobs alive.
+        self._process_host.stop_background()
         self._resources.close()
 
     def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
@@ -1403,7 +1409,7 @@ class Core:
             tool_definition_callback=self._governance.visible_tool_definition,
             artifacts_dir=self._state_dir / "artifacts",
             sandbox_backend=sandbox_backend,
-            process_spool_dir=self._process_spool_dir(),
+            process_host=self._process_host,
         )
 
     def build_candidate_runtime(self, admission: Admission, target_revision_id: str) -> PluginRuntime:

@@ -7,7 +7,6 @@ import importlib.util
 import inspect
 import json
 import sys
-import tempfile
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -88,7 +87,7 @@ from .artifacts import ArtifactStore
 from .child_contracts import ChildCompletionReceipt, ChildSpawnRequest, ChildWaitDelivery
 from .events import EventType
 from .facts import fact_for_event
-from .processes import ProcessRegistry
+from .processes import ProcessHost, ProcessRegistry
 from .sandbox import SandboxBackend
 from .services import ResourceReaderServicesView, RuntimeServices
 from .storage.store import (
@@ -275,7 +274,7 @@ def _check_arity(fn: Any, expected_arity: int, name: str) -> None:
 
 
 class PluginRuntime:
-    """One loaded plugin generation, dispatched synchronously in this process."""
+    """One loaded plugin generation, dispatched synchronously; shares its Core's ProcessHost."""
 
     def __init__(
         self,
@@ -305,7 +304,7 @@ class PluginRuntime:
         tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,
         artifacts_dir: Path | None = None,
         sandbox_backend: SandboxBackend | None = None,
-        process_spool_dir: Path | None = None,
+        process_host: ProcessHost | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         if not self.workspace.is_dir():
@@ -353,14 +352,12 @@ class PluginRuntime:
         self._claimed_services: dict[str, set[tuple[str, str]]] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._closed = False
-        #: Every child process this runtime started; reaped on close.
-        self.processes = ProcessRegistry()
+        #: Core-lifetime background supervisor; reload candidates receive the same host.
+        self.process_host = process_host if process_host is not None else ProcessHost()
+        #: Every child process this generation started; reaped/stopped on close.
+        self.processes = ProcessRegistry(self.process_host)
         #: Transparent exec backend for this generation; None means unconfined host exec.
         self.sandbox_backend: SandboxBackend | None = sandbox_backend
-        #: Stable runtime-owned spool ancestor for confined logs (None = per-generation temp).
-        self.process_spool_dir: Path | None = Path(process_spool_dir) if process_spool_dir is not None else None
-        #: Where a background process spools its output when the caller names no log path.
-        self.background_spool = Path(tempfile.mkdtemp(prefix="voidcode-process-"))
 
         self._tools: dict[str, tuple[Any, str]] = {}
         self._providers: dict[str, tuple[Any, str]] = {}
@@ -1804,15 +1801,6 @@ class PluginRuntime:
             raise RuntimeError("prepare_deactivate must return a JSON object")
         return json_wire_object(prepared)
 
-    def stop_background_processes(self) -> None:
-        """Owner shutdown: supervised background processes end with the core that started them.
-
-        A generation swap is not an owner shutdown: a background process started by one
-        generation keeps running across a reload, which is exactly why the caller persists
-        its identity.
-        """
-        self.processes.stop_background()
-
     def _forget_module(self, name: str) -> None:
         sys.modules.pop(name, None)
 
@@ -1827,8 +1815,9 @@ class PluginRuntime:
             self._active_leases.clear()
             self._claimed_services.clear()
             self._cancel_events.clear()
-        # Child and service processes started by this generation stop with it;
-        # supervised background jobs are owned separately and survive a swap.
+        # Child and service processes started by this generation stop with it. Detached
+        # background jobs live in the core-owned ProcessHost and survive a generation swap;
+        # Core.close() is the owner shutdown that stops them.
         try:
             self.processes.reap_all()
         finally:

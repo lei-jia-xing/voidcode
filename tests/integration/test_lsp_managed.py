@@ -133,6 +133,16 @@ def _wait_file(path: Path, *, timeout: float = 15.0) -> str:
     raise AssertionError(f"{path} was never written")
 
 
+def _wait_text(path: Path, needle: str, *, timeout: float = 15.0) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        if needle in text:
+            return text
+        time.sleep(0.02)
+    raise AssertionError(f"{path} never contained {needle!r}")
+
+
 def _wait_second_hover_started(record: Path, *, timeout: float = 30.0) -> bool:
     """Wait until the fixture records the hung second hover plus its barrier.
 
@@ -383,9 +393,12 @@ def test_reload_retires_old_runtime_and_its_service_tree(tmp_path: Path) -> None
                 "background_process",
                 op="start",
                 command=(
-                    f'{sys.executable} -c "import os,pathlib,time;'
+                    f'{sys.executable} -c "import os,pathlib,sys,time;'
                     f"pathlib.Path({str(tmp_path / 'bg.pid')!r}).write_text(str(os.getpid()));"
-                    "print('bg-ready', flush=True);time.sleep(120)\""
+                    "print('bg-ready', flush=True);"
+                    "line=sys.stdin.readline();"
+                    "print('bg-echo:'+line.strip(), flush=True);"
+                    'time.sleep(120)"'
                 ),
                 ready_pattern="bg-ready",
             )
@@ -402,11 +415,21 @@ def test_reload_retires_old_runtime_and_its_service_tree(tmp_path: Path) -> None
         markers = [entry for entry in _record_methods(record) if entry.get("method") == "__grandchild__"]
         server_pid = int(markers[0]["pid"])
         old_runtime = core.plugin_runtime
+        start = next(result for result in _completed(core, session_id) if result.tool_name == "background_process")
+        assert isinstance(start, ToolSuccess) and start.body is not None
+        start_body = dict(start.body.structured_content)
+        process_id = str(start_body["process_id"])
+        stdout_path = Path(str(start_body["stdout_path"]))
+        assert stdout_path.is_relative_to(core.state_dir / "process-spool")
+        service_handles = core.plugin_runtime.processes.list_background(owner="lsp", session_id=session_id)
+        assert service_handles, "the fixture LSP service must be supervised before reload"
+        assert all(Path(handle.stdout_path).is_relative_to(core.state_dir / "process-spool") for handle in service_handles)
 
-        # A no-op reload refuses; change the workspace config so the swap is real.
+        # A no-op reload refuses; change the workspace config so the swap is real. Keep yolo
+        # approvals so the post-reload tool calls exercise the host instead of parking.
         config_path = workspace / "voidcode.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        config["policy"]["approval_mode"] = "ask"
+        config["plugins"]["lsp"]["config"]["servers"]["echo"]["extensions"] = [".txt", ".md"]
         config_path.write_text(json.dumps(config), encoding="utf-8")
         reloaded = core.invoke_command(session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
         assert reloaded.status == "ok", reloaded
@@ -414,6 +437,86 @@ def test_reload_retires_old_runtime_and_its_service_tree(tmp_path: Path) -> None
         assert _pid_gone(server_pid, timeout=20), f"server pid {server_pid} survived reload"
         assert _pid_gone(descendant, timeout=20), f"descendant pid {descendant} survived reload"
         assert not _pid_gone(bg_pid, timeout=0.1), f"detached background job {bg_pid} must survive reload"
+
+        # A reload is not a host restart: the same job remains listable, readable, writable, and
+        # stoppable from the new generation through the core-owned ProcessHost.
+        server.replies.extend(
+            [
+                _turn(
+                    _call("post-ps", "background_process", op="ps"),
+                    _call("post-logs-1", "background_process", op="logs", process_id=process_id, stream="stdout", offset=0, limit=50),
+                    _call("post-send", "background_process", op="send", process_id=process_id, input="after-reload"),
+                ),
+                _turn(output="post reload inspect"),
+            ]
+        )
+        assert core.run("inspect after reload", session_id=session_id, max_steps=8).status == "completed"
+        ps, logs_before, send = _completed(core, session_id)[-3:]
+        assert isinstance(ps, ToolSuccess) and ps.body is not None
+        ps_body = dict(ps.body.structured_content)
+        assert any(row["process_id"] == process_id and row["state"] == "running" for row in ps_body["processes"])
+        assert process_id in ps.output.text
+        assert isinstance(logs_before, ToolSuccess) and logs_before.body is not None
+        assert "bg-ready" in dict(logs_before.body.structured_content)["stdout"]
+        assert isinstance(send, ToolSuccess) and send.body is not None
+        assert dict(send.body.structured_content)["written_bytes"] == len("after-reload\n")
+
+        _wait_text(stdout_path, "bg-echo:after-reload")
+        server.replies.extend(
+            [
+                _turn(
+                    _call("post-logs-2", "background_process", op="logs", process_id=process_id, stream="stdout", offset=0, limit=50),
+                    _call("post-stop", "background_process", op="stop", process_id=process_id),
+                ),
+                _turn(output="post reload stop"),
+            ]
+        )
+        assert core.run("stop after reload", session_id=session_id, max_steps=8).status == "completed"
+        logs_after, stop = _completed(core, session_id)[-2:]
+        assert isinstance(logs_after, ToolSuccess) and logs_after.body is not None
+        assert "bg-echo:after-reload" in dict(logs_after.body.structured_content)["stdout"]
+        assert isinstance(stop, ToolSuccess)
+        assert _pid_gone(bg_pid, timeout=20), f"background job {bg_pid} survived post-reload stop"
+
+
+def test_core_close_after_reload_stops_a_preexisting_background_job(tmp_path: Path) -> None:
+    record = tmp_path / "record.jsonl"
+    bg_pid_file = tmp_path / "close-bg.pid"
+    replies = [
+        _turn(
+            _call(
+                "call-bg-close",
+                "background_process",
+                op="start",
+                command=(
+                    f'{sys.executable} -c "import os,pathlib,time;'
+                    f"pathlib.Path({str(bg_pid_file)!r}).write_text(str(os.getpid()));"
+                    "print('bg-ready', flush=True);time.sleep(120)\""
+                ),
+                ready_pattern="bg-ready",
+            )
+        ),
+        _turn(output="started"),
+    ]
+    with loopback_server(replies) as server:
+        core, workspace = _core(tmp_path, server, record)
+        session_id = core.create_session().session_id
+        assert core.run("start before reload", session_id=session_id, max_steps=8).status == "completed"
+        bg_pid = int(_wait_file(bg_pid_file))
+        old_runtime = core.plugin_runtime
+
+        config_path = workspace / "voidcode.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["plugins"]["lsp"]["config"]["servers"]["echo"]["extensions"] = [".txt", ".md"]
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        reloaded = core.invoke_command(session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
+        assert reloaded.status == "ok", reloaded
+        assert core.plugin_runtime is not old_runtime
+        assert not _pid_gone(bg_pid, timeout=0.1), "the job must survive the reload"
+
+        core.close()
+        discard_core(core)
+        assert _pid_gone(bg_pid, timeout=20), f"Core.close did not stop background job {bg_pid}"
 
 
 def test_exec_proc_resources_are_scoped_and_preserve_process_bytes(tmp_path: Path) -> None:

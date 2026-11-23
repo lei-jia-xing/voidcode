@@ -213,7 +213,12 @@ never reconstruct a cursor from trimmed display text.
   foster-owned session group (never the core's group) and stop at runtime
   retirement/swap or owner shutdown —
   the shape for a language server or other interactive helper. Detached
-  `spawn_process` jobs keep their own groups and survive a runtime swap.
+  `spawn_process` jobs keep their own groups and are owned by the
+  Core-lifetime `ProcessHost`, which every runtime generation shares: a reload
+  keeps them listable, readable, writable, and stoppable, while `Core.close()`
+  is the owner shutdown that stops them. Their logs use the stable
+  `state_dir/process-spool` root, and exited entries are retained only up to a
+  small per-owner/session cap.
   Poll `ToolContext.abort_signal` and cancel explicitly; never retain a
   `PluginServices` object past its invocation.
 - Long-running owner drivers: `Plugin.background_action` registers one callback
