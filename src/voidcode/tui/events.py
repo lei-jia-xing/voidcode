@@ -5,7 +5,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from voidcode.sdk.client import CommandCatalog, CommandResult, EventFrame, HeadFrame, HealthStatus, SessionRow
+from voidcode.sdk.client import (
+    CommandCatalog,
+    CommandResult,
+    EventFrame,
+    FollowupWithdrawReceipt,
+    HeadFrame,
+    HealthStatus,
+    QueuedFollowup,
+    SessionRow,
+)
 from voidcode.sdk.commands import ConfirmationRequest
 from voidcode.sdk.services import ArtifactPage
 from voidcode.sdk.views import PluginViewDescriptor, ViewsSnapshot
@@ -177,6 +186,26 @@ class FollowupFailedEvent(TuiEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class FollowupsLoadedEvent(TuiEvent):
+    followups: tuple[QueuedFollowup, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FollowupsLoadFailedEvent(TuiEvent):
+    error: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FollowupWithdrawnEvent(TuiEvent):
+    receipt: FollowupWithdrawReceipt
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FollowupWithdrawFailedEvent(TuiEvent):
+    error: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RunRejectedEvent(TuiEvent):
     prompt: str
 
@@ -307,6 +336,10 @@ type TuiFrame = (
     | CancelDoneEvent
     | FollowupQueuedEvent
     | FollowupFailedEvent
+    | FollowupsLoadedEvent
+    | FollowupsLoadFailedEvent
+    | FollowupWithdrawnEvent
+    | FollowupWithdrawFailedEvent
     | RunRejectedEvent
     | RunWaitingEvent
     | ConfirmationEvent

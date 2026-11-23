@@ -12,7 +12,16 @@ import time
 from collections.abc import Mapping, Sequence
 
 from ..events import EventType
-from .records import SessionRecord, StagedStateUpdate, StoreConflict, _decode_session, canonical_json
+from .records import (
+    MAX_COMMITTED_EVENT_BYTES,
+    EventDraft,
+    SessionRecord,
+    StagedStateUpdate,
+    StoreConflict,
+    StoredEvent,
+    _decode_session,
+    canonical_json,
+)
 
 
 def set_window_projection_locked(
@@ -129,3 +138,52 @@ def record_event_indexes(connection: sqlite3.Connection, session_id: str, event_
                 "INSERT OR IGNORE INTO continuation_starts (session_id, continuation_id, created_at) VALUES (?, ?, ?)",
                 (session_id, continuation_id, now),
             )
+
+
+def insert_session_event_locked(
+    connection: sqlite3.Connection,
+    session_id: str,
+    sequence: int,
+    *,
+    run_id: str,
+    revision_id: str,
+    draft: EventDraft,
+    now: int,
+) -> StoredEvent:
+    """Append one session event row and its side indexes inside an open transaction."""
+    payload_json = canonical_json(draft.payload)
+    payload_size = len(payload_json.encode("utf-8"))
+    if payload_size > MAX_COMMITTED_EVENT_BYTES:
+        raise StoreConflict(
+            f"session event {draft.event_type!r} payload is {payload_size} bytes, "
+            f"exceeding the {MAX_COMMITTED_EVENT_BYTES}-byte committed-event bound"
+        )
+    connection.execute(
+        """
+        INSERT INTO session_events (
+            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session_id,
+            sequence,
+            run_id,
+            draft.event_type,
+            draft.source,
+            draft.actor,
+            revision_id,
+            payload_json,
+            payload_size,
+        ),
+    )
+    record_event_indexes(connection, session_id, draft.event_type, draft.payload, now)
+    return StoredEvent(
+        session_id=session_id,
+        sequence=sequence,
+        run_id=run_id,
+        event_type=draft.event_type,
+        source=draft.source,
+        actor=draft.actor,
+        revision_id=revision_id,
+        payload=draft.payload,
+    )

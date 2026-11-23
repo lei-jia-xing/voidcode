@@ -28,6 +28,8 @@ class EventType(StrEnum):
     CONFIRMATION_DECIDED = "core.confirmation_decided"
     COMMAND_COMPLETED = "core.command_completed"
     CONTINUATION_STARTED = "core.continuation_started"
+    FOLLOWUP_QUEUED = "core.followup_queued"
+    FOLLOWUP_WITHDRAWN = "core.followup_withdrawn"
     WAKEUP_FIRED = "core.wakeup_fired"
     CHILD_SPAWNED = "core.child_spawned"
     #: A keyed child's atomic birth record on its own session (sequence 1): core

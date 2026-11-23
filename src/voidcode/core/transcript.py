@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping, Sequence
 
 from voidcode.sdk.codec import decode_provider_result, decode_tool_call, decode_tool_result
-from voidcode.sdk.hooks import RequestWindow
+from voidcode.sdk.hooks import RequestWindow, is_stop_cause
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ImageAttachment, ProviderMessage
@@ -79,14 +79,18 @@ def transcript_entry(event: StoredEvent) -> TranscriptEntry | None:
                 raise ValueError("dispatch requires provider and model identities")
             content = TranscriptDispatch(provider, model, RequestWindow.from_payload(_mapping(payload["request_window"])))
         case EventType.RUN_COMPLETED | EventType.RUN_FAILED | EventType.RUN_INTERRUPTED:
-            status = (
-                "completed"
-                if event.event_type == EventType.RUN_COMPLETED
-                else "failed"
-                if event.event_type == EventType.RUN_FAILED
-                else "interrupted"
-            )
-            content = TranscriptRun(status)
+            if event.event_type == EventType.RUN_COMPLETED:
+                content = TranscriptRun("completed")
+            elif event.event_type == EventType.RUN_FAILED:
+                raw_error = payload.get("error")
+                error = raw_error if isinstance(raw_error, str) and raw_error else None
+                content = TranscriptRun("failed", error=error)
+            else:
+                raw_reason = payload.get("reason")
+                reason = raw_reason if isinstance(raw_reason, str) and raw_reason else None
+                raw_cause = payload.get("stop_cause")
+                stop_cause = raw_cause if is_stop_cause(raw_cause) else None
+                content = TranscriptRun("interrupted", reason=reason, stop_cause=stop_cause)
         case _:
             return None
     dispatch = _sequence(payload["dispatch_sequence"]) if event.event_type in {EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED} else None

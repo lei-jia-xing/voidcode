@@ -868,4 +868,90 @@ describe("canonical transcript cutover", () => {
     expect(connections).toBe(settledConnections);
     unmount();
   });
+
+  it("renders TranscriptRun failure error and interruption reason from durable transcript", async () => {
+    const head = JSON.stringify({
+      session: { session_id: SESSION },
+      events: [
+        storedEvent(
+          1,
+          "core.run_failed",
+          {},
+          {
+            sequence: 1,
+            run_id: "run-1",
+            revision_id: "rev-1",
+            source: "core",
+            content: {
+              kind: "run",
+              body: {
+                status: "failed",
+                error: "provider outage",
+              },
+            },
+          },
+        ),
+        storedEvent(
+          2,
+          "core.run_interrupted",
+          {},
+          {
+            sequence: 2,
+            run_id: "run-1",
+            revision_id: "rev-1",
+            source: "core",
+            content: {
+              kind: "run",
+              body: {
+                status: "interrupted",
+                reason: "Max steps reached",
+                stop_cause: "limit_reached",
+              },
+            },
+          },
+        ),
+      ],
+    });
+    const rpcMock = vi.fn(async (method: string): Promise<MockResponse> => {
+      if (method === "command.catalog") {
+        return jsonResponse({ revision_id: "rev-1", commands: [] });
+      }
+      if (method === "session.views") {
+        return jsonResponse({ revision_id: "rev-1", views: [] });
+      }
+      if (method === "session.subscribe") {
+        return frameSource([head], []);
+      }
+      if (method === "health.get") {
+        return jsonResponse({ status: "ok", fenced: false });
+      }
+      if (method.startsWith("session.")) {
+        return jsonResponse({
+          sessions: [
+            {
+              session_id: SESSION,
+              workspace: "/tmp/ws",
+              status: "idle",
+              active_revision_id: "rev-1",
+              run_id: "run-1",
+              turn: 1,
+              last_event_sequence: 2,
+            },
+          ],
+        });
+      }
+      return jsonResponse({});
+    });
+    installRpcPeer(rpcMock);
+    const { unmount } = render(<CoreApp baseUrl="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId("event-1")).toHaveTextContent(
+        "Run failed: provider outage",
+      );
+    });
+    expect(screen.getByTestId("event-2")).toHaveTextContent(
+      "Run interrupted: Max steps reached",
+    );
+    unmount();
+  });
 });

@@ -32,6 +32,10 @@ from .events import (
     DecisionDoneEvent,
     FollowupFailedEvent,
     FollowupQueuedEvent,
+    FollowupsLoadedEvent,
+    FollowupsLoadFailedEvent,
+    FollowupWithdrawFailedEvent,
+    FollowupWithdrawnEvent,
     FormLoadEvent,
     GateAcceptedEvent,
     HealthEvent,
@@ -135,6 +139,14 @@ def drain_events(app: CoreTuiApp, timeout: float | None = None) -> int:
                 _handle_followup_queued(app, frame, rows_to_commit)
             case FollowupFailedEvent():
                 _handle_followup_failed(app, frame, rows_to_commit)
+            case FollowupsLoadedEvent():
+                _handle_followups_loaded(app, frame, rows_to_commit)
+            case FollowupsLoadFailedEvent():
+                _handle_followups_load_failed(app, frame, rows_to_commit)
+            case FollowupWithdrawnEvent():
+                _handle_followup_withdrawn(app, frame, rows_to_commit)
+            case FollowupWithdrawFailedEvent():
+                _handle_followup_withdraw_failed(app, frame, rows_to_commit)
             case RunRejectedEvent():
                 _handle_run_rejected(app, frame, rows_to_commit)
             case RunWaitingEvent():
@@ -199,6 +211,7 @@ def _handle_stream_head(app: CoreTuiApp, frame: StreamHeadEvent, rows: list[str]
         app._welcomed_sessions.add(app.session_id)
     for event in frame.frame.events:
         handle_stream_event(app, event, rows)
+    app._refresh_followups()
 
 
 def _handle_stream_event(app: CoreTuiApp, frame: StreamEventEvent, rows: list[str]) -> None:
@@ -243,6 +256,7 @@ def _handle_reconciled(app: CoreTuiApp, frame: ReconciledEvent, rows: list[str])
         app.status_line = f"Run {frame.session_status}" if frame.session_status in ("running", "waiting") else app.status_line
     if frame.failures:
         rows.append(app.styles.fg("warning", f"[Reconnect refresh incomplete: {', '.join(frame.failures)}]"))
+    app._refresh_followups()
 
 
 def _handle_notice(app: CoreTuiApp, frame: NoticeEvent, rows: list[str]) -> None:
@@ -389,13 +403,13 @@ def _handle_run_status(app: CoreTuiApp, frame: RunStatusEvent, rows: list[str]) 
     if frame.status in ("failed", "interrupted") and not frame.run_id:
         app._render_run_notice(frame.status, frame.error, rows)
     if frame.status in ("completed", "failed", "interrupted"):
-        app._run_active = False
+        app._mark_run_inactive()
         app._cancel_pending = False
         app.status_line = ""
     elif frame.status == "queued":
         app.status_line = "Follow-up queued for when run yields · Esc to interrupt"
     elif frame.status in ("running", "waiting"):
-        app._run_active = True
+        app._mark_run_active()
         app.status_line = ""
 
 
@@ -406,6 +420,7 @@ def _handle_cancel_done(app: CoreTuiApp, _frame: CancelDoneEvent, _rows: list[st
 
 def _handle_followup_queued(app: CoreTuiApp, _frame: FollowupQueuedEvent, _rows: list[str]) -> None:
     app.status_line = "Follow-up queued for when run yields · Esc to interrupt"
+    app._refresh_followups()
 
 
 def _handle_followup_failed(app: CoreTuiApp, frame: FollowupFailedEvent, _rows: list[str]) -> None:
@@ -414,8 +429,35 @@ def _handle_followup_failed(app: CoreTuiApp, frame: FollowupFailedEvent, _rows: 
     app.status_line = f"Error: {frame.error}"
 
 
+def _handle_followups_loaded(app: CoreTuiApp, frame: FollowupsLoadedEvent, _rows: list[str]) -> None:
+    app._queued_followups = frame.followups
+
+
+def _handle_followups_load_failed(app: CoreTuiApp, frame: FollowupsLoadFailedEvent, _rows: list[str]) -> None:
+    if not app.status_line:
+        app.status_line = f"Warning: could not load queued follow-ups: {frame.error}"
+
+
+def _handle_followup_withdrawn(app: CoreTuiApp, frame: FollowupWithdrawnEvent, _rows: list[str]) -> None:
+    app._followup_withdrawing = False
+    receipt = frame.receipt
+    app._queued_followups = tuple(item for item in app._queued_followups if item.continuation_id != receipt.continuation_id)
+    if not app.composer.value.strip():
+        app.composer.set_text(receipt.prompt)
+    if receipt.image_count > 0:
+        app.status_line = "Recalled prompt text (attached images cannot be re-edited in composer)"
+    else:
+        app.status_line = "Queued follow-up recalled to composer"
+
+
+def _handle_followup_withdraw_failed(app: CoreTuiApp, frame: FollowupWithdrawFailedEvent, _rows: list[str]) -> None:
+    app._followup_withdrawing = False
+    app.status_line = f"Could not withdraw follow-up: {frame.error}"
+    app._refresh_followups()
+
+
 def _handle_run_rejected(app: CoreTuiApp, frame: RunRejectedEvent, _rows: list[str]) -> None:
-    app._run_active = False
+    app._mark_run_inactive()
     app._cancel_pending = False
     if not app.composer.value:
         app.composer.set_text(frame.prompt)

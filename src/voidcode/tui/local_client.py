@@ -26,6 +26,8 @@ from voidcode.sdk.client import (
     CoreClientError,
     ErrorFrame,
     EventFrame,
+    FollowupListReceipt,
+    FollowupWithdrawReceipt,
     HeadFrame,
     HealthModel,
     HealthStatus,
@@ -307,6 +309,24 @@ class CoreLocalClient(SessionClient):
         except Exception as exc:
             raise self._refusal(exc) from None
         return CancelReceipt(session_id=session_id, cancellation_requested=bool(accepted))
+
+    def list_followups(self, session_id: str) -> FollowupListReceipt:
+        self._validated(session_id)
+        try:
+            return self._core.list_followups(session_id)
+        except Exception as exc:
+            raise self._refusal(exc) from None
+
+    def withdraw_followup(self, session_id: str, continuation_id: str, expected_revision: str = "") -> FollowupWithdrawReceipt:
+        self._validated(session_id)
+        if not isinstance(continuation_id, str) or not continuation_id.strip() or "\0" in continuation_id:
+            raise CoreClientError("continuation_id must be nonempty text without NUL", status_code=400, code="invalid_params")
+        if not expected_revision:
+            raise CoreClientError("expected_revision must be the revision the client displayed", status_code=400, code="invalid_params")
+        try:
+            return self._core.withdraw_followup(session_id, continuation_id, expected_revision=expected_revision)
+        except Exception as exc:
+            raise self._refusal(exc) from None
 
     def transcript(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
         self._validated(session_id)

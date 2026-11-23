@@ -75,6 +75,7 @@ RESERVED_SHORTCUTS: frozenset[str] = frozenset(
         "alt+shift+c",
         "alt+x",
         "alt+shift+x",
+        "alt+up",
     }
 )
 

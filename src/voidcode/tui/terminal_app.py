@@ -23,6 +23,7 @@ from voidcode.sdk.client import (
     CommandResult,
     CoreClientError,
     HealthStatus,
+    QueuedFollowup,
     ResumeSpec,
     RunSpec,
     SessionClient,
@@ -82,9 +83,6 @@ from .formatting import (
     normalize_chord as _normalize_chord,
 )
 from .formatting import (
-    prefixed_rows as _prefixed_rows,
-)
-from .formatting import (
     safe as _safe,
 )
 from .formatting import (
@@ -98,7 +96,7 @@ from .formatting import (
 )
 from .help_view import TUI_CONTROLS, TUI_CONTROLS_BY_NAME, render_help
 from .keys import Key, KeyDecoder
-from .rendering import ActiveToolProgress, render_frame
+from .rendering import ActiveToolProgress, render_frame, run_notice_rows
 from .rendering import banner_rows as _banner_rows
 from .session_follower import SessionFollower
 from .styles import Styles
@@ -238,8 +236,11 @@ class CoreTuiApp:
         self._stream_dispatch: str | None = None
         self._spinner_tick = 0
         self._run_active = False
+        self._run_started_at: float | None = None
         self._quit_armed_at = float("-inf")
         self._cancel_pending = False
+        self._queued_followups: tuple[QueuedFollowup, ...] = ()
+        self._followup_withdrawing = False
         self.catalog_cache: tuple[CommandDescriptor, ...] = ()
         #: The capability revision the displayed catalog came from; slash dispatch
         #: echoes it verbatim. Rendered overlays carry their own captured revision.
@@ -678,16 +679,18 @@ class CoreTuiApp:
 
         self._work.submit("ArtifactOpen", worker)
 
+    def _mark_run_active(self) -> None:
+        if not self._run_active or self._run_started_at is None:
+            self._run_started_at = time.monotonic()
+        self._run_active = True
+
+    def _mark_run_inactive(self) -> None:
+        self._run_active = False
+        if not self._active_tools:
+            self._run_started_at = None
+
     def _render_run_notice(self, status: str, detail: object, rows: list[str], *, stop_cause: object = None) -> None:
-        if status == "failed":
-            rows.extend(_prefixed_rows("Error:", str(detail or "Run failed"), self.styles, slot="error"))
-        elif stop_cause in ("user_stop", "owner_cancel"):
-            rows.append(self.styles.fg("dim", "Operation aborted"))
-        elif detail:
-            label = "Stopped:" if stop_cause == "limit_reached" else "Interrupted:"
-            rows.extend(_prefixed_rows(label, str(detail), self.styles, slot="dim"))
-        else:
-            rows.append(self.styles.fg("dim", "Interrupted"))
+        rows.extend(run_notice_rows(status, detail, self.styles, stop_cause=stop_cause))
 
     def _apply_gate_change(self, change: GateChange) -> None:
         """Fold one typed gate change and sync the mounted widgets to the reducer."""
@@ -764,7 +767,7 @@ class CoreTuiApp:
         self._stream_reasoning.clear()
         self._stream_dispatch = None
         if not self._active_tools:
-            self._run_active = False
+            self._mark_run_inactive()
         self._cancel_pending = False
         self.status_line = ""
 
@@ -1242,13 +1245,16 @@ class CoreTuiApp:
             claimants = ", ".join(f"/{_slash_display(entry)}" for entry in self._shortcut_conflicts[chord])
             self.terminal.commit_rows([self.styles.fg("warning", f"Shortcut {name} is claimed by {claimants}; no action bound")])
             return
-        if not self.catalog_revision and "+" in chord and chord != "ctrl+o" and not self.composer.owns_key(chord):
+        if not self.catalog_revision and "+" in chord and chord not in ("ctrl+o", "alt+up") and not self.composer.owns_key(chord):
             # A modified chord the composer does not own can only be a catalog
             # shortcut; with no catalog it must say so instead of doing nothing.
             catalog.get(self, retry=True)
             return
         if chord == "ctrl+o":
             self._show_truncated_output()
+            return
+        if chord == "alt+up":
+            self._withdraw_last_followup()
             return
         if name == "enter" and not self.composer.completion:
             line = self.composer.value.strip()
@@ -1556,7 +1562,7 @@ class CoreTuiApp:
             self._work.submit("CoreFollowup", followup_worker)
             return
         self.status_line = ""
-        self._run_active = True
+        self._mark_run_active()
         session_id, generation = self.session_id, self._generation
 
         def run_worker() -> None:
@@ -1676,6 +1682,44 @@ class CoreTuiApp:
             catalog.unavailable(self)
         return None
 
+    def _refresh_followups(self) -> None:
+        session_id, generation = self.session_id, self._generation
+        self._work.submit(
+            "CoreFollowups",
+            lambda: self.event_queue.put(operations.load_followups(self.client, session_id=session_id, generation=generation)),
+        )
+
+    def _withdraw_last_followup(self) -> None:
+        if not self._queued_followups:
+            self.status_line = "No queued follow-ups to edit"
+            return
+        if self.composer.value.strip():
+            self.status_line = "Clear or submit the current draft before recalling a queued follow-up"
+            return
+        if self._followup_withdrawing:
+            return
+        target = self._queued_followups[-1]
+        expected_revision = self.catalog_revision or target.revision_id
+        if not expected_revision:
+            self.status_line = "Capability revision unknown; retrying catalog"
+            catalog.get(self, retry=True)
+            return
+        self._followup_withdrawing = True
+        self.status_line = "Withdrawing queued follow-up…"
+        session_id, generation = self.session_id, self._generation
+        self._work.submit(
+            "CoreWithdrawFollowup",
+            lambda: self.event_queue.put(
+                operations.withdraw_followup(
+                    self.client,
+                    session_id=session_id,
+                    continuation_id=target.continuation_id,
+                    expected_revision=expected_revision,
+                    generation=generation,
+                )
+            ),
+        )
+
     def _switch_session(self, session_id: str) -> None:
         """Rebind the follower to another session.
 
@@ -1698,6 +1742,8 @@ class CoreTuiApp:
         self.queued_confirmations.clear()
         self._gates = GateState()
         self._active_tools.clear()
+        self._queued_followups = ()
+        self._followup_withdrawing = False
         self._clear_stream()
         self.latest_input_tokens = None
         self.cumulative_input_tokens = 0

@@ -19,7 +19,12 @@ from uuid import uuid4
 
 import jsonschema
 
-from ...sdk.client import BudgetExhaustion
+from ...sdk.client import (
+    BudgetExhaustion,
+    FollowupListReceipt,
+    FollowupWithdrawReceipt,
+    QueuedFollowup,
+)
 from ...sdk.codec import (
     decode_tool_call,
     encode_tool_call,
@@ -131,6 +136,8 @@ _PARKED_INTERVENING_TYPES = frozenset(
         EventType.CHILD_SPAWNED,
         EventType.CHILD_RESERVED,
         EventType.CHILD_FINISHED,
+        EventType.FOLLOWUP_QUEUED,
+        EventType.FOLLOWUP_WITHDRAWN,
         EventType.MODEL_QUERY,
         EventType.TOOL_DEFERRED,
         EventType.TOOL_PROGRESS,
@@ -1969,6 +1976,73 @@ class Core:
 
     def root_budget_state(self, root_id: str) -> tuple[int, int] | None:
         return self.store.root_budget_state(root_id)
+
+    def record_followup_event(
+        self,
+        session_id: str,
+        event: EventDraft,
+        *,
+        run_id: str | None = None,
+    ) -> None:
+        self.store.append_session_event_at_tip(
+            session_id,
+            revision_id=self.revision_id,
+            event=event,
+            run_id=run_id,
+        )
+        self.notify_commit()
+
+    def list_followups(self, session_id: str) -> FollowupListReceipt:
+        """List pending user follow-ups for one session in FIFO order."""
+        self.ensure_open()
+        self.session(session_id)
+        rows = self.store.pending_followups(session_id)
+        return FollowupListReceipt(
+            session_id=session_id,
+            revision_id=self.revision_id,
+            followups=tuple(
+                QueuedFollowup(
+                    continuation_id=row.continuation_id,
+                    prompt=row.prompt,
+                    revision_id=row.revision_id,
+                    created_at=row.created_at,
+                    max_steps=row.max_steps,
+                    image_count=row.image_count,
+                )
+                for row in rows
+            ),
+        )
+
+    def withdraw_followup(
+        self,
+        session_id: str,
+        continuation_id: str,
+        *,
+        expected_revision: str,
+    ) -> FollowupWithdrawReceipt:
+        """Withdraw one pending user follow-up before claim, bound to the displayed revision."""
+        self.ensure_open()
+        self._check_expected_revision(expected_revision)
+        if not isinstance(continuation_id, str) or not continuation_id.strip() or "\0" in continuation_id:
+            raise ValueError("continuation_id must be nonempty text without NUL")
+        self.session(session_id)
+        record = self.store.withdraw_pending_followup(
+            session_id,
+            continuation_id,
+            expected_revision=expected_revision,
+            revision_id=self.revision_id,
+        )
+        self.notify_commit()
+        self._delegation.notify_child_state_changed()
+        return FollowupWithdrawReceipt(
+            session_id=session_id,
+            continuation_id=record.continuation_id,
+            revision_id=self.revision_id,
+            prompt=record.prompt,
+            max_steps=record.max_steps,
+            image_count=record.image_count,
+            withdrawn=True,
+        )
 
     def queue_followup(
         self,

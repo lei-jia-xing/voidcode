@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from voidcode.config import BannerConfig
+from voidcode.sdk.client import QueuedFollowup
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
 from voidcode.sdk.transcript import (
@@ -19,7 +20,7 @@ from voidcode.sdk.transcript import (
 )
 
 from .artifact_viewer import InteractiveArtifactViewer
-from .formatting import effort_segment, footer_row, json_safe, model_segment, safe, short_workspace
+from .formatting import effort_segment, footer_row, json_safe, model_segment, prefixed_rows, safe, short_workspace
 from .region import TuiFrame
 from .styles import SPINNER_FRAMES, Styles
 from .term import clamp_row, escape_terminal_controls, visible_width
@@ -160,9 +161,9 @@ def content_rows(
         return rows
     if isinstance(content, TranscriptRun):
         if content.status == "failed":
-            return [styles.fg("error", "Error: Run failed")]
+            return run_notice_rows("failed", content.error, styles)
         if content.status == "interrupted":
-            return [styles.fg("dim", "Interrupted")]
+            return run_notice_rows("interrupted", content.reason, styles, stop_cause=content.stop_cause)
         return []
     if isinstance(content, TranscriptInterrupted):
         return []
@@ -171,6 +172,56 @@ def content_rows(
     if isinstance(content, TranscriptDispatch):
         return []
     raise ValueError(f"unknown transcript content: {type(content).__name__}")
+
+
+def run_notice_rows(status: str, detail: object, styles: Styles, *, stop_cause: object = None) -> list[str]:
+    """Render terminal run notices consistently across live events and transcript replay."""
+    if status == "failed":
+        return prefixed_rows("Error:", str(detail or "Run failed"), styles, slot="error")
+    if stop_cause in ("user_stop", "owner_cancel"):
+        return [styles.fg("dim", "Operation aborted")]
+    if detail:
+        label = "Stopped:" if stop_cause == "limit_reached" else "Interrupted:"
+        return prefixed_rows(label, str(detail), styles, slot="dim")
+    return [styles.fg("dim", "Interrupted")]
+
+
+def _format_elapsed(seconds: float) -> str:
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        minutes, secs = divmod(total, 60)
+        return f"{minutes}m{secs:02d}s"
+    hours, rem = divmod(total, 3600)
+    minutes, _ = divmod(rem, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def queued_followup_rows(followups: tuple[QueuedFollowup, ...], *, width: int, styles: Styles) -> list[str]:
+    """Render server-queued user follow-ups directly above the composer."""
+    if not followups or width <= 0:
+        return []
+    visible = followups[:2]
+    rows: list[str] = []
+    for index, item in enumerate(visible):
+        preview = escape_terminal_controls(" ".join(item.prompt.split()), preserve_tabs=False)
+        suffix = f" ({item.image_count} img)" if item.image_count == 1 else f" ({item.image_count} imgs)" if item.image_count > 1 else ""
+        hint = ""
+        if index == len(visible) - 1:
+            extra = len(followups) - len(visible)
+            more = f" (+{extra} more)" if extra > 0 else ""
+            hint = f"{more} · Alt+Up edit"
+        prefix_text = "↳ Queued: " if len(followups) == 1 else f"↳ Queued #{index + 1}: "
+        available = max(1, width - visible_width(prefix_text) - visible_width(suffix) - visible_width(hint))
+        shown_preview = preview if visible_width(preview) <= available else clamp_row(preview, max(1, available - 1)) + "…"
+        rows.append(
+            styles.fg("accent", prefix_text)
+            + styles.fg("text", shown_preview)
+            + (styles.fg("dim", suffix) if suffix else "")
+            + (styles.fg("dim", hint) if hint else "")
+        )
+    return [clamp_row(row, width) for row in rows]
 
 
 def footer_context(app: CoreTuiApp, width: int) -> str:
@@ -188,7 +239,14 @@ def footer_context(app: CoreTuiApp, width: int) -> str:
         used_str = f"{app.latest_input_tokens / 1000.0:.1f}k"
         window = model.context_window if model is not None else None
         if window is not None:
-            context_segment = f"{used_str}/{window / 1000.0:.0f}k"
+            context_text = f"{used_str}/{window / 1000.0:.0f}k"
+            ratio = app.latest_input_tokens / window if window > 0 else 0.0
+            if ratio >= 0.95:
+                context_segment = app.styles.fg("error", context_text)
+            elif ratio >= 0.80:
+                context_segment = app.styles.fg("warning", context_text)
+            else:
+                context_segment = context_text
         else:
             context_segment = f"{used_str} ctx"
 
@@ -208,19 +266,25 @@ def footer_context(app: CoreTuiApp, width: int) -> str:
 
 
 def border_status(app: CoreTuiApp) -> str:
-    """`<spinner> working` while a run or active tool is running; idle borders stay clean."""
+    """`<spinner> working/running` with elapsed time and active tool names; idle borders stay clean."""
     if not app._run_active and not app._active_tools:
         return ""
     spinner = SPINNER_FRAMES[app._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
+    parts: list[str] = []
     if app._active_tools:
-        first_tool = next(iter(app._active_tools.values()))
-        label = f"running {first_tool.tool_name}" if len(app._active_tools) == 1 else f"running {len(app._active_tools)} tools"
-        if app._cancel_pending:
-            label = f"cancelling {first_tool.tool_name}"
-        else:
-            label += " · Esc to interrupt"
+        names = [tool.tool_name for tool in app._active_tools.values()]
+        shown = ", ".join(names[:3])
+        if len(names) > 3:
+            shown = f"{shown} +{len(names) - 3}"
+        verb = "cancelling" if app._cancel_pending else "running"
+        parts.append(f"{verb} {shown}")
     else:
-        label = "cancelling" if app._cancel_pending else "working · Esc to interrupt"
+        parts.append("cancelling" if app._cancel_pending else "working")
+    if app._run_started_at is not None:
+        parts.append(_format_elapsed(time.monotonic() - app._run_started_at))
+    if not app._cancel_pending:
+        parts.append("Esc to interrupt")
+    label = " · ".join(parts)
     return f"{spinner} {label}" if spinner else label
 
 
@@ -287,7 +351,8 @@ def _render_composer(app: CoreTuiApp, width: int, footer_rows: tuple[str, ...]) 
     composer_rows = app.composer.render(status if app.border == "borderless" else "", border_status=status)
     cursor = app.composer.cursor_position
     popup = list(app.composer.completion_rows(max_rows=max(1, min(6, available - len(composer_rows)))))
-    live_space = max(0, available - len(composer_rows) - len(popup))
+    queued = queued_followup_rows(app._queued_followups, width=width, styles=app.styles) if available > len(composer_rows) else []
+    live_space = max(0, available - len(composer_rows) - len(popup) - len(queued))
     live: list[str] = []
     if live_space > 0:
         tools = list(app._active_tools.values())
@@ -332,7 +397,7 @@ def _render_composer(app: CoreTuiApp, width: int, footer_rows: tuple[str, ...]) 
         else:
             stream_rows = app._live_stream_rows(width)
             live = stream_rows[-live_space:] if stream_rows else []
-    if cursor is not None and (live or popup):
+    if cursor is not None and (live or popup or queued):
         row, column = cursor
-        cursor = (row + len(live) + len(popup), column)
-    app.terminal.paint_frame(TuiFrame(transcript_rows=(), chrome_rows=(*live, *popup, *composer_rows, *footer_rows), cursor=cursor))
+        cursor = (row + len(live) + len(popup) + len(queued), column)
+    app.terminal.paint_frame(TuiFrame(transcript_rows=(), chrome_rows=(*live, *popup, *queued, *composer_rows, *footer_rows), cursor=cursor))

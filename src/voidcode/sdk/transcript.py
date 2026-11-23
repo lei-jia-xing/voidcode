@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from .codec import ToolResultWire
-from .hooks import RequestWindow
+from .hooks import RequestWindow, StopCause
 from .icons import Icon
 from .provider import ProviderMessage, ProviderTurnResult
 from .tools import ToolCall, ToolResult
@@ -37,6 +37,9 @@ class TranscriptDispatch:
 @dataclass(frozen=True, slots=True)
 class TranscriptRun:
     status: Literal["completed", "failed", "interrupted"]
+    error: str | None = None
+    reason: str | None = None
+    stop_cause: StopCause | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +147,9 @@ class TranscriptDispatchWire(TranscriptWireModel):
 
 class TranscriptRunWire(TranscriptWireModel):
     status: Literal["completed", "failed", "interrupted"]
+    error: str | None = None
+    reason: str | None = None
+    stop_cause: StopCause | None = None
 
 
 class TranscriptChildWire(TranscriptWireModel):
@@ -269,7 +275,14 @@ def encode_transcript_content(content: TranscriptContent) -> dict[str, object]:
             },
         }
     if isinstance(content, TranscriptRun):
-        return {"kind": "run", "body": {"status": content.status}}
+        body: dict[str, object] = {"status": content.status}
+        if content.error is not None:
+            body["error"] = content.error
+        if content.reason is not None:
+            body["reason"] = content.reason
+        if content.stop_cause is not None:
+            body["stop_cause"] = content.stop_cause
+        return {"kind": "run", "body": body}
     if isinstance(content, TranscriptInterrupted):
         return {"kind": "interrupted", "body": {}}
     if isinstance(content, TranscriptChild):
@@ -336,7 +349,12 @@ def _content_wire_to_domain(
     if isinstance(wire, TranscriptDispatchContentWire):
         return _dispatch_wire_to_domain(wire.body)
     if isinstance(wire, TranscriptRunContentWire):
-        return TranscriptRun(wire.body.status)
+        return TranscriptRun(
+            wire.body.status,
+            error=wire.body.error,
+            reason=wire.body.reason,
+            stop_cause=wire.body.stop_cause,
+        )
     if isinstance(wire, TranscriptInterruptedContentWire):
         return TranscriptInterrupted()
     return TranscriptChild(wire.body.child_session_id)

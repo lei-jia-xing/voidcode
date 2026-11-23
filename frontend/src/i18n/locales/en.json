@@ -63,6 +63,7 @@
   "core.toolStoppedUnconfirmed": "may still be running; side effects unknown",
   "core.toolEffectsUnknown": "side effects unknown",
   "core.commandLabel": "Command",
+  "core.runFailed": "Run failed: {{error}}",
   "core.runInterrupted": "Run interrupted: {{cause}}",
   "core.unknownLabel": "unknown",
   "core.pendingConfirmationLabel": "Pending confirmation",

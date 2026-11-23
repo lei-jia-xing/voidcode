@@ -286,6 +286,21 @@ def test_invalid_inputs_refused_identically(arm_client: tuple[str, SessionClient
     with pytest.raises(ValueError, match="prompt"):
         client.run(session.session_id, RunSpec(prompt="   "))
 
+    followups = client.list_followups(session.session_id)
+    assert followups.session_id == session.session_id and followups.followups == ()
+    with pytest.raises(CoreClientError) as empty_rev:
+        client.withdraw_followup(session.session_id, "cid-1", expected_revision="")
+    assert empty_rev.value.status_code == 400 and empty_rev.value.code == "invalid_params"
+    with pytest.raises(CoreClientError) as empty_cid:
+        client.withdraw_followup(session.session_id, "", expected_revision=catalog.revision_id)
+    assert empty_cid.value.status_code == 400 and empty_cid.value.code == "invalid_params"
+    with pytest.raises(CoreClientError) as stale_withdraw:
+        client.withdraw_followup(session.session_id, "cid-1", expected_revision="not-the-displayed-revision")
+    assert stale_withdraw.value.status_code == 409 and stale_withdraw.value.code == "stale_revision"
+    with pytest.raises(CoreClientError) as missing_withdraw:
+        client.withdraw_followup(session.session_id, "cid-1", expected_revision=catalog.revision_id)
+    assert missing_withdraw.value.status_code == 404
+
 
 def test_sse_preserves_business_tool_body() -> None:
     """Consumer regression: an opaque tool body survives the RPC wire unwrapped."""

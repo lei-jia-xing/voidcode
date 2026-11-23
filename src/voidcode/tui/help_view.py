@@ -144,6 +144,7 @@ def _key_rows(
         ("Ctrl+C", f"Clear the draft; press twice within {quit_arm_seconds:g}s to quit."),
         ("Ctrl+D", "Quit when the draft is empty."),
         ("Ctrl+O", "Open the latest tool artifact or truncated output."),
+        ("Alt+Up", "Withdraw the last queued follow-up into the composer for editing."),
     ]
     rows: list[tuple[str, str]] = [(chord, summary) for chord, summary in fixed]
     for chord in sorted(bindings):

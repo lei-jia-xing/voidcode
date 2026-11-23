@@ -362,6 +362,92 @@ _CANCEL_ADAPTER: TypeAdapter[CancelReceipt] = TypeAdapter(CancelReceipt)
 
 
 @dataclass(frozen=True, slots=True)
+class QueuedFollowup:
+    """One queued user follow-up continuation awaiting a turn boundary."""
+
+    continuation_id: str
+    prompt: str
+    revision_id: str
+    created_at: int
+    max_steps: int | None = None
+    image_count: int = 0
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "continuation_id": self.continuation_id,
+            "prompt": self.prompt,
+            "revision_id": self.revision_id,
+            "created_at": self.created_at,
+            "max_steps": self.max_steps,
+            "image_count": self.image_count,
+        }
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> QueuedFollowup:
+        return _decode(_QUEUED_FOLLOWUP_ADAPTER, payload, "queued follow-up")
+
+
+_QUEUED_FOLLOWUP_ADAPTER: TypeAdapter[QueuedFollowup] = TypeAdapter(QueuedFollowup)
+
+
+@dataclass(frozen=True, slots=True)
+class FollowupListReceipt:
+    """Server snapshot of pending user follow-ups for one session."""
+
+    session_id: str
+    revision_id: str
+    followups: tuple[QueuedFollowup, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "followups", tuple(self.followups))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "revision_id": self.revision_id,
+            "followups": [item.as_payload() for item in self.followups],
+        }
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> FollowupListReceipt:
+        return _decode(_FOLLOWUP_LIST_ADAPTER, payload, "follow-up list")
+
+
+_FOLLOWUP_LIST_ADAPTER: TypeAdapter[FollowupListReceipt] = TypeAdapter(FollowupListReceipt)
+
+
+@dataclass(frozen=True, slots=True)
+class FollowupWithdrawReceipt:
+    """Durable withdrawal confirmation returning the recalled prompt."""
+
+    session_id: str
+    continuation_id: str
+    revision_id: str
+    prompt: str
+    max_steps: int | None = None
+    image_count: int = 0
+    withdrawn: bool = True
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "continuation_id": self.continuation_id,
+            "revision_id": self.revision_id,
+            "prompt": self.prompt,
+            "max_steps": self.max_steps,
+            "image_count": self.image_count,
+            "withdrawn": self.withdrawn,
+        }
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> FollowupWithdrawReceipt:
+        return _decode(_FOLLOWUP_WITHDRAW_ADAPTER, payload, "follow-up withdrawal")
+
+
+_FOLLOWUP_WITHDRAW_ADAPTER: TypeAdapter[FollowupWithdrawReceipt] = TypeAdapter(FollowupWithdrawReceipt)
+
+
+@dataclass(frozen=True, slots=True)
 class StreamEvent:
     """One stored session event as session event frames carry it.
 
@@ -647,6 +733,10 @@ class SessionClient(Protocol):
 
     def cancel(self, session_id: str) -> CancelReceipt: ...
 
+    def list_followups(self, session_id: str) -> FollowupListReceipt: ...
+
+    def withdraw_followup(self, session_id: str, continuation_id: str, expected_revision: str = "") -> FollowupWithdrawReceipt: ...
+
     def events_stream(
         self,
         session_id: str,
@@ -667,6 +757,8 @@ __all__ = [
     "ErrorFrameWire",
     "EventFrame",
     "EventFrameWire",
+    "FollowupListReceipt",
+    "FollowupWithdrawReceipt",
     "HeadFrame",
     "HeadFrameWire",
     "HealthModel",
@@ -674,6 +766,7 @@ __all__ = [
     "ImageAttachment",
     "MAX_PROMPT_BYTES",
     "MAX_PROMPT_CHARS",
+    "QueuedFollowup",
     "RestartFrame",
     "RestartFrameWire",
     "ResumeSpec",

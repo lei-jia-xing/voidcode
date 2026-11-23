@@ -16,6 +16,10 @@ from voidcode.sdk.views import PluginViewDescriptor
 from .events import (
     AbortToken,
     CommandInputReadyEvent,
+    FollowupsLoadedEvent,
+    FollowupsLoadFailedEvent,
+    FollowupWithdrawFailedEvent,
+    FollowupWithdrawnEvent,
     LiveInputReadyEvent,
     ModelSwitchDoneEvent,
     SessionCreatedEvent,
@@ -49,6 +53,29 @@ def load_views(client: SessionClient, *, session_id: str, generation: int, name_
     except Exception as exc:
         return ViewsFailedEvent(error=str(exc), session_id=session_id, generation=generation)
     return ViewsLoadedEvent(snapshot=snapshot, name_filter=name_filter, session_id=session_id, generation=generation)
+
+
+def load_followups(client: SessionClient, *, session_id: str, generation: int) -> FollowupsLoadedEvent | FollowupsLoadFailedEvent:
+    try:
+        receipt = client.list_followups(session_id)
+    except Exception as exc:
+        return FollowupsLoadFailedEvent(error=str(exc), session_id=session_id, generation=generation)
+    return FollowupsLoadedEvent(followups=receipt.followups, session_id=session_id, generation=generation)
+
+
+def withdraw_followup(
+    client: SessionClient,
+    *,
+    session_id: str,
+    continuation_id: str,
+    expected_revision: str,
+    generation: int,
+) -> FollowupWithdrawnEvent | FollowupWithdrawFailedEvent:
+    try:
+        receipt = client.withdraw_followup(session_id, continuation_id, expected_revision=expected_revision)
+    except Exception as exc:
+        return FollowupWithdrawFailedEvent(error=str(exc), session_id=session_id, generation=generation)
+    return FollowupWithdrawnEvent(receipt=receipt, session_id=session_id, generation=generation)
 
 
 def switch_model(

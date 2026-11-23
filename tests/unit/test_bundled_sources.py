@@ -15,6 +15,7 @@ from voidcode.sdk.tools import ToolFailure, ToolSuccess
 
 _REPRESENTATIVE_CALLS: tuple[tuple[str, dict[str, object], type[object]], ...] = (
     ("read", {"path": "subject.txt"}, ToolSuccess),
+    ("find", {"query": "initial content", "mode": "literal"}, ToolSuccess),
     ("shell_exec", {"command": "echo bundle-ok"}, ToolSuccess),
     ("cron_list", {}, ToolSuccess),
     ("todo", {"op": "view"}, ToolSuccess),

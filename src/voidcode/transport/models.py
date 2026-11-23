@@ -151,6 +151,11 @@ class AskCancelRequest(SessionParams):
     expected_revision: str = Field(min_length=1, max_length=128)
 
 
+class FollowupWithdrawRequest(SessionParams):
+    continuation_id: str = Field(min_length=1, max_length=128)
+    expected_revision: str = Field(min_length=1, max_length=128)
+
+
 class DrainRequest(SessionParams):
     limit: int = Field(default=10, ge=1, le=100)
 

@@ -110,6 +110,8 @@ class FollowupHost(Protocol):
         start_turn: bool = False,
     ) -> tuple[StoredEvent, ...]: ...
 
+    def record_followup_event(self, session_id: str, event: EventDraft, *, run_id: str | None = None) -> None: ...
+
     def drive(self, execution: _Execution) -> CoreResult: ...
 
     def notify_child_state_changed(self) -> None: ...
@@ -226,6 +228,18 @@ class FollowupManager:
             payload,
             root_id=root_id,
             role="user",
+        )
+        queued_payload: dict[str, object] = {
+            "continuation_id": cid,
+            "prompt": sub.prompt,
+            "image_count": len(sub.images),
+        }
+        if sub.max_steps is not None:
+            queued_payload["max_steps"] = sub.max_steps
+        self._host.record_followup_event(
+            session.session_id,
+            EventDraft(EventType.FOLLOWUP_QUEUED, "core", "user", queued_payload),
+            run_id=session.run_id or cid,
         )
         self._host.notify_child_state_changed()
         return CoreResult(
@@ -370,7 +384,7 @@ class FollowupManager:
                         max_steps=max_steps,
                         continuation_id=continuation_id,
                     )
-                user_payload: dict[str, object] = {"content": prompt}
+                user_payload: dict[str, object] = {"content": prompt, "continuation_id": continuation_id}
                 if max_steps is not None:
                     user_payload["max_steps"] = max_steps
                 if images:

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from voidcode.core.engine import Core
-from voidcode.sdk.client import ArtifactPageWire, CancelReceipt, RunResult, SessionRow
+from voidcode.sdk.client import ArtifactPageWire, CancelReceipt, FollowupListReceipt, FollowupWithdrawReceipt, RunResult, SessionRow
 from voidcode.sdk.commands import CommandCatalog, CommandInputSnapshot, CommandResult
 from voidcode.sdk.provider import ImageAttachment
 from voidcode.sdk.services import SessionUsageReport
@@ -133,6 +133,12 @@ METHODS: dict[str, RpcMethod] = {
         m.SessionParams,
         CancelReceipt,
         lambda c, p: {"session_id": p.session_id, "cancellation_requested": c.cancel_session(p.session_id, reason="RPC session cancellation")},
+    ),
+    "followup.list": RpcMethod(m.SessionParams, FollowupListReceipt, lambda c, p: c.list_followups(p.session_id).as_payload()),
+    "followup.withdraw": RpcMethod(
+        m.FollowupWithdrawRequest,
+        FollowupWithdrawReceipt,
+        lambda c, p: c.withdraw_followup(p.session_id, p.continuation_id, expected_revision=p.expected_revision).as_payload(),
     ),
 }
 

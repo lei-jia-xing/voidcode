@@ -288,7 +288,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for number, handler in previous.items():
                     signal.signal(number, handler)
     except Exception as exc:
-        print(json.dumps({"status": "failed", "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False, allow_nan=False))
+        if args.command is None:
+            print(f"Error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        else:
+            print(json.dumps({"status": "failed", "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False, allow_nan=False))
         return 1
 
 

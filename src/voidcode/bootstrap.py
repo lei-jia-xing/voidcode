@@ -59,6 +59,7 @@ BUNDLED_PLUGIN_IDS = (
     "subagents",
     "exec",
     "files",
+    "find",
     "goal",
     "hooks",
     "lsp",

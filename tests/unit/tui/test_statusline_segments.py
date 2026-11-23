@@ -235,3 +235,57 @@ def test_footer_uses_terminal_default_foreground_at_standard_color_depth() -> No
     row = next(row for row in terminal.frames[-1] if "local/test-model" in row)
     assert "\x1b[39m" in row
     assert "\x1b[90m" not in row
+
+
+def test_footer_styles_context_warning_and_error_thresholds() -> None:
+    from rich.color import ColorSystem
+
+    from voidcode.tui.rendering import footer_context
+    from voidcode.tui.styles import Styles
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_StubClient(), session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    app.styles = Styles(ColorSystem.STANDARD)
+    app.upgrade = _health(model=_model(provider="local", model="test-model", context_window=100_000))
+
+    app.latest_input_tokens = 50_000
+    low = footer_context(app, 120)
+    assert "\x1b[33m" not in low
+    assert "\x1b[91m" not in low
+
+    app.latest_input_tokens = 80_000
+    warn = footer_context(app, 120)
+    assert "\x1b[33m80.0k/100k\x1b[39m" in warn
+
+    app.latest_input_tokens = 95_000
+    crit = footer_context(app, 120)
+    assert "\x1b[91m95.0k/100k\x1b[39m" in crit
+
+
+def test_border_status_includes_elapsed_time_and_parallel_tool_names() -> None:
+    import time
+
+    from voidcode.tui.rendering import ActiveToolProgress, border_status
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_StubClient(), session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    app._mark_run_active()
+    app._run_started_at = time.monotonic() - 65.2
+    working = border_status(app)
+    assert "working" in working
+    assert "1m05s" in working
+
+    for idx, name in enumerate(("read", "grep", "find", "edit")):
+        app._active_tools[f"inv-{idx}"] = ActiveToolProgress(
+            invocation_id=f"inv-{idx}",
+            tool_name=name,
+            icon=None,
+            start_time=time.monotonic() - 2.0,
+            session_id="s1",
+            run_id="r1",
+            revision_id="rev-1",
+            generation=0,
+        )
+    tools_status = border_status(app)
+    assert "running read, grep, find +1" in tools_status
+    assert "1m05s" in tools_status

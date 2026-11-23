@@ -570,6 +570,11 @@ class _StubClient:
     def views(self, session_id: str) -> ViewsSnapshot:
         return ViewsSnapshot(revision_id="rev-1", views=())
 
+    def list_followups(self, session_id: str) -> Any:
+        from voidcode.sdk.client import FollowupListReceipt
+
+        return FollowupListReceipt(session_id=session_id, revision_id="rev-1", followups=())
+
     def get_session(self, session_id: str) -> SessionRow:
         return _session_row(session_id)
 
@@ -1225,6 +1230,25 @@ def test_rows_carry_no_hardcoded_colors() -> None:
     assert any("boom" in row for row in plain)
 
 
+def test_transcript_run_replay_renders_failure_and_interruption_reasons() -> None:
+    from voidcode.tui.rendering import content_rows
+    from voidcode.tui.styles import Styles
+
+    plain_styles = Styles(None)
+    failed = content_rows(TranscriptRun("failed", error="upstream 502"), width=80, styles=plain_styles)
+    assert failed == ["Error: upstream 502"]
+
+    stopped = content_rows(
+        TranscriptRun("interrupted", reason="Max steps reached", stop_cause="limit_reached"),
+        width=80,
+        styles=plain_styles,
+    )
+    assert stopped == ["Stopped: Max steps reached"]
+
+    aborted = content_rows(TranscriptRun("interrupted", stop_cause="user_stop"), width=80, styles=plain_styles)
+    assert aborted == ["Operation aborted"]
+
+
 def test_model_turn_renders_markdown_and_structured_tool_rows() -> None:
     import re
 
@@ -1681,6 +1705,83 @@ def test_busy_run_failed_followup_restores_draft() -> None:
         time.sleep(0.01)
     assert app.composer.value == "next question"
     assert "boom" in app.status_line
+
+
+def test_queued_followup_panel_and_alt_up_withdraw_to_composer() -> None:
+    import time
+
+    from voidcode.sdk.client import FollowupWithdrawReceipt, QueuedFollowup
+    from voidcode.tui.keys import Key
+    from voidcode.tui.stream_handlers import handle_stream_event
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    class _WithdrawClient(_CommandClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.withdrawn: list[tuple[str, str, str]] = []
+
+        def withdraw_followup(self, session_id: str, continuation_id: str, expected_revision: str = "") -> FollowupWithdrawReceipt:
+            self.withdrawn.append((session_id, continuation_id, expected_revision))
+            return FollowupWithdrawReceipt(
+                session_id=session_id,
+                continuation_id=continuation_id,
+                revision_id="rev-1",
+                prompt="queued prompt text",
+                withdrawn=True,
+            )
+
+    client = _WithdrawClient()
+    terminal = _StubTerminal()
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+    app.catalog_revision = "rev-1"
+    app.status_line = ""
+    rows: list[str] = []
+
+    handle_stream_event(
+        app,
+        _event(1, "core.followup_queued", continuation_id="cid-1", prompt="queued prompt text", image_count=0),
+        rows,
+    )
+    assert app._queued_followups == (
+        QueuedFollowup(continuation_id="cid-1", prompt="queued prompt text", revision_id="rev-1", created_at=0, image_count=0),
+    )
+    app._render_frame()
+    frame_text = "\n".join(terminal.frames[-1])
+    assert "↳ Queued:" in frame_text
+    assert "queued prompt text" in frame_text
+    assert "Alt+Up edit" in frame_text
+
+    # Non-empty draft is never overwritten by Alt+Up recall.
+    app.composer.set_text("unsent draft")
+    app._handle_composer_key(Key("alt+up"))
+    assert client.withdrawn == []
+    assert app.composer.value == "unsent draft"
+    assert "Clear or submit" in app.status_line
+
+    # Clearing draft allows Alt+Up to withdraw on server and restore prompt into composer.
+    app.composer.set_text("")
+    app._handle_composer_key(Key("alt+up"))
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and app.composer.value != "queued prompt text":
+        app._drain_events()
+        time.sleep(0.01)
+    assert client.withdrawn == [("s1", "cid-1", "rev-1")]
+    assert app.composer.value == "queued prompt text"
+    assert app._queued_followups == ()
+
+    # Subsequent followup_queued + followup_withdrawn stream events update state symmetrically.
+    handle_stream_event(
+        app,
+        _event(2, "core.followup_queued", continuation_id="cid-2", prompt="second", image_count=0),
+        rows,
+    )
+    assert len(app._queued_followups) == 1
+    handle_stream_event(
+        app,
+        _event(3, "core.followup_withdrawn", continuation_id="cid-2", prompt="second"),
+        rows,
+    )
+    assert app._queued_followups == ()
 
 
 def test_short_terminal_reserves_input_and_bounds_completion() -> None:

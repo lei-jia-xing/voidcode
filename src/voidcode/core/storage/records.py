@@ -317,6 +317,18 @@ class ContinuationRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingFollowupRecord:
+    """One queued user follow-up awaiting claim at the next run boundary."""
+
+    continuation_id: str
+    prompt: str
+    revision_id: str
+    created_at: int
+    max_steps: int | None
+    image_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class StagedStateUpdate:
     owner: str
     scope: StateScope

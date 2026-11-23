@@ -49,6 +49,8 @@ PARKED_INTERVENING_TYPES = frozenset(
         EventType.CHILD_SPAWNED,
         EventType.CHILD_RESERVED,
         EventType.CHILD_FINISHED,
+        EventType.FOLLOWUP_QUEUED,
+        EventType.FOLLOWUP_WITHDRAWN,
         EventType.MODEL_QUERY,
         EventType.TOOL_DEFERRED,
         EventType.TOOL_PROGRESS,

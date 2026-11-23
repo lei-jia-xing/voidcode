@@ -6,9 +6,9 @@
 
 - [x] **修复 `bootstrap.py` 遗漏 bundled 插件 `find`。**
   - `src/voidcode/plugins/find/` 已有完整实现、README 与单测，但 `BUNDLED_PLUGIN_IDS`（`bootstrap.py`）此前漏掉了 `"find"`；现已接入并验证。
-- [ ] **首次运行引导与诊断归入未来 TUI，CLI 不再新增 `init`、不扩展 `doctor`。**
-  - [x] `voidcode doctor` 已实现并继续保留（检查配置、provider 凭证可用性与 URL、sandbox、state DB，绝不输出密钥）；bare CLI 异常已改为 stderr 明文输出。
-  - 不再计划 CLI `init` / `doctor` 扩展：首次运行配置引导与完整诊断属于未来 TUI 的能力，将在 TUI 中实现；TUI 侧当前尚未实现。
+- [ ] **首次运行引导与诊断归入未来 TUI，CLI 不再新增 `init`、不保留 `doctor`。**
+  - [x] bare CLI 交互式启动异常已改为向 stderr 打印明文错误，不再输出裸 JSON。
+  - 不再在 CLI 新增 `init` / `doctor`：首次运行配置引导与完整诊断属于未来 TUI 的能力，将在 TUI 中实现。
 
 ## P1：Web 前端与 CLI 完整度
 

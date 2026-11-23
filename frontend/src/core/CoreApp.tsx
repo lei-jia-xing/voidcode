@@ -410,14 +410,39 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
                   </div>
                 );
               }
+              if (content?.kind === "run" && content.body.status === "failed") {
+                const errorDetail =
+                  content.body.error ||
+                  (typeof ev.payload.error === "string"
+                    ? ev.payload.error
+                    : null) ||
+                  t("core.unknownLabel");
+                return (
+                  <div
+                    key={ev.sequence}
+                    data-testid={`event-${ev.sequence}`}
+                    className="text-xs font-mono text-red-300 bg-red-950/25 px-3 py-1.5 rounded border border-red-900/60 max-w-2xl"
+                  >
+                    {t("core.runFailed", {
+                      error: String(errorDetail),
+                    })}
+                  </div>
+                );
+              }
               if (
                 content?.kind === "run" &&
                 content.body.status === "interrupted"
               ) {
                 const cause =
-                  typeof ev.payload.stop_cause === "string"
+                  content.body.reason ||
+                  content.body.stop_cause ||
+                  (typeof ev.payload.reason === "string"
+                    ? ev.payload.reason
+                    : null) ||
+                  (typeof ev.payload.stop_cause === "string"
                     ? ev.payload.stop_cause
-                    : t("core.unknownLabel");
+                    : null) ||
+                  t("core.unknownLabel");
                 return (
                   <div
                     key={ev.sequence}

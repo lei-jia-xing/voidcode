@@ -25,6 +25,8 @@ from voidcode.sdk.client import (
     CoreClientError,
     ErrorFrame,
     EventFrame,
+    FollowupListReceipt,
+    FollowupWithdrawReceipt,
     HeadFrame,
     HealthStatus,
     ResumeSpec,
@@ -322,6 +324,21 @@ class CoreRpcClient(SessionClient):
 
     def cancel(self, session_id: str) -> CancelReceipt:
         return CancelReceipt.from_payload(self._call("session.cancel", {"session_id": session_id}))
+
+    def list_followups(self, session_id: str) -> FollowupListReceipt:
+        return FollowupListReceipt.from_payload(self._call("followup.list", {"session_id": session_id}))
+
+    def withdraw_followup(self, session_id: str, continuation_id: str, expected_revision: str = "") -> FollowupWithdrawReceipt:
+        return FollowupWithdrawReceipt.from_payload(
+            self._call(
+                "followup.withdraw",
+                {
+                    "session_id": session_id,
+                    "continuation_id": continuation_id,
+                    "expected_revision": expected_revision,
+                },
+            )
+        )
 
     def transcript(self, session_id: str, *, after_sequence: int = 0, limit: int = 100) -> TranscriptPage:
         return decode_transcript_page(self._call("session.transcript", {"session_id": session_id, "after_sequence": after_sequence, "limit": limit}))

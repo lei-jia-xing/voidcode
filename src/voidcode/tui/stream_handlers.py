@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from voidcode.core.events import EventType
-from voidcode.sdk.client import CommandResult, StreamEvent
+from voidcode.sdk.client import CommandResult, QueuedFollowup, StreamEvent
 from voidcode.sdk.codec import decode_tool_call, decode_tool_result
 from voidcode.sdk.commands import ConfirmationRequest
 from voidcode.sdk.icons import Icon
@@ -64,7 +64,15 @@ def handle_stream_event(app: CoreTuiApp, event: StreamEvent, rows: list[str]) ->
     _transcript_entry(app, event, event_type, entry, rows)
     match event_type:
         case EventType.USER_MESSAGE | EventType.RUN_RESUMED:
+            if event_type == EventType.USER_MESSAGE:
+                claimed_id = payload.get("continuation_id")
+                if isinstance(claimed_id, str) and claimed_id:
+                    app._queued_followups = tuple(item for item in app._queued_followups if item.continuation_id != claimed_id)
             _run_started(app)
+        case EventType.FOLLOWUP_QUEUED:
+            _followup_queued(app, event, payload)
+        case EventType.FOLLOWUP_WITHDRAWN:
+            _followup_withdrawn(app, payload)
         case EventType.MODEL_TURN:
             app._record_model_turn(payload, entry.content if entry else None)
         case EventType.TOOL_INTENT:
@@ -90,8 +98,38 @@ def handle_stream_event(app: CoreTuiApp, event: StreamEvent, rows: list[str]) ->
 
 
 def _run_started(app: CoreTuiApp) -> None:
-    app._run_active = True
+    app._mark_run_active()
     app.status_line = ""
+
+
+def _followup_queued(app: CoreTuiApp, event: StreamEvent, payload: Mapping[str, object]) -> None:
+    cid = payload.get("continuation_id")
+    prompt = payload.get("prompt")
+    if not isinstance(cid, str) or not cid or not isinstance(prompt, str):
+        return
+    if any(item.continuation_id == cid for item in app._queued_followups):
+        return
+    raw_steps = payload.get("max_steps")
+    max_steps = raw_steps if type(raw_steps) is int else None
+    raw_images = payload.get("image_count")
+    image_count = raw_images if type(raw_images) is int and raw_images >= 0 else 0
+    item = QueuedFollowup(
+        continuation_id=cid,
+        prompt=prompt,
+        revision_id=event.revision_id,
+        created_at=0,
+        max_steps=max_steps,
+        image_count=image_count,
+    )
+    app._queued_followups = (*app._queued_followups, item)
+
+
+def _followup_withdrawn(app: CoreTuiApp, payload: Mapping[str, object]) -> None:
+    cid = payload.get("continuation_id")
+    if isinstance(cid, str) and cid:
+        app._queued_followups = tuple(item for item in app._queued_followups if item.continuation_id != cid)
+    if not app._queued_followups and app.status_line.startswith("Follow-up queued"):
+        app.status_line = ""
 
 
 def _transcript_entry(
@@ -148,7 +186,7 @@ def _tool_intent(app: CoreTuiApp, event: StreamEvent, payload: Mapping[str, obje
             revision_id=event.revision_id,
             generation=app._generation,
         )
-        app._run_active = True
+        app._mark_run_active()
 
 
 def _tool_progress(app: CoreTuiApp, event: StreamEvent, payload: Mapping[str, object]) -> None:
@@ -195,7 +233,7 @@ def _provider_progress(app: CoreTuiApp, payload: Mapping[str, object]) -> None:
         target = app._stream_reasoning if channel == "reasoning" else app._stream_buffers
         target.setdefault(dispatch, []).append(delta)
         app._stream_dispatch = dispatch
-        app._run_active = True
+        app._mark_run_active()
 
 
 def _command_completed(app: CoreTuiApp, payload: Mapping[str, object], rows: list[str]) -> None:
@@ -233,6 +271,8 @@ def _gate_change(app: CoreTuiApp, event: StreamEvent, event_type: EventType) -> 
 
 def _run_notice(app: CoreTuiApp, event: StreamEvent, event_type: EventType, payload: Mapping[str, object], rows: list[str]) -> None:
     if event_type == EventType.RUN_INTERRUPTED:
+        if payload.get("stop_cause") in ("user_stop", "owner_cancel"):
+            app._queued_followups = ()
         app._render_run_notice("interrupted", payload.get("reason"), rows, stop_cause=payload.get("stop_cause"))
     else:
         app._render_run_notice("failed", payload.get("error"), rows)

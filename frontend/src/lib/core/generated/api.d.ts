@@ -657,6 +657,59 @@ export interface components {
             /** @default null */
             style?: components["schemas"]["ComponentStyle"] | null;
         };
+        /**
+         * FollowupListReceipt
+         * @description Server snapshot of pending user follow-ups for one session.
+         */
+        FollowupListReceipt: {
+            /**
+             * Followups
+             * @default []
+             */
+            followups?: components["schemas"]["QueuedFollowup"][];
+            /** Revision Id */
+            revision_id: string;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
+         * FollowupWithdrawReceipt
+         * @description Durable withdrawal confirmation returning the recalled prompt.
+         */
+        FollowupWithdrawReceipt: {
+            /** Continuation Id */
+            continuation_id: string;
+            /**
+             * Image Count
+             * @default 0
+             */
+            image_count?: number;
+            /**
+             * Max Steps
+             * @default null
+             */
+            max_steps?: number | null;
+            /** Prompt */
+            prompt: string;
+            /** Revision Id */
+            revision_id: string;
+            /** Session Id */
+            session_id: string;
+            /**
+             * Withdrawn
+             * @default true
+             */
+            withdrawn?: boolean;
+        };
+        /** FollowupWithdrawRequest */
+        FollowupWithdrawRequest: {
+            /** Continuation Id */
+            continuation_id: string;
+            /** Expected Revision */
+            expected_revision: string;
+            /** Session Id */
+            session_id: string;
+        };
         /** FormField */
         FormField: {
             /**
@@ -1064,6 +1117,30 @@ export interface components {
             tool_calls?: components["schemas"]["ToolCall"][];
             /** @default null */
             usage?: components["schemas"]["ProviderTokenUsage"] | null;
+        };
+        /**
+         * QueuedFollowup
+         * @description One queued user follow-up continuation awaiting a turn boundary.
+         */
+        QueuedFollowup: {
+            /** Continuation Id */
+            continuation_id: string;
+            /** Created At */
+            created_at: number;
+            /**
+             * Image Count
+             * @default 0
+             */
+            image_count?: number;
+            /**
+             * Max Steps
+             * @default null
+             */
+            max_steps?: number | null;
+            /** Prompt */
+            prompt: string;
+            /** Revision Id */
+            revision_id: string;
         };
         /** ReadObservationWire */
         ReadObservationWire: {
@@ -1716,10 +1793,25 @@ export interface components {
         /** TranscriptRunWire */
         TranscriptRunWire: {
             /**
+             * Error
+             * @default null
+             */
+            error?: string | null;
+            /**
+             * Reason
+             * @default null
+             */
+            reason?: string | null;
+            /**
              * Status
              * @enum {string}
              */
             status: "completed" | "failed" | "interrupted";
+            /**
+             * Stop Cause
+             * @default null
+             */
+            stop_cause?: ("completed" | "error" | "user_stop" | "owner_cancel" | "limit_reached" | "shutdown") | null;
         };
         /** TranscriptToolContentWire */
         TranscriptToolContentWire: {
@@ -1854,6 +1946,8 @@ export interface RpcMethods {
   "command.input": { params: components["schemas"]["CommandInputRequest"]; result: components["schemas"]["CommandInputSnapshot"] };
   "command.invoke": { params: components["schemas"]["InvokeRequest"]; result: components["schemas"]["CommandResult"] };
   "connection.authenticate": { params: components["schemas"]["AuthenticateParams"]; result: components["schemas"]["AuthenticateReceipt"] };
+  "followup.list": { params: components["schemas"]["SessionParams"]; result: components["schemas"]["FollowupListReceipt"] };
+  "followup.withdraw": { params: components["schemas"]["FollowupWithdrawRequest"]; result: components["schemas"]["FollowupWithdrawReceipt"] };
   "session.ack": { params: components["schemas"]["AckParams"]; result: components["schemas"]["AckReceipt"] };
   "session.cancel": { params: components["schemas"]["SessionParams"]; result: components["schemas"]["CancelReceipt"] };
   "session.context": { params: components["schemas"]["ContextParams"]; result: components["schemas"]["ContextHistoryWire"] };

@@ -21,7 +21,6 @@ from ..events import EventType
 from .records import (
     BACKGROUND_ACTION_SOURCE,
     MAX_CHILD_LABEL_BYTES,
-    MAX_COMMITTED_EVENT_BYTES,
     MAX_CONTINUATION_PAYLOAD_BYTES,
     MAX_WAKEUP_PAYLOAD_BYTES,
     AskAnswerConflict,
@@ -62,7 +61,7 @@ from .records import (
     _stored_root_budget,
     canonical_json,
 )
-from .writes import apply_state_updates_locked, record_event_indexes, set_window_projection_locked
+from .writes import apply_state_updates_locked, insert_session_event_locked, set_window_projection_locked
 
 
 class _SessionsMixin(_ConnectionStore):
@@ -1023,32 +1022,15 @@ class _SessionsMixin(_ConnectionStore):
                         )
                     current_seq += 1
                     first_sequence_by_type.setdefault(draft.event_type, current_seq)
-                    payload_json = canonical_json(draft.payload)
-                    payload_size = len(payload_json.encode("utf-8"))
-                    if payload_size > MAX_COMMITTED_EVENT_BYTES:
-                        raise StoreConflict(
-                            f"session event {draft.event_type!r} payload is {payload_size} bytes, "
-                            f"exceeding the {MAX_COMMITTED_EVENT_BYTES}-byte committed-event bound"
-                        )
-                    self._connection.execute(
-                        """
-                        INSERT INTO session_events (
-                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            session_id,
-                            current_seq,
-                            run_id,
-                            draft.event_type,
-                            draft.source,
-                            draft.actor,
-                            revision_id,
-                            payload_json,
-                            payload_size,
-                        ),
+                    insert_session_event_locked(
+                        self._connection,
+                        session_id,
+                        current_seq,
+                        run_id=run_id,
+                        revision_id=revision_id,
+                        draft=draft,
+                        now=now,
                     )
-                    record_event_indexes(self._connection, session_id, draft.event_type, draft.payload, now)
 
                 new_turn = session_row.turn + 1 if start_turn else session_row.turn
 

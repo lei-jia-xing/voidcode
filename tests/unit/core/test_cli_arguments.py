@@ -172,3 +172,12 @@ def test_tui_prefs_fail_visibly_on_a_malformed_file(tmp_path: Path) -> None:
     (workspace / "voidcode.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(ValueError, match="cannot read TUI preferences"):
         _tui_prefs(Namespace(server=None, no_border=False, footer=None, show_session=False), workspace=workspace)
+
+
+def test_bare_client_startup_error_writes_stderr_without_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    missing = tmp_path / "does-not-exist"
+    state = tmp_path / "state"
+    assert main(["--workspace", str(missing), "--state-dir", str(state)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("Error:")

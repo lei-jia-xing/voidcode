@@ -63,6 +63,7 @@
   "core.toolStoppedUnconfirmed": "可能仍在运行；副作用状态未知",
   "core.toolEffectsUnknown": "副作用状态未知",
   "core.commandLabel": "命令",
+  "core.runFailed": "运行失败：{{error}}",
   "core.runInterrupted": "运行被中断：{{cause}}",
   "core.unknownLabel": "未知",
   "core.pendingConfirmationLabel": "待确认",

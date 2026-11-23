@@ -159,3 +159,67 @@ def test_interrupting_active_run_cancels_queued_followup(tmp_path: Path) -> None
         assert len(user_events) == 1
         assert user_events[0].payload["content"] == "Turn 1 prompt"
         core.close()
+
+
+def test_list_and_withdraw_pending_followup_atomic_and_stale_checks(tmp_path: Path) -> None:
+    import pytest
+
+    from voidcode.core.storage.store import StaleRevision, StoreConflict, UnknownContinuation
+
+    replies = [
+        _turn(_call("block-1", BLOCK_TOOL)),
+        _turn(output="turn 1 done"),
+    ]
+    with loopback_server(replies) as server:
+        core, workspace = _setup_core(tmp_path, server)
+        try:
+            session = core.create_session("sess-withdraw")
+            session_id = session.session_id
+            t1 = threading.Thread(target=lambda: core.run("Turn 1", session_id=session_id), daemon=True)
+            t1.start()
+
+            marker = workspace / "block.started"
+            deadline = time.monotonic() + 10
+            while not marker.is_file() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert marker.is_file()
+
+            queued = core.run("Queued follow-up", session_id=session_id)
+            assert queued.status == "queued"
+
+            listed = core.list_followups(session_id)
+            assert len(listed.followups) == 1
+            item = listed.followups[0]
+            assert item.prompt == "Queued follow-up"
+            assert item.revision_id == core.revision_id
+
+            events = core.store.events(session_id)
+            assert any(e.event_type == "core.followup_queued" and e.payload.get("continuation_id") == item.continuation_id for e in events)
+
+            with pytest.raises(StaleRevision):
+                core.withdraw_followup(session_id, item.continuation_id, expected_revision="stale-rev")
+            assert len(core.list_followups(session_id).followups) == 1
+
+            receipt = core.withdraw_followup(session_id, item.continuation_id, expected_revision=core.revision_id)
+            assert receipt.withdrawn is True
+            assert receipt.prompt == "Queued follow-up"
+            assert core.list_followups(session_id).followups == ()
+            assert core.store.continuation_status(item.continuation_id) == "cancelled"
+
+            events_after = core.store.events(session_id)
+            assert any(e.event_type == "core.followup_withdrawn" and e.payload.get("continuation_id") == item.continuation_id for e in events_after)
+
+            with pytest.raises(StoreConflict, match="cannot be withdrawn"):
+                core.withdraw_followup(session_id, item.continuation_id, expected_revision=core.revision_id)
+            with pytest.raises(UnknownContinuation):
+                core.withdraw_followup(session_id, "missing-followup", expected_revision=core.revision_id)
+
+            (workspace / "block.release").touch()
+            t1.join(timeout=10)
+            assert not t1.is_alive()
+
+            user_events = [e for e in core.store.events(session_id) if e.event_type == "core.user_message"]
+            assert len(user_events) == 1
+            assert user_events[0].payload["content"] == "Turn 1"
+        finally:
+            core.close()
