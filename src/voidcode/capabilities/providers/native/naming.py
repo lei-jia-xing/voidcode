@@ -1,29 +1,4 @@
-"""Provider naming: one canonical id and one human label per provider.
-
-Machine identifier
-    The lowercase canonical vendor id (``minimax``). It is the registry key, the
-    ``providers.<id>`` config key, the ``<id>/<model>`` reference prefix, the
-    ``<ID>_API_KEY`` credential environment variable, the model-catalog key,
-    ``/api/providers`` ``name`` and every internal lookup. Provider input is
-    trimmed and lowercased at every boundary and canonicalised to this id, so
-    ``MiniMax``, ``MINIMAX`` and `` minimax `` all name the same provider.
-
-Human label
-    ``provider_label`` (``MiniMax``), used by every surface that shows a provider
-    name to a human: the web ``/api/providers`` payload and
-    ``voidcode provider inspect`` (both through ``ProviderSummary.label``) and
-    ``voidcode doctor``. A provider without an explicit label degrades to its
-    canonical id.
-
-Model ids are deliberately NOT canonicalised: the ``<model>`` half of a
-``provider/model`` reference is sent to the vendor verbatim, including its case.
-Catalog metadata and reasoning-effort capability lookups match model ids case-insensitively, and ``model_map`` is the mechanism
-for vendor casings and aliases.
-
-``PROVIDER_LABELS`` is the one authoritative table of built-in provider ids: the
-registry, the ``providers`` config payload and ``providers.custom`` name
-reservations all derive from it instead of carrying a second list.
-"""
+"""Provider naming: canonical machine identifier and human label mappings."""
 
 from __future__ import annotations
 

@@ -1,31 +1,4 @@
-"""Follow one session: stream thread, health/reconcile rounds, invalidation tokens.
-
-The follower owns everything that watches the core in the background: the
-session event-stream thread, the health + connection-reconcile workers, the
-session epoch, and the abort tokens that invalidate stale async replies. It
-produces event-queue frames; :class:`CoreTuiApp` keeps consuming them.
-
-Guard mapping (four counters collapse to one epoch plus tokens):
-
-* ``_generation`` → :attr:`epoch`. Session/stream scope: bumped only by
-  :meth:`new_epoch` on session switch. Frames carry the int; the drain drops
-  foreign epochs exactly as before.
-* ``_reconcile_serial`` + ``_reconcile_applied`` → one reconcile token per
-  round. The two envelopes of a round (``health`` + ``reconciled``) share it;
-  a new round aborts the previous token. The applied floor is subsumed: the
-  only order the producer emits is health-then-reconciled (same worker,
-  sequential puts, FIFO queue), and any older round is aborted, so "newest
-  token wins" is exactly "newest serial wins".
-* ``_interaction_serial`` → interaction token. Input-prep and presentation
-  replies carry it; invoke/overlay/composer/view paths abort without
-  beginning (they only invalidate pending input frames).
-* ``_live_serial`` → live token. Live refresh replies carry it; close and
-  suspend paths abort without beginning.
-
-Tokens beat serials: invalidation is explicit (teardown paths abort rather
-than bumping a counter and hoping), no integer applies anywhere, and a token
-answers one question — "was I superseded?" — instead of encoding an order.
-"""
+"""Follow one session: event stream ingestion, health reconciliation, and abort tokens."""
 
 from __future__ import annotations
 

@@ -1,20 +1,4 @@
-"""SQLite storage facade for the VoidCode core.
-
-The store is one object with one connection and one re-entrant lock, composed from
-three domain mixins so each file stays cohesive:
-
-- `storage.sessions`: session rows, the append-only event stream, checkpoints, and the
-  atomic CAS commit that appends events and moves the session projection together.
-- `storage.state`: capability revisions, the workspace pointer, adoption/activation,
-  owner state copies, confirmations, budgets, overlays, and window projections.
-- `storage.continuations`: wakeups, model continuations, background actions, root-action
-  budgets, and child-message claims.
-
-Shared vocabulary (constants, errors, frozen records, typed SELECT rows and their
-decoders, connection lifecycle) lives in `storage.records`. This module keeps the
-`SqliteStore` name and re-exports that vocabulary, so every existing
-`from ...storage.store import ...` keeps addressing the same contract.
-"""
+"""SQLite storage facade for the VoidCode core, composing sessions, state, and continuations."""
 
 from __future__ import annotations
 

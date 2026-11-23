@@ -14,6 +14,7 @@ import time
 from collections.abc import Mapping, Sequence
 from uuid import uuid4
 
+from ...sdk.hooks import ObservedFactKind
 from ...sdk.json_values import own_json_object
 from ...sdk.plugin import StateScope
 from ...sdk.services import PluginBudget
@@ -497,26 +498,9 @@ class _StateMixin(_ConnectionStore):
         cleared_budget_owners: Sequence[str] = (),
         require_quiescent: bool,
         recover_orphaned_runs: bool = False,
-        fact_observers: Mapping[str, Sequence[str]] | None = None,
+        fact_observers: Mapping[ObservedFactKind, Sequence[str]] | None = None,
     ) -> str:
-        """One CAS transaction that adopts a new core generation for the workspace.
-
-        Covers, atomically: the immutable revision row, the workspace pointer, EVERY session ref in
-        the workspace, every migrated/deactivated owner state copy, cancelled work for dropped
-        owners, retargeted queued work, and (when an acting session names the transition) that
-        session's CAS, events, and checkpoint. An adoption without an acting session is allowed
-        only when the workspace has no sessions at all.
-
-        ``recover_orphaned_runs`` may be set only by a caller that proved no core owns the
-        workspace (exclusive lease). Every other ``running`` row is then a dead run at its last
-        committed boundary: it becomes ``interrupted`` with one durable fact, while its cursor,
-        batch references, and replay policies are preserved, so an explicit resume still applies
-        the ordinary interrupted-batch and unknown-usage settlement instead of replaying native
-        work here. All other blockers keep refusing regardless of this flag.
-        ``fact_observers`` is the target generation's fact-kind -> owners roster captured before
-        this transaction: the recovery fact freezes it exactly as the engine stamps its own facts,
-        so delivery eligibility never has to be guessed from a later generation.
-        """
+        """Atomic CAS transaction that commits a new revision and transitions the workspace."""
         target_text = canonical_json(target_payload)
         if session_id is None:
             if expected_sequence is not None or expected_run_id is not None:
@@ -844,7 +828,7 @@ class _StateMixin(_ConnectionStore):
         *,
         target_revision_id: str,
         acting_session_id: str | None,
-        fact_observers: Mapping[str, Sequence[str]],
+        fact_observers: Mapping[ObservedFactKind, Sequence[str]],
         now: int,
     ) -> None:
         """Settle dead runs of ONE workspace inside the caller's adoption transaction.

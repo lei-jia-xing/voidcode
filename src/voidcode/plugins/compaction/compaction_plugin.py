@@ -1,24 +1,4 @@
-"""Compaction plugin: the session window projection over the core's verified seam.
-
-The plugin decides *what* a projection covers and writes the replacement text; the core
-decides whether that projection is admissible and measures its accounting itself. So a
-projection is declared through ``services.project_window`` and read back through
-``services.window_projection`` -- the numbers reported here are the core's, never this
-plugin's own estimate.
-
-Trigger (``enabled`` + ``threshold_tokens``/``reserve_tokens``): the provider-reported prompt
-tokens of the newest dispatch, compared against the resolved threshold. Coverage always
-starts at the session's first event and ends at a sequence that closes a whole native tool
-batch, and the prefix is never covered past the point where the replacement would stop
-shrinking the window: that check is made before the call and a refusal is visible.
-
-Manual ``/compact`` runs the same projection on demand -- the user is the gate there, not
-``enabled`` -- and a call with nothing new to cover is a no-op that reports the projection
-already in force.
-
-State is this plugin's own bookkeeping only (the observation cursor and the last projection's
-accounting); the projection row itself belongs to the core.
-"""
+"""Compaction plugin: manages session context window projection and token compaction."""
 
 from __future__ import annotations
 

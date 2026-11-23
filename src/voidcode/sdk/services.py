@@ -136,16 +136,7 @@ class QueryUnavailable(ValueError):
 
 
 class QueryContractError(ValueError):
-    """A query answered, but its answer violated the agreed contract.
-
-    Raised by the *consumer's* answer decoder (e.g. ``workspace_queries``), never by the
-    transport: ``services.query`` raises ``QueryUnavailable`` only when no admitted plugin
-    answers the name, returns ``None`` when the provider knows no matching resource, and
-    lets any other provider failure surface as its own exception. A typed contract's three-way
-    split is therefore: catch ``QueryUnavailable`` for absent providers (take the
-    documented optional path), accept ``None`` as "no such resource", and report
-    ``QueryContractError`` as a provider bug — never as ordinary absence.
-    """
+    """Raised when a query answer violates its expected contract schema."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,23 +266,7 @@ class EventView:
 
 @dataclass(frozen=True, slots=True)
 class ChildOutcome:
-    """Outcome of ONE delegated child run, as observed by its parent.
-
-    ``run_id`` identifies the logical turn this outcome belongs to; a follow-up run is a new
-    ``run_id`` in the same child session, so a caller can never mistake an older terminal fact
-    for the result of newer work. ``history_sha256`` names the immutable snapshot of the child's
-    readable history at that terminal point (``artifact://<sha256>``); the live, paged history
-    stays ``transcript://<child_session_id>``. The plugin-provided ``agent://<child_session_id>``
-    resource is distinct: it projects current descendant status and the latest eligible nonempty
-    marker, so this selection is not a claim of exact OMP yield equivalence. A recoverable
-    finite-cap interruption carries the cap facts committed in that run's stop event; it does
-    not claim terminal completion or changed authorization. When the producer could not
-    capture that run's large output or history snapshot, ``output_error``/``history_error``
-    carry the committed capture cause verbatim; ``None`` means no committed failure
-    (including historical facts that predate the fields), never an inference. A present
-    ``output_preview`` without an artifact reference is a bounded prefix of otherwise
-    uncaptured output, not a completeness claim.
-    """
+    """Outcome of one delegated child run, as observed by its parent."""
 
     child_session_id: str
     status: Literal["completed", "failed", "interrupted", "cancelled", "running", "waiting"]
@@ -406,16 +381,7 @@ class DescendantNode:
 
 @dataclass(frozen=True, slots=True)
 class ChildSessionSnapshot:
-    """One caller-scoped current descendant row and its latest eligible published outcome.
-
-    Core snapshots select only committed completed outcomes with nonempty inline output or a
-    full output artifact; failed, interrupted, cancelled, empty, and preview-only outcomes do
-    not erase the prior result. Inline output is materialized as a deduplicated immutable
-    artifact for resource paging, without changing the committed event or join result. Current
-    lifecycle status and run identity remain on ``descendant`` and may identify a newer run.
-    The durable child fact has no explicit accepted-yield marker; this selection is a documented
-    approximation, not OMP-equivalent yield semantics.
-    """
+    """One caller-scoped descendant record and its latest eligible outcome."""
 
     descendant: DescendantNode
     latest_outcome: ChildOutcome | None = None
@@ -652,17 +618,7 @@ class RawStreamCapture:
 
 @dataclass(frozen=True, slots=True)
 class ProcessResult:
-    """Outcome of one lease-scoped child process.
-
-    `stdout`/`stderr` are decoded UTF-8 (invalid bytes replaced) and bounded; when a stream was
-    cut at the capture bound `truncated` is set, so a caller never mistakes a clipped capture for
-    complete output. A process the runtime stopped is reported by `timed_out`/`cancelled`, which
-    are separate from the real exit status.
-
-    In raw mode (`raw_capture=True`) `raw` carries exactly the stdout/stderr
-    pair and the text fields are "" and VOID: when `raw` is non-empty they
-    carry no meaning.
-    """
+    """Outcome of one lease-scoped child process execution."""
 
     exit_code: int | None
     stdout: str
@@ -1009,30 +965,7 @@ class ChildServices(Protocol):
         idempotency_key: str | None = None,
         result_schema: Mapping[str, object] | None = None,
     ) -> str:
-        """Start a delegated child session of the bound session; returns its durable session id.
-
-        `max_steps`, when supplied, is an explicit provider-turn cap for this child run. The child
-        inherits its root action authorization from its parent; it cannot create or extend it.
-        The child can only be narrower than its parent: depth, the chain's spawn budget, the
-        parent's tool scope, and the parent's restrictive stance bound it. A read-only lease may
-        therefore delegate read-only work, but never spawn a writable child; `readonly=True`
-        records the child's stance durably on the child session (the core owns that record).
-
-        With `notify_on_completion` the core delivers one bounded, run-scoped notice to this
-        session when the child's run reaches a terminal state, even after this turn ends, and the
-        child's readable history is spilled to an immutable artifact. The notice is keyed by the
-        run, never by the child alone, so a follow-up run cannot be masked by an older one.
-
-        With `idempotency_key` the identity is deterministic per parent, owner, and key: a retry
-        with the same effective spec returns the existing child, while the same key with a
-        different spec is refused visibly instead of spawning a second child.
-
-        With `result_schema` (a JSON Schema describing one JSON object) the core appends a
-        fixed delivery instruction to the child's prompt and carries the declaration durably;
-        the parent validates the child's full terminal text against it after join. The core
-        never validates child output: terminal facts commit identically with or without a
-        schema. `None` (the default) declares no contract — unknown, never valid.
-        """
+        """Start a delegated child session under this parent session and return its id."""
         ...
 
     def send_child(
@@ -1043,47 +976,19 @@ class ChildServices(Protocol):
         label: str = "",
         notify_on_completion: bool = True,
     ) -> ChildSendReceipt:
-        """Send a follow-up message to ONE child this session spawned, in its own session.
-
-        This is a SESSION verb, not a filesystem write and not user authority: the child keeps its
-        tool scope, its read-only overlay, and the core's policy. Only the direct parent may
-        send (the core checks lineage); siblings, parents, and unrelated sessions are refused.
-        A running or approval-parked child queues the message durably and consumes it at its next
-        safe boundary; an open child starts a new turn immediately. The receipt says `started` or
-        `queued` and never claims consumption or completion.
-        """
+        """Send a follow-up prompt to a spawned child session."""
         ...
 
     def join_child(self, child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
-        """Wait for the child's CURRENT run to reach a terminal state.
-
-        While the child is running or has a queued follow-up, this waits instead of returning an
-        older terminal fact. The result carries the run id it belongs to.
-        """
+        """Wait for the child session's current run to reach a terminal state."""
         ...
 
     def wait_children(self, child_session_ids: Sequence[str]) -> tuple[ChildOutcome, ...]:
-        """Wait for undelivered results from these directly owned child sessions.
-
-        Existing eligible results are returned before waiting; otherwise wait for the first
-        selected child result. Every outcome retains its exact child/run identity. The Core
-        stages delivery receipts and pending-notice cancellation with this invocation, so
-        callers must not acknowledge outcomes returned here. An empty tuple means no eligible
-        result or registered work remains; interruption, cancellation, and shutdown are not
-        represented as an empty success.
-        """
+        """Wait for undelivered terminal outcomes from owned child sessions."""
         ...
 
     def acknowledge_child_completion(self, child_session_id: str, run_id: str) -> None:
-        """Stage delivery of this exact known terminal child run.
-
-        Unknown or nonterminal runs are a no-op; a known old run remains eligible even when a
-        newer run is current. The receipt is staged even if no completion notice exists (for
-        example, `notify_on_completion=False`). An unstarted notice for this run is cancelled;
-        claimed or delivered notices are untouched. Both effects commit with any valid result,
-        including `ToolFailure`; exceptions, invalid results, abort, revocation, or shutdown do
-        not consume the outcome.
-        """
+        """Stage delivery receipt for a completed terminal child run."""
         ...
 
     def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
@@ -1324,17 +1229,7 @@ class ToolServices(Protocol):
         *,
         expected_revision: str,
     ) -> ToolInvocationReceipt:
-        """Invoke another tool through this session's ordinary admission path.
-
-        The core resolves the target in the active revision the caller displayed
-        (`expected_revision`), applies the session's tool scope, read-only stance, pre-tool gates,
-        and declared-effect approval policy exactly as it does for a model-requested call.
-        Requests are staged atomically with the caller's result and execute
-        only after its callback returns; this receipt never waits on execution or human consent.
-        Approvable targets go through the ordinary approval boundary, never a rejection for
-        needing approval. Recursion consumes the chain's action budget and carries core-counted
-        depth. Hook leases cannot invoke.
-        """
+        """Stage an invocation of another tool through the session's admission pipeline."""
         ...
 
     def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
@@ -1456,18 +1351,7 @@ class ProcessServices(Protocol):
         raw_capture: bool = False,
         raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
-        """Run one child process of this runtime, in its own process group under this lease.
-
-        The runtime owns the process, the bytes, and the bounds, and the
-        core's own governance already decided whether the calling tool may execute at all. What
-        the lease adds is stance: a read-only lease and a hook lease are refused outright, because
-        neither may touch the machine. `env` overrides the inherited environment; `cwd` defaults to
-        the workspace. Each stream is captured up to `max_output_bytes` and the excess is dropped
-        with `truncated` set. A lease cancellation kills the whole group before returning.
-        With `raw_capture` each stream is also durably captured byte-identical to its own
-        artifact (`raw_media_type` names both); `raw` then carries exactly the
-        stdout/stderr pair and the text fields are "" and VOID.
-        """
+        """Run one child process synchronously in its own process group under this lease."""
         ...
 
     def run_query_process(
@@ -1483,17 +1367,7 @@ class ProcessServices(Protocol):
         raw_capture: bool = False,
         raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
-        """Run one read-only query child process of this runtime under this lease.
-
-        Unlike `run_process`, a read-only lease IS permitted to execute read-only query
-        commands (such as code search, AST queries, linters, or non-mutating analysis tools).
-        Hook leases remain purely observational and are refused outright. When sandboxed,
-        the process runs under a read-only profile, and no mutable filesystem observations
-        are staged. With `raw_capture` each stream is also durably captured
-        byte-identical to its own artifact (`raw_media_type` names both); `raw`
-        then carries exactly the stdout/stderr pair and the text fields are ""
-        and VOID.
-        """
+        """Run one read-only query child process under this lease."""
         ...
 
     def spawn_service_process(
@@ -1504,17 +1378,7 @@ class ProcessServices(Protocol):
         env: Mapping[str, str] | None = None,
         process_id: str | None = None,
     ) -> ProcessHandle:
-        """Start a supervised *service* process: a helper this runtime generation owns end to end.
-
-        Same identity, stdin, log paging, and cancellation surface as `spawn_process` (`write_process`,
-        `read_process_output`, `cancel_process`, `list_processes` all address it by its id), with one
-        lifetime difference: a service process belongs to the runtime generation that started it. It
-        is stopped when that generation retires — a reload/retire or owner shutdown — because it
-        runs in its own process group, while a background process keeps its
-        documented "survives a generation swap" contract. Service processes are the right shape for
-        a language server or another interactive helper: they are not a user job the caller persists,
-        and a stale one outliving its generation would hold the workspace.
-        """
+        """Start a supervised service process tied to the lifetime of this runtime generation."""
         ...
 
     def spawn_process(
@@ -1528,17 +1392,7 @@ class ProcessServices(Protocol):
         stderr_path: Path | str | None = None,
         process_id: str | None = None,
     ) -> ProcessHandle:
-        """Start a supervised process that outlives this invocation, and return its identity.
-
-        Supervised means the runtime owns the live process and its group: `cancel_process` stops the
-        whole group, and the owner's shutdown stops every supervised process. What the caller owns
-        is the identity — persist `ProcessHandle` (pid + start_time + log paths): after the caller's
-        own restart the runtime no longer supervises that process, and only that identity can tell a
-        live process from a recycled pid. Output goes to the log paths you name (created, never
-        truncated); pass none and the runtime spools into its own temporary files, whose paths the
-        returned handle carries. A duplicate `process_id` is refused, so a retried start cannot
-        silently create a second process.
-        """
+        """Start a long-lived supervised process that outlives the current invocation."""
         ...
 
     def write_process(self, process_id: str, data: bytes | str) -> int:

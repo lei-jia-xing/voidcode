@@ -1,13 +1,4 @@
-"""Typed values on the in-process child-orchestration service boundary.
-
-A plugin reaches child orchestration only through `RuntimeServices`; the values that
-cross from the core's `DelegationManager`/`Engine` into that service layer are built
-in-process by trusted typed code, never parsed from plugin JSON. They therefore travel
-as these dataclasses: one request for a spawn, one delivery per exact result fact, and
-one durable receipt identity per acknowledgment. The plugin-supplied inputs themselves
-(prompt, label, allowlist, schema, keys) are still validated once in `RuntimeServices`,
-the actual ingress boundary.
-"""
+"""Typed values and contracts for in-process child orchestration."""
 
 from __future__ import annotations
 

@@ -1,21 +1,4 @@
-"""Plan plugin: plan mode as a plugin-owned restrictive overlay.
-
-Ports the legacy plan-mode mechanism (``collaboration_mode`` in
-``src/voidcode/runtime/permissions/policy.py`` plus ``PLAN_MODE_INSTRUCTION`` from
-``src/voidcode/runtime/context/window.py``) onto the core's owner-scoped overlay primitive:
-- ``plan`` tightens the session with a read-only overlay, records the mode in
-  this plugin's own session state and contributes the plan instruction
-  to the provider context.
-- ``plan.off`` revokes exactly this owner's overlay and stops the contribution. A read-only
-  policy frozen by the user (core config or another owner) is never affected: overlays can
-  only tighten.
-- ``plan.status`` reports the plugin's view of the mode.
-
-The overlay row is owned by this plugin, so while the plugin is active plan mode survives
-restarts (the state and the overlay are both durable). On deactivation the core deletes the
-overlay row and this plugin's transform parks the mode off, so the parked state stays
-truthful and re-enable never silently re-tightens the session.
-"""
+"""Plan plugin: read-only policy overlay and contextual planning instructions."""
 
 from __future__ import annotations
 

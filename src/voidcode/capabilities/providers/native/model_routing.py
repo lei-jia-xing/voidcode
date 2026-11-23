@@ -52,18 +52,7 @@ class WireRouting:
 
 @dataclass(frozen=True, slots=True)
 class RoutedTurnProvider:
-    """``TurnProvider`` dispatching each request to the wire its model speaks.
-
-    ``build`` is the owning adapter's wire factory (it knows the endpoint, the
-    credential and the tool-feedback rules of that gateway); ``RoutedTurnProvider``
-    knows only the table. Sub-providers are built lazily per protocol and
-    cached per protocol. Cache construction is serialized to avoid losing an owned
-    SDK client and connection pool.
-
-    ``model_map`` aliases resolve here, before dispatch, so a routed model always
-    reaches its wire under the name the table routed. Gateway factories remove
-    the alias map from native chat configs to prevent a second lookup.
-    """
+    """TurnProvider dispatching model requests to the configured wire protocol."""
 
     name: str
     routing: WireRouting

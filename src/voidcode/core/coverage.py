@@ -205,17 +205,7 @@ def project_tool_result(
     artifact_reader: ArtifactPageReader | None = None,
     include_images: bool = True,
 ) -> tuple[str, tuple[ImageAttachment, ...], bool]:
-    """Project one authoritative model representation, preserving complete-resource identities.
-
-    ``TextOutput.text`` is the selected page; its machine body is recoverable through the
-    canonical result URI, never duplicated into the model allocation. ``EmptyOutput`` bodies
-    remain inline for structured-only results. Only explicit ``EmptyOutput`` references with
-    textual MIME types (``text/*``, JSON/XML/JavaScript, ``+json``/``+xml``) are paged; images are read
-    to EOF at dispatch. ``CompositeOutput`` renders parts in order to ``text`` with ``parts``
-    identities and ``output_uris``; its body is omitted like ``TextOutput``. Any omission
-    requires ``result_reference``. The final boolean means selected content was clipped,
-    not that machine metadata was omitted.
-    """
+    """Project a tool result into model text, image attachments, and a clipped indicator."""
     if type(max_bytes) is not int or max_bytes < 1:
         raise ValueError("model projection budget must be a positive integer")
     output = result.output

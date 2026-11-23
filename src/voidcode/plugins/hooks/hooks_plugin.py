@@ -1,22 +1,4 @@
-"""Hooks plugin: argv pre-tool gate, post-tool note and session lifecycle hooks.
-
-The user's ``voidcode.json`` argv commands for the four surfaces the core
-offers:
-
-- ``pre_tool`` can only refuse: a ``cancel`` action, a non-zero exit, malformed
-  stdout or a timeout denies the call, and the hook's own diagnostic is what the
-  model reads instead of a result.
-- ``post_tool`` can only append: the guidance a hook command prints becomes the
-  note on the successful result the model reads. A broken note never fails a call
-  that already succeeded.
-- ``session_start`` / ``session_end`` run for their side effects only and
-  are never injected into the prompt.
-- Hook leases are read-only, so this plugin touches no state and stages no events.
-
-Which tools a surface applies to is config-driven (``pre_tool_match`` /
-``post_tool_match``); the registration matches ``("*",)`` because every tool
-must reach the plugin to be filtered.
-"""
+"""Hooks plugin: user-configured shell command hooks for tool gates and session lifecycle."""
 
 from __future__ import annotations
 

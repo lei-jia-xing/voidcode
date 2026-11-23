@@ -24,9 +24,9 @@ graph LR
 ```
 
 - **SDK (`src/voidcode/sdk/`)**:
-  The contract surface shared by core and plugins: plugin registration (`plugin.py`, including `resource_readers`), tools (`tools.py`), commands (`commands.py`), invocation context (`invocation.py`), provider contracts (`provider.py`), hook/observer contracts (`hooks.py`), declarative views (`views.py`), resource readers (`resources.py`: typed `scheme://` handlers with `ResourceUnavailable`/`ResourceContractError`), scoped services (`services.py`, including the optional-query transport and its `QueryUnavailable`/`QueryContractError` errors), history page bounds (`history.py`), plus JSON and limit helpers (`json_values.py`, `codec.py`, `limits.py`). No configuration schema, no workspace query contracts, no state migration hook.
+  The contract surface shared by core and plugins: plugin registration (`plugin.py`, including `resource_readers`), tools (`tools.py`), commands (`commands.py`), invocation context (`invocation.py`), provider contracts (`provider.py`), hook/observer contracts (`hooks.py`), declarative views (`views.py`), resource readers (`resources.py`: typed `scheme://` handlers with `ResourceUnavailable`/`ResourceContractError`), scoped services (`services.py`, including the optional-query transport and its `QueryUnavailable`/`QueryContractError` errors), plus JSON helpers (`json_values.py`, `codec.py`). No configuration schema, no workspace query contracts, no state migration hook.
 - **Core (`src/voidcode/core/`)**:
-  The minimal engine: `engine.py` runs governed turns over append-only SQLite events with native tool batches, approvals, and confirmation gates; `activation.py` defines neutral execution configurations and state copies; `plugins.py` is the in-process plugin runtime that loads plugins and dispatches invocations synchronously; `services.py` binds scoped services to invocation leases; `processes.py` owns child processes and background jobs; `storage/` owns the append-only SQLite store and v6 schema; `coverage.py` projects tool results for the model and resolves resource paths; `history_renderer.py` renders the readable event projection the history services share. Core has zero product configuration or provider credential concepts and imports no outer adapters, no capabilities, and no concrete plugin.
+  The minimal engine: `engine/` (`Core`) runs governed turns over append-only SQLite events with native tool batches, approvals, and confirmation gates; `activation.py` defines neutral execution configurations and state copies; `plugins.py` is the in-process plugin runtime that loads plugins and dispatches invocations synchronously; `services.py` binds scoped services to invocation leases; `processes.py` owns child processes and background jobs; `storage/` owns the append-only SQLite store and v6 schema; `coverage.py` projects tool results for the model and resolves resource paths; `history_renderer.py` renders the readable event projection the history services share. Core has zero product configuration or provider credential concepts and imports no outer adapters, no capabilities, and no concrete plugin.
 - **Outer product layer (`src/voidcode/`)**:
   Product wiring: `cli.py` (CLI entry point for `voidcode` and `python -m voidcode`), `config.py` (product `voidcode.json` schema and flat provider resolution), `bootstrap.py` (admission assembly, `open_core`, generation adoption, and bundled sources), `transport/` (WebSocket RPC server and web client bundle delivery), and `tui/` (terminal interface).
 - **Bundled plugins (`src/voidcode/plugins/`)**:
@@ -48,7 +48,7 @@ scope. See `docs/contracts/optional-queries.md`.
 
 | Task / Domain | Location | Key Entrypoint |
 |---|---|---|
-| Governed turns, approvals, budgets, continuations | `src/voidcode/core/` | `engine.py` (`Core`) |
+| Governed turns, approvals, budgets, continuations | `src/voidcode/core/` | `engine/` (`Core`) |
 | Core generation & activation state | `src/voidcode/core/` | `activation.py` (`Admission`, `ExecutionConfig`) |
 | In-process plugin runtime, invocation leases | `src/voidcode/core/` | `plugins.py` (`PluginRuntime`), `services.py` |
 | Append-only session persistence (schema v6) | `src/voidcode/core/storage/` | `store.py` (`SqliteStore`), `schema.sql` |
@@ -91,6 +91,14 @@ A plugin is a Python package directory whose `__init__.py` exports `create_plugi
 
 ## Engineering Conventions & Taste
 
+- **No Fragile Fallbacks**:
+  Minimal trusted core with zero fallback builtins. Tools, file access, command execution, and model providers exist only through explicitly admitted plugins. When a plugin or capability is disabled or absent, it is completely absent with no hidden built-in fallbacks. Operations that fail or are unavailable must fail visibly with typed errors, never degrade silently to guesswork or ad-hoc defaults.
+- **Strict Strong Typing & Zero Casual Casts**:
+  Validate strictly at ingress boundaries (CLI, config, RPC, storage row decoders). Eliminate stringly-typed APIs and loose untyped dicts across internal pipelines. Zero casual `cast(...)` to disguise typing flaws or bypass type checker guarantees — use explicit `TypeGuard`, closed `Literal`/`Enum` (such as `ObservedFactKind`, `StateScope`, `MessageRole`, `SessionStatus`, `NoticeTone`), and immutable `frozen=True, slots=True` dataclasses. If types don't line up, fix the data model at its source.
+- **Core & Plugin Decoupling**:
+  Core must never hardcode or couple to plugin-specific tool names (e.g. `task`, `task_batch`, `eval`), plugin prompts, or draft structures. All collaboration happens through generic typed contracts (e.g. `ChildFinishedNoticePayload`, `ChildRunStatus`, `ObservedFactKind`, `PluginServices.bind`/`ask`).
+- **Maintainability & Restraint**:
+  Restraint and convergence come first. Eliminate speculative abstractions, dead code, premature platform engineering, and bloated comments. Keep docstrings concise, crisp, and direct; eliminate narrative essays, historical turn journals, or redundant tautologies.
 - **Validate at the Ingress Boundary**:
   Configuration, CLI arguments, command arguments, and HTTP bodies are validated once at entry (strict parsers that reject unknown fields). Internal code relies on typed dataclasses and Protocol contracts.
 - **Fail Visibly**:

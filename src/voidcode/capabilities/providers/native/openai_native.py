@@ -104,27 +104,7 @@ def _stream_event_error_payload(exc: Exception) -> dict[str, object]:
 
 
 class OpenAIChatCompletionsTransport:
-    """Official OpenAI SDK transport for the Chat Completions wire protocol.
-
-    The SDK owns HTTP, SSE decoding, and error typing. Runtime owns retry and
-    fallback, so SDK-internal retries are disabled.
-
-    Stream framing must be spec-compliant: the SDK's SSE decoder dispatches an
-    event only on the blank line that terminates it, so events separated by a
-    single newline are never delivered and a final event without its
-    terminating blank line is discarded. A stream that ends without a finish
-    reason fails as a missing terminal event; an unrecognized reported token
-    is preserved as ``unknown`` with its
-    raw value in metadata. The explicit transport terminal marker distinguishes
-    a complete model turn from a missing terminal event. Events the decoder
-    emits but cannot decode as a JSON object are reported as a bounded,
-    non-leaking stream error payload.
-
-    Auth headers reproduce the configured ``auth_scheme``/``auth_header``
-    contract exactly (see ``_auth_headers``): ``none`` -- or no key -- sends no
-    credential at all, ``token`` sends the raw key, ``bearer`` sends
-    ``Bearer <key>``.
-    """
+    """OpenAI SDK transport for the Chat Completions wire protocol."""
 
     def __init__(
         self,

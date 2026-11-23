@@ -1,14 +1,4 @@
-"""Tool governance, visibility filtering, approval policy, and request measurement.
-
-This module owns:
-- Policy and overlay read-only stance evaluation
-- Session tool visibility and profile filtering
-- Pre-tool gate evaluation and fail-closed denial
-- Tool effect approval decisions under the configured approval mode
-- Parameter validation helpers
-- Request window measurement and segment accounting
-- Lifecycle hook dispatch and post-tool hook observation
-"""
+"""Tool governance, visibility filtering, approval policy, and request measurement."""
 
 from __future__ import annotations
 

@@ -1,14 +1,4 @@
-"""Core-owned child processes: lease-scoped runs plus supervised services and jobs.
-
-The core owns the process, its group, and its bounded output. The core's own
-governance already decided whether the calling tool may execute at all; the lease adds
-stance only: a read-only or hook lease is refused by the caller.
-
-Every child this registry starts lives in its own process group, so group
-signals touch exactly the owned tree. Service processes (one per generation,
-stopped at generation retire) run in their own session. Detached background jobs
-(user jobs that survive a reload) own their session directly.
-"""
+"""Child process management: process groups, supervised services, and background jobs."""
 
 from __future__ import annotations
 

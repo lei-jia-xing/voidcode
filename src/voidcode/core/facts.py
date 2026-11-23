@@ -4,12 +4,12 @@ from collections.abc import Iterable, Mapping
 from typing import get_args
 
 from voidcode.sdk.codec import decode_provider_result
-from voidcode.sdk.hooks import StopCause
+from voidcode.sdk.hooks import ObservedFactKind, StopCause
 
 from .events import EventType
 from .storage.store import StoredEvent
 
-FACT_EVENT_TYPES: dict[str, str] = {
+_EVENT_KIND_MAP: dict[EventType, ObservedFactKind] = {
     EventType.MODEL_TURN: "usage",
     EventType.PROVIDER_INTERRUPTED: "usage",
     EventType.TOOL_COMPLETED: "invocation_finished",
@@ -25,6 +25,8 @@ FACT_EVENT_TYPES: dict[str, str] = {
     EventType.WAKEUP_FIRED: "wakeup_fired",
 }
 
+FACT_EVENT_TYPES: dict[EventType, ObservedFactKind] = _EVENT_KIND_MAP
+
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
@@ -32,7 +34,7 @@ def _mapping(value: object, label: str) -> Mapping[str, object]:
     return value
 
 
-def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str, dict[str, object]] | None:
+def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[ObservedFactKind, dict[str, object]] | None:
     if ev.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
         d_seq = ev.payload.get("dispatch_sequence")
         disp_seq_val = int(d_seq) if isinstance(d_seq, (int, float)) else None
@@ -142,7 +144,9 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str,
             "stop_cause": stop_cause,
             "elapsed_seconds": elapsed_seconds,
         }
-    kind = FACT_EVENT_TYPES.get(ev.event_type)
+    kind = _EVENT_KIND_MAP.get(ev.event_type)
+    if kind is None:
+        return None
     common = {
         "session_id": ev.session_id,
         "run_id": ev.run_id,
@@ -150,25 +154,27 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[str,
         "logical_turn": str(ev.payload.get("logical_turn", "")),
         "event_sequence": ev.sequence,
     }
-    if kind == "run_requested":
-        return kind, {**common, "resumed": ev.event_type == EventType.RUN_RESUMED}
-    if kind == "approval_requested":
-        return kind, {**common, "request_id": ev.payload["request_id"]}
-    if kind == "child_spawned":
-        return kind, {**common, "child_session_id": ev.payload["child_session_id"]}
-    if kind == "wakeup_fired":
-        return kind, {
-            **common,
-            "owner": ev.payload["owner"],
-            "wakeup_id": ev.payload["wakeup_id"],
-            "role": ev.payload["role"],
-            "payload": _mapping(ev.payload["payload"], "wakeup payload"),
-        }
-    if kind == "context_projected":
-        return kind, {
-            **common,
-            "owner": ev.payload["owner"],
-            "covered_bytes": ev.payload["covered_bytes"],
-            "dropped_bytes": ev.payload["dropped_bytes"],
-        }
-    return None
+    match kind:
+        case "run_requested":
+            return kind, {**common, "resumed": ev.event_type == EventType.RUN_RESUMED}
+        case "approval_requested":
+            return kind, {**common, "request_id": ev.payload["request_id"]}
+        case "child_spawned":
+            return kind, {**common, "child_session_id": ev.payload["child_session_id"]}
+        case "wakeup_fired":
+            return kind, {
+                **common,
+                "owner": ev.payload["owner"],
+                "wakeup_id": ev.payload["wakeup_id"],
+                "role": ev.payload["role"],
+                "payload": _mapping(ev.payload["payload"], "wakeup payload"),
+            }
+        case "context_projected":
+            return kind, {
+                **common,
+                "owner": ev.payload["owner"],
+                "covered_bytes": ev.payload["covered_bytes"],
+                "dropped_bytes": ev.payload["dropped_bytes"],
+            }
+        case _:
+            return None

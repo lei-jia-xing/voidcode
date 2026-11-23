@@ -31,7 +31,7 @@ from ...sdk.commands import (
     CommandInputSnapshot,
     CommandResult,
 )
-from ...sdk.hooks import StopCause
+from ...sdk.hooks import ObservedFactKind, StopCause
 from ...sdk.icons import Icon
 from ...sdk.invocation import ToolContext
 from ...sdk.json_values import json_wire_object
@@ -544,7 +544,7 @@ class Core:
             self._commit_cond.notify_all()
 
     @property
-    def observer_owners(self) -> Mapping[str, tuple[str, ...]]:
+    def observer_owners(self) -> Mapping[ObservedFactKind, tuple[str, ...]]:
         return self.plugin_runtime.observer_owners
 
     def notify_tool_waiters(self) -> None:
@@ -661,21 +661,7 @@ class Core:
     def _settle_parked_cancel(
         self, session_id: str, reason: str, cause: StopCause, *, expected_run_id: str | None = None, is_bound: bool = False
     ) -> bool:
-        """Settle parked work at its already-safe boundary.
-
-        Parked work is an approval wait or a recoverable (non-terminal)
-        interruption with no active abort in this process: an explicit user or
-        owner cancellation ends it here instead of leaving a session that
-        refuses fresh work AND cannot resume. The session must belong to this
-        workspace and carry its own durable run identity, and claimed
-        continuations are cancelled in the SAME transaction as the terminal
-        checkpoint, so no crash can leave a cancelled claim next to a resumable
-        session or vice versa. The run lock is deliberately not taken: an
-        unrelated run may be executing in another thread, and the store's CAS on
-        (sequence, run) is what keeps this settle atomic. A bound call pins the
-        whole settle (including the parked-batch reports) to the expected run
-        and never rebases onto a newer run.
-        """
+        """Settle parked work (e.g. approval waits or interruptions) on cancellation."""
         session = self.session(session_id)
         if is_bound and (session.run_id or None) != expected_run_id:
             return False
@@ -1906,20 +1892,7 @@ class Core:
     def wait_background_actions(
         self, session_id: str, *, action_id: str | None = None, timeout_seconds: float = 300.0
     ) -> tuple[dict[str, object], ...]:
-        """Wait until this session's background actions settle; raise when one failed.
-
-        With `action_id` the wait names one exact receipt: even when that action already
-        settled before the wait starts, its terminal state is checked and a failure is
-        raised — a pre-settled failure can never slip through as a green empty wait. The
-        id must belong to this session; a foreign or unknown id raises visibly. Without
-        an id the wait covers the session's currently active actions only, so a past
-        failure never poisons a new run.
-
-        Claimed-but-unattended (stale) rows are never waited on: they report `interrupted`
-        and need an explicit new action, never an automatic replay. An explicitly waited
-        stale row or a timeout is not success: the caller gets the honest remainder, and
-        a failed action raises `RuntimeError` naming its id and recorded error.
-        """
+        """Wait until background actions settle and raise if any action failed."""
         return self._background.wait_actions(session_id, action_id=action_id, timeout_seconds=timeout_seconds)
 
     @property

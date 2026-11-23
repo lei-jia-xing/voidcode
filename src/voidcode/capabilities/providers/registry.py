@@ -1,15 +1,4 @@
-"""The one provider table: id -> label, wire, vendor host, credentials, catalog key.
-
-Every provider surface derives from this module instead of carrying its own
-list: the registry's built-in ids and the human labels (``naming``), the
-``providers.<id>`` payload fields and their vendor defaults and credential
-environment variables (``config``), the Anthropic-wire host and listing-header
-overrides (``provider_config``), and the model-catalog generator's upstream
-source keys (``scripts/generate_model_catalog.py``).
-
-Adding a vendor is one row in ``provider_table.json`` plus its payload field;
-adding a *host* or an ``<ID>_API_KEY`` spelling is only a row.
-"""
+"""Provider registry: canonical definitions, default hosts, wires, and credential metadata."""
 
 from __future__ import annotations
 

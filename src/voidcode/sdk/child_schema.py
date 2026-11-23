@@ -1,20 +1,4 @@
-"""Consumer-side structured delivery for delegated child output.
-
-A parent declares the expected shape once, at spawn, as ``result_schema`` (a
-JSON Schema describing one JSON object). The core carries the declaration
-durably and appends a fixed delivery instruction to the child's prompt text;
-it never validates output against the schema. Each parent consumer validates
-the child's full terminal text after join — mirroring
-``ToolDefinition.output_schema`` + ``result_schema.py`` (consumer-side only:
-a schema bug can never lose committed work) and
-``model_query_structured``'s never-pose semantics (exactly one of
-``data``|``parse_error``; no fence-stripping or reply repair).
-
-Degraded paths are explicit in the types: an undeclared schema is ``None``
-(unknown — never \"valid\"), and ``validate_child_text`` returns exactly one
-of owned data or a ``StructuredQueryParseError``. Preview bytes are never
-validated; callers validate full artifact-joined text only.
-"""
+"""Consumer-side validation and schema contracts for structured child output."""
 
 from __future__ import annotations
 

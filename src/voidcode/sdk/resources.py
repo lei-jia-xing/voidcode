@@ -1,13 +1,4 @@
-"""Resource readers: typed ``scheme://`` handlers for the ``read`` tool.
-
-A reader is an ordinary plugin registration, not a core builtin: the runtime
-owns the ``scheme -> (handler, owner)`` map, rejects duplicate schemes at
-admission, and dispatches each ``scheme://`` URI to its owner's handler under
-a provider-owner sub-lease. The caller session, workspace, revision, and
-stance flow unchanged, so lineage and visibility gates apply as for a direct
-backend call. Child and process projections remain bound to the caller's
-authorized scope, not the provider owner's ambient visibility.
-"""
+"""Resource readers: typed scheme:// handlers for resource inspection and discovery."""
 
 from __future__ import annotations
 

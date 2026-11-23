@@ -1,15 +1,4 @@
-"""Transparent exec backend: neutral confinement for registry children.
-
-No plugins involved: when a ``SandboxPolicy`` is present, the registry builds the
-helper argv + explicit env + protected paths from neutral inputs (workspace, plugin
-source roots, helper path, extra protected paths from bootstrap) and runs every
-child under it. Absent policy means today's host behavior exactly.
-
-V1 scope is registry children ONLY (shell_exec, background, user_shell, LSP
-services). Hooks executor, review git, and MCP stdio stay host-side with zero
-plugin changes. File tools stay host-side and self-report; the engine dedups
-overlap with supervisor observations.
-"""
+"""Transparent exec backend: process confinement and filesystem policy for child processes."""
 
 import base64
 import hashlib

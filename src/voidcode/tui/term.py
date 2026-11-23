@@ -1,39 +1,4 @@
-"""Terminal I/O for the inline renderer.
-
-This module owns every byte the TUI puts on the terminal, plus the ANSI-aware
-text layer that guarantees a row never exceeds the terminal width.
-
-Rendering model (mirrors oh-my-pi's ``HistoryBatch``/viewport split):
-
-* :meth:`Terminal.commit_rows` writes finalized rows **once** into the native
-  scrollback. They are never rewritten, erased, or audited afterwards.
-* :meth:`Terminal.paint_frame` repaints the bounded live region below them,
-  per-row diffed against the previous frame, using relative cursor movement and
-  erase-to-EOL. Identical frames emit **zero bytes**.
-* Both writes are wrapped in synchronized output (``?2026h``/``?2026l``) with
-  the cursor hidden and autowrap off, so a frame is atomic on screen.
-* Full-screen overlays borrow the alternate screen only when its original state
-  is known off; entry first reanchors the main-buffer caret.
-* PNG previews are trusted ``TuiFrame`` placements, not artifact escape text.
-  Kitty uploads request correlated success/error replies; placement errors are
-  correlated separately. Pixels are cached until close, placements are deleted
-  before commits/resizes, and an unconfirmed probe never claims image support.
-
-The live region is anchored at an owned origin. Before frame edits, commits,
-and resets, ``Terminal`` returns the cached native caret to that origin. After
-``paint_frame`` the terminal places a supplied native caret at its frame cell;
-without one, the cursor remains hidden at the region's first row. After
-``commit_rows`` it sits at column 1 of the first row below committed rows,
-where the live region starts. Committed rows are written top-down and the
-terminal scrolls when they overflow, pushing only already committed rows into
-scrollback (the live region is erased first, so an unfinished frame can never
-be pushed).
-
-When stdout is not a TTY or raw mode cannot be entered, ``paint_frame`` appends
-changed rows instead of moving or hiding the cursor. Renderer styling may remain
-when colour support was detected; a ``None`` colour system independently omits
-styling while preserving terminal controls on an available raw TTY.
-"""
+"""Terminal I/O, synchronized frame rendering, and ANSI layout for the TUI."""
 
 from __future__ import annotations
 

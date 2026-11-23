@@ -1,14 +1,4 @@
-"""Provider-turn retry owned by the runtime, not the adapters.
-
-Adapters classify failures (``ProviderExecutionError.retryable/retry_after``) and set
-``max_retries=0`` on their own SDK clients; this module is the single executor. It
-retries only a failure the adapter explicitly opted in (``retryable is True``),
-waits the structured ``retry_after`` hint when present, otherwise an exponential
-backoff with jitter, and stops after a bounded number of attempts or when the run's
-abort signal fires. Cancellation raises the run's own
-``ProviderExecutionError(kind="cancelled")`` so the caller's except-chain keeps its
-shape: cancelled during backoff reads exactly like provider-reported cancellation.
-"""
+"""Runtime-owned provider dispatch retries with backoff and cancellation support."""
 
 from __future__ import annotations
 

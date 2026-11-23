@@ -1,14 +1,4 @@
-"""Consumer-side discovery and validation for declared tool-result body schemas.
-
-A producer declares its success-body contract once, on
-``ToolDefinition.output_schema``. Unrelated consumers (eval/tool bridges, typed
-proxies, scripted waits) resolve that schema from the definition they already
-hold and validate a peer's decoded body against it — no peer imports, no second
-JSON body, no parallel registry.
-
-Validation is consumer-side only: nothing on the commit path gates a producer's
-result on this schema, so a schema bug can never lose committed work.
-"""
+"""Consumer-side discovery and validation for declared tool-result body schemas."""
 
 from __future__ import annotations
 

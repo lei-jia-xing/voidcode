@@ -1,16 +1,4 @@
-"""Model-summary continuity projection and the compaction budget math.
-
-Ported from legacy ``runtime/context/window.py`` (the threshold/reserve resolution and the
-summary lane's constants) so this plugin stands on its own once the legacy tree is deleted.
-This module only *plans*: the core re-verifies the boundary and measures the accounting of
-every declared projection (``services.project_window``), so nothing here is trusted about
-coverage.
-
-Rulers: a token number is either provider-reported (a dispatch's usage record, a usage
-fact) or a legacy constant. Sizes this module compares against each other are measured on
-the core's own ruler -- the canonical JSON bytes of a committed event payload -- never a
-UTF-8-bytes/4 token estimate, which the plugin has no way to make truthful.
-"""
+"""Model-summary continuity projection and compaction budget calculation."""
 
 from __future__ import annotations
 

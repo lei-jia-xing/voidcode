@@ -74,16 +74,7 @@ class PluginQueryCaller:
 
 @dataclass(frozen=True, slots=True)
 class PluginQuery:
-    """One named, read-only question another plugin in this runtime may ask.
-
-    A query is a runtime-local convenience between trusted plugins, not a capability: it runs inside
-    the asking plugin's invocation, returns one bounded JSON object (or ``None`` for "nothing to
-    answer"), and gets no writable ``PluginServices`` authority. The scoped read-only convention
-    is allowed (a query may read the files its plugin could already read); state
-    mutations, filesystem writes, process starts, and any other external effects are forbidden.
-    This is a code-review contract, not an OS sandbox — and only some providers are purely
-    in-memory. It carries no core authority.
-    """
+    """One named, read-only query contract answered by an admitted plugin."""
 
     name: str
     handler: Callable[[Mapping[str, object], PluginQueryCaller], Mapping[str, object] | None]

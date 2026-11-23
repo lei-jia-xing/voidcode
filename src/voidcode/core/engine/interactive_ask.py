@@ -1,14 +1,4 @@
-"""Model-initiated interactive ask suspension, adoption, resumption, and expiration sweeps.
-
-When a tool suspends waiting for user feedback, an ask park is committed.
-This module owns:
-- Validating and resolving live ask bindings from committed checkpoints
-- Detecting ask expiration based on declared timeouts
-- Rendering projected ask answers for model turns
-- Adopting terminal ask outcomes (answered, cancelled, expired) into tool results
-- Resuming runs from parked ask checkpoints
-- Sweeping and settling expired ask candidates across sessions
-"""
+"""Model-initiated interactive ask suspension, adoption, resumption, and expiration sweeps."""
 
 from __future__ import annotations
 

@@ -15,7 +15,7 @@ Welcome to the VoidCode documentation. Here you will find guides on architecture
 
 ## Plugins
 
-Each bundled plugin documents its own surface, configuration, behavior, and limits in its package README. The Markdown agent format is canonical in the [delegation](../src/voidcode/plugins/delegation/README.md) README; scripted workflows live in the [workflows](../src/voidcode/plugins/workflows/README.md) README; goal accounting lives in the [goal](../src/voidcode/plugins/goal/README.md) README.
+Each bundled plugin documents its own surface, configuration, behavior, and limits in its package README. The Markdown agent format is canonical in the [subagents](../src/voidcode/plugins/subagents/README.md) README; scripted workflows live in the [workflows](../src/voidcode/plugins/workflows/README.md) README; goal accounting lives in the [goal](../src/voidcode/plugins/goal/README.md) README.
 
 | Plugin | Entry doc |
 |---|---|
@@ -23,9 +23,9 @@ Each bundled plugin documents its own surface, configuration, behavior, and limi
 | `btw` | [README](../src/voidcode/plugins/btw/README.md) |
 | `compaction` | [README](../src/voidcode/plugins/compaction/README.md) |
 | `cron` | [README](../src/voidcode/plugins/cron/README.md) |
-| `delegation` | [README](../src/voidcode/plugins/delegation/README.md) |
 | `exec` | [README](../src/voidcode/plugins/exec/README.md) |
 | `files` | [README](../src/voidcode/plugins/files/README.md) |
+| `find` | [README](../src/voidcode/plugins/find/README.md) |
 | `goal` | [README](../src/voidcode/plugins/goal/README.md) |
 | `hooks` | [README](../src/voidcode/plugins/hooks/README.md) |
 | `lsp` | [README](../src/voidcode/plugins/lsp/README.md) |
@@ -34,6 +34,7 @@ Each bundled plugin documents its own surface, configuration, behavior, and limi
 | `providers` | [README](../src/voidcode/plugins/providers/README.md) |
 | `review` | [README](../src/voidcode/plugins/review/README.md) |
 | `skills` | [README](../src/voidcode/plugins/skills/README.md) |
+| `subagents` | [README](../src/voidcode/plugins/subagents/README.md) |
 | `todo` | [README](../src/voidcode/plugins/todo/README.md) |
 | `user_shell` | [README](../src/voidcode/plugins/user_shell/README.md) |
 | `web` | [README](../src/voidcode/plugins/web/README.md) |

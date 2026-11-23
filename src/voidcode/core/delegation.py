@@ -183,24 +183,7 @@ class DelegationManager:
         admission_guard: Callable[[], bool] | None = None,
         result_schema: Mapping[str, object] | None = None,
     ) -> str:
-        """Create and start a delegated child session under `parent_session_id`.
-
-        Limits are core-owned: depth, the chain's spawn budget, and the parent's tool scope.
-        The child inherits the core policy unchanged (a request can never widen it), and its
-        allowlist may only narrow the parent's visible catalog. `notify_on_completion` asks the
-        core to deliver one bounded, run-scoped notice to the parent when this run terminates.
-
-        With `idempotency_key` the child identity is deterministic per parent, owner, and key:
-        a retry with the same effective spec returns the existing child (repairing a crash
-        window that left a pristine child or a missing spawn fact), while the same key with a
-        different spec is refused visibly instead of spawning a second child. Without a key the
-        child is always fresh.
-
-        With `result_schema` the core appends a fixed delivery instruction to the child's
-        prompt and carries the declaration in the birth and spawn facts plus the spec hash.
-        The core never validates child output against it; terminal facts commit identically
-        with or without a schema.
-        """
+        """Create and start a delegated child session under `parent_session_id`."""
         canonical_schema: dict[str, object] | None = None
         if result_schema is not None:
             if not isinstance(result_schema, Mapping):

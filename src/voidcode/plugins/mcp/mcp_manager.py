@@ -1,20 +1,4 @@
-"""
-MCP Manager
-
-This module provides the plugin-owned MCP lifecycle management layer. The
-plugin owns configuration, server state, and tool governance while the
-official Python MCP SDK owns protocol framing, initialize negotiation,
-request/response correlation, and stdio process teardown.
-
-One manager owns one thread running one asyncio loop; every SDK session and
-every piece of manager state lives on that loop. The synchronous public API
-submits one coroutine per call and blocks on its future, so concurrent tool
-calls interleave on the loop while shared state is never touched from two
-threads and no locks are needed anywhere. Each server additionally serializes
-its own SDK calls on an asyncio lock, preserving the old per-server ordering.
-IMPORTANT: Static types and contracts live in this plugin's ``types.py``
-(ported from ``voidcode.mcp``); this module adds the implementation.
-"""
+"""MCP lifecycle manager: handles server initialization, discovery, and tool dispatch."""
 
 from __future__ import annotations
 

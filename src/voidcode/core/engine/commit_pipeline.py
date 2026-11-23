@@ -1,13 +1,4 @@
-"""Atomic staged commit, reconciliation, and public fact delivery pipeline.
-
-This module encapsulates:
-- Reconciling in-memory execution event prefixes against SQLite session tips
-- Freezing generation-bound observer owner subscriptions onto durable fact events
-- Adopting committed event sequences into cursor checkpoint bindings
-- Committing staged transactions rebased onto fresh tips with SequenceConflict retry
-- Staging and committing non-turn public facts and deliver them to observers
-- Delivering facts committed by non-turn transactions under re-entrancy protection
-"""
+"""Atomic staged commit, reconciliation, and public fact delivery pipeline."""
 
 from __future__ import annotations
 
@@ -16,6 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 from uuid import uuid4
 
+from ...sdk.hooks import ObservedFactKind
 from ...sdk.json_values import json_wire_object
 from ..events import EventType
 from ..execution import _Cursor, _Execution
@@ -122,7 +114,7 @@ class CommitHost(Protocol):
     def revision_id(self) -> str: ...
 
     @property
-    def observer_owners(self) -> Mapping[str, tuple[str, ...]]: ...
+    def observer_owners(self) -> Mapping[ObservedFactKind, tuple[str, ...]]: ...
 
     def notify_commit(self) -> None: ...
 
@@ -221,7 +213,7 @@ class CommitPipeline:
         owners = self._host.observer_owners
         stamped: list[EventDraft] = []
         for event in events:
-            fact_type = "usage" if event.event_type == EventType.PROVIDER_INTENT else FACT_EVENT_TYPES.get(event.event_type)
+            fact_type: ObservedFactKind | None = "usage" if event.event_type == EventType.PROVIDER_INTENT else FACT_EVENT_TYPES.get(event.event_type)
             if fact_type is None or "eligible_owners" in event.payload:
                 stamped.append(event)
                 continue

@@ -1,36 +1,4 @@
-"""Cron plugin: scheduled prompts as workspace-product policy over core wakeups.
-
-Ported from the legacy scheduler without behavior changes, but rebased on the core's durable
-wakeup seam instead of a runtime scheduler thread plus a workspace ``scheduled_tasks`` table:
-
-- Grammar, next-fire search and human formatting: ``schedule_expr`` (verbatim legacy copy).
-- ``/loop`` parsing and confirmation text: ``loop_command`` (verbatim legacy copy).
-- Terminal reschedule rules: ``legacy runtime/background/scheduler.py:on_task_terminal`` —
-  one-shots delete on success and stay disabled for inspection on failure, recurring schedules
-  delete past expiry and otherwise recompute ``next_fire_after(expr, now)``.
-- Tool surface, argument errors, 50-job cap and output shapes: ``legacy tools/cron.py``.
-
-Scope moves from a workspace table to this plugin's session-scope state document: the session
-that created a schedule owns it, so the same workspace can hold independent schedules per
-session, and every schedule keeps exactly ONE armed wakeup — a claimed wakeup means a run is in
-flight, which is what makes overlap impossible without a lock. The plugin never sleeps or polls:
-the core ticker owns time, and the plugin only computes fire instants and re-arms when it
-observes the completion of a run whose wakeup it armed.
-
-Re-arming is the whole point of the terminal reschedule: a long run delays the next fire, and
-slots missed while a run was in flight are never replayed.
-
-Divergences from the legacy product, stated rather than faked:
-
-- ``cron_list`` reports each enabled schedule's next fire as recomputed from its expression at
-  list time; the armed wakeup remains the truth (a plugin cannot read core wakeup rows). The
-  two agree exactly for ``at`` and ``once`` schedules and are within one tick for the rest.
-- The legacy "5s scheduler tick" and the expired-sweep pass are gone: expiry is enforced by the
-  same wakeup claim (``expires_at`` is checked when a run finishes), so an expired schedule can
-  never fire a second time after its final due run.
-- There is no configuration surface: the schedule policy (7-day recurring expiry, 50-job cap) is
-  the ported legacy policy, so ``create_plugin`` accepts and ignores its config mapping.
-"""
+"""Cron plugin: scheduled prompts and recurring task management over core wakeups."""
 
 from __future__ import annotations
 

@@ -1,20 +1,4 @@
-"""In-process plugin runtime: direct factory loading and synchronous dispatch.
-
-One `PluginRuntime` is one capability generation: it imports each configured plugin
-package (`__init__.py:create_plugin`), registers the returned `Plugin` objects, and
-dispatches tool, command, provider, hook, view, observer, and migration calls by direct
-synchronous invocation.
-
-Module identity: each plugin root is imported under a unique namespace derived from its
-id plus this runtime's identity, so two generations can coexist (a candidate is built
-before the old runtime closes) and a reloaded generation never reuses stale modules.
-`close()` runs every `Plugin.close()`, stops generation-owned service processes, and
-unimports the runtime's namespaces.
-
-Cancellation is cooperative only: a plugin that never returns blocks its dispatch until
-the core restarts. Real child processes keep their own timeout/cancel/partial-output
-semantics via the core-owned `ProcessRegistry`.
-"""
+"""In-process plugin runtime: direct factory loading and synchronous dispatch."""
 
 from __future__ import annotations
 
@@ -597,7 +581,7 @@ class PluginRuntime:
         self._validators_view: Mapping[str, Any] = MappingProxyType(self._validators)
         self._command_validators_view: Mapping[str, Any] = MappingProxyType(self._command_validators)
         self._context_owners = tuple(self._context_callbacks)
-        self._observer_owners: dict[str, tuple[str, ...]] = {
+        self._observer_owners: dict[ObservedFactKind, tuple[str, ...]] = {
             fact_type: tuple(pid for _, obs_facts, pid in self._observers if fact_type in obs_facts) for fact_type in get_args(ObservedFactKind)
         }
 
@@ -674,7 +658,7 @@ class PluginRuntime:
         return tuple(self._plugin_ids)
 
     @property
-    def observer_owners(self) -> Mapping[str, tuple[str, ...]]:
+    def observer_owners(self) -> Mapping[ObservedFactKind, tuple[str, ...]]:
         """Fact kind -> owners that registered it in this generation."""
         return dict(self._observer_owners)
 
@@ -1625,7 +1609,7 @@ class PluginRuntime:
 
     def notify_fact(
         self,
-        fact_type: str,
+        fact_type: ObservedFactKind,
         fact: Mapping[str, object],
         *,
         owners: Sequence[str] | None = None,
@@ -1718,7 +1702,14 @@ class PluginRuntime:
         )
 
     @staticmethod
-    def _typed_fact(fact_type: str, fact: Mapping[str, object], session_id: str, run_id: str, revision_id: str, logical_turn: str) -> PluginFact:
+    def _typed_fact(
+        fact_type: ObservedFactKind,
+        fact: Mapping[str, object],
+        session_id: str,
+        run_id: str,
+        revision_id: str,
+        logical_turn: str,
+    ) -> PluginFact:
         if fact_type == "usage":
             usage_payload = fact.get("usage")
             usage_obj = None
@@ -1758,7 +1749,7 @@ class PluginRuntime:
             if not isinstance(raw_effects, (list, tuple)) or not all(isinstance(item, str) for item in raw_effects):
                 raise ValueError("'effects' must be a list of strings")
             return TypeAdapter(InvocationFinishedFact).validate_python(json_wire_object(fact))
-        extra_types = {
+        extra_types: dict[ObservedFactKind, type[PluginFact]] = {
             "run_requested": RunRequestedFact,
             "approval_requested": ApprovalRequestedFact,
             "child_spawned": ChildSpawnedFact,

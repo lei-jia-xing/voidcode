@@ -1,19 +1,4 @@
-"""Plugin-owned LSP connection manager.
-
-Holds session-scoped language servers over the host's supervised service
-processes, plus document state for the ``lsp`` tool. The tool talks to this
-manager only through the small requester boundary in ``lsp_types``; no runtime
-module is imported. Every invocation passes its live lease services and abort
-signal down to the transport; nothing here retains them across invocations.
-
-All runtime state (the session-scoped registry, running servers, byte cursors,
-opened documents) is owned by one module-global worker thread: every entry
-point submits one callable and blocks on its future, so shared state is never
-touched from two threads and no locks are needed anywhere. LSP stdio framing
-lives in exactly one place, the framed reader below; the host only offers
-paged log reads, so the reader parks on a bounded blocking wait between empty
-pages.
-"""
+"""LSP connection manager: manages session-scoped language server processes and document state."""
 
 from __future__ import annotations
 

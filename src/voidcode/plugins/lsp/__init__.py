@@ -1,14 +1,4 @@
-"""The official ``lsp`` plugin: one language-server tool plus one document query.
-
-Owns the LSP connection manager (session-scoped servers over the host's
-supervised service processes, document state, request timeouts, shutdown) and
-the ``lsp`` tool that renders bounded pages of 13 language-server operations.
-Servers are resolved from the plugin config, or derived from workspace markers
-when the config declares none, and are spawned lazily on the first request.
-The ``lsp`` command reports the same manager's servers without spawning one,
-and the ``workspace.document_version`` query answers the caller's session's
-already-opened documents without starting a server or sending didOpen/didChange.
-"""
+"""LSP plugin: language-server tool and document state query."""
 
 from collections.abc import Mapping
 from pathlib import Path

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
+from ..sdk.hooks import ObservedFactKind
 from ..sdk.json_values import json_wire_object
 from ..sdk.services import PluginBudget
 from .events import EventType
@@ -226,6 +227,8 @@ class FactDelivery:
         fact = fact_for_event(ev, execution.events)
         if fact is None:
             return
+        fact_type: ObservedFactKind
+        fact_payload: dict[str, object]
         fact_type, fact_payload = fact
         session_id = ev.session_id
         with self._host.dispatch(f"observer:{fact_type}") as snapshot:

@@ -1,16 +1,4 @@
-"""Pure composer: an input editor state machine plus its row renderer.
-
-Implements pure composer contracts:
-editing, history, Unicode wrapping, cursor placement, and all eight named
-frames. A closed frame table keeps layout geometry independent from editor
-state, statusline profile, prompt gutter, and cursor. The app supplies
-the one real statusline row; this module renders it in the selected dock.
-
-The class is deliberately I/O free: it never touches a terminal, ``rich``
-renderables, or the runtime. ``handle_key`` consumes a decoded :class:`Key`
-and returns a :class:`ComposerOutcome`; ``render`` returns the composed
-status/frame/input rows and the native insertion cursor position.
-"""
+"""Input editor state machine, history management, and text layout for the TUI."""
 
 from __future__ import annotations
 
