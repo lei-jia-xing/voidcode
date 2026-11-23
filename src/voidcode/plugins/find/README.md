@@ -81,6 +81,9 @@ Takes no plugin config; `create_plugin` ignores it. See
   files capability's documented path policy.
 - No vector DB, no daemon index, no background threads; model access goes only
   through the existing `model_query_structured` plumbing with an explicit
-  per-call output cap. Judge spend is recorded as `core.model_query`; it is not
-  part of the session usage/budget report. Symbol and semantic navigation
+  per-call output cap. Judge spend is counted once in the session usage report
+  as a side provider turn; the `core.model_query` event carries the invoking
+  plugin owner. Budget admission gates side queries against all active session
+  owner budgets, matching turn dispatch; find's query/prompt/`max_output_tokens`
+  bounds remain independent guards. Symbol and semantic navigation
   (definitions, references, rename scope) are out of scope here.
