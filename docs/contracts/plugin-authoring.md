@@ -71,6 +71,13 @@ arguments against the registered schema before dispatch; a schema failure is
   read-only lease; other leases lose that staging.
 - **Replay**: `safe` only for pure reads; anything mutating is `never`
   (default). A crashed-then-recovered mutation is never re-executed.
+- **Whole-tool effects**: effects are declared per tool, never per operation.
+  A tool that mixes operations with different external reach declares the union
+  of everything any operation may do. Examples: `find` literal mode is
+  model-free `READ` while auto mode also makes one `NETWORK` judge call;
+  `lsp` queries are read-like while the tool also spawns and manages
+  language-server processes, so it declares `READ`+`EXECUTE`. Per-operation
+  effect semantics are future SDK design, not implemented.
 - **Input errors**: return `ToolFailure(tool_name, error, output)` with a
   plain message — never raise for bad input, never invent a placeholder
   success. Use the typed SDK results (`ToolSuccess`/`ToolFailure` with

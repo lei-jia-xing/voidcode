@@ -4,6 +4,14 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Find: judge coverage, network effect, bounded evidence
+- `find` now compares candidate ids against returned verdicts: candidates with no verdict appear in `coverage.unjudged` as `missing_verdict`, force `partial`, and add a model-visible detail line. This replaces the previous `ok`/`no_hit` claims when a judge silently omitted candidates.
+- Effects move to the honest whole-tool union `READ`+`NETWORK`; `find` is therefore never replayed after a crash. Literal mode remains model-free. The tool-level declaration and future per-operation effects are documented in the find README and the plugin-authoring contract.
+- The judge prompt is JSON-framed as untrusted data, capped below the core's 64 KiB limit (including the structured suffix), and may drop suffix candidate cards with a visible `prompt_budget`/`partial` reason. `query` is capped at 1000 characters and `max_output_tokens` at 8000. Only match lines shown to the judge are selectable (`line_not_shown` otherwise).
+- Provider failures are classified from `ProviderExecutionError.kind` (cancelled, transient, not_configured, missing_auth, …); the unreachable `timeout` status is removed. Cancelled turns caused by the caller report a confirmed stop. `model_calls`/`candidates_judged` no longer claim a dispatch that never happened.
+- Evidence validation distinguishes `range_too_large` and `evidence_page_clipped` from real out-of-range lines, and opaque/binary read pages are typed `evidence_unreadable` instead of a bare `ValueError`. Model-visible detail now reports limit drops, snippet caps, dropped/failed prescreen terms, and unreadable fallback evidence. Literal/fallback matching is case-sensitive, matching “exact text”; `.gitignore` remains unhonored and documented.
+- Verification: `tests/unit/plugins/test_find_plugin.py` 33 passed; `tests/unit/test_bundled_sources.py` 1 passed; `ruff check`, `ruff format --check`, and `ty check src` green.
+
 ### Compaction budgets, summaries, and re-enable hardening
 - Budget: `threshold_tokens: 0` is consistently "off" with or without a catalog window; an explicit reserve at or above an explicit threshold is refused, and a defaulted reserve that cannot fit under an explicit threshold is dropped instead of collapsing the trigger to `1`. The observer returns before reading history when the gate is unsized.
 - Deactivation: the parked state clears `last_projection` (the cursor survives), so a re-enable can re-project immediately after the core deletes the row instead of waiting for a new provider-visible event.
