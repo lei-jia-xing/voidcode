@@ -520,10 +520,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
   record, failing closed with a visible diagnostic when nothing is open; stale version/hash and
   encoding mismatches return typed actionable diagnostics, and hash-only edits work with the LSP
   plugin disabled.
-- Language servers run as supervised host-generation service processes (shared host group,
-  descendant-tree cancellation, foster-parent reaping, core group sweep on hard host death);
-  the `lsp` tool declares `read`+`execute`, so read-only policy refuses it and ask/write modes
-  approve it. SDK source hash changes by design (P5 controlled upgrade).
+- Language servers run as supervised host-generation service processes (own session group,
+  descendant-tree cancellation, stopped on graceful retirement/reload); a hard-killed core does
+  not run cleanup and leaves an unconfined service running. The `lsp` tool declares
+  `read`+`execute`, so read-only policy refuses it and ask/write modes approve it. SDK source
+  hash changes by design (P5 controlled upgrade).
 
 ### Docs and comment corrections (no behavior change)
 - Comments, docstrings, and guides no longer describe deleted pre-cutover trees or promise

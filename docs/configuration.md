@@ -218,7 +218,10 @@ Each server may declare `preset`, argv `command`, string arrays `extensions`,
 `languages`, `root_markers`, and objects `settings` and `init_options`. Unknown
 fields and invalid values are rejected rather than filtered out. A server needs
 a command or a known preset; an empty server set retains workspace-based default
-discovery. `enabled: false` disables LSP explicitly.
+discovery. `enabled: false` keeps the plugin admitted but disables its runtime: the
+`lsp` tool still appears and fails visibly when called, and `workspace.document_version`
+answers nothing. Use the outer `plugins.lsp.enabled: false` to remove the plugin's
+tool, command, and query entirely.
 
 ### Scheduled prompts
 

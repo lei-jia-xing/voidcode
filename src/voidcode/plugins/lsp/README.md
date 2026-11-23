@@ -12,17 +12,21 @@ Code intelligence through workspace language servers, plus the document-state qu
 
 Plugin-only keys (strict; `providers` accepted and ignored):
 
-- `enabled` (bool, default `true`): `false` disables LSP support.
+- `enabled` (bool, default `true`): `false` makes runtime requests fail and leaves `workspace.document_version` unanswered, but the plugin remains admitted and its tool/command stay registered. Admit the plugin with `plugins.lsp.enabled: false` to remove the surface entirely.
 - `servers`: map of server name to override — `preset`, `command`, `extensions`, `languages`, `root_markers`, `settings`, `init_options`. Empty means derive from workspace markers; names must be non-empty.
 
 See [configuration](../../../../docs/configuration.md) for global config.
 
 ## Behavior and limits
 
-- The plugin owns the session-scoped connection manager: servers spawn lazily on first request over supervised host service processes, document state and request timeouts are tracked, and `close` shuts everything down.
-- Filesystem-nonmutating but not read-only-admitted: `rename` and `willRenameFiles` return computed edits for the caller to apply and nothing here writes files — but the tool declares `READ` + `EXECUTE` for the supervised server processes it spawns, so it routes through `EXECUTE` approval and a read-only stance denies it. Failures surface as tool errors, not exceptions.
+- The plugin owns the session-scoped connection manager: servers spawn lazily on first request over supervised host service processes, document state and one overall request deadline are tracked, and `close` stops the manager's owner thread after the host has stopped its service processes.
+- Filesystem-nonmutating but not read-only-admitted: `rename`, `willRenameFiles`, and `codeAction` return computed edits for the caller to apply and nothing here writes files — but the tool declares `READ` + `EXECUTE` for the supervised server processes it spawns, so it routes through `EXECUTE` approval and a read-only stance denies it. `willRenameFiles` previews file-operation edits (`create`/`rename`/`delete`) as well as text edits. Failures surface as tool errors, not exceptions.
+- One owner thread per manager serializes every request and passive state read across servers and sessions: a hung server blocks other LSP work until its request deadline or cancellation. This is a deliberate simplicity tradeoff, not a per-server lock.
+- Language servers inherit the core process environment; this plugin has no environment override. Interleaved notifications and server requests share one request deadline, so a chatty server cannot extend a request indefinitely.
 
-Manager lifecycle operations serialize acquisition and local lease handoff,
+Manager lifecycle operations serialize acquisition, local lease handoff,
 retirement, and shutdown. Concurrent first use holds one registry reference per
-manager/session/server. Requests still use the server's request lock; the lifecycle
-lock is released after startup. Late failures cannot forget a newer process entry.
+manager/session/server/workspace root. Late failures cannot forget a newer process
+entry. Graceful runtime retirement, reload, and shutdown stop the generation's
+service tree; a hard-killed core does not run this cleanup and leaves an
+unconfined language server running in its own session.

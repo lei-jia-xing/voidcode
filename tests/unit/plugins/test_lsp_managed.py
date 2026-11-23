@@ -4,8 +4,9 @@ Behavior boundaries, not wiring: a real stdio fixture server is driven through
 the live PluginServices surface (fake lease, real protocol bytes), the version
 query answers strict shapes from real didOpen/didChange tracking, and the
 second-use cancel kills the actual server plus its descendant. Core/host
-smoke (read_only/approval, reload/close cleanup, hard-death group sweep) runs
-in the coordinated P5 window, not here.
+smoke (read_only/approval, reload/close cleanup) runs in the integration
+suite; hard core death has no cleanup path and is intentionally not claimed
+here.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
@@ -628,17 +630,272 @@ def test_concurrent_first_use_owns_one_registry_lease(tmp_path: Path, monkeypatc
 
 
 def test_late_server_failure_preserves_new_local_entry(tmp_path: Path) -> None:
-    from threading import Lock
     from types import SimpleNamespace
 
     from voidcode.plugins.lsp.lsp_manager import _LspRegistryKey
 
     manager = build_lsp_manager(_config(tmp_path / "record.jsonl"))
-    old = SimpleNamespace(process_id="old", request_lock=Lock(), documents={}, initialized=True, stdout_cursor=0)
+    old = SimpleNamespace(process_id="old", documents={}, initialized=True, stdout_cursor=0)
     new = SimpleNamespace(process_id="new")
-    manager._running_servers[("session", "echo")] = new
+    manager._running_servers[("session", "echo", tmp_path)] = new
     before = manager.current_state()
     services = SimpleNamespace(cancel_process=lambda process_id: process_id == "old")
     assert manager._cancel_own_server(services, _LspRegistryKey("session", "echo", tmp_path), old, error="old failure")
-    assert manager._running_servers[("session", "echo")] is new
+    assert manager._running_servers[("session", "echo", tmp_path)] is new
     assert manager.current_state() == before
+    manager.shutdown()
+
+
+def test_shutdown_stops_owner_thread_and_next_manager_works(harness: tuple[_Services, Path]) -> None:
+    services, tmp_path = harness
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = workspace / "note.txt"
+    target.write_text("owner\n", encoding="utf-8")
+    record = tmp_path / "record.jsonl"
+    from voidcode.plugins.lsp.lsp_manager import LspRequest, ManagedLspManager
+
+    baseline = {thread for thread in threading.enumerate() if thread.name == "lsp-owner"}
+    manager = build_lsp_manager(_config(record))
+    assert isinstance(manager, ManagedLspManager)
+
+    def _hover(instance: ManagedLspManager) -> object:
+        return instance.request(
+            LspRequest(
+                server_name="echo",
+                method="textDocument/hover",
+                params={"textDocument": {"uri": target.as_uri()}, "position": {"line": 0, "character": 1}},
+                workspace=workspace,
+                session_id="sess-owner",
+                services=services,  # type: ignore[arg-type]
+                abort_signal=_Abort(),  # type: ignore[arg-type]
+            )
+        )
+
+    _hover(manager)
+    owner_thread = manager._owner._thread
+    assert owner_thread is not None and owner_thread.is_alive()
+    manager.shutdown()
+    assert not owner_thread.is_alive()
+    assert {thread for thread in threading.enumerate() if thread.name == "lsp-owner"} == baseline
+
+    replacement = build_lsp_manager(_config(record))
+    assert isinstance(replacement, ManagedLspManager)
+    try:
+        _hover(replacement)
+        assert services.names().count("spawn_service_process") == 2
+    finally:
+        replacement.shutdown()
+    assert {thread for thread in threading.enumerate() if thread.name == "lsp-owner"} == baseline
+
+
+def test_interleaved_notifications_share_one_request_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from voidcode.plugins.lsp import lsp_manager as module
+    from voidcode.plugins.lsp.lsp_manager import _RunningLspServer
+
+    manager = build_lsp_manager(_config(tmp_path / "record.jsonl"))
+    server = _RunningLspServer(
+        config=manager.configuration.resolve("echo"),
+        process_id="notification-flood",
+        workspace_root=tmp_path,
+    )
+    writes: list[bytes] = []
+
+    class Writes:
+        def write_process(self, process_id: str, data: bytes | str) -> int:
+            assert process_id == "notification-flood"
+            payload = data.encode() if isinstance(data, str) else bytes(data)
+            writes.append(payload)
+            return len(payload)
+
+    remaining_timeouts: list[float] = []
+    clock = iter([0.0, 0.0, 11.0])
+
+    def _read_message(*args: object, **kwargs: object) -> dict[str, object]:
+        remaining_timeouts.append(float(kwargs["timeout"]))
+        return {"jsonrpc": "2.0", "method": "window/logMessage", "params": {"type": 3, "message": "busy"}}
+
+    monkeypatch.setattr(module, "LSP_REQUEST_TIMEOUT_SECONDS", 10.0)
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(manager, "_read_message", _read_message)
+    with pytest.raises(TimeoutError, match="did not respond within 10.0s"):
+        manager._send_request_owned(
+            Writes(),  # type: ignore[arg-type]
+            server,
+            method="textDocument/hover",
+            params={},
+            server_name="echo",
+            abort_signal=None,
+        )
+    assert remaining_timeouts == [10.0]
+    assert len(writes) == 1
+    manager.shutdown()
+
+
+def test_crashed_server_is_replaced_between_requests(harness: tuple[_Services, Path]) -> None:
+    services, tmp_path = harness
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = workspace / "note.txt"
+    target.write_text("crash\n", encoding="utf-8")
+    record = tmp_path / "record.jsonl"
+    from voidcode.plugins.lsp.lsp_manager import LspRequest, ManagedLspManager
+
+    manager = build_lsp_manager(_config(record))
+    assert isinstance(manager, ManagedLspManager)
+
+    def _hover() -> object:
+        return manager.request(
+            LspRequest(
+                server_name="echo",
+                method="textDocument/hover",
+                params={"textDocument": {"uri": target.as_uri()}, "position": {"line": 0, "character": 1}},
+                workspace=workspace,
+                session_id="sess-crash",
+                services=services,  # type: ignore[arg-type]
+                abort_signal=_Abort(),  # type: ignore[arg-type]
+            )
+        )
+
+    _hover()
+    process = next(iter(services._entries.values()))
+    process.kill()
+    process.wait(timeout=5)
+    _hover()
+    assert services.names().count("spawn_service_process") == 2
+    manager.shutdown()
+
+
+@pytest.mark.parametrize("cancel_result", [False, ValueError("unknown process")], ids=["false", "value-error"])
+def test_abandoned_server_stop_reports_unconfirmed(
+    tmp_path: Path,
+    cancel_result: bool | ValueError,
+) -> None:
+    from types import SimpleNamespace
+
+    from voidcode.plugins.lsp.lsp_manager import _LspRegistryKey, _RunningLspServer
+
+    manager = build_lsp_manager(_config(tmp_path / "record.jsonl"))
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    old_root.mkdir()
+    new_root.mkdir()
+    server = _RunningLspServer(
+        config=manager.configuration.resolve("echo"),
+        process_id="old-abandoned",
+        workspace_root=old_root,
+    )
+    local_key = ("session", "echo", old_root)
+    manager._running_servers[local_key] = server
+
+    def _cancel_process(process_id: str) -> bool:
+        assert process_id == "old-abandoned"
+        if isinstance(cancel_result, ValueError):
+            raise cancel_result
+        return cancel_result
+
+    assert (
+        manager._stop_abandoned_server(
+            SimpleNamespace(cancel_process=_cancel_process),  # type: ignore[arg-type]
+            local_key,
+            _LspRegistryKey("session", "echo", new_root),
+            server,
+        )
+        is False
+    )
+    state = manager.current_state().servers["echo"]
+    assert state.status == "failed"
+    assert state.last_error is not None and "could not be confirmed stopped" in state.last_error
+    manager.shutdown()
+
+
+def test_alternating_roots_keep_separate_servers(harness: tuple[_Services, Path]) -> None:
+    services, tmp_path = harness
+    workspace = tmp_path / "ws"
+    first_root = workspace / "first"
+    second_root = workspace / "second"
+    first_root.mkdir(parents=True)
+    second_root.mkdir(parents=True)
+    (first_root / "pyproject.toml").write_text("", encoding="utf-8")
+    (second_root / "pyproject.toml").write_text("", encoding="utf-8")
+    first_target = first_root / "a.txt"
+    second_target = second_root / "b.txt"
+    first_target.write_text("a\n", encoding="utf-8")
+    second_target.write_text("b\n", encoding="utf-8")
+    record = tmp_path / "record.jsonl"
+    config = lsp_config_from_mapping(
+        {
+            "servers": {
+                "echo": {
+                    "command": [sys.executable, str(_FIXTURE), "--record", str(record)],
+                    "extensions": [".txt"],
+                    "root_markers": ["pyproject.toml"],
+                }
+            }
+        }
+    )
+    from voidcode.plugins.lsp.lsp_manager import LspRequest, ManagedLspManager
+
+    manager = build_lsp_manager(config)
+    assert isinstance(manager, ManagedLspManager)
+
+    def _hover(target: Path) -> object:
+        return manager.request(
+            LspRequest(
+                server_name="echo",
+                method="textDocument/hover",
+                params={"textDocument": {"uri": target.as_uri()}, "position": {"line": 0, "character": 1}},
+                workspace=workspace,
+                session_id="sess-roots",
+                services=services,  # type: ignore[arg-type]
+                abort_signal=_Abort(),  # type: ignore[arg-type]
+            )
+        )
+
+    _hover(first_target)
+    _hover(second_target)
+    third = _hover(first_target)
+    assert services.names().count("spawn_service_process") == 2
+    assert third.document_state is not None and third.document_state.version == 1
+    manager.shutdown()
+
+
+@pytest.mark.parametrize(("name", "expected"), [("note.js", "javascript"), ("note.tsx", "typescript")])
+def test_language_id_uses_document_extension(tmp_path: Path, name: str, expected: str) -> None:
+    from voidcode.plugins.lsp.lsp_manager import _RunningLspServer
+
+    config = lsp_config_from_mapping(
+        {
+            "servers": {
+                "tsserver": {
+                    "command": ["typescript-language-server"],
+                    "extensions": [".js", ".tsx"],
+                    "languages": ["typescript", "javascript"],
+                }
+            }
+        }
+    )
+    manager = build_lsp_manager(config)
+    target = tmp_path / name
+    target.write_text("const value = 1;\n", encoding="utf-8")
+    server = _RunningLspServer(
+        config=manager.configuration.resolve("tsserver"),
+        process_id="language-id",
+        workspace_root=tmp_path,
+        document_sync_enabled=True,
+    )
+    writes: list[bytes] = []
+
+    class Writes:
+        def write_process(self, process_id: str, data: bytes | str) -> int:
+            assert process_id == "language-id"
+            payload = data.encode() if isinstance(data, str) else bytes(data)
+            writes.append(payload)
+            return len(payload)
+
+    state = manager._synchronize_document_owned(Writes(), server, target)  # type: ignore[arg-type]
+    assert state is not None and state.version == 1
+    message = json.loads(writes[0].split(b"\r\n\r\n", 1)[1])
+    assert message["method"] == "textDocument/didOpen"
+    assert message["params"]["textDocument"]["languageId"] == expected
+    manager.shutdown()

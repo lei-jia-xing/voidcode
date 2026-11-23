@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, ParamSpec, Protocol, TypeVar
+from typing import Any, Final, Literal, ParamSpec, Protocol, TypeVar
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
@@ -37,6 +37,88 @@ logger = logging.getLogger(__name__)
 
 MAX_LSP_HEADER_BYTES = 8192
 MAX_LSP_MESSAGE_BYTES = 1024 * 1024
+LSP_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
+
+#: Preferred LSP language ids per document extension. A server's configured
+#: languages decide which candidate wins; the first configured language is only
+#: the fallback when none of the document's candidates are configured.
+_LANGUAGE_IDS_BY_EXTENSION: dict[str, tuple[str, ...]] = {
+    ".py": ("python",),
+    ".pyi": ("python",),
+    ".js": ("javascript",),
+    ".mjs": ("javascript",),
+    ".cjs": ("javascript",),
+    ".jsx": ("javascriptreact", "javascript"),
+    ".ts": ("typescript",),
+    ".mts": ("typescript",),
+    ".cts": ("typescript",),
+    ".tsx": ("typescriptreact", "typescript"),
+    ".go": ("go",),
+    ".rs": ("rust",),
+    ".zig": ("zig",),
+    ".zon": ("zig",),
+    ".java": ("java",),
+    ".kt": ("kotlin",),
+    ".kts": ("kotlin",),
+    ".cs": ("csharp",),
+    ".csx": ("csharp",),
+    ".rb": ("ruby",),
+    ".php": ("php",),
+    ".phtml": ("php",),
+    ".lua": ("lua",),
+    ".toml": ("toml",),
+    ".c": ("c",),
+    ".cc": ("cpp",),
+    ".cpp": ("cpp",),
+    ".cxx": ("cpp",),
+    ".h": ("cpp", "c"),
+    ".hh": ("cpp",),
+    ".hpp": ("cpp",),
+    ".hxx": ("cpp",),
+    ".css": ("css",),
+    ".scss": ("scss",),
+    ".less": ("less",),
+    ".html": ("html",),
+    ".htm": ("html",),
+    ".vue": ("vue",),
+    ".svelte": ("svelte",),
+    ".astro": ("astro",),
+    ".md": ("markdown",),
+    ".markdown": ("markdown",),
+    ".mdx": ("mdx", "markdown"),
+    ".json": ("json",),
+    ".jsonc": ("jsonc", "json"),
+    ".yaml": ("yaml", "dockercompose"),
+    ".yml": ("yaml", "dockercompose"),
+    ".sh": ("shell", "bash"),
+    ".bash": ("bash", "shell"),
+    ".zsh": ("zsh", "shell"),
+    ".xml": ("xml",),
+    ".xsd": ("xsd", "xml"),
+    ".xsl": ("xsl", "xml"),
+    ".xslt": ("xslt", "xml"),
+    ".svg": ("svg", "xml"),
+    ".tex": ("tex",),
+    ".bib": ("bibtex",),
+    ".cmake": ("cmake",),
+    ".dockerfile": ("dockerfile",),
+}
+
+
+def _language_id_for_path(path: Path, config: ResolvedLspServerConfig) -> str:
+    suffix = path.suffix.lower()
+    candidates = _LANGUAGE_IDS_BY_EXTENSION.get(suffix, ())
+    for language in candidates:
+        if language in config.languages:
+            return language
+    if len(config.languages) == 1:
+        return config.languages[0]
+    bare_suffix = suffix.removeprefix(".")
+    if bare_suffix in config.languages:
+        return bare_suffix
+    if config.languages:
+        return config.languages[0]
+    return bare_suffix or "plaintext"
 
 
 class LspRuntimeError(LspRequestError):
@@ -170,40 +252,69 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 
+_OWNER_CLOSE_JOIN_SECONDS: Final[float] = 5.0
+
+
 class _LspOwner:
-    """The single thread that owns every LSP runtime object in this process.
+    """One manager's owner thread for LSP runtime objects.
 
     ``call`` runs ``func`` on that thread and returns its result (or raises
     its exception). Calls issued from the owner thread itself run inline, so
     owned code can freely use the routing entry points without self-deadlock.
-    The loop never exits on its own: one item's failure is delivered to its
-    caller and the next item runs.
+    The thread starts lazily and ``close`` stops it after queued work so a
+    manager owns the whole lifecycle; one manager's shutdown never affects
+    another manager.
     """
 
     def __init__(self) -> None:
-        self._work: queue.Queue[tuple[Callable[[], Any], concurrent.futures.Future[Any]]] = queue.Queue()
+        self._work: queue.Queue[tuple[Callable[[], Any], concurrent.futures.Future[Any]] | None] = queue.Queue()
         self._ident: int | None = None
-        self._thread = threading.Thread(target=self._serve, name="lsp-owner", daemon=True)
-        self._thread.start()
+        self._thread: threading.Thread | None = None
+        self._closed = False
+        self._lock = threading.RLock()
 
     def call(self, func: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs) -> _T:
-        if threading.get_ident() == self._ident:
-            return func(*args, **kwargs)
-        future: concurrent.futures.Future[Any] = concurrent.futures.Future()
-        self._work.put((lambda: func(*args, **kwargs), future))
+        with self._lock:
+            self._ensure_started_locked()
+            if threading.get_ident() == self._ident:
+                return func(*args, **kwargs)
+            future: concurrent.futures.Future[Any] = concurrent.futures.Future()
+            self._work.put((lambda: func(*args, **kwargs), future))
         return future.result()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            thread = self._thread
+            if thread is None:
+                return
+            if threading.get_ident() == self._ident:
+                raise RuntimeError("the LSP owner thread cannot join itself")
+            self._work.put(None)
+        thread.join(timeout=_OWNER_CLOSE_JOIN_SECONDS)
+        if thread.is_alive():
+            raise RuntimeError("the LSP owner thread did not stop")
+
+    def _ensure_started_locked(self) -> None:
+        if self._closed:
+            raise RuntimeError("the LSP manager is shut down")
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._serve, name="lsp-owner", daemon=True)
+            self._thread.start()
 
     def _serve(self) -> None:
         self._ident = threading.get_ident()
         while True:
-            func, future = self._work.get()
+            item = self._work.get()
+            if item is None:
+                return
+            func, future = item
             try:
                 future.set_result(func())
             except BaseException as exc:  # noqa: B036 - delivered to the caller; the owner itself never exits
                 future.set_exception(exc)
-
-
-_LSP_OWNER = _LspOwner()
 
 
 # The one LSP wire header name. ``lsprotocol`` ships only converters and
@@ -355,11 +466,12 @@ class _LspServerLease:
 
 
 class _SessionScopedLspRegistry:
-    """Session-scoped server sharing; all entries are owned by the LSP owner thread."""
+    """Session-scoped server sharing; the manager's owner thread serializes manager calls."""
 
     def __init__(self) -> None:
         self._entries: dict[_LspRegistryKey, _SharedLspServerEntry] = {}
         self._next_generation = 1
+        self._lock = threading.Lock()
 
     def _allocate_generation(self) -> int:
         generation = self._next_generation
@@ -373,64 +485,52 @@ class _SessionScopedLspRegistry:
         config: ResolvedLspServerConfig,
         start: Callable[[str], _RunningLspServer],
     ) -> tuple[_RunningLspServer, _LspServerLease, Literal["started", "reused"]]:
-        return _LSP_OWNER.call(self._acquire_owned, key=key, config=config, start=start)
-
-    def _acquire_owned(
-        self,
-        *,
-        key: _LspRegistryKey,
-        config: ResolvedLspServerConfig,
-        start: Callable[[str], _RunningLspServer],
-    ) -> tuple[_RunningLspServer, _LspServerLease, Literal["started", "reused"]]:
-        entry = self._entries.get(key)
-        if entry is not None:
-            if entry.server.config != config:
-                raise ValueError(
-                    "session-scoped LSP reuse rejected because the existing "
-                    f"{key.server_name} server for {key.workspace_root} was started with "
-                    "a different resolved configuration"
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None:
+                if entry.server.config != config:
+                    raise ValueError(
+                        "session-scoped LSP reuse rejected because the existing "
+                        f"{key.server_name} server for {key.workspace_root} was started with "
+                        "a different resolved configuration"
+                    )
+                entry.ref_count += 1
+                return (
+                    entry.server,
+                    _LspServerLease(key=key, generation=entry.generation),
+                    "reused",
                 )
-            entry.ref_count += 1
-            return (
-                entry.server,
-                _LspServerLease(key=key, generation=entry.generation),
-                "reused",
-            )
 
-        server = start(f"lsp-{uuid.uuid4().hex[:12]}")
-        generation = self._allocate_generation()
-        self._entries[key] = _SharedLspServerEntry(
-            server=server,
-            generation=generation,
-            ref_count=1,
-        )
-        return server, _LspServerLease(key=key, generation=generation), "started"
+            server = start(f"lsp-{uuid.uuid4().hex[:12]}")
+            generation = self._allocate_generation()
+            self._entries[key] = _SharedLspServerEntry(
+                server=server,
+                generation=generation,
+                ref_count=1,
+            )
+            return server, _LspServerLease(key=key, generation=generation), "started"
 
     def release(self, *, lease: _LspServerLease) -> _RunningLspServer | None:
-        return _LSP_OWNER.call(self._release_owned, lease=lease)
-
-    def _release_owned(self, *, lease: _LspServerLease) -> _RunningLspServer | None:
-        entry = self._entries.get(lease.key)
-        if entry is None:
-            return None
-        if entry.generation != lease.generation:
-            return None
-        if entry.ref_count > 1:
-            entry.ref_count -= 1
-            return None
-        self._entries.pop(lease.key, None)
-        return entry.server
+        with self._lock:
+            entry = self._entries.get(lease.key)
+            if entry is None:
+                return None
+            if entry.generation != lease.generation:
+                return None
+            if entry.ref_count > 1:
+                entry.ref_count -= 1
+                return None
+            self._entries.pop(lease.key, None)
+            return entry.server
 
     def invalidate(self, *, key: _LspRegistryKey, process_id: str) -> _RunningLspServer | None:
         """Drop one entry only when it still holds this process id; never touches the host."""
-        return _LSP_OWNER.call(self._invalidate_owned, key=key, process_id=process_id)
-
-    def _invalidate_owned(self, *, key: _LspRegistryKey, process_id: str) -> _RunningLspServer | None:
-        entry = self._entries.get(key)
-        if entry is None or entry.server.process_id != process_id:
-            return None
-        self._entries.pop(key, None)
-        return entry.server
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None or entry.server.process_id != process_id:
+                return None
+            self._entries.pop(key, None)
+            return entry.server
 
 
 _SESSION_SCOPED_LSP_REGISTRY = _SessionScopedLspRegistry()
@@ -442,8 +542,11 @@ class ManagedLspManager:
     def __init__(self, config: RuntimeLspConfig) -> None:
         self._configuration = LspConfigState.from_runtime_config(config)
         self._server_states: dict[str, LspServerState] = {name: LspServerState(name=name) for name in self._configuration.servers}
-        self._running_servers: dict[tuple[str, str], _RunningLspServer] = {}
-        self._leased_servers: dict[tuple[str, str], _LspServerLease] = {}
+        self._running_servers: dict[tuple[str, str, Path], _RunningLspServer] = {}
+        self._leased_servers: dict[tuple[str, str, Path], _LspServerLease] = {}
+        self._owner = _LspOwner()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown = False
         self._converter = lsp_converters.get_converter()
         # An explicit plugin config owns the server set; without one the manager
         # derives workspace-safe defaults per workspace, like the runtime did.
@@ -452,7 +555,7 @@ class ManagedLspManager:
 
     def configuration_for(self, workspace: Path) -> LspConfigState:
         """The server set one workspace resolves to (explicit config, else derived defaults)."""
-        return _LSP_OWNER.call(self._configuration_for_owned, workspace)
+        return self._owner.call(self._configuration_for_owned, workspace)
 
     def _configuration_for_owned(self, workspace: Path) -> LspConfigState:
         if not self._derive_servers:
@@ -471,7 +574,7 @@ class ManagedLspManager:
         return self._configuration
 
     def current_state(self) -> LspManagerState:
-        return _LSP_OWNER.call(self._current_state_owned)
+        return self._owner.call(self._current_state_owned)
 
     def _current_state_owned(self) -> LspManagerState:
         return LspManagerState(
@@ -481,7 +584,7 @@ class ManagedLspManager:
         )
 
     def request(self, request: LspRequest) -> LspRequestResult:
-        return _LSP_OWNER.call(self._request_owned, request)
+        return self._owner.call(self._request_owned, request)
 
     def _request_owned(self, request: LspRequest) -> LspRequestResult:
         configuration = self._configuration_for_owned(request.workspace)
@@ -531,7 +634,7 @@ class ManagedLspManager:
         )
 
     def document_state(self, *, session_id: str, file_path: Path, workspace: Path) -> LspDocumentState | None:
-        return _LSP_OWNER.call(self._document_state_owned, session_id=session_id, file_path=file_path, workspace=workspace)
+        return self._owner.call(self._document_state_owned, session_id=session_id, file_path=file_path, workspace=workspace)
 
     def _document_state_owned(self, *, session_id: str, file_path: Path, workspace: Path) -> LspDocumentState | None:
         path = file_path.resolve()
@@ -604,7 +707,7 @@ class ManagedLspManager:
 
         version = opened.version + 1 if opened is not None else 1
         if opened is None:
-            language_id = running_server.config.languages[0] if running_server.config.languages else path.suffix.removeprefix(".") or "plaintext"
+            language_id = _language_id_for_path(path, running_server.config)
             self._send_notification(
                 services,
                 running_server,
@@ -638,7 +741,14 @@ class ManagedLspManager:
         )
 
     def shutdown(self) -> None:
-        _LSP_OWNER.call(self._shutdown_owned)
+        with self._shutdown_lock:
+            if self._shutdown:
+                return
+            self._shutdown = True
+        try:
+            self._owner.call(self._shutdown_owned)
+        finally:
+            self._owner.close()
 
     def _shutdown_owned(self) -> None:
         # Host retirement already stopped every service process in this generation;
@@ -661,7 +771,7 @@ class ManagedLspManager:
     ) -> tuple[_RunningLspServer, _LspRegistryKey]:
         # One local entry owns exactly one registry lease, including concurrent
         # first use. Owner-thread serialization covers the local handoff.
-        return _LSP_OWNER.call(
+        return self._owner.call(
             self._ensure_running_owned,
             services,
             server_name=server_name,
@@ -682,14 +792,18 @@ class ManagedLspManager:
         abort_signal: ProviderAbortSignal | None,
     ) -> tuple[_RunningLspServer, _LspRegistryKey]:
         lease_key = _LspRegistryKey(session_id=session_id, server_name=server_name, workspace_root=workspace_root)
-        local_key = (session_id, server_name)
+        local_key = (session_id, server_name, workspace_root)
         running_server = self._running_servers.get(local_key)
-        if running_server is not None and running_server.workspace_root == workspace_root:
-            if self._service_answers(services, running_server):
+        if running_server is not None:
+            if running_server.workspace_root != workspace_root:
+                if not self._stop_abandoned_server(services, local_key, lease_key, running_server):
+                    raise ValueError(
+                        f"LSP server {server_name} for {running_server.workspace_root} could not be confirmed stopped; not starting another"
+                    )
+            elif self._service_answers(services, running_server):
                 return running_server, lease_key
-            self._forget_dead_entry(local_key, lease_key, running_server.process_id)
-        elif running_server is not None:
-            self._stop_abandoned_server(services, local_key, lease_key, running_server)
+            else:
+                self._forget_dead_entry(local_key, lease_key, running_server.process_id)
 
         self._server_states[server_name] = LspServerState(
             name=server_name,
@@ -734,25 +848,27 @@ class ManagedLspManager:
     @staticmethod
     def _service_answers(services: ProcessServices, running_server: _RunningLspServer) -> bool:
         try:
-            services.read_process_output(running_server.process_id, stream="stdout", offset=running_server.stdout_cursor, limit=1)
+            page = services.read_process_output(running_server.process_id, stream="stdout", offset=running_server.stdout_cursor, limit=1)
         except ValueError:
             return False
-        return True
+        return page.running
 
     def _stop_abandoned_server(
         self,
         services: ProcessServices,
-        local_key: tuple[str, str],
+        local_key: tuple[str, str, Path],
         lease_key: _LspRegistryKey,
         running_server: _RunningLspServer,
-    ) -> None:
-        """Stop a workspace-switched server's tree instead of orphaning it behind a new entry."""
+    ) -> bool:
+        """Stop a mismatched-root server and report an unconfirmed stop instead of dropping it."""
         process_id = running_server.process_id
         old_key = _LspRegistryKey(session_id=lease_key.session_id, server_name=lease_key.server_name, workspace_root=running_server.workspace_root)
+        error: str | None = None
         try:
-            services.cancel_process(process_id)
-        except ValueError:
-            pass
+            stopped = services.cancel_process(process_id)
+        except ValueError as exc:
+            stopped = False
+            error = str(exc)
         running_server.documents.clear()
         running_server.initialized = False
         running_server.stdout_cursor = 0
@@ -761,8 +877,18 @@ class ManagedLspManager:
         _SESSION_SCOPED_LSP_REGISTRY.invalidate(key=old_key, process_id=process_id)
         if lease is not None:
             _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
+        if stopped:
+            self._server_states[lease_key.server_name] = LspServerState(name=lease_key.server_name, status="stopped")
+        else:
+            detail = f": {error}" if error else ""
+            self._server_states[lease_key.server_name] = LspServerState(
+                name=lease_key.server_name,
+                status="failed",
+                last_error=f"LSP server {lease_key.server_name} could not be confirmed stopped{detail}",
+            )
+        return stopped
 
-    def _forget_dead_entry(self, local_key: tuple[str, str], lease_key: _LspRegistryKey, process_id: str) -> None:
+    def _forget_dead_entry(self, local_key: tuple[str, str, Path], lease_key: _LspRegistryKey, process_id: str) -> None:
         """Drop a local entry whose service id the host no longer supervises for this session."""
         current = self._running_servers.get(local_key)
         if current is None or current.process_id != process_id:
@@ -774,7 +900,7 @@ class ManagedLspManager:
             _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
 
     def _cancel_own_server(self, services: ProcessServices, lease_key: _LspRegistryKey, running_server: _RunningLspServer, *, error: str) -> bool:
-        return _LSP_OWNER.call(self._cancel_own_server_owned, services, lease_key, running_server, error=error)
+        return self._owner.call(self._cancel_own_server_owned, services, lease_key, running_server, error=error)
 
     def _cancel_own_server_owned(
         self, services: ProcessServices, lease_key: _LspRegistryKey, running_server: _RunningLspServer, *, error: str
@@ -788,7 +914,7 @@ class ManagedLspManager:
         running_server.documents.clear()
         running_server.initialized = False
         running_server.stdout_cursor = 0
-        local_key = (lease_key.session_id, lease_key.server_name)
+        local_key = (lease_key.session_id, lease_key.server_name, lease_key.workspace_root)
         if self._running_servers.get(local_key) is not running_server:
             return stopped
         self._forget_dead_entry(local_key, lease_key, process_id)
@@ -838,9 +964,16 @@ class ManagedLspManager:
             self._initialize_server(services, running_server, server_name=server_name, abort_signal=abort_signal)
         except Exception:
             try:
-                services.cancel_process(process_id)
+                stopped = services.cancel_process(process_id)
             except ValueError:
-                pass
+                stopped = False
+            if not stopped:
+                current = self._server_states.get(server_name)
+                detail = current.last_error if current is not None and current.last_error else f"LSP initialize failed for {server_name}"
+                self._mark_failed(
+                    server_name=server_name,
+                    error=f"{detail}; LSP server {server_name} could not be confirmed stopped",
+                )
             raise
         return running_server
 
@@ -1014,8 +1147,12 @@ class ManagedLspManager:
             running_server,
             message={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
         )
+        deadline = time.monotonic() + LSP_REQUEST_TIMEOUT_SECONDS
         while True:
-            response = self._read_message(services, running_server, server_name=server_name, abort_signal=abort_signal)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"LSP server {server_name} did not respond within {LSP_REQUEST_TIMEOUT_SECONDS}s")
+            response = self._read_message(services, running_server, server_name=server_name, abort_signal=abort_signal, timeout=remaining)
             if response is None:
                 raise LspProtocolError(f"No response from LSP server {server_name} for {method}")
             if "method" in response:

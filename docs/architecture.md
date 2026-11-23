@@ -173,8 +173,9 @@ constraints are checked against the LSP plugin's `workspace.document_version` qu
 read of documents this session already opened (never a server start) — failing closed with a
 visible diagnostic when nothing is open. Mutating targets must resolve inside the workspace;
 `read`/`glob`/`grep` keep external read access. Language servers run as supervised runtime-generation
-service processes (`spawn_service_process`, stdin piped, stdout/stderr spooled) so retirement,
-reload, cancellation, and hard core death all clean the owned tree; the `lsp` tool therefore
+service processes (`spawn_service_process`, stdin piped, stdout/stderr spooled) so graceful
+retirement, reload, and cancellation clean the owned tree; a hard-killed core does not run that
+cleanup and leaves an unconfined service running in its own session. The `lsp` tool therefore
 declares `read`+`execute` and flows through the existing approval/read-only gates.
 
 ## Execution & Durability Model

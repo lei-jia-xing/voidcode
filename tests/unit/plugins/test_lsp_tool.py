@@ -153,3 +153,51 @@ def test_malformed_call_hierarchy_preparation_is_not_empty_success(tmp_path: Pat
     with pytest.raises(ValueError, match="prepareCallHierarchy returned an invalid result"):
         invoke(tmp_path, {"operation": "incomingCalls", "path": "file.py", "line": 1, "character": 1}, manager)
     assert len(manager.requests) == 1
+
+
+def test_will_rename_files_renders_resource_operations(tmp_path: Path):
+    old_uri = (tmp_path / "file.py").as_uri()
+    new_uri = (tmp_path / "renamed.py").as_uri()
+    result = invoke(
+        tmp_path,
+        {"operation": "willRenameFiles", "path": "file.py", "newPath": "renamed.py"},
+        Manager([{"documentChanges": [{"kind": "rename", "oldUri": old_uri, "newUri": new_uri}]}]),
+    )
+    assert "No workspace edits needed" not in result.output.text
+    assert "RENAME file.py -> renamed.py" in result.output.text
+    assert result.body.as_payload()["item_count"] == 1
+
+
+def test_will_rename_files_renders_create_and_delete_operations(tmp_path: Path):
+    old_uri = (tmp_path / "file.py").as_uri()
+    new_uri = (tmp_path / "created.py").as_uri()
+    result = invoke(
+        tmp_path,
+        {"operation": "willRenameFiles", "path": "file.py", "newPath": "created.py"},
+        Manager(
+            [
+                {
+                    "documentChanges": [
+                        {"kind": "create", "uri": new_uri},
+                        {"kind": "delete", "uri": old_uri},
+                    ]
+                }
+            ]
+        ),
+    )
+    assert "No workspace edits needed" not in result.output.text
+    assert "CREATE created.py" in result.output.text
+    assert "DELETE file.py" in result.output.text
+    assert result.body.as_payload()["item_count"] == 2
+
+
+def test_code_action_lists_resource_operation_paths(tmp_path: Path):
+    old_uri = (tmp_path / "file.py").as_uri()
+    new_uri = (tmp_path / "renamed.py").as_uri()
+    action = {
+        "title": "rename file",
+        "kind": "refactor",
+        "edit": {"documentChanges": [{"kind": "rename", "oldUri": old_uri, "newUri": new_uri}]},
+    }
+    result = invoke(tmp_path, {"operation": "codeAction", "path": "file.py", "line": 1, "character": 1}, Manager([[action]]))
+    assert "affects: file.py, renamed.py" in result.output.text

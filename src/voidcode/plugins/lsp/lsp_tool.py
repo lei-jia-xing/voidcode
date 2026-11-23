@@ -1,9 +1,10 @@
-"""LSP Tool: read-only adapter over the plugin-owned LSP manager."""
+"""LSP Tool: filesystem-nonmutating adapter over the plugin-owned LSP manager."""
 
 from __future__ import annotations
 
 import enum
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 from urllib.parse import unquote, urlparse
@@ -114,7 +115,7 @@ class _LspArgs(BaseModel):
 
 
 class LspTool:
-    """Read-only adapter over the plugin-owned LSP manager; this class also owns the invocation schema/effects."""
+    """Filesystem-nonmutating adapter over the plugin-owned LSP manager; this class also owns the invocation schema/effects."""
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="lsp",
@@ -507,6 +508,77 @@ def _uri_to_rel_path(uri: str, workspace_root: Path) -> str:
     return uri
 
 
+@dataclass(frozen=True, slots=True)
+class _WorkspaceEditItem:
+    kind: str
+    path: str
+    version_label: str | None = None
+    edit: dict[str, object] | None = None
+    target_path: str | None = None
+
+
+def _workspace_edit_items(payload: dict[str, object], workspace_root: Path) -> tuple[_WorkspaceEditItem, ...]:
+    """Flatten text edits and file-operation edits into one ordered preview list."""
+    items: list[_WorkspaceEditItem] = []
+    changes = payload.get("changes")
+    if isinstance(changes, dict) and changes:
+        for uri, edits in changes.items():
+            if not isinstance(uri, str) or not isinstance(edits, list):
+                continue
+            relative_path = _uri_to_rel_path(uri, workspace_root)
+            items.extend(_WorkspaceEditItem("edit", relative_path, None, edit) for edit in edits if isinstance(edit, dict))
+        return tuple(items)
+
+    document_changes = payload.get("documentChanges")
+    if not isinstance(document_changes, list):
+        return ()
+    for document in document_changes:
+        if not isinstance(document, dict):
+            continue
+        kind = document.get("kind")
+        if kind == "rename":
+            old_uri = document.get("oldUri")
+            new_uri = document.get("newUri")
+            if isinstance(old_uri, str) and isinstance(new_uri, str):
+                items.append(
+                    _WorkspaceEditItem(
+                        "rename",
+                        _uri_to_rel_path(old_uri, workspace_root),
+                        target_path=_uri_to_rel_path(new_uri, workspace_root),
+                    )
+                )
+            continue
+        if kind in ("create", "delete"):
+            uri = document.get("uri")
+            if isinstance(uri, str):
+                items.append(_WorkspaceEditItem(kind, _uri_to_rel_path(uri, workspace_root)))
+            continue
+        text_document = document.get("textDocument", {})
+        if not isinstance(text_document, dict):
+            continue
+        uri = text_document.get("uri")
+        if not isinstance(uri, str):
+            continue
+        version = text_document.get("version")
+        version_label = f" (document version {version})" if isinstance(version, int) and not isinstance(version, bool) else None
+        edits = document.get("edits", [])
+        if not isinstance(edits, list):
+            continue
+        relative_path = _uri_to_rel_path(uri, workspace_root)
+        items.extend(_WorkspaceEditItem("edit", relative_path, version_label, edit) for edit in edits if isinstance(edit, dict))
+    return tuple(items)
+
+
+def _workspace_edit_paths(payload: dict[str, object], workspace_root: Path) -> tuple[str, ...]:
+    """Every path a workspace edit names, including resource-operation targets."""
+    paths: list[str] = []
+    for item in _workspace_edit_items(payload, workspace_root):
+        paths.append(item.path)
+        if item.target_path is not None:
+            paths.append(item.target_path)
+    return tuple(dict.fromkeys(paths))
+
+
 _SYMBOL_KIND_NAMES = {kind.value: kind.name for kind in lsp_types.SymbolKind}
 
 _SEVERITY_NAMES: dict[int, str] = {
@@ -591,26 +663,6 @@ def _render_lsp_output(
             lines.append(f"  {relative_path}:{s_line}:{s_character}-{e_line}:{e_character}")
         return "\n".join(lines), count, start + len(page) < count
 
-    if operation == LspOperation.FIND_REFERENCES:
-        locations = payload if isinstance(payload, list) else []
-        count = len(locations)
-        if not count:
-            return f"No references found for {file_path} at {line}:{character}.", 0, False
-        page = locations[start : start + limit]
-        if not page:
-            return f"No references at offset {offset}; {count} total.", count, False
-        lines = [f"Found {count} reference(s) for {file_path}:{line}:{character}:"]
-        for location in page:
-            if not isinstance(location, dict):
-                continue
-            relative_path = _uri_to_rel_path(location.get("uri", ""), workspace_root)
-            rng = location.get("range", {})
-            point = rng.get("start", {}) if isinstance(rng, dict) else {}
-            s_line = point.get("line", 0) + 1
-            s_character = point.get("character", 0) + 1
-            lines.append(f"  {relative_path}:{s_line}:{s_character}")
-        return "\n".join(lines), count, start + len(page) < count
-
     if operation == LspOperation.HOVER:
         if not isinstance(payload, dict):
             return f"No hover information available for {file_path} at {line}:{character}.", 0, False
@@ -690,24 +742,7 @@ def _render_lsp_output(
                 f"Rename to '{new_name}' produced no changes." if operation == LspOperation.RENAME else "No workspace edits needed for file rename."
             )
             return message, 0, False
-        raw_edits: list[tuple[str, str | None, dict[str, object]]] = []
-        changes = payload.get("changes")
-        document_changes = payload.get("documentChanges")
-        if isinstance(changes, dict) and changes:
-            for uri, edits in changes.items():
-                if isinstance(edits, list):
-                    raw_edits.extend((_uri_to_rel_path(uri, workspace_root), None, edit) for edit in edits if isinstance(edit, dict))
-        elif isinstance(document_changes, list):
-            for document in document_changes:
-                if not isinstance(document, dict):
-                    continue
-                text_document = document.get("textDocument", {})
-                uri = text_document.get("uri", "") if isinstance(text_document, dict) else ""
-                version = text_document.get("version") if isinstance(text_document, dict) else None
-                version_label = f" (document version {version})" if isinstance(version, int) and not isinstance(version, bool) else None
-                edits = document.get("edits", [])
-                if isinstance(edits, list):
-                    raw_edits.extend((_uri_to_rel_path(uri, workspace_root), version_label, edit) for edit in edits if isinstance(edit, dict))
+        raw_edits = _workspace_edit_items(payload, workspace_root)
         count = len(raw_edits)
         if not count:
             message = (
@@ -724,8 +759,18 @@ def _render_lsp_output(
         )
         lines = [title]
         current_document: str | None = None
-        for relative_path, version_label, edit in page:
-            document_label = f"{relative_path}{version_label or ''}"
+        for item in page:
+            if item.kind != "edit":
+                current_document = None
+                if item.kind == "rename":
+                    lines.append(f"  RENAME {item.path} -> {item.target_path or '<unchanged>'}")
+                else:
+                    lines.append(f"  {item.kind.upper()} {item.path}")
+                continue
+            edit = item.edit
+            if edit is None:
+                continue
+            document_label = f"{item.path}{item.version_label or ''}"
             if document_label != current_document:
                 lines.append(f"  {document_label}:")
                 current_document = document_label
@@ -758,9 +803,8 @@ def _render_lsp_output(
             lines.append(f"  {index}. [{kind}] {title}")
             edit = action.get("edit")
             if isinstance(edit, dict):
-                changes = edit.get("changes") or {}
-                if isinstance(changes, dict) and changes:
-                    paths = [_uri_to_rel_path(uri, workspace_root) for uri in changes]
+                paths = _workspace_edit_paths(edit, workspace_root)
+                if paths:
                     lines.append(f"     affects: {', '.join(paths)}")
         lines.append('\nNote: Preview only. To apply workspace edits, use edit with mode="range".')
         return "\n".join(lines), count, start + len(page) < count
