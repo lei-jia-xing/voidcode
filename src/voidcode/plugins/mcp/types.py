@@ -3,10 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, Self
+from enum import StrEnum
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, Self
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+if TYPE_CHECKING:
+    from voidcode.sdk.provider import ProviderAbortSignal
+
+
+class McpCallStage(StrEnum):
+    """Closed manager operation kind; never compare raw stage strings."""
+
+    DISCOVERY = "discovery"
+    CALL = "call"
+
+
+type McpCallBoundary = Literal["pre_send", "in_flight", "cancelled"]
+type McpManagerMode = Literal["disabled", "managed"]
+type McpServerStatus = Literal["starting", "running", "stopped", "failed"]
+type McpSafetySource = Literal["default-deny", "server-annotations"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +39,7 @@ class McpToolSafety:
     destructive: bool | None = None
     idempotent: bool | None = None
     open_world: bool | None = None
-    source: str = "default-deny"
+    source: McpSafetySource = "default-deny"
 
     @classmethod
     def from_hints(
@@ -63,11 +81,36 @@ class McpToolCallResult:
     is_error: bool = False
 
 
+class McpCallError(ValueError):
+    """Typed manager failure carrying the execution boundary as data.
+
+    ``request_may_have_started`` is conservative: it is true once the SDK call
+    has been entered, even if the remote server never observed the request.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        boundary: McpCallBoundary,
+        request_may_have_started: bool,
+        cancelled: bool = False,
+        timed_out: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.boundary = boundary
+        self.request_may_have_started = request_may_have_started
+        self.cancelled = cancelled
+        self.timed_out = timed_out
+
+
 # =============================================================================
 # Configuration (mirrors the runtime's RuntimeMcpServerConfig/RuntimeMcpConfig)
 # =============================================================================
 
 type McpTransport = Literal["stdio", "remote-http"]
+STDIO_TRANSPORT: Final[McpTransport] = "stdio"
+REMOTE_HTTP_TRANSPORT: Final[McpTransport] = "remote-http"
 
 
 class McpServerConfig(BaseModel):
@@ -75,14 +118,14 @@ class McpServerConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
 
-    transport: McpTransport = "stdio"
+    transport: McpTransport = STDIO_TRANSPORT
     command: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict, repr=False)
     url: str | None = None
 
     @model_validator(mode="after")
     def _transport_fields(self) -> Self:
-        if self.transport == "stdio":
+        if self.transport == STDIO_TRANSPORT:
             if not self.command or any(not part or "\0" in part for part in self.command):
                 raise ValueError("stdio command must contain non-empty argv strings")
             if self.url is not None:
@@ -148,7 +191,7 @@ class McpCachedToolSurface:
 class McpManagerState:
     """Snapshot of configured servers and their current connection states."""
 
-    mode: str = "disabled"
+    mode: McpManagerMode = "disabled"
     configuration: McpConfigState = field(default_factory=McpConfigState)
     servers: dict[str, McpServerRuntimeState] = field(default_factory=dict)
 
@@ -157,7 +200,7 @@ class McpManagerState:
 class McpServerRuntimeState:
     """Runtime-owned connection state for a configured MCP server."""
 
-    status: Literal["starting", "running", "stopped", "failed"] = "stopped"
+    status: McpServerStatus = "stopped"
     error: str | None = None
 
 
@@ -175,14 +218,14 @@ class McpManager(Protocol):
     def list_tools(
         self,
         *,
-        workspace: Any,
+        workspace: Path,
         server_name: str | None = None,
     ) -> tuple[McpToolDescriptor, ...]: ...
 
     def cached_surface(
         self,
         *,
-        workspace: Any,
+        workspace: Path,
     ) -> McpCachedToolSurface: ...
 
     def descriptor_for(
@@ -198,7 +241,8 @@ class McpManager(Protocol):
         server_name: str,
         tool_name: str,
         arguments: dict[str, Any],
-        workspace: Any,
+        workspace: Path,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> McpToolCallResult: ...
 
     def shutdown(self) -> None: ...

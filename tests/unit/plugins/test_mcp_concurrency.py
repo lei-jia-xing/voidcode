@@ -1,6 +1,7 @@
 """Old MCP calls and cleanup cannot dispatch through or retire replacements."""
 
 import asyncio
+import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import pytest
 import voidcode.plugins.mcp.mcp_manager as mcp_manager_module
 from voidcode.plugins.mcp import _mcp_config
 from voidcode.plugins.mcp.mcp_manager import ManagedMcpManager
+from voidcode.plugins.mcp.types import McpCallError, McpCallStage
 
 
 def _fake_running(server_name="demo"):
@@ -76,7 +78,7 @@ def test_failed_old_call_does_not_stop_or_poison_a_replacement(monkeypatch):
             raise RuntimeError("old connection failed")
 
         def _old_call():
-            return manager._submit(manager._call_sdk_owned(old, stage="call", method="tools/call", operation=fail_after_replacement))
+            return manager._submit(manager._call_sdk_owned(old, stage=McpCallStage.CALL, method="tools/call", operation=fail_after_replacement))
 
         async def _replace():
             manager._running_servers["demo"] = replacement
@@ -113,7 +115,7 @@ def test_queued_stale_call_is_not_sent(monkeypatch):
             sent.append(True)
 
         with pytest.raises(ValueError, match="request was not sent"):
-            manager._submit(manager._call_sdk_owned(old, stage="call", method="tools/call", operation=_send))
+            manager._submit(manager._call_sdk_owned(old, stage=McpCallStage.CALL, method="tools/call", operation=_send))
         assert sent == []
         assert terminated == []
     finally:
@@ -405,3 +407,119 @@ def test_shutdown_stops_other_servers_when_one_teardown_hangs(monkeypatch):
     assert state.servers["ok"].status == "stopped"
     assert state.servers["hang"].status == "failed"
     assert "timed out" in (state.servers["hang"].error or "")
+
+
+def test_abort_cancels_in_flight_call_without_waiting_for_timeout(monkeypatch, tmp_path):
+    started = Event()
+
+    class Abort:
+        cancelled = False
+        reason = None
+
+        def set_cancelled(self, value, *, reason=None):
+            self.cancelled = value
+            self.reason = reason
+
+    class Session:
+        async def list_tools(self, *, params=None):
+            _ = params
+            return SimpleNamespace(tools=[_tool("slow", {"type": "object"})], next_cursor=None)
+
+        async def call_tool(self, name, arguments, **kwargs):
+            _ = name, arguments, kwargs
+            started.set()
+            await asyncio.Event().wait()
+
+    manager = _paged_manager(monkeypatch, Session())
+    abort = Abort()
+    try:
+        manager.list_tools(workspace=tmp_path)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                manager.call_tool,
+                server_name="demo",
+                tool_name="slow",
+                arguments={},
+                workspace=tmp_path,
+                abort_signal=abort,
+            )
+            assert started.wait(timeout=5)
+            cancelled_at = time.monotonic()
+            abort.cancelled = True
+            with pytest.raises(McpCallError) as caught:
+                future.result(timeout=2)
+            assert time.monotonic() - cancelled_at < 2
+        assert caught.value.boundary == "cancelled"
+        assert caught.value.cancelled is True
+        assert caught.value.request_may_have_started is True
+        assert caught.value.timed_out is False
+    finally:
+        manager.shutdown()
+
+
+def test_timeout_after_send_is_typed_in_flight(monkeypatch, tmp_path):
+    from mcp.shared.exceptions import MCPError
+
+    class Session:
+        async def list_tools(self, *, params=None):
+            _ = params
+            return SimpleNamespace(tools=[_tool("slow", {"type": "object"})], next_cursor=None)
+
+        async def call_tool(self, name, arguments, **kwargs):
+            _ = name, arguments, kwargs
+            raise MCPError(-32001, "request timed out")
+
+    manager = _paged_manager(monkeypatch, Session())
+    try:
+        manager.list_tools(workspace=tmp_path)
+        with pytest.raises(McpCallError) as caught:
+            manager.call_tool(server_name="demo", tool_name="slow", arguments={}, workspace=tmp_path)
+        assert caught.value.boundary == "in_flight"
+        assert caught.value.request_may_have_started is True
+        assert caught.value.timed_out is True
+        assert caught.value.cancelled is False
+    finally:
+        manager.shutdown()
+
+
+def test_invalid_post_send_result_is_typed_in_flight(monkeypatch, tmp_path):
+    class Session:
+        async def list_tools(self, *, params=None):
+            _ = params
+            return SimpleNamespace(tools=[_tool("bad-result", {"type": "object"})], next_cursor=None)
+
+        async def call_tool(self, name, arguments, **kwargs):
+            _ = name, arguments, kwargs
+            return SimpleNamespace(content=[], structured_content=object())
+
+    manager = _paged_manager(monkeypatch, Session())
+    try:
+        manager.list_tools(workspace=tmp_path)
+        with pytest.raises(McpCallError) as caught:
+            manager.call_tool(server_name="demo", tool_name="bad-result", arguments={}, workspace=tmp_path)
+        assert caught.value.boundary == "in_flight"
+        assert caught.value.request_may_have_started is True
+        assert caught.value.cancelled is False
+    finally:
+        manager.shutdown()
+
+
+def test_pre_send_validation_failure_is_not_in_flight(monkeypatch, tmp_path):
+    class Session:
+        async def list_tools(self, *, params=None):
+            _ = params
+            return SimpleNamespace(
+                tools=[_tool("needs", {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]})],
+                next_cursor=None,
+            )
+
+    manager = _paged_manager(monkeypatch, Session())
+    try:
+        manager.list_tools(workspace=tmp_path)
+        with pytest.raises(McpCallError) as caught:
+            manager.call_tool(server_name="demo", tool_name="needs", arguments={}, workspace=tmp_path)
+        assert caught.value.boundary == "pre_send"
+        assert caught.value.request_may_have_started is False
+        assert caught.value.cancelled is False
+    finally:
+        manager.shutdown()

@@ -21,11 +21,13 @@ from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginSer
 from voidcode.sdk.tools import (
     RASTER_IMAGE_MIMES,
     CompositeOutput,
+    ConfirmedStop,
     ContentPart,
     JsonPart,
     MediaPart,
     OpaqueToolBody,
     OutputBounds,
+    TextOutput,
     TextPart,
     ToolCall,
     ToolDefinition,
@@ -33,10 +35,11 @@ from voidcode.sdk.tools import (
     ToolFailure,
     ToolResult,
     ToolSuccess,
+    UnconfirmedStop,
 )
 from voidcode.sdk.views import MAX_VIEW_DATA_BYTES
 
-from .types import McpManager, McpToolCallResult, McpToolSafety
+from .types import McpCallError, McpManager, McpToolCallResult, McpToolSafety
 
 _MAX_MCP_BINARY_BYTES = 50 * 1024 * 1024
 _MIME_TOKEN = r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
@@ -121,12 +124,16 @@ class McpTool:
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         workspace = context.require_workspace()
         server_name, tool_name, arguments = _call_arguments(call.arguments)
-        result = self._manager.call_tool(
-            server_name=server_name,
-            tool_name=tool_name,
-            arguments=arguments,
-            workspace=workspace,
-        )
+        try:
+            result = self._manager.call_tool(
+                server_name=server_name,
+                tool_name=tool_name,
+                arguments=arguments,
+                workspace=workspace,
+                abort_signal=context.abort_signal,
+            )
+        except McpCallError as exc:
+            return self._call_failure(exc, server_name=server_name, tool_name=tool_name)
         try:
             if type(result.is_error) is not bool:
                 raise ValueError("MCP result is_error must be a boolean")
@@ -154,6 +161,7 @@ class McpTool:
                 tool_name=self.definition.name,
                 error=message,
                 output=CompositeOutput(parts=(TextPart(message),), bounds=OutputBounds(partial=True)),
+                execution=UnconfirmedStop(cancellation_signalled=False),
                 body=OpaqueToolBody(
                     {
                         "server": server_name,
@@ -223,6 +231,30 @@ class McpTool:
             projection_error=projection_error,
         )
 
+    def _call_failure(self, exc: McpCallError, *, server_name: str, tool_name: str) -> ToolFailure:
+        message = str(exc)
+        execution = (
+            UnconfirmedStop(cancellation_signalled=exc.cancelled)
+            if exc.request_may_have_started
+            else ConfirmedStop(cancellation_signalled=exc.cancelled)
+        )
+        return ToolFailure(
+            tool_name=self.definition.name,
+            error=message,
+            output=TextOutput(text=message),
+            execution=execution,
+            body=OpaqueToolBody(
+                {
+                    "server": server_name,
+                    "tool": tool_name,
+                    "boundary": exc.boundary,
+                    "request_may_have_started": exc.request_may_have_started,
+                    "cancelled": exc.cancelled,
+                    "timed_out": exc.timed_out,
+                }
+            ),
+        )
+
     def _result(
         self,
         result: McpToolCallResult,
@@ -268,6 +300,7 @@ class McpTool:
                 tool_name=self.definition.name,
                 error=error,
                 output=output,
+                execution=UnconfirmedStop(cancellation_signalled=False),
                 body=OpaqueToolBody(payload),
             )
         return ToolSuccess(

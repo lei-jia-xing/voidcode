@@ -219,7 +219,9 @@ Inner `plugins.mcp.config.enabled: false` keeps the plugin admitted but reports
 MCP support as disabled; use `plugins.mcp.enabled: false` to remove the tool and
 command. MCP is tools-only: resources and prompts are not exposed. Stdio servers
 are host-side and unconfined. Normal close/reload stops them; a core SIGKILL can
-leave a server that ignores stdin EOF, with no parent-death mechanism.
+leave a server that ignores stdin EOF, with no parent-death mechanism. Calls
+observe the invocation abort signal; post-send failures/timeouts/cancellation are
+reported as `UnconfirmedStop`, while pre-send failures are confirmed.
 
 ### LSP servers
 

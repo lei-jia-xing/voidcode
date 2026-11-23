@@ -8,11 +8,20 @@ from pathlib import Path
 import pytest
 
 from voidcode.plugins.mcp.mcp_tool import McpTool
-from voidcode.plugins.mcp.types import McpToolCallResult
+from voidcode.plugins.mcp.types import McpCallError, McpToolCallResult
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference
-from voidcode.sdk.tools import CompositeOutput, JsonPart, MediaPart, TextPart, ToolCall, composite_ordered_text
+from voidcode.sdk.tools import (
+    CompositeOutput,
+    ConfirmedStop,
+    JsonPart,
+    MediaPart,
+    TextPart,
+    ToolCall,
+    UnconfirmedStop,
+    composite_ordered_text,
+)
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=")
 
@@ -25,6 +34,33 @@ class Manager:
         return self.result
 
     def descriptor_for(self, **kwargs):
+        return None
+
+
+class FailingManager:
+    def __init__(self, error):
+        self.error = error
+
+    def call_tool(self, **kwargs):
+        _ = kwargs
+        raise self.error
+
+    def descriptor_for(self, **kwargs):
+        _ = kwargs
+        return None
+
+
+class RecordingManager:
+    def __init__(self):
+        self.abort_signal = None
+        self.result = McpToolCallResult(content=[])
+
+    def call_tool(self, **kwargs):
+        self.abort_signal = kwargs.get("abort_signal")
+        return self.result
+
+    def descriptor_for(self, **kwargs):
+        _ = kwargs
         return None
 
 
@@ -44,6 +80,24 @@ def invoke(tmp_path, content, *, is_error=False):
     result = McpTool(manager=Manager(McpToolCallResult(content=content, is_error=is_error))).invoke(
         ToolCall("mcp", {"server": "demo", "tool": "example"}),
         context=ToolContext(workspace=tmp_path, session_id="session", run_id="run", invocation_id="inv", revision_id="rev", actor="model"),
+        services=services,
+    )
+    return result, services
+
+
+def invoke_manager(tmp_path, manager, *, abort_signal=None):
+    services = Services()
+    result = McpTool(manager=manager).invoke(
+        ToolCall("mcp", {"server": "demo", "tool": "example"}),
+        context=ToolContext(
+            workspace=tmp_path,
+            session_id="session",
+            run_id="run",
+            invocation_id="inv",
+            revision_id="rev",
+            actor="model",
+            abort_signal=abort_signal,
+        ),
         services=services,
     )
     return result, services
@@ -96,6 +150,8 @@ def test_projection_failure_keeps_original_json_available(tmp_path: Path, conten
     reference = result.body.as_payload()["result_artifact"]
     assert json.loads(services.artifacts[reference["sha256"]])["content"] == content
     assert "projection failed" in result.error
+    assert isinstance(result.execution, UnconfirmedStop)
+    assert result.execution.cancellation_signalled is False
 
 
 def test_remote_tool_error_is_partial_even_for_valid_text(tmp_path: Path):
@@ -104,6 +160,8 @@ def test_remote_tool_error_is_partial_even_for_valid_text(tmp_path: Path):
     assert result.output.bounds.partial is True
     assert isinstance(result.output, CompositeOutput)
     assert "remote failure" in composite_ordered_text(result.output)
+    assert isinstance(result.execution, UnconfirmedStop)
+    assert result.execution.cancellation_signalled is False
 
 
 def test_resource_blob_without_mime_is_preserved_as_generic_bytes(tmp_path: Path):
@@ -162,6 +220,7 @@ def test_nonstandard_or_incomplete_resources_are_explicit_projection_failures(tm
     assert result.output.bounds.partial is True
     artifact = result.body.as_payload()["result_artifact"]
     assert json.loads(services.artifacts[artifact["sha256"]])["content"] == content
+    assert isinstance(result.execution, UnconfirmedStop)
 
 
 def test_mcp_multi_image_order_preserved_with_structured_json(tmp_path: Path):
@@ -251,3 +310,60 @@ def test_oversize_structured_content_fails_loudly_with_sizes(tmp_path: Path):
     assert result.body.as_payload()["projection_error"].startswith("MCP structured content preview exceeds")
     artifact = result.body.as_payload()["result_artifact"]
     assert json.loads(services.artifacts[artifact["sha256"]])["structured_content"] == big
+
+
+def test_post_send_timeout_returns_unconfirmed_stop(tmp_path: Path):
+    error = McpCallError(
+        "MCP server timed out after 30.0s. The server may be unresponsive.",
+        boundary="in_flight",
+        request_may_have_started=True,
+        timed_out=True,
+    )
+    result, _ = invoke_manager(tmp_path, FailingManager(error))
+    assert result.status == "error"
+    assert isinstance(result.execution, UnconfirmedStop)
+    assert result.execution.cancellation_signalled is False
+    assert result.body.as_payload()["boundary"] == "in_flight"
+    assert result.body.as_payload()["timed_out"] is True
+
+
+def test_post_send_cancellation_returns_unconfirmed_stop(tmp_path: Path):
+    error = McpCallError(
+        "MCP call was cancelled after the request may have reached the server",
+        boundary="cancelled",
+        request_may_have_started=True,
+        cancelled=True,
+    )
+    result, _ = invoke_manager(tmp_path, FailingManager(error))
+    assert result.status == "error"
+    assert isinstance(result.execution, UnconfirmedStop)
+    assert result.execution.cancellation_signalled is True
+    assert result.body.as_payload()["cancelled"] is True
+
+
+def test_pre_send_manager_failure_returns_confirmed_stop(tmp_path: Path):
+    error = McpCallError(
+        "MCP[demo/example]: request was not sent",
+        boundary="pre_send",
+        request_may_have_started=False,
+    )
+    result, _ = invoke_manager(tmp_path, FailingManager(error))
+    assert result.status == "error"
+    assert isinstance(result.execution, ConfirmedStop)
+    assert result.execution.cancellation_signalled is False
+    assert result.body.as_payload()["request_may_have_started"] is False
+
+
+def test_abort_signal_is_forwarded_to_the_manager(tmp_path: Path):
+    signal = object()
+    manager = RecordingManager()
+    result, _ = invoke_manager(tmp_path, manager, abort_signal=signal)
+    assert result.status == "ok"
+    assert manager.abort_signal is signal
+
+
+def test_invalid_result_json_is_an_unconfirmed_stop(tmp_path: Path):
+    result, _ = invoke_manager(tmp_path, Manager(McpToolCallResult(content=[{"type": object()}])))
+    assert result.status == "error"
+    assert isinstance(result.execution, UnconfirmedStop)
+    assert result.execution.cancellation_signalled is False

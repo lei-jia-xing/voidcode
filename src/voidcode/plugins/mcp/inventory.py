@@ -7,14 +7,14 @@ display-only.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar, Literal, TypedDict
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import ContextContribution
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices
 
-from .types import McpCachedToolSurface, McpManager, McpManagerState, McpToolDescriptor
+from .types import McpCachedToolSurface, McpManager, McpManagerState, McpServerStatus, McpToolDescriptor
 
 #: Servers and tools are bounded so a large remote surface never becomes a wall.
 MAX_SERVERS = 32
@@ -28,6 +28,16 @@ MAX_DISABLED_REASON_CHARS = 160
 MAX_ERROR_CHARS = 800
 MAX_SERVER_NAME_CHARS = 120
 MCP_DISABLED_MESSAGE = "MCP support is disabled by configuration."
+
+type McpInventoryStatus = McpServerStatus | Literal["configured", "unknown"]
+
+
+class McpInventoryServer(TypedDict):
+    name: str
+    status: McpInventoryStatus
+    error: str | None
+    tools: list[dict[str, object]]
+    tools_known: int | None
 
 
 class McpInventoryCommand:
@@ -164,21 +174,23 @@ def _inventory_servers(
     surface: McpCachedToolSurface,
     *,
     include_tool_details: bool = True,
-) -> list[dict[str, Any]]:
+) -> list[McpInventoryServer]:
     configured = state.configuration.servers
-    servers: list[dict[str, Any]] = []
+    servers: list[McpInventoryServer] = []
     for name in sorted(set(configured) | set(surface.servers))[:MAX_SERVERS]:
         discovered = surface.servers.get(name, ())
         runtime = state.servers.get(name)
         bounded = discovered[:MAX_TOOLS_PER_SERVER]
-        if include_tool_details:
-            tools: list[dict[str, object]] = [_tool_payload(tool) for tool in bounded]
-        else:
-            tools = [{"name": _display_text(tool.tool_name, MAX_TOOL_NAME_CHARS)} for tool in bounded]
+        tools: list[dict[str, object]] = (
+            [_tool_payload(tool) for tool in bounded]
+            if include_tool_details
+            else [{"name": _display_text(tool.tool_name, MAX_TOOL_NAME_CHARS)} for tool in bounded]
+        )
+        status: McpInventoryStatus = runtime.status if runtime is not None else "configured" if name in configured else "unknown"
         servers.append(
             {
                 "name": name,
-                "status": runtime.status if runtime is not None else "configured" if name in configured else "unknown",
+                "status": status,
                 "error": _display_text(runtime.error, MAX_ERROR_CHARS) if runtime is not None and runtime.error else None,
                 "tools": tools,
                 "tools_known": len(discovered) if name in surface.servers else None,
@@ -204,7 +216,7 @@ def _display_text(value: str, limit: int) -> str:
     return cleaned[: max(1, limit - 1)].rstrip() + "…"
 
 
-def _render_inventory(servers: list[dict[str, Any]]) -> str:
+def _render_inventory(servers: list[McpInventoryServer]) -> str:
     if not servers:
         return "No MCP servers are configured."
     lines = [f"{len(servers)} MCP server(s) configured:"]
