@@ -44,5 +44,8 @@ The core (`src/voidcode/core/`) governs runs over append-only events and durable
 to an isolated prompt; `include_context=True` reads the current conversation window,
 including its verified compaction summary and contributed plugin context. An unfinished
 native tool batch is omitted as a whole, so providers never receive dangling tool calls.
-The question and answer do not extend the main conversation; usage is recorded in
-`core.model_query`. The bundled `/btw` command requests this contextual mode.
+The question and answer do not extend the main conversation; actual provider usage is
+recorded in `core.model_query`, attributed to the invoking owner, and charged once to
+the session usage report and active budgets. An exhausted budget refuses the query
+before dispatch; missing usage stays unknown. The bundled `/btw` command requests this
+contextual mode.

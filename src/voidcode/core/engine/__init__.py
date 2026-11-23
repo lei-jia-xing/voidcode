@@ -2414,22 +2414,31 @@ class Core:
     def messages(self, execution: _Execution, *, completed_only: bool, model: str) -> tuple[ProviderMessage, ...]:
         return self._context_projection.messages(execution, completed_only=completed_only, model=model)
 
+    def commit_accounted_event(self, session_id: str, event: EventDraft) -> None:
+        """Append one account-bearing fact, raising when it cannot be persisted.
+
+        A provider turn already happened when its usage event is written, so a
+        failed accounting commit must fail the caller instead of leaving billed
+        spend silently unrecorded.
+        """
+        session = self.store.session(session_id)
+        self.store.commit_staged(
+            session_id,
+            expected_sequence=session.last_event_sequence,
+            expected_run_id=session.run_id,
+            run_id=session.run_id or uuid4().hex,
+            revision_id=self.revision_id,
+            events=self._commit_pipeline.stamp_fact_owners((event,)),
+            status=session.status,
+            checkpoint_kind=None,
+            checkpoint_payload=None,
+        )
+        self.notify_commit()
+
     def commit_control_event(self, session_id: str, event: EventDraft) -> None:
         """Append one best-effort diagnostic control fact; losing it never blocks owner work."""
         try:
-            session = self.store.session(session_id)
-            self.store.commit_staged(
-                session_id,
-                expected_sequence=session.last_event_sequence,
-                expected_run_id=session.run_id,
-                run_id=session.run_id or uuid4().hex,
-                revision_id=self.revision_id,
-                events=self._commit_pipeline.stamp_fact_owners((event,)),
-                status=session.status,
-                checkpoint_kind=None,
-                checkpoint_payload=None,
-            )
-            self.notify_commit()
+            self.commit_accounted_event(session_id, event)
         except Exception:
             return
 
@@ -2459,10 +2468,12 @@ class Core:
         model: str | None = None,
         max_output_tokens: int | None = None,
         include_context: bool = False,
+        owner: str | None = None,
     ) -> str:
         """A tool-free side turn, optionally reading the current conversation window.
 
-        Usage is recorded, but the question and answer never extend the conversation.
+        Actual provider usage is recorded against the invoking ``owner`` and the
+        session, but the question and answer never extend the conversation.
         """
         return self._model_query.query(
             session_id,
@@ -2470,6 +2481,7 @@ class Core:
             model=model,
             max_output_tokens=max_output_tokens,
             include_context=include_context,
+            owner=owner,
         )
 
     def governed_model_query_structured(
@@ -2480,6 +2492,7 @@ class Core:
         model: str | None = None,
         max_output_tokens: int | None = None,
         include_context: bool = False,
+        owner: str | None = None,
     ) -> StructuredModelResult:
         """A tool-free side turn parsed and validated against ``result_schema``.
 
@@ -2493,6 +2506,7 @@ class Core:
             model=model,
             max_output_tokens=max_output_tokens,
             include_context=include_context,
+            owner=owner,
         )
 
     def commit_staged_rebased(

@@ -296,9 +296,9 @@ class PluginRuntime:
         read_child_snapshot_callback: Callable[[str, str], ChildSessionSnapshot | None] | None = None,
         cancel_subtree_callback: Callable[[str, str, str | None, str], CancelSubtreeReceipt] | None = None,
         cancel_background_action_callback: Callable[[str, str, str, str], bool] | None = None,
-        model_query_callback: Callable[[str, str, str | None, int | None, bool], str] | None = None,
+        model_query_callback: Callable[[str, str, str | None, int | None, bool, str | None], str] | None = None,
         model_query_structured_callback: (
-            Callable[[str, str, Mapping[str, object], str | None, int | None, bool], StructuredModelResult] | None
+            Callable[[str, str, Mapping[str, object], str | None, int | None, bool, str | None], StructuredModelResult] | None
         ) = None,
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
         tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,

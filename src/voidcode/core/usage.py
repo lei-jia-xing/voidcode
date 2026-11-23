@@ -8,11 +8,85 @@ only durable state, so the core can rebuild it per turn without owning the arith
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+
 from ..sdk.codec import decode_provider_result
-from ..sdk.services import SessionUsageReport
+from ..sdk.provider import ProviderTokenUsage
+from ..sdk.services import PluginBudget, SessionUsageReport
 from .events import EventType
 from .execution import wire_object
 from .storage.store import SessionRecord, SqliteStore, StoredEvent
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetBlock:
+    """One active owner budget that refuses the next provider dispatch."""
+
+    #: The cap's own metric is unknown, so this is a failure rather than a reached limit.
+    unknown: bool
+    message: str
+
+
+def budget_block(report: SessionUsageReport, budget: PluginBudget) -> BudgetBlock | None:
+    """Return the first metric in ``budget`` that refuses another provider dispatch.
+
+    Each metric is checked independently with its own unknown flag: a known input
+    total with an unknown output total must still obey an input cap, and only the
+    caps whose metric is genuinely unknown fail visibly.
+    """
+    if budget.max_input_tokens is not None:
+        if report.input_tokens is None:
+            return BudgetBlock(True, f"budget limit reached: input tokens unknown for owner {budget.owner}")
+        if report.input_tokens >= budget.max_input_tokens:
+            return BudgetBlock(
+                False,
+                f"budget limit exceeded: input tokens {report.input_tokens} >= {budget.max_input_tokens} for owner {budget.owner}",
+            )
+    if budget.max_output_tokens is not None:
+        if report.output_tokens is None:
+            return BudgetBlock(True, f"budget limit reached: output tokens unknown for owner {budget.owner}")
+        if report.output_tokens >= budget.max_output_tokens:
+            return BudgetBlock(
+                False,
+                f"budget limit exceeded: output tokens {report.output_tokens} >= {budget.max_output_tokens} for owner {budget.owner}",
+            )
+    if budget.max_total_tokens is not None:
+        if report.input_tokens is None or report.output_tokens is None:
+            return BudgetBlock(True, f"budget limit reached: total tokens unknown for owner {budget.owner}")
+        total = report.input_tokens + report.output_tokens
+        if total >= budget.max_total_tokens:
+            return BudgetBlock(
+                False,
+                f"budget limit exceeded: total tokens {total} >= {budget.max_total_tokens} for owner {budget.owner}",
+            )
+    if budget.max_elapsed_seconds is not None:
+        if report.elapsed_seconds is None:
+            return BudgetBlock(True, f"budget limit reached: elapsed time unknown for owner {budget.owner}")
+        if report.elapsed_seconds >= budget.max_elapsed_seconds:
+            return BudgetBlock(
+                False,
+                f"budget limit exceeded: elapsed time {report.elapsed_seconds}s >= {budget.max_elapsed_seconds}s for owner {budget.owner}",
+            )
+    if budget.max_cost_usd is not None:
+        if report.total_cost_usd is None:
+            return BudgetBlock(True, f"budget limit reached: cost unknown for owner {budget.owner}")
+        if report.total_cost_usd >= budget.max_cost_usd:
+            return BudgetBlock(
+                False,
+                f"budget limit exceeded: cost ${report.total_cost_usd} >= ${budget.max_cost_usd} for owner {budget.owner}",
+            )
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class _DispatchUsage:
+    """The bill of one completed provider dispatch, or of an unsettled one."""
+
+    usage: ProviderTokenUsage | None
+    cost_usd: float | None
+    elapsed_ms: int | float | None
+    counts_as_turn: bool
 
 
 class UsageProjector:
@@ -30,8 +104,12 @@ class UsageProjector:
     ) -> SessionUsageReport:
         """Calculate truthful token usage metrics strictly from immutable core facts."""
         session_id = session.session_id
-        all_events = self._store.events_by_types(session_id, (EventType.PROVIDER_INTENT, EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED))
+        all_events = self._store.events_by_types(
+            session_id,
+            (EventType.PROVIDER_INTENT, EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED, EventType.MODEL_QUERY),
+        )
         dispatches_in_window: list[int] = []
+        queries_in_window: list[StoredEvent] = []
         completions_by_dispatch: dict[int, StoredEvent] = {}
 
         for ev in all_events:
@@ -43,12 +121,18 @@ class UsageProjector:
                 seq = ev.sequence
                 if seq > since_sequence and (until_sequence is None or seq <= until_sequence):
                     dispatches_in_window.append(seq)
+            elif ev.event_type == EventType.MODEL_QUERY:
+                seq = ev.sequence
+                if seq > since_sequence and (until_sequence is None or seq <= until_sequence):
+                    queries_in_window.append(ev)
             elif ev.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
                 disp_seq = ev.payload.get("dispatch_sequence")
                 if disp_seq is not None and isinstance(disp_seq, (int, float)):
                     completions_by_dispatch[int(disp_seq)] = ev
 
-        if not dispatches_in_window:
+        dispatches = [self._dispatch_usage(completions_by_dispatch.get(seq)) for seq in dispatches_in_window]
+        dispatches.extend(self._model_query_usage(ev) for ev in queries_in_window)
+        if not dispatches:
             return SessionUsageReport(
                 session_id=session_id,
                 input_tokens=0,
@@ -78,61 +162,52 @@ class UsageProjector:
         unknown_elapsed = False
         turn_count = 0
 
-        for disp_seq in dispatches_in_window:
-            comp_ev = completions_by_dispatch.get(disp_seq)
-            if comp_ev is None or comp_ev.event_type == EventType.PROVIDER_INTERRUPTED:
+        for dispatch in dispatches:
+            if dispatch.counts_as_turn:
+                turn_count += 1
+            usage = dispatch.usage
+            if usage is None:
                 unknown_input = True
                 unknown_output = True
                 unknown_cache = True
                 unknown_uncached = True
                 unknown_cost = True
-                if comp_ev is not None:
-                    ms = comp_ev.payload.get("elapsed_ms")
-                    if ms is not None and isinstance(ms, (int, float)):
-                        total_elapsed_ms += int(ms)
-                    else:
-                        unknown_elapsed = True
-                else:
-                    unknown_elapsed = True
-            elif comp_ev.event_type == EventType.MODEL_TURN:
-                turn_count += 1
-                turn = decode_provider_result(wire_object(comp_ev.payload["result"], "model turn"))
-                u = turn.usage
-                if u is not None and u.input_tokens is not None:
-                    total_input += u.input_tokens
-                else:
-                    unknown_input = True
+                unknown_elapsed = unknown_elapsed or dispatch.elapsed_ms is None
+                if dispatch.elapsed_ms is not None:
+                    total_elapsed_ms += int(dispatch.elapsed_ms)
+                continue
 
-                if u is not None and u.output_tokens is not None:
-                    total_output += u.output_tokens
-                else:
-                    unknown_output = True
+            if usage.input_tokens is not None:
+                total_input += usage.input_tokens
+            else:
+                unknown_input = True
 
-                if u is not None and u.cache_read_tokens is not None:
-                    total_cache_read += u.cache_read_tokens
-                else:
-                    unknown_cache = True
+            if usage.output_tokens is not None:
+                total_output += usage.output_tokens
+            else:
+                unknown_output = True
 
-                if u is not None and u.uncached_input_tokens is not None:
-                    total_uncached_input += u.uncached_input_tokens
-                else:
-                    unknown_uncached = True
+            if usage.cache_read_tokens is not None:
+                total_cache_read += usage.cache_read_tokens
+            else:
+                unknown_cache = True
 
-                # One canonical usage DTO carries cost; the event envelope may also
-                # carry it, and either source is truthful for this dispatch.
-                cost = comp_ev.payload.get("cost_usd")
-                if cost is None and u is not None and u.cost_usd is not None:
-                    cost = u.cost_usd
-                if cost is not None and isinstance(cost, (int, float)):
-                    total_cost += float(cost)
-                else:
-                    unknown_cost = True
+            if usage.uncached_input_tokens is not None:
+                total_uncached_input += usage.uncached_input_tokens
+            else:
+                unknown_uncached = True
 
-                ms = comp_ev.payload.get("elapsed_ms")
-                if ms is not None and isinstance(ms, (int, float)):
-                    total_elapsed_ms += int(ms)
-                else:
-                    unknown_elapsed = True
+            # One canonical usage DTO carries cost; the event envelope may also
+            # carry it, and either source is truthful for this dispatch.
+            if dispatch.cost_usd is not None:
+                total_cost += dispatch.cost_usd
+            else:
+                unknown_cost = True
+
+            if dispatch.elapsed_ms is not None:
+                total_elapsed_ms += int(dispatch.elapsed_ms)
+            else:
+                unknown_elapsed = True
 
         return SessionUsageReport(
             session_id=session_id,
@@ -148,3 +223,50 @@ class UsageProjector:
             until_sequence=until_sequence,
             through_sequence=session.last_event_sequence,
         )
+
+    @staticmethod
+    def _dispatch_usage(completion: StoredEvent | None) -> _DispatchUsage:
+        """The bill of one intent's completion, or an unknown bill when it never settled."""
+        if completion is None or completion.event_type == EventType.PROVIDER_INTERRUPTED:
+            return _DispatchUsage(None, None, _elapsed_ms(completion), False)
+        turn = decode_provider_result(wire_object(completion.payload["result"], "model turn"))
+        usage = turn.usage
+        cost = _cost_usd(completion.payload.get("cost_usd"))
+        if cost is None and usage is not None:
+            cost = usage.cost_usd
+        return _DispatchUsage(usage, cost, _elapsed_ms(completion), True)
+
+    @staticmethod
+    def _model_query_usage(event: StoredEvent) -> _DispatchUsage:
+        """The bill of one standalone model query, decoded from its own event."""
+        usage = _model_query_tokens(event.payload.get("usage"))
+        cost = _cost_usd(event.payload.get("cost_usd"))
+        if cost is None and usage is not None:
+            cost = usage.cost_usd
+        return _DispatchUsage(usage, cost, _elapsed_ms(event), True)
+
+
+def _elapsed_ms(event: StoredEvent | None) -> int | float | None:
+    if event is None:
+        return None
+    value = event.payload.get("elapsed_ms")
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _cost_usd(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _model_query_tokens(value: object) -> ProviderTokenUsage | None:
+    """Decode one model query's recorded usage, keeping absent metrics unknown."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("model query usage must be an object or null")
+    tokens: dict[str, int | None] = {}
+    for field_name in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "uncached_input_tokens"):
+        field_value = value.get(field_name)
+        if field_value is not None and (type(field_value) is not int or field_value < 0):
+            raise ValueError(f"model query usage {field_name} must be a non-negative integer or null")
+        tokens[field_name] = field_value
+    return ProviderTokenUsage(**tokens, cost_usd=_cost_usd(value.get("cost_usd")))

@@ -1,15 +1,16 @@
 """Governed model queries: tool-free side turns with recorded usage.
 
 The core orchestrator delegates side-channel queries (both unstructured and
-JSON-Schema validated structured queries) to this runtime. Usage and cost are
-recorded durably via diagnostic control events, but neither the prompt nor the
-response extends conversation history.
+JSON-Schema validated structured queries) to this runtime. Actual provider usage
+is charged once to the session report and active owner budgets, but neither the
+prompt nor the response extends conversation history.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import time
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import Protocol
 from uuid import uuid4
@@ -18,12 +19,13 @@ import jsonschema
 
 from ...sdk.json_values import json_wire_object, own_json_object
 from ...sdk.provider import ProviderMessage, ProviderReasoningEffort, ProviderTurnRequest, ProviderTurnResult
-from ...sdk.services import StructuredModelResult, StructuredQueryParseError
+from ...sdk.services import PluginBudget, SessionUsageReport, StructuredModelResult, StructuredQueryParseError
 from ..cancellation import Cancellation
 from ..events import EventType
 from ..execution import _Cursor, _Execution
 from ..plugins import PluginRuntime
 from ..storage.store import EventDraft, SessionRecord, SqliteStore
+from ..usage import budget_block
 
 MODEL_CONFIGURATION_GUIDANCE = "no model configured or registered"
 
@@ -58,7 +60,11 @@ class ModelQueryHost(Protocol):
 
     def dispatch(self, description: str) -> AbstractContextManager[ModelQuerySnapshot]: ...
 
-    def commit_control_event(self, session_id: str, event: EventDraft) -> None: ...
+    def session_budgets(self, session_id: str) -> Sequence[PluginBudget]: ...
+
+    def usage(self, session_id: str, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport: ...
+
+    def commit_accounted_event(self, session_id: str, event: EventDraft) -> None: ...
 
 
 class ModelQueryRuntime:
@@ -74,13 +80,16 @@ class ModelQueryRuntime:
         model: str | None = None,
         max_output_tokens: int | None = None,
         include_context: bool = False,
+        owner: str | None = None,
     ) -> str:
         """A tool-free side turn, optionally reading the current conversation window.
 
-        Usage is recorded, but the question and answer never extend the conversation.
+        Actual provider usage is charged once to ``owner`` and the session; the
+        question and answer never extend the conversation.
         """
-        turn, provider_name, model_name = self._turn(session_id, prompt, model, max_output_tokens, include_context)
-        self._commit_usage(session_id, turn, provider_name, model_name)
+        turn, provider_name, model_name, elapsed_ms = self._turn(session_id, prompt, model, max_output_tokens, include_context)
+        self._commit_usage(session_id, turn, provider_name, model_name, owner=owner, elapsed_ms=elapsed_ms)
+        _reject_tool_calls(turn)
         return turn.output or ""
 
     def query_structured(
@@ -91,6 +100,7 @@ class ModelQueryRuntime:
         model: str | None = None,
         max_output_tokens: int | None = None,
         include_context: bool = False,
+        owner: str | None = None,
     ) -> StructuredModelResult:
         """A tool-free side turn parsed and validated against ``result_schema``.
 
@@ -110,14 +120,15 @@ class ModelQueryRuntime:
             jsonschema.Draft202012Validator.check_schema(schema_json)
         except jsonschema.exceptions.SchemaError as err:
             raise ValueError(f"result_schema is not a valid JSON schema: {err.message}") from err
-        turn, provider_name, model_name = self._turn(
+        turn, provider_name, model_name, elapsed_ms = self._turn(
             session_id,
             f"{prompt}\n\nReply with exactly one JSON object and nothing else.",
             model,
             max_output_tokens,
             include_context,
         )
-        self._commit_usage(session_id, turn, provider_name, model_name)
+        self._commit_usage(session_id, turn, provider_name, model_name, owner=owner, elapsed_ms=elapsed_ms)
+        _reject_tool_calls(turn)
         raw_text = turn.output or ""
         stripped = raw_text.strip()
         if not stripped:
@@ -165,8 +176,8 @@ class ModelQueryRuntime:
         model: str | None,
         max_output_tokens: int | None,
         include_context: bool,
-    ) -> tuple[ProviderTurnResult, str, str]:
-        """The shared governed side-turn: resolution, abort, dispatch, tool-calls guard."""
+    ) -> tuple[ProviderTurnResult, str, str, int]:
+        """The shared governed side-turn: resolution, budget, dispatch, and measurement."""
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > 64 * 1024:
             raise ValueError("model query prompt must be nonempty UTF-8 text within 64 KiB")
         self._host.ensure_open()
@@ -183,6 +194,7 @@ class ModelQueryRuntime:
                 if type(max_output_tokens) is not int or max_output_tokens < 1:
                     raise ValueError("max_output_tokens must be a positive integer")
                 metadata["max_output_tokens"] = max_output_tokens
+            self._admit_budget(session_id)
             context: tuple[ProviderMessage, ...] = ()
             if include_context:
                 session = self._host.store.session(session_id)
@@ -198,24 +210,43 @@ class ModelQueryRuntime:
                 metadata=metadata,
                 abort_signal=self._host.abort_signal,
             )
+            started = time.monotonic()
             turn = snapshot.plugin_runtime.propose_turn(request, provider=provider_name)
-        if turn.tool_calls:
-            raise RuntimeError("governed model query returned tool calls; none were offered")
-        return turn, provider_name, model_name
+            elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+        return turn, provider_name, model_name, elapsed_ms
 
-    def _commit_usage(self, session_id: str, turn: ProviderTurnResult, provider_name: str, model_name: str) -> None:
+    def _admit_budget(self, session_id: str) -> None:
+        """Refuse a side query when an active session/plugin budget already blocks dispatch."""
+        for budget in self._host.session_budgets(session_id):
+            report = self._host.usage(session_id, since_sequence=budget.since_sequence)
+            block = budget_block(report, budget)
+            if block is not None:
+                raise RuntimeError(block.message)
+
+    def _commit_usage(
+        self,
+        session_id: str,
+        turn: ProviderTurnResult,
+        provider_name: str,
+        model_name: str,
+        *,
+        owner: str | None,
+        elapsed_ms: int,
+    ) -> None:
         """Record one governed query's usage; the question and answer stay out of history."""
-        self._host.commit_control_event(
-            session_id,
-            EventDraft(
-                EventType.MODEL_QUERY,
-                "core",
-                "plugin",
-                {
-                    "provider": provider_name,
-                    "model": model_name,
-                    "usage": None if turn.usage is None else turn.usage.metadata_payload(),
-                    "cost_usd": None if turn.usage is None else turn.usage.cost_usd,
-                },
-            ),
-        )
+        payload: dict[str, object] = {
+            "provider": provider_name,
+            "model": model_name,
+            "usage": None if turn.usage is None else turn.usage.metadata_payload(),
+            "cost_usd": None if turn.usage is None else turn.usage.cost_usd,
+            "elapsed_ms": elapsed_ms,
+        }
+        if owner is not None:
+            payload["owner"] = owner
+        self._host.commit_accounted_event(session_id, EventDraft(EventType.MODEL_QUERY, "core", "plugin", payload))
+
+
+def _reject_tool_calls(turn: ProviderTurnResult) -> None:
+    """A side query offers no tools, so any native call is a provider contract failure."""
+    if turn.tool_calls:
+        raise RuntimeError("governed model query returned tool calls; none were offered")

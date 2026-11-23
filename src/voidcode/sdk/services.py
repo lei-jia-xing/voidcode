@@ -1239,7 +1239,13 @@ class ToolServices(Protocol):
         ...
 
     def model_query(self, prompt: str, *, model: str | None = None, max_output_tokens: int | None = None, include_context: bool = False) -> str:
-        """One tool-free provider turn; optionally read the current context without extending it."""
+        """One tool-free provider turn; optionally read the current context without extending it.
+
+        The provider's actual usage is charged once to this session's usage report
+        and any active owner budget. An exhausted budget refuses the call before
+        dispatch, missing usage stays unknown, and a usage fact that cannot be
+        recorded fails the call.
+        """
         ...
 
     def model_query_structured(

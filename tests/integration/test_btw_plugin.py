@@ -9,6 +9,8 @@ from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
+from voidcode.core.storage.store import SessionStatus, StagedBudgetUpdate
+from voidcode.sdk.services import PluginBudget
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins"
 _NOTES_PLUGIN_SOURCE = '''"""Test-only plugin exposing one observable tool."""
@@ -127,9 +129,44 @@ def test_btw_answers_without_polluting_history(tmp_path: Path) -> None:
         ] == conversation_before
         assert not [event for event in event_types if event.startswith("plugin.btw.")]
 
+        # The side query's real provider bill is part of the session report exactly once.
+        query = next(event for event in core.events_after(session_id) if event.event_type == "core.model_query")
+        assert query.payload["owner"] == "btw"
+        report = core.usage(session_id)
+        assert (report.input_tokens, report.output_tokens) == (22, 7)
+        assert report.turn_count == 2
+        assert report.has_unknown_usage is False
+
         empty = _invoke(core, session_id, "btw", {"question": "   "})
         assert empty.status == "error"
         assert empty.error == "side question must not be empty"
+
+
+def test_btw_query_cannot_bypass_an_exhausted_owner_budget(tmp_path: Path) -> None:
+    with loopback_server([]) as server:
+        core = _core(tmp_path, server, "btw")
+        session_id = core.create_session().session_id
+        core.store.commit_staged(
+            session_id,
+            run_id="run-budget",
+            revision_id=core.revision_id,
+            events=(),
+            status=SessionStatus.IDLE,
+            staged_budgets=(
+                StagedBudgetUpdate(
+                    owner="btw",
+                    action="set",
+                    budget=PluginBudget(owner="btw", max_total_tokens=0),
+                ),
+            ),
+        )
+        result = _invoke(core, session_id, "btw", {"question": "budgeted?"})
+        report = core.usage(session_id)
+    assert result.status == "error"
+    assert result.error is not None and "budget limit exceeded" in result.error
+    assert server.requests == []
+    assert (report.input_tokens, report.output_tokens) == (0, 0)
+    assert report.turn_count == 0
 
 
 def test_btw_uses_complete_context_while_tool_approval_is_pending(tmp_path: Path) -> None:

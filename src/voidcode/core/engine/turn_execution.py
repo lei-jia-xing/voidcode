@@ -50,6 +50,7 @@ from ..storage.store import (
     StoreConflict,
     StoredEvent,
 )
+from ..usage import budget_block
 from .commit_pipeline import CheckpointBinding, RootBudgetGrant
 from .governance import request_window, tool_schema_characters
 
@@ -426,58 +427,18 @@ class TurnDriver:
         input total with an unknown output total must still obey an input cap,
         and only the caps whose metric is genuinely unknown fail visibly.
         """
-        for b in self._host.session_budgets(execution.session.session_id):
-            u_report = self._host.get_session_usage(
+        for budget in self._host.session_budgets(execution.session.session_id):
+            report = self._host.get_session_usage(
                 execution.session.session_id,
-                since_sequence=b.since_sequence,
+                since_sequence=budget.since_sequence,
                 session=execution.session,
             )
-            if b.max_input_tokens is not None:
-                if u_report.input_tokens is None:
-                    return self.fail(execution, f"budget limit reached: input tokens unknown for owner {b.owner}")
-                if u_report.input_tokens >= b.max_input_tokens:
-                    return self.stop(
-                        execution,
-                        f"budget limit exceeded: input tokens {u_report.input_tokens} >= {b.max_input_tokens} for owner {b.owner}",
-                        stop_cause="limit_reached",
-                    )
-            if b.max_output_tokens is not None:
-                if u_report.output_tokens is None:
-                    return self.fail(execution, f"budget limit reached: output tokens unknown for owner {b.owner}")
-                if u_report.output_tokens >= b.max_output_tokens:
-                    return self.stop(
-                        execution,
-                        f"budget limit exceeded: output tokens {u_report.output_tokens} >= {b.max_output_tokens} for owner {b.owner}",
-                        stop_cause="limit_reached",
-                    )
-            if b.max_total_tokens is not None:
-                if u_report.input_tokens is None or u_report.output_tokens is None:
-                    return self.fail(execution, f"budget limit reached: total tokens unknown for owner {b.owner}")
-                tot = (u_report.input_tokens or 0) + (u_report.output_tokens or 0)
-                if tot >= b.max_total_tokens:
-                    return self.stop(
-                        execution,
-                        f"budget limit exceeded: total tokens {tot} >= {b.max_total_tokens} for owner {b.owner}",
-                        stop_cause="limit_reached",
-                    )
-            if b.max_elapsed_seconds is not None:
-                if u_report.elapsed_seconds is None:
-                    return self.fail(execution, f"budget limit reached: elapsed time unknown for owner {b.owner}")
-                if u_report.elapsed_seconds >= b.max_elapsed_seconds:
-                    return self.stop(
-                        execution,
-                        f"budget limit exceeded: elapsed time {u_report.elapsed_seconds}s >= {b.max_elapsed_seconds}s for owner {b.owner}",
-                        stop_cause="limit_reached",
-                    )
-            if b.max_cost_usd is not None:
-                if u_report.total_cost_usd is None:
-                    return self.fail(execution, f"budget limit reached: cost unknown for owner {b.owner}")
-                if u_report.total_cost_usd >= b.max_cost_usd:
-                    return self.stop(
-                        execution,
-                        f"budget limit exceeded: cost ${u_report.total_cost_usd} >= ${b.max_cost_usd} for owner {b.owner}",
-                        stop_cause="limit_reached",
-                    )
+            block = budget_block(report, budget)
+            if block is None:
+                continue
+            if block.unknown:
+                return self.fail(execution, block.message)
+            return self.stop(execution, block.message, stop_cause="limit_reached")
         return None
 
     def abort_stop(self, execution: _Execution, session_abort: Cancellation | None) -> CoreResult | None:

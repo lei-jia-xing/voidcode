@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Plugin model-query accounting
+- `core.model_query` usage now participates in the session usage report and every active owner budget: a plugin-invoked query is charged once, attributed to the invoking owner, and missing usage/cost stays unknown. Budget admission runs before a side query and refuses an already-exhausted window with the same visible reason as a turn dispatch.
+- The usage commit is strict, so a billed query whose usage fact cannot be persisted fails the call instead of disappearing; a reply that unexpectedly carries tool calls still records its measured bill before the contract error is raised. No retries or fallbacks were added.
+- Verification: `tests/unit/core/test_model_query_structured.py` + `tests/integration/test_btw_plugin.py` + the real-find judge round trip = 17 passed; related usage/budget/find batch = 65 passed; `ruff check`, `ruff format --check`, and `ty check src` green on the changed files.
+
 ### Find: judge coverage, network effect, bounded evidence
 - `find` now compares candidate ids against returned verdicts: candidates with no verdict appear in `coverage.unjudged` as `missing_verdict`, force `partial`, and add a model-visible detail line. This replaces the previous `ok`/`no_hit` claims when a judge silently omitted candidates.
 - Effects move to the honest whole-tool union `READ`+`NETWORK`; `find` is therefore never replayed after a crash. Literal mode remains model-free. The tool-level declaration and future per-operation effects are documented in the find README and the plugin-authoring contract.
