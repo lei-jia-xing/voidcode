@@ -21,7 +21,7 @@ from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.events import EventType
 from voidcode.sdk.codec import decode_tool_result
-from voidcode.sdk.tools import ToolFailure, UnconfirmedStop
+from voidcode.sdk.tools import ConfirmedStop, ToolFailure
 
 PLUGIN_ID = "background-tool-wait-fixture"
 
@@ -855,7 +855,7 @@ def test_hidden_stale_and_missing_wait_authority_are_refused(tmp_path: Path) -> 
             assert "require captured origin tool, stance, and root authorization" in _plugin_state(core, "parent")["last_refusal"]
 
 
-def test_in_flight_cancel_reports_unknown_effects_without_late_write(tmp_path: Path) -> None:
+def test_in_flight_cancel_preserves_confirmed_stop_without_late_write(tmp_path: Path) -> None:
     with _server() as server:
         workspace = _configure(tmp_path, server)
         target = workspace / "late.txt"
@@ -884,10 +884,9 @@ def test_in_flight_cancel_reports_unknown_effects_without_late_write(tmp_path: P
             assert interrupted.payload["stop_cause"] == "owner_cancel"
             result = decode_tool_result(interrupted.payload["result"])
             assert isinstance(result, ToolFailure)
-            assert result.execution is not None
-            assert isinstance(result.execution, UnconfirmedStop)
-            assert result.execution.execution_stopped is False
-            assert result.execution.side_effect_state == "unknown"
+            assert isinstance(result.execution, ConfirmedStop)
+            assert result.execution.execution_stopped is True
+            assert result.execution.side_effect_state == "settled"
 
 
 def test_activation_retires_live_tool_wait_before_new_revision(tmp_path: Path) -> None:

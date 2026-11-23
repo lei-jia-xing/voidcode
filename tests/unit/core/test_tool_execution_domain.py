@@ -6,6 +6,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from voidcode.core.cancellation import Cancellation
 from voidcode.core.engine.tool_execution import (
     ToolExecutionHost,
@@ -17,20 +19,29 @@ from voidcode.core.events import EventType
 from voidcode.core.execution import _Cursor, _Execution
 from voidcode.core.plugins import FrozenStaged, ToolInvocationOutcome, ToolSuspension
 from voidcode.core.storage.store import (
+    EventDraft,
+    ObserverReceiptRecord,
     SessionRecord,
     SessionStatus,
+    StagedBudgetUpdate,
     StagedCancellation,
+    StagedContinuationDraft,
+    StagedStateUpdate,
     StoredEvent,
 )
-from voidcode.sdk.codec import encode_provider_result
+from voidcode.sdk.codec import decode_tool_result, encode_provider_result
 from voidcode.sdk.provider import ProviderTurnResult
+from voidcode.sdk.services import PluginBudget
 from voidcode.sdk.suspend import SuspendPark
 from voidcode.sdk.tools import (
+    Change,
+    ConfirmedStop,
     TextOutput,
     ToolCall,
     ToolDefinition,
     ToolFailure,
     ToolSuccess,
+    UnconfirmedStop,
 )
 
 
@@ -263,3 +274,121 @@ def test_tool_execution_manager_interrupt_batch() -> None:
     assert host.commit.call_count == 1
     committed_event_draft = host.commit.call_args[0][3]
     assert committed_event_draft.event_type == EventType.TOOL_INTERRUPTED
+
+
+def _cancelled_invocation(
+    result: ToolSuccess | ToolFailure,
+    **outcome_fields: object,
+) -> tuple[MagicMock, list[tuple[str, tuple[EventDraft, ...], dict[str, object]]], _Execution, ToolCall, ToolDefinition, object]:
+    """Invoke one tool against a cancelled run and record every host commit and stop."""
+    host = MagicMock(spec=ToolExecutionHost)
+    host.workspace = Path("/tmp/ws")
+    host.default_abort = Cancellation()
+    abort = Cancellation()
+    host.active_abort.return_value = abort
+    host.session_read_only.return_value = False
+    host.visible_tools.return_value = ()
+    host.prepare_report.side_effect = lambda reported: (reported, 10, False)
+    sentinel = object()
+    host.stop.return_value = sentinel
+
+    definition = ToolDefinition(name="my_tool", description="", input_schema={})
+    snapshot = MagicMock(spec=ToolExecutionSnapshot)
+    snapshot.native_tools = {}
+    snapshot.owner_of.return_value = "plugin-1"
+    snapshot.definition_of.return_value = definition
+    snapshot.revision_id = "rev-1"
+    outcome = ToolInvocationOutcome(result=result, **outcome_fields)
+
+    def invoke_outcome(*args: object, **kwargs: object) -> ToolInvocationOutcome:
+        # Cancellation lands while the tool is running, after its intent is durable.
+        abort.set_cancelled(True, reason="owner stopped the run", stop_cause="owner_cancel")
+        return outcome
+
+    snapshot.plugin_runtime.invoke.side_effect = invoke_outcome
+
+    @contextmanager
+    def dispatch_cm(desc: str):
+        yield snapshot
+
+    host.dispatch.side_effect = dispatch_cm
+
+    timeline: list[tuple[str, tuple[EventDraft, ...], dict[str, object]]] = []
+
+    def fake_commit(exec_arg, status, kind, *events, checkpoint_bindings=(), **kwargs):
+        if checkpoint_bindings:
+            exec_arg.cursor.intent_sequence = 2
+            exec_arg.events.append(
+                StoredEvent("sess-tool-1", 2, "run-1", EventType.TOOL_INTENT, "core", "model", "rev-1", {"invocation_id": "inv-1"})
+            )
+        timeline.append(("commit", events, kwargs))
+        return ()
+
+    host.commit.side_effect = fake_commit
+    host.stop.side_effect = lambda *args, **kwargs: timeline.append(("stop", (), {})) or sentinel
+
+    call = ToolCall(tool_name="my_tool", arguments={})
+    execution = _make_execution(tool_calls=(call,))
+    assert ToolExecutionManager(host).invoke(execution, call, definition) is sentinel
+    return host, timeline, execution, call, definition, sentinel
+
+
+@pytest.mark.parametrize(
+    "observation",
+    [ConfirmedStop(cancellation_signalled=True), UnconfirmedStop(cancellation_signalled=True)],
+    ids=["confirmed", "unconfirmed"],
+)
+def test_cancelled_tool_stop_observation_is_committed_before_stop(observation) -> None:
+    staged_state = (StagedStateUpdate("plugin-1", "session", "sess-tool-1", {"stopped": True}, 0, 1),)
+    staged_events = (EventDraft("plugin.stop_staged", "plugin", "plugin", {"observed": True}),)
+    staged_conts = (StagedContinuationDraft("cont-1", "plugin-1", "@core/test", {"queued": True}),)
+    staged_cancels = (StagedCancellation(owner="plugin-1"),)
+    staged_receipts = (ObserverReceiptRecord("sess-tool-1", 9, "observer"),)
+    staged_budget = PluginBudget(owner="plugin-1", max_total_tokens=10)
+    staged_observations = (Change("observed.txt", "update"),)
+    result = ToolFailure("my_tool", "external effects unknown", execution=observation)
+
+    host, timeline, execution, _call, _definition, _sentinel = _cancelled_invocation(
+        result,
+        staged_state=staged_state,
+        staged_events=staged_events,
+        staged_continuations=staged_conts,
+        staged_cancellations=staged_cancels,
+        staged_observer_receipts=staged_receipts,
+        staged_budget=staged_budget,
+        staged_observations=staged_observations,
+    )
+
+    # The result commits before the run stop, and the remaining batch is not touched here.
+    assert [entry[0] for entry in timeline] == ["commit", "commit", "stop"]
+    report_events = timeline[1][1]
+    assert [event.event_type for event in report_events] == [EventType.TOOL_INTERRUPTED, "plugin.stop_staged"]
+    decoded = decode_tool_result(report_events[0].payload["result"])
+    assert isinstance(decoded, ToolFailure)
+    assert decoded.execution == observation
+    report_kwargs = timeline[1][2]
+    assert report_kwargs["staged_state"] == staged_state
+    assert report_kwargs["staged_continuations"] == staged_conts
+    assert report_kwargs["staged_cancellations"] == staged_cancels
+    assert report_kwargs["staged_budgets"] == (StagedBudgetUpdate(owner="plugin-1", action="set", budget=staged_budget),)
+    assert report_kwargs["observer_receipts"] == staged_receipts
+    prepared = host.prepare_report.call_args.args[0]
+    assert isinstance(prepared, ToolFailure)
+    assert prepared.changes == staged_observations
+    host.post_tool_hooks.assert_not_called()
+    host.stop.assert_called_once_with(execution, "tool invocation was cancelled", stop_cause="owner_cancel")
+
+
+@pytest.mark.parametrize(
+    "result",
+    [ToolSuccess("my_tool", TextOutput("ok")), ToolFailure("my_tool", "ordinary cancellation")],
+    ids=["success", "failure"],
+)
+def test_cancelled_tool_without_stop_observation_stops_without_report(result: ToolSuccess | ToolFailure) -> None:
+    host, timeline, execution, _call, _definition, _sentinel = _cancelled_invocation(result)
+
+    # Only the intent commit and the stop: an ordinary cancelled result is still not committed.
+    assert [entry[0] for entry in timeline] == ["commit", "stop"]
+    host.prepare_report.assert_not_called()
+    host.post_tool_hooks.assert_not_called()
+    host.stop.assert_called_once_with(execution, "tool invocation was cancelled", stop_cause="owner_cancel")

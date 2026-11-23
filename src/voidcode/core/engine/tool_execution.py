@@ -294,7 +294,26 @@ class ToolExecutionManager:
                 return self._host.stop(execution, "tool result identity differs from the dispatched native call", stop_cause="error")
 
             if effective_abort.cancelled:
-                return self._host.stop(execution, "tool invocation was cancelled", stop_cause=effective_abort.stop_cause or "user_stop")
+                stop_cause = effective_abort.stop_cause or "user_stop"
+                if isinstance(result, ToolFailure) and result.execution is not None:
+                    # The tool observed its own stop (for example after the request may have
+                    # reached an external system): preserve that verdict and its staged work
+                    # instead of discarding both and fabricating a generic cancellation.
+                    execution.cursor.stop_cause = stop_cause
+                    self.report(
+                        execution,
+                        call,
+                        result,
+                        interrupted=True,
+                        staged_state=staged_state,
+                        staged_events=staged_events,
+                        staged_conts=staged_conts,
+                        staged_cancels=staged_cancels,
+                        staged_budget=staged_budget,
+                        staged_receipts=staged_receipts,
+                        staged_observations=staged_observations,
+                    )
+                return self._host.stop(execution, "tool invocation was cancelled", stop_cause=stop_cause)
 
             result = self._host.post_tool_hooks(execution, snapshot, call, result)
 
