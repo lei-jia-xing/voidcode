@@ -178,7 +178,7 @@ class OpenAIChatCompletionsTransport:
                     http_client = httpx2.Client(verify=self.ssl_verify)
                 # ``default_headers`` wins over the SDK's own auth header, so the
                 # configured scheme stays authoritative. ``max_retries=0`` keeps
-                # retry/fallback owned by the runtime instead of the SDK.
+                # retry policy owned by the runtime instead of the SDK.
                 self._sdk_client = OpenAI(
                     api_key=self.api_key or PLACEHOLDER_API_KEY,
                     base_url=self.base_url,
@@ -297,7 +297,6 @@ def _raise_finish_reason_error(raw_reason: str, *, provider_name: str, model_nam
         model_name=model_name,
         message=f"provider reported finish_reason={raw_reason}",
         retryable=False,
-        fallback_allowed=True,
         details={"source": "finish_reason", "reason": "provider_error", "finish_reason_raw": raw_reason},
     )
 
@@ -365,7 +364,6 @@ class OpenAIChatCompletionsProvider:
                 model_name="unknown",
                 message="provider requires model name",
                 retryable=False,
-                fallback_allowed=True,
             )
         endpoint = self._endpoint_config()
         model_map = endpoint.model_map if endpoint is not None else {}
@@ -391,7 +389,6 @@ class OpenAIChatCompletionsProvider:
                 model_name="",
                 message="This transport does not support model listing",
                 retryable=False,
-                fallback_allowed=False,
             )
         timeout = 10.0
         if self.config is not None and self.config.timeout_seconds is not None:
@@ -430,7 +427,6 @@ class OpenAIChatCompletionsProvider:
                         model_name="unknown",
                         message=f"provider '{self.name}' has no endpoint configured; set providers.{self.name}.base_url and its API key",
                         retryable=False,
-                        fallback_allowed=True,
                     )
                 # The two config shapes spell these two credentials differently:
                 # OpenAI's own config names them ``organization``/``project``, an
@@ -531,7 +527,6 @@ class OpenAIChatCompletionsProvider:
                         model_name=request.model_name or "unknown",
                         message="OpenAI chat completions wire does not support image attachments in tool messages",
                         retryable=False,
-                        fallback_allowed=True,
                     )
                 messages.append(
                     {
@@ -614,7 +609,6 @@ class OpenAIChatCompletionsProvider:
                 model_name=request.model_name or "unknown",
                 message="cache_retention requires an Anthropic Messages-compatible provider",
                 retryable=False,
-                fallback_allowed=True,
                 details={"source": "payload", "reason": "unsupported_cache_retention"},
             )
         model_name = self._model_name(request)
@@ -632,7 +626,6 @@ class OpenAIChatCompletionsProvider:
                     model_name=model_name,
                     message=f"model '{model_name}' does not support image input",
                     retryable=False,
-                    fallback_allowed=True,
                 )
         rule = thinking_rule_for(request.provider_name or self.name, model_name)
         payload: dict[str, object] = {"model": model_name, "messages": self._messages(request), "stream": stream}
@@ -658,7 +651,6 @@ class OpenAIChatCompletionsProvider:
                         model_name=model_name,
                         message="This Chat Completions adapter accepts reasoning effort levels, not numeric token budgets",
                         retryable=False,
-                        fallback_allowed=True,
                         details={"source": "payload", "reason": "unsupported_reasoning_budget"},
                     )
                 effort = "off"
@@ -729,7 +721,6 @@ class OpenAIChatCompletionsProvider:
                 model_name=model_name,
                 message="provider returned malformed tool calls",
                 retryable=False,
-                fallback_allowed=True,
                 details={"source": "api", "reason": "malformed_tool_calls"},
             )
         parsed: list[ToolCall] = []
@@ -741,7 +732,6 @@ class OpenAIChatCompletionsProvider:
                     model_name=model_name,
                     message="provider returned a malformed tool call",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "api", "reason": "malformed_tool_call"},
                 )
             function = item["function"]
@@ -752,7 +742,6 @@ class OpenAIChatCompletionsProvider:
                     model_name=model_name,
                     message="provider returned a malformed tool call",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "api", "reason": "malformed_tool_call"},
                 )
             provider_tool_name = function["name"]
@@ -787,7 +776,6 @@ class OpenAIChatCompletionsProvider:
                     model_name=model_name,
                     message="provider response contained no valid choices",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "api", "reason": "malformed_response"},
                 )
             choice = choices[0]
@@ -799,7 +787,6 @@ class OpenAIChatCompletionsProvider:
                     model_name=model_name,
                     message="provider response choice contained no valid message",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "api", "reason": "malformed_response"},
                 )
             message_mapping = message
@@ -811,7 +798,6 @@ class OpenAIChatCompletionsProvider:
                     model_name=model_name,
                     message="provider response message content was not text",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "api", "reason": "malformed_response"},
                 )
             raw_finish_reason = choice.get("finish_reason")
@@ -899,7 +885,6 @@ class OpenAIChatCompletionsProvider:
                         model_name=model_name,
                         message="provider stream tool_calls was not a list",
                         retryable=False,
-                        fallback_allowed=True,
                         details={"source": "stream", "reason": "malformed_tool_calls"},
                     )
                 for raw_tool in raw_tool_calls:
@@ -910,7 +895,6 @@ class OpenAIChatCompletionsProvider:
                             model_name=model_name,
                             message="provider stream tool call was not an object",
                             retryable=False,
-                            fallback_allowed=True,
                             details={"source": "stream", "reason": "malformed_tool_call"},
                         )
                     raw_index = raw_tool.get("index")
@@ -921,7 +905,6 @@ class OpenAIChatCompletionsProvider:
                             model_name=model_name,
                             message="provider stream tool call index was malformed",
                             retryable=False,
-                            fallback_allowed=True,
                             details={"source": "stream", "reason": "malformed_tool_call"},
                         )
                     index = raw_index if isinstance(raw_index, int) else 0
@@ -934,7 +917,6 @@ class OpenAIChatCompletionsProvider:
                             model_name=model_name,
                             message="provider stream tool call id was malformed",
                             retryable=False,
-                            fallback_allowed=True,
                             details={"source": "stream", "reason": "malformed_tool_call"},
                         )
                     if isinstance(raw_id, str) and previous.tool_call_id not in (None, raw_id):
@@ -944,7 +926,6 @@ class OpenAIChatCompletionsProvider:
                             model_name=model_name,
                             message="provider stream changed a tool call id",
                             retryable=False,
-                            fallback_allowed=True,
                             details={"source": "stream", "reason": "conflicting_tool_call_id"},
                         )
                     tool_id = normalize_tool_call_id(raw_id if isinstance(raw_id, str) else previous.tool_call_id, fallback=f"tool_call_{index + 1}")
@@ -956,7 +937,6 @@ class OpenAIChatCompletionsProvider:
                             model_name=model_name,
                             message="provider stream function payload was malformed",
                             retryable=False,
-                            fallback_allowed=True,
                             details={"source": "stream", "reason": "malformed_tool_call"},
                         )
                     name = previous.tool_name
@@ -970,7 +950,6 @@ class OpenAIChatCompletionsProvider:
                                 model_name=model_name,
                                 message="provider stream function name was malformed",
                                 retryable=False,
-                                fallback_allowed=True,
                                 details={"source": "stream", "reason": "malformed_tool_call"},
                             )
                         if isinstance(raw_name, str):
@@ -983,7 +962,6 @@ class OpenAIChatCompletionsProvider:
                                 model_name=model_name,
                                 message="provider stream function arguments were malformed",
                                 retryable=False,
-                                fallback_allowed=True,
                                 details={"source": "stream", "reason": "malformed_tool_call_arguments"},
                             )
                         if isinstance(raw_arguments, str):
@@ -1027,7 +1005,6 @@ class OpenAIChatCompletionsProvider:
                 model_name=model_name,
                 message="provider stream ended without a finish_reason",
                 retryable=False,
-                fallback_allowed=True,
                 details={"source": "stream", "reason": "missing_terminal_event"},
             )
         completed: list[tuple[int, _ToolAccumulator, dict[str, object], str]] = []
@@ -1039,7 +1016,6 @@ class OpenAIChatCompletionsProvider:
                     model_name=model_name,
                     message="provider stream contained a malformed tool call",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "stream", "reason": "malformed_tool_call"},
                 )
             try:
@@ -1051,7 +1027,6 @@ class OpenAIChatCompletionsProvider:
                     model_name=model_name,
                     message="provider stream ended with malformed tool-call arguments",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "stream", "reason": "malformed_tool_call_arguments"},
                 ) from exc
             if not isinstance(parsed, dict):
@@ -1061,7 +1036,6 @@ class OpenAIChatCompletionsProvider:
                     model_name=model_name,
                     message="provider stream tool-call arguments were not an object",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "stream", "reason": "malformed_tool_call_arguments"},
                 )
             runtime_name = reverse.get(accumulator.tool_name, accumulator.tool_name)

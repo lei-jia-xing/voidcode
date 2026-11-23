@@ -49,7 +49,6 @@ def _cancelled_error(provider: str, model: str) -> ProviderExecutionError:
         model_name=model,
         message="provider turn cancelled while waiting to retry",
         retryable=False,
-        fallback_allowed=False,
     )
 
 

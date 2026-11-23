@@ -126,7 +126,7 @@ class AnthropicMessagesTransport:
     def _sdk(self) -> Anthropic:
         with self._client_lock:
             if self._sdk_client is None:
-                # ``max_retries=0`` keeps retry/fallback owned by the runtime.
+                # ``max_retries=0`` keeps retry policy owned by the runtime.
                 self._sdk_client = Anthropic(
                     api_key=self.api_key or PLACEHOLDER_API_KEY,
                     base_url=self.base_url,
@@ -271,7 +271,6 @@ class AnthropicMessagesProvider:
                         model_name="unknown",
                         message=f"provider '{self.name}' has no endpoint configured; set providers.{self.name}.base_url and its API key",
                         retryable=False,
-                        fallback_allowed=True,
                     )
                 owned.value = AnthropicMessagesTransport(
                     base_url=base_url,
@@ -403,7 +402,6 @@ class AnthropicMessagesProvider:
                 model_name=model_name,
                 message="provider requires model name",
                 retryable=False,
-                fallback_allowed=True,
             )
         metadata = static_catalog_metadata(provider_name, request.model_name or "")
         model_name = request.model_name or ""
@@ -417,7 +415,6 @@ class AnthropicMessagesProvider:
                     model_name=model_name,
                     message=f"model '{model_name}' does not support image input",
                     retryable=False,
-                    fallback_allowed=True,
                 )
         system, messages = self._messages_and_system(request)
         rule = thinking_rule_for(request.provider_name or self.name, model_name)
@@ -671,7 +668,6 @@ class AnthropicMessagesProvider:
                     model_name=model_name,
                     message="provider stream ended without terminal message_stop",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "stream", "reason": "missing_terminal_event"},
                 )
             # message_stop is terminal; without deltas the wire's explicit input object is complete.
@@ -685,7 +681,6 @@ class AnthropicMessagesProvider:
                         model_name=model_name,
                         message="provider stream ended with malformed tool-call arguments",
                         retryable=False,
-                        fallback_allowed=True,
                         details={"source": "stream", "reason": "malformed_tool_call_arguments"},
                     ) from exc
                 yield ProviderStreamEvent(
@@ -719,7 +714,7 @@ class AnthropicMessagesProvider:
             )
         except Exception as exc:
             mapped = self._map_exception(exc, provider_name=provider_name, model_name=model_name, source="stream")
-            # Errors are raised to preserve runtime retry/fallback ownership;
+            # Errors are raised to preserve runtime retry ownership;
             # cancellation is the sole stream-local terminal event path.
             raise mapped from exc
 
@@ -748,7 +743,6 @@ def _thinking_payload(payload: dict[str, object], *, request: ProviderTurnReques
                 model_name=request.model_name or "unknown",
                 message="Anthropic thinking budget must be zero (disabled) or at least 1024 tokens",
                 retryable=False,
-                fallback_allowed=True,
             )
         payload["thinking"] = {"type": "enabled", "budget_tokens": effort}
         return

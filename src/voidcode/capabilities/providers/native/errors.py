@@ -70,15 +70,14 @@ class ParsedProviderError:
     #: ``None`` means the kind does not decide it: ``rate_limit`` is a usage/limit
     #: answer whose lane the runtime's own policy owns.
     retryable: bool | None
-    fallback_allowed: bool
     retry_after: float | None
     guidance: str
 
 
-def _recovery_policy_for_kind(kind: ProviderErrorKind) -> tuple[bool | None, bool]:
+def _retryable_for_kind(kind: ProviderErrorKind) -> bool | None:
     if kind == "context_limit":
         # Classification alone does not decide context recovery.
-        return None, True
+        return None
     if kind in {
         "missing_auth",
         "invalid_model",
@@ -87,13 +86,13 @@ def _recovery_policy_for_kind(kind: ProviderErrorKind) -> tuple[bool | None, boo
         "unsupported_feature",
         "stream_tool_feedback_shape",
     }:
-        return False, True
+        return False
     if kind == "rate_limit":
         # Rate-limit classification alone does not authorize an immediate retry.
-        return None, True
+        return None
     if kind == "cancelled":
-        return False, False
-    return True, True
+        return False
+    return True
 
 
 def guidance_for_provider_error_kind(kind: str) -> str:
@@ -142,7 +141,7 @@ def parse_provider_error(payload: dict[str, Any], *, source: str = "api") -> Par
     status_code = _extract_status_code(payload)
     code = _extract_error_code(payload)
     kind = _classify_api_error_kind(status_code=status_code, code=code)
-    retryable, fallback_allowed = _recovery_policy_for_kind(kind)
+    retryable = _retryable_for_kind(kind)
     if payload.get("network_failure") is True:
         # SDK-recognized connection/time-out classes opt into retry without
         # relabeling the causal provider error as a generic transient failure.
@@ -168,7 +167,6 @@ def parse_provider_error(payload: dict[str, Any], *, source: str = "api") -> Par
         message=_strip_provider_error_wrapper(message),
         details=details,
         retryable=retryable,
-        fallback_allowed=fallback_allowed,
         retry_after=retry_after,
         guidance=guidance,
     )
@@ -310,7 +308,6 @@ def provider_execution_error_from_payload(
         model_name=model_name,
         message=parsed.message,
         retryable=parsed.retryable,
-        fallback_allowed=parsed.fallback_allowed,
         retry_after=parsed.retry_after,
         details=parsed.details,
     )

@@ -84,7 +84,6 @@ def _service_account_credentials(path: str | None, *, provider_name: str, model_
             model_name=model_name,
             message=_SERVICE_ACCOUNT_LOAD_FAILURE_MESSAGE,
             retryable=False,
-            fallback_allowed=True,
             details={"reason": "missing_service_account_json_path"},
         )
     try:
@@ -96,7 +95,6 @@ def _service_account_credentials(path: str | None, *, provider_name: str, model_
             model_name=model_name,
             message=_SERVICE_ACCOUNT_LOAD_FAILURE_MESSAGE,
             retryable=False,
-            fallback_allowed=True,
             details={"reason": "unreadable_or_invalid_service_account_file", "exception_type": type(exc).__name__},
         ) from exc
 
@@ -205,7 +203,6 @@ class GoogleGenAIProvider:
                 model_name=model_name,
                 message="google provider requires configured auth: an API key, OAuth access token, or service-account file",
                 retryable=False,
-                fallback_allowed=True,
             )
         credentials: Any = None
         api_key: str | None = None
@@ -219,7 +216,6 @@ class GoogleGenAIProvider:
                     model_name=model_name,
                     message="Google OAuth requires providers.google.project for Vertex AI credentials",
                     retryable=False,
-                    fallback_allowed=True,
                 )
             credentials = oauth_credentials.Credentials(token=auth.access_token)
         else:
@@ -231,7 +227,6 @@ class GoogleGenAIProvider:
                     model_name=model_name,
                     message="Configured API-key authentication requires an API key",
                     retryable=False,
-                    fallback_allowed=True,
                 )
         kwargs: dict[str, Any] = {}
         if api_key:
@@ -292,7 +287,6 @@ class GoogleGenAIProvider:
                     model_name=model_name,
                     message=f"model '{model_name}' does not support image input",
                     retryable=False,
-                    fallback_allowed=True,
                 )
         system: list[str] = []
         contents: list[dict[str, object]] = []
@@ -452,7 +446,6 @@ class GoogleGenAIProvider:
                 model_name=model_name,
                 message="provider blocked the prompt",
                 retryable=False,
-                fallback_allowed=True,
                 details={"source": "api", "reason": "prompt_blocked", "block_reason": token},
             )
 
@@ -541,7 +534,6 @@ class GoogleGenAIProvider:
                     model_name=model_name,
                     message="provider response contained no candidates",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "api", "reason": "malformed_response"},
                 )
             raw_finish = getattr(candidates[0], "finish_reason", None)
@@ -596,7 +588,6 @@ class GoogleGenAIProvider:
                 model_name=request.model_name or "unknown",
                 message="provider returned a malformed function call",
                 retryable=False,
-                fallback_allowed=True,
                 details={"source": "api", "reason": "malformed_tool_call"},
             )
         if args is None:
@@ -610,7 +601,6 @@ class GoogleGenAIProvider:
                 model_name=request.model_name or "unknown",
                 message="provider returned malformed function-call arguments",
                 retryable=False,
-                fallback_allowed=True,
                 details={"source": "api", "reason": "malformed_tool_call_arguments"},
             )
         return ToolCall(
@@ -676,7 +666,6 @@ class GoogleGenAIProvider:
                         model_name=model_name,
                         message="provider stream contained no candidates",
                         retryable=False,
-                        fallback_allowed=True,
                         details={"source": "stream", "reason": "malformed_response"},
                     )
                 raise ProviderExecutionError(
@@ -685,7 +674,6 @@ class GoogleGenAIProvider:
                     model_name=model_name,
                     message="provider stream ended without a terminal finish_reason",
                     retryable=False,
-                    fallback_allowed=True,
                     details={"source": "stream", "reason": "missing_terminal_event"},
                 )
             done_reason = GoogleWireCodec.done_reason(raw_finish)

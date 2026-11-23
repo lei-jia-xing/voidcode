@@ -417,7 +417,6 @@ def test_a_stalled_chunk_with_a_pending_abort_is_cancelled_not_transient(start_s
 
     assert excinfo.value.kind == "cancelled"
     assert excinfo.value.retryable is False
-    assert excinfo.value.fallback_allowed is False
 
 
 def test_streaming_and_non_streaming_report_the_same_turn_facts(

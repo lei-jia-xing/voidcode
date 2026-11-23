@@ -88,7 +88,6 @@ class RoutedTurnProvider:
                     "VoidCode does not implement; use another model"
                 ),
                 retryable=False,
-                fallback_allowed=True,
             )
         with self._lock:
             provider = self._providers.get(route)

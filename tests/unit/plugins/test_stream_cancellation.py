@@ -30,7 +30,6 @@ def test_transport_error_after_partial_output_preserves_caller_intent(cancelled:
             list(stream)
         assert exc.value.kind == "cancelled"
         assert exc.value.retryable is False
-        assert exc.value.fallback_allowed is False
     else:
         with pytest.raises(TimeoutError) as exc:
             list(stream)

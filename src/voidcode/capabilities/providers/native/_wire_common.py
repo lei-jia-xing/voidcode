@@ -168,7 +168,6 @@ def iter_stream_with_timeout(
             model_name=model_name,
             message="provider stream timeout must be greater than zero",
             retryable=False,
-            fallback_allowed=True,
         )
     # The first-event budget never undershoots the idle timeout
     # (``getOpenAIStreamFirstEventTimeoutMs`` returns ``max(base, idleTimeoutMs)``,
@@ -222,7 +221,6 @@ def iter_stream_with_timeout(
                         model_name=model_name,
                         message="provider stream cancelled while waiting for a chunk",
                         retryable=False,
-                        fallback_allowed=False,
                     ) from exc
                 if monotonic() < deadline:
                     continue
@@ -232,7 +230,6 @@ def iter_stream_with_timeout(
                     model_name=model_name,
                     message=("provider stream first-event timeout exceeded" if not seen_first_event else "provider stream chunk timeout exceeded"),
                     retryable=True,
-                    fallback_allowed=True,
                 ) from exc
             if kind == "done":
                 return
@@ -246,7 +243,6 @@ def iter_stream_with_timeout(
                         model_name=model_name,
                         message="provider stream cancelled while waiting for a chunk",
                         retryable=False,
-                        fallback_allowed=False,
                     ) from value
                 if isinstance(value, BaseException):
                     raise value
@@ -371,7 +367,6 @@ def fallback_execution_error(exc: Exception, *, provider_name: str, model_name: 
         model_name=model_name,
         message="provider request failed",
         retryable=network_error,
-        fallback_allowed=True,
         details={
             "source": source,
             "exception_type": type(exc).__name__,

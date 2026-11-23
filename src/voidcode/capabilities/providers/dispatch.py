@@ -293,7 +293,6 @@ class RegisteredProvider:
                     model_name=request.model_name or "",
                     message=f"provider '{request.provider_name or self._name}' does not support streaming",
                     retryable=False,
-                    fallback_allowed=False,
                 )
             for event in provider.stream_turn(request):
                 yield price_event(request, event)

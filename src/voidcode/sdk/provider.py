@@ -224,10 +224,9 @@ class ProviderExecutionError(ValueError):
     provider_name: str
     model_name: str
     message: str
-    # ``None`` means the adapter did not make a recovery decision. Explicit
-    # False is a provider veto and must not be overridden by kind defaults.
+    # ``None`` means the adapter did not make a retry decision. Explicit False
+    # is a provider veto that must not be overridden by kind defaults.
     retryable: bool | None = None
-    fallback_allowed: bool | None = None
     retry_after: float | None = None
     details: dict[str, object] | None = None
 
