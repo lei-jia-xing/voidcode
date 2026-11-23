@@ -520,6 +520,115 @@ def test_credentials_never_appear_in_a_registered_provider_repr_or_in_an_error(s
     assert server.requests == []
 
 
+def test_turn_error_redacts_a_credential_echoed_by_the_provider(servers: _Servers) -> None:
+    server = servers.start_openai()
+    secret = "sk-echo-must-never-be-persisted"
+    server.chat_status = 401
+    server.replies.append({"error": {"message": f"invalid api key {secret}", "code": "invalid_api_key", "echo": secret}})
+    provider = _provider({"deepseek": {"api_key": secret, "base_url": _base_url(server)}}, name="deepseek")
+
+    with pytest.raises(ProviderExecutionError) as excinfo:
+        provider.propose_turn(_request(provider_name="deepseek", model_name="deepseek-chat"))
+
+    error = excinfo.value
+    rendered = f"{error.message} {error.details} {error!r}"
+    assert secret not in rendered
+    assert "[redacted]" in error.message
+    assert error.kind == "provider_error"
+    assert error.retryable is False
+    assert error.provider_name == "deepseek"
+    assert error.model_name == "deepseek-chat"
+
+
+def test_google_oauth_from_admission_wins_over_an_ambient_key(servers: _Servers, tmp_path: Path, monkeypatch) -> None:
+    from voidcode.bootstrap import admit_live, bundled_sources
+    from voidcode.capabilities.providers.registry import PROVIDER_TABLE
+    from voidcode.config import parse_config
+
+    server = servers.start_json()
+    for row in PROVIDER_TABLE:
+        for variable in row.env_vars:
+            monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("GOOGLE_API_KEY", "ambient-google-key")
+    admission = admit_live(
+        parse_config(
+            {
+                "providers": {
+                    "google": {
+                        "auth": {"method": "oauth", "access_token": "google-access-token"},
+                        "base_url": server.base_url,
+                        "project": "loopback-project",
+                        "region": "us-central1",
+                    }
+                }
+            }
+        ),
+        workspace=tmp_path,
+        bundled_sources=bundled_sources(),
+    )
+    provider = {item.name: item for item in build_registered_providers({"providers": admission.private_snapshot["providers"]})}["google"]
+    try:
+        provider.propose_turn(_request(provider_name="google", model_name="gemini-2.5-flash", raw_model="google/gemini-2.5-flash"))
+    finally:
+        provider.close()
+
+    request = server.requests[0]
+    assert request.headers["authorization"] == "Bearer google-access-token"
+    assert "x-goog-api-key" not in request.headers
+
+
+def test_copilot_explicit_token_from_admission_wins_over_an_ambient_token(servers: _Servers, tmp_path: Path, monkeypatch) -> None:
+    from voidcode.bootstrap import admit_live, bundled_sources
+    from voidcode.capabilities.providers.registry import PROVIDER_TABLE
+    from voidcode.config import parse_config
+
+    server = servers.start_openai()
+    server.replies.append(openai_response(message={"content": "copilot-ok"}, finish="stop"))
+    for row in PROVIDER_TABLE:
+        for variable in row.env_vars:
+            monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("GITHUB_COPILOT_TOKEN", "ambient-copilot-token")
+    admission = admit_live(
+        parse_config(
+            {
+                "providers": {
+                    "github-copilot": {
+                        "auth": {"method": "token", "token": "explicit-copilot-token"},
+                        "base_url": _base_url(server),
+                    }
+                }
+            }
+        ),
+        workspace=tmp_path,
+        bundled_sources=bundled_sources(),
+    )
+    provider = {item.name: item for item in build_registered_providers({"providers": admission.private_snapshot["providers"]})}["github-copilot"]
+    try:
+        provider.propose_turn(_request(provider_name="github-copilot", model_name="loopback-model"))
+    finally:
+        provider.close()
+
+    assert server.request_headers[0]["authorization"] == "Bearer explicit-copilot-token"
+
+
+def test_turn_error_redacts_a_nested_auth_token(servers: _Servers) -> None:
+    server = servers.start_openai()
+    secret = "nested-copilot-token-must-not-leak"
+    server.chat_status = 401
+    server.replies.append({"error": {"message": f"bad token {secret}", "code": "bad_token"}})
+    provider = _provider(
+        {"github-copilot": {"auth": {"method": "token", "token": secret}, "base_url": _base_url(server)}},
+        name="github-copilot",
+    )
+
+    with pytest.raises(ProviderExecutionError) as excinfo:
+        provider.propose_turn(_request(provider_name="github-copilot", model_name="loopback-model"))
+
+    error = excinfo.value
+    assert secret not in f"{error.message} {error.details} {error!r}"
+    assert "[redacted]" in error.message
+
+
 # ---------------------------------------------------------------------------
 # Catalog pricing
 # ---------------------------------------------------------------------------

@@ -151,9 +151,9 @@ With the bundled `providers` plugin enabled, recognized non-blank credentials su
 
 Credentials never reach events or revisions, which carry digests only: resolved credentials are written only into the private 0600 snapshot inside the state directory. The core never writes environment-resolved keys back to the workspace; an `api_key` written explicitly in `voidcode.json` stays where the user put it.
 
-`/model deepseek` reads the shipped catalog. `/model openrouter` reads current model IDs from the configured OpenAI-compatible `/models` endpoint because OpenRouter has no shipped catalog. Discovery is explicit, uses the recorded credential and endpoint, and makes no inference request. A failed listing is an error, not an empty catalog.
+`/model deepseek` reads the shipped catalog. `/model openrouter` reads current model IDs from the configured OpenAI-compatible `/models` endpoint because OpenRouter has no shipped catalog. Discovery is explicit, uses the recorded credential and endpoint, and makes no inference request. A failed listing is an error, not an empty catalog. An unknown provider id is refused. A known provider with a shipped catalog is listed without configuration; one with no shipped catalog must be configured in this workspace, otherwise it is refused instead of reported as an empty catalog.
 
-For the Google provider, `auth: {"method": "oauth", "access_token": "..."}` uses Vertex AI OAuth credentials and requires `project`; `region` is optional and follows the SDK default. It sends a Bearer token, does not use `x-goog-api-key`, and does not fall back to an environment API key. Supply the current access token; this configuration does not perform an interactive login or refresh-token exchange. API-key and service-account authentication remain separate methods.
+For the Google provider, `auth: {"method": "oauth", "access_token": "..."}` uses Vertex AI OAuth credentials and requires `project`; `region` is optional and follows the SDK default. It sends a Bearer token, does not use `x-goog-api-key`, and does not fall back to an environment API key. Supply the current access token; this configuration does not perform an interactive login or refresh-token exchange. API-key and service-account authentication remain separate methods. A nested `auth` block is authoritative: table-declared environment credentials are not injected as a flat `api_key` alongside it. Google credentials must be configured explicitly (API key, OAuth token, or service-account file); ambient `GOOGLE_API_KEY` and application-default credentials are not read after admission.
 
 ### `plugins`
 
@@ -234,14 +234,16 @@ Export API credentials in the environment of the process that starts VoidCode; n
 
 ### Model providers
 
-For a configured provider, omit `providers.<name>.api_key` to use `<PROVIDER>_API_KEY`: uppercase the provider name and replace `-` with `_`. For example, `openai` uses `OPENAI_API_KEY`, `deepseek` uses `DEEPSEEK_API_KEY`, and `github-copilot` uses `GITHUB_COPILOT_API_KEY`. An explicit `api_key` in `voidcode.json` takes precedence.
+For a configured provider, omit `providers.<name>.api_key` to use the provider's table-declared credential variables, then the generic `<PROVIDER>_API_KEY` fallback: uppercase the provider name and replace `-` with `_`. For example, `openai` uses `OPENAI_API_KEY`, `deepseek` uses `DEEPSEEK_API_KEY`, and `github-copilot` uses `GITHUB_COPILOT_TOKEN` (its generic fallback is `GITHUB_COPILOT_API_KEY`). An explicit `api_key` in `voidcode.json` takes precedence over discovery, and an explicit nested `auth` block suppresses both discovered and generic keys. A non-null `api_key` and a nested `auth` block are mutually exclusive.
 
 ```bash
 export OPENAI_API_KEY="sk-..."
 voidcode run "Summarize this repository"
 ```
 
-The provider entry, its `base_url`, and the selected `model` still belong in `voidcode.json`; setting an API key alone does not configure a provider. Provider credentials are captured when a revision is admitted and restored from its private snapshot on restart. To adopt a changed key, export it before starting the core process and invoke `core.reload`; changing another shell's environment does not affect an already-running core.
+A supported environment credential can make its provider available without a `providers` entry (see provider discovery above). It does not select a model, and it does not pin a non-default `base_url` or explicit auth: put those in `voidcode.json`. Provider credentials are captured when a revision is admitted and restored from its private snapshot on restart. To adopt a changed key, export it before starting the core process and invoke `core.reload`; changing another shell's environment does not affect an already-running core.
+
+The normal turn path streams and is single-attempt. Once a provider dispatch has started, a failure is reported rather than retried or rerouted to another provider/model; the runtime retry policy applies to non-streaming provider implementations. No fallback provider or model is configured automatically.
 
 ### Web search APIs
 

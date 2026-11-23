@@ -15,6 +15,8 @@ class OpenAILoopbackServer(ThreadingHTTPServer):
         self.response_bodies: list[bytes] = []
         self.response_content_types: list[str] = []
         self.model_listing_status = 200
+        #: HTTP status for chat-completions requests; 401 lets a test prove error redaction.
+        self.chat_status = 200
         #: Optional test hook run after each request is recorded, before its reply
         #: is chosen. Returning a reply overrides the queued one for that request.
         self.before_reply: Callable[[dict[str, object], int], dict[str, object] | None] | None = None
@@ -53,11 +55,15 @@ class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
         streaming = payload.get("stream") is True
         stream_options = payload.get("stream_options")
         include_usage = isinstance(stream_options, dict) and stream_options.get("include_usage") is True
-        encoded = _stream_response_body(response, include_usage=include_usage) if streaming else json.dumps(response).encode()
-        content_type = "text/event-stream" if streaming else "application/json"
+        if server.chat_status != 200 or "choices" not in response:
+            encoded = json.dumps(response).encode()
+            content_type = "application/json"
+        else:
+            encoded = _stream_response_body(response, include_usage=include_usage) if streaming else json.dumps(response).encode()
+            content_type = "text/event-stream" if streaming else "application/json"
         server.response_bodies.append(encoded)
         server.response_content_types.append(content_type)
-        self.send_response(200)
+        self.send_response(server.chat_status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()

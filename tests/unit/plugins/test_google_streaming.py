@@ -79,7 +79,7 @@ def test_google_stream_cancellation_does_not_report_success(before_start):
 @pytest.mark.parametrize(("seconds", "milliseconds"), [(None, 300000), (0.1, 100), (0.0001, 1)])
 def test_owned_google_client_always_has_a_finite_sdk_read_timeout(monkeypatch, seconds, milliseconds):
     from voidcode.capabilities.providers.native import google_native
-    from voidcode.capabilities.providers.native.config import GoogleProviderConfig
+    from voidcode.capabilities.providers.native.config import GoogleProviderAuthConfig, GoogleProviderConfig
 
     captured = {}
 
@@ -88,7 +88,12 @@ def test_owned_google_client_always_has_a_finite_sdk_read_timeout(monkeypatch, s
         return SimpleNamespace(close=lambda: None)
 
     monkeypatch.setattr(google_native.genai, "Client", client)
-    provider = GoogleGenAIProvider(config=GoogleProviderConfig(timeout_seconds=seconds))
+    provider = GoogleGenAIProvider(
+        config=GoogleProviderConfig(
+            auth=GoogleProviderAuthConfig(method="api_key", api_key="test-key"),
+            timeout_seconds=seconds,
+        )
+    )
     try:
         provider._client(provider_name="google", model_name="test")
         assert captured["http_options"].timeout == milliseconds

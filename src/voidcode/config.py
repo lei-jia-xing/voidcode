@@ -239,6 +239,12 @@ def resolve_providers(config: Config, *, use_environment: bool = True, discover:
             raise ValueError(f"provider {name} requires an explicit base_url")
         if entry is not None and "api_key" in entry.model_fields_set:
             key = entry.api_key
+        elif entry is not None and "auth" in entry.extra:
+            # A nested auth block is the provider's own credential choice (for
+            # example Google OAuth or a service-account file). A flat key
+            # discovered from the table would conflict with it at the plugin
+            # boundary, so explicit auth stays authoritative.
+            key = None
         else:
             key = credentials.get(name)
             if key is None and use_environment:

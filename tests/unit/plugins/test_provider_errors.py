@@ -53,14 +53,13 @@ def test_unimplemented_token_refresh_configuration_is_rejected(field):
         provider_configs({"providers": {"github-copilot": {"auth": {"method": "oauth", "token": "supplied-token", field: "unused"}}}})
 
 
-def test_copilot_environment_token_resolves_without_an_ambiguous_reference():
+def test_copilot_auth_requires_a_token_from_the_admitted_config():
     from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
-    from voidcode.capabilities.providers.registry import PROVIDER_TABLE_BY_ID
 
-    name = PROVIDER_TABLE_BY_ID["github-copilot"].env_vars[0]
-    configs = parse_provider_configs_payload({"github-copilot": {"auth": {"method": "token"}}}, source="test", env={name: "test-token"})
+    with pytest.raises(ValueError, match="requires token"):
+        parse_provider_configs_payload({"github-copilot": {"auth": {"method": "token"}}}, source="test")
+    configs = parse_provider_configs_payload({"github-copilot": {"auth": {"method": "token", "token": "test-token"}}}, source="test")
     assert configs.github_copilot.auth.token == "test-token"
-    assert configs.github_copilot.auth.token_env_var is None
 
 
 @pytest.mark.parametrize("value", [0, -1, True, "30", float("nan"), float("inf"), float("-inf")])
@@ -68,14 +67,14 @@ def test_provider_timeout_requires_a_finite_positive_number(value):
     from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
 
     with pytest.raises(ValueError, match="timeout_seconds"):
-        parse_provider_configs_payload({"openai": {"timeout_seconds": value}}, source="test", env={})
+        parse_provider_configs_payload({"openai": {"timeout_seconds": value}}, source="test")
 
 
 @pytest.mark.parametrize("value", [None, 1, 0.25])
 def test_provider_timeout_accepts_null_and_positive_numbers(value):
     from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
 
-    configs = parse_provider_configs_payload({"openai": {"timeout_seconds": value}}, source="test", env={})
+    configs = parse_provider_configs_payload({"openai": {"timeout_seconds": value}}, source="test")
     assert configs.openai.timeout_seconds == value
 
 
@@ -84,33 +83,14 @@ def test_provider_config_does_not_coerce_strings_or_booleans(field, value):
     from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
 
     with pytest.raises(ValueError, match=field):
-        parse_provider_configs_payload({"endpoint": {field: value}}, source="test", env={})
-
-
-@pytest.mark.parametrize(
-    "auth",
-    [
-        {"method": "oauth", "access_token": "supplied-token"},
-        {"method": "service_account", "service_account_json_path": "account.json"},
-    ],
-)
-def test_google_non_key_auth_ignores_ambient_api_key(auth):
-    from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
-    from voidcode.capabilities.providers.registry import PROVIDER_TABLE_BY_ID
-
-    name = PROVIDER_TABLE_BY_ID["google"].env_vars[0]
-    configs = parse_provider_configs_payload({"google": {"auth": auth}}, source="test", env={name: "ambient-key"})
-    assert configs.google.auth.method == auth["method"]
-    assert configs.google.auth.api_key is None
+        parse_provider_configs_payload({"endpoint": {field: value}}, source="test")
 
 
 def test_google_oauth_still_rejects_an_explicit_api_key():
     from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
 
     with pytest.raises(ValueError, match="api_key.*must not be set"):
-        parse_provider_configs_payload(
-            {"google": {"auth": {"method": "oauth", "access_token": "token", "api_key": "explicit-key"}}}, source="test", env={}
-        )
+        parse_provider_configs_payload({"google": {"auth": {"method": "oauth", "access_token": "token", "api_key": "explicit-key"}}}, source="test")
 
 
 def test_provider_config_representations_omit_credentials():
@@ -127,7 +107,7 @@ def test_provider_config_representations_omit_credentials():
         "custom": {"gateway": {"api_key": secret}},
     }
     payload = ProviderConfigsPayload.model_validate(raw)
-    configs = parse_provider_configs_payload(raw, source="test", env={})
+    configs = parse_provider_configs_payload(raw, source="test")
     assert secret not in repr(payload)
     assert secret not in repr(configs)
     assert configs.openai.api_key == secret
@@ -142,7 +122,7 @@ def test_invalid_provider_config_traceback_omits_credential_input():
 
     secret = "credential-sentinel-do-not-print"
     with pytest.raises(ValueError) as caught:
-        parse_provider_configs_payload({"openai": {"api_key": {"unexpected": secret}}}, source="test", env={})
+        parse_provider_configs_payload({"openai": {"api_key": {"unexpected": secret}}}, source="test")
     assert secret not in "".join(traceback.format_exception(caught.value))
 
 
@@ -210,7 +190,7 @@ def test_provider_collection_and_literal_constraints_reject_invalid_values(provi
     from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
 
     with pytest.raises(ValueError, match=field):
-        parse_provider_configs_payload({provider: {field: value}}, source="test", env={})
+        parse_provider_configs_payload({provider: {field: value}}, source="test")
 
 
 def test_provider_collection_nulls_and_valid_values_have_one_typed_result():
@@ -235,7 +215,7 @@ def test_google_auth_requires_exactly_the_selected_credential(method, required):
     from voidcode.capabilities.providers.native.config import parse_provider_configs_payload
 
     def parse(auth):
-        return parse_provider_configs_payload({"google": {"auth": auth}}, source="test", env={})
+        return parse_provider_configs_payload({"google": {"auth": auth}}, source="test")
 
     with pytest.raises(ValueError, match=f"{required}.*must be provided"):
         parse({"method": method})

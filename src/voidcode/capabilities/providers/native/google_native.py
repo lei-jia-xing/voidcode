@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator, Mapping
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -195,13 +194,24 @@ class GoogleGenAIProvider:
     def _create_client(self, *, provider_name: str, model_name: str) -> Any:
         config = self.config
         auth = None if config is None else config.auth
+        if auth is None:
+            # Credentials are resolved once at admission and recorded in the
+            # private snapshot. Reading GOOGLE_API_KEY or letting the SDK use
+            # ambient ADC here would authenticate from state the revision never
+            # captured, so this fails visibly instead.
+            raise ProviderExecutionError(
+                kind="missing_auth",
+                provider_name=provider_name,
+                model_name=model_name,
+                message="google provider requires configured auth: an API key, OAuth access token, or service-account file",
+                retryable=False,
+                fallback_allowed=True,
+            )
         credentials: Any = None
         api_key: str | None = None
-        if auth is not None and auth.method == "service_account":
-            # A configured service account file is authoritative for this method:
-            # falling back to ``GOOGLE_API_KEY`` would silently ignore it.
+        if auth.method == "service_account":
             credentials = _service_account_credentials(auth.service_account_json_path, provider_name=provider_name, model_name=model_name)
-        elif auth is not None and auth.method == "oauth":
+        elif auth.method == "oauth":
             if config is None or not config.project:
                 raise ProviderExecutionError(
                     kind="not_configured",
@@ -212,7 +222,7 @@ class GoogleGenAIProvider:
                     fallback_allowed=True,
                 )
             credentials = oauth_credentials.Credentials(token=auth.access_token)
-        elif auth is not None:
+        else:
             api_key = auth.api_key
             if not api_key:
                 raise ProviderExecutionError(
@@ -223,8 +233,6 @@ class GoogleGenAIProvider:
                     retryable=False,
                     fallback_allowed=True,
                 )
-        if credentials is None and auth is None:
-            api_key = os.environ.get("GOOGLE_API_KEY")
         kwargs: dict[str, Any] = {}
         if api_key:
             kwargs["api_key"] = api_key
@@ -254,12 +262,6 @@ class GoogleGenAIProvider:
                 project = _service_account_project_id(credentials)
             # Explicit credentials always select the Vertex AI surface.
             kwargs.update(vertexai=True, project=project, location=location)
-        elif api_key is None:
-            # No credential material at all, so the SDK falls back to ambient ADC.
-            # Either half of project/location selects Vertex AI; the previous
-            # ``project and region`` gate silently skipped ADC-only users.
-            if project is not None or location is not None:
-                kwargs.update(vertexai=True, project=project, location=location)
         elif project is not None and location is not None:
             # API key configs keep the pre-existing gate: only a
             # complete project+region pair selects Vertex express mode, so a

@@ -61,6 +61,21 @@ def test_streamed_turn_aggregates_to_propose_shape_with_progress(tmp_path: Path)
             assert progress[0].payload["dispatch_sequence"] == turn.payload["dispatch_sequence"]
 
 
+def test_provider_error_secret_is_redacted_from_the_interrupted_event(tmp_path: Path) -> None:
+    secret = "stream-secret"
+    with loopback_server([]) as server:
+        server.chat_status = 401
+        server.replies.append({"error": {"message": f"invalid api key {secret}", "code": "invalid_api_key"}})
+        _configure(tmp_path, server)
+        with _open(tmp_path) as core:
+            result = core.run("Fail with a credential echo.")
+            assert result.status != "completed"
+            events = core.store.events(result.session_id)
+            interrupted = next(event for event in events if event.event_type == "core.provider_interrupted")
+            assert secret not in json.dumps(dict(interrupted.payload))
+            assert "[redacted]" in str(interrupted.payload["error"])
+
+
 def test_non_streamable_provider_falls_back_to_propose_turn(tmp_path: Path) -> None:
     """A registered provider without stream_turn still answers through propose_turn."""
     source = tmp_path / "plugin"

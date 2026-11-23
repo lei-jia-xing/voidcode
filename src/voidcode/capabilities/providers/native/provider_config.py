@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 
 from ..registry import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
@@ -57,8 +56,6 @@ def anthropic_wire_default_base_url(provider_name: str) -> str | None:
 def copilot_provider_config(config: CopilotProviderConfig | None) -> ProviderEndpointConfig:
     auth = None if config is None else config.auth
     token = None if auth is None else auth.token
-    if token is None and auth is not None and auth.token_env_var is not None:
-        token = os.environ.get(auth.token_env_var)
     configured_base_url = None if config is None else config.base_url
     return ProviderEndpointConfig(
         api_key=token,
@@ -87,7 +84,6 @@ def vendor_endpoint_config(
     config: ProviderEndpointConfig | None,
     *,
     base_url: str,
-    api_key_env_var: str,
 ) -> ProviderEndpointConfig:
     """Normalize one gateway vendor's configuration against that vendor's own defaults.
 
@@ -96,9 +92,5 @@ def vendor_endpoint_config(
     vendor's.
     """
     if config is None:
-        return ProviderEndpointConfig(
-            base_url=base_url,
-            api_key_env_var=api_key_env_var,
-            model_map={},
-        )
+        return ProviderEndpointConfig(base_url=base_url, model_map={})
     return replace(config, base_url=config.base_url or base_url)

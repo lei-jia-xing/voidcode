@@ -105,18 +105,18 @@ def guidance_for_provider_error_kind(kind: str) -> str:
     if kind == "not_configured":
         return "Set providers.<name>.base_url (and the provider API key) before using this provider."
     if kind == "rate_limit":
-        return "Retry later, reduce request volume, or configure a fallback model."
+        return "Retry later or reduce request volume."
     if kind == "context_limit":
         return "Reduce prompt/tool-result context or switch to a model with a larger context window."
     if kind == "provider_error":
-        return "Inspect the structured provider error details or configure a fallback provider/model."
+        return "Inspect the structured provider error details or adjust the configured provider/model."
     if kind == "unsupported_feature":
         return "Disable the unsupported provider feature or choose a model/provider that supports it."
     if kind == "stream_tool_feedback_shape":
         return "Report this provider stream/tool-call shape; VoidCode could not normalize it safely."
     if kind == "cancelled":
         return "The request was cancelled; rerun when ready."
-    return "Inspect the provider error details or configure a fallback provider/model."
+    return "Inspect the provider error details."
 
 
 def _classify_api_error_kind(*, status_code: int | None, code: str | None) -> ProviderErrorKind:

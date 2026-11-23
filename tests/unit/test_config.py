@@ -212,6 +212,45 @@ def test_explicit_credentials_and_null_override_discovered_keys(monkeypatch) -> 
         resolve_providers(parse_config({"providers": {"custom": {}}}))
 
 
+@pytest.mark.parametrize(
+    ("provider", "auth", "env_var"),
+    [
+        ("google", {"method": "oauth", "access_token": "explicit-oauth-token"}, "GOOGLE_API_KEY"),
+        ("google", {"method": "service_account", "service_account_json_path": "account.json"}, "GOOGLE_API_KEY"),
+        ("github-copilot", {"method": "token", "token": "explicit-copilot-token"}, "GITHUB_COPILOT_TOKEN"),
+    ],
+)
+def test_explicit_nested_auth_suppresses_discovered_flat_credentials(monkeypatch, provider, auth, env_var) -> None:
+    from voidcode.capabilities.providers.registry import PROVIDER_TABLE
+
+    for row in PROVIDER_TABLE:
+        for variable in row.env_vars:
+            monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv(env_var, "ambient-credential")
+    providers = resolve_providers(parse_config({"providers": {provider: {"auth": auth, "base_url": "https://example.invalid"}}}))
+    assert providers[provider]["api_key"] is None
+    assert providers[provider]["auth"] == auth
+
+
+def test_explicit_nested_auth_admits_while_an_ambient_key_exists(tmp_path, monkeypatch) -> None:
+    from voidcode.bootstrap import admit_live, bundled_sources
+    from voidcode.capabilities.providers.registry import PROVIDER_TABLE
+
+    for row in PROVIDER_TABLE:
+        for variable in row.env_vars:
+            monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("GOOGLE_API_KEY", "ambient-google-key")
+    auth = {"method": "oauth", "access_token": "explicit-oauth-token"}
+    admission = admit_live(
+        parse_config({"providers": {"google": {"auth": auth, "project": "project", "base_url": "https://example.invalid"}}}),
+        workspace=tmp_path,
+        bundled_sources=bundled_sources(),
+    )
+    snapshot = admission.private_snapshot["providers"]["google"]
+    assert snapshot["api_key"] is None
+    assert snapshot["auth"] == auth
+
+
 def test_banner_colors_are_validated_and_owned_without_theme_fields() -> None:
     colors = ["cyan", "#abcdef"]
     config = parse_config({"tui": {"banner": {"text": "╲╱\n∨", "colors": colors}}})

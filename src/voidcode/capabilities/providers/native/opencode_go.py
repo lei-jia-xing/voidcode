@@ -12,12 +12,7 @@ from .config import (
     openai_compatible_endpoint_config,
 )
 from .model_routing import IMPLEMENTED_API_ROUTES, RoutedTurnProvider, WireRouting
-from .openai_native import OpenAIChatCompletionsProvider
 from .opencode import OpenCodeZenModelProvider
-
-# These gateways reject the OpenAI ``tool`` role, so completed tool results are
-# replayed as a synthetic user message instead.
-_SYNTHETIC_TOOL_FEEDBACK_MODELS = frozenset({"qwen3.6-plus"})
 
 _OPENCODE_GO = PROVIDER_TABLE_BY_ID["opencode-go"]
 
@@ -40,13 +35,10 @@ class OpenCodeGoModelProvider:
 
     def _wire(self, route: RoutedWire) -> StreamableTurnProvider:
         endpoint = self.provider_config()
-        provider = OpenCodeZenModelProvider(
+        return OpenCodeZenModelProvider(
             name=self.name,
             config=replace(endpoint, base_url=self.config.base_url if self.config else None),
         )._wire(route)
-        if isinstance(provider, OpenAIChatCompletionsProvider):
-            provider = replace(provider, synthetic_tool_feedback_models=_SYNTHETIC_TOOL_FEEDBACK_MODELS)
-        return provider
 
     def turn_provider(self) -> TurnProvider:
         endpoint = self.provider_config()

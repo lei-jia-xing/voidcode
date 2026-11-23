@@ -217,46 +217,6 @@ def test_custom_endpoint_auth_scheme_and_header_are_sent(loopback_server: OpenAI
     assert "Authorization" not in headers
 
 
-@pytest.mark.parametrize("model", ["qwen3.6-plus", "alias"])
-@pytest.mark.parametrize("reuse_id", [False, True])
-def test_gateway_feedback_preserves_history_order_and_assistant_text(loopback_server, model, reuse_id):
-    import json
-
-    loopback_server.replies.append(openai_response(message={"content": "done"}, finish="stop"))
-    provider = _provider(
-        {"opencode-go": {"api_key": "loopback-key", "base_url": _base_url(loopback_server), "model_map": {"alias": "qwen3.6-plus"}}},
-        name="opencode-go",
-    )
-    second_id = "call-1" if reuse_id else "call-2"
-    request = _request(
-        ProviderMessage("user", "first request"),
-        ProviderMessage("assistant", "before first", tool_calls=(ToolCall("read", {"path": "a"}, tool_call_id="call-1"),)),
-        ProviderMessage("tool", "first body", tool_name="read", tool_call_id="call-1"),
-        ProviderMessage("user", "second request"),
-        ProviderMessage("assistant", "before second", tool_calls=(ToolCall("read", {"path": "b"}, tool_call_id=second_id),)),
-        ProviderMessage("tool", "second body", tool_name="read", tool_call_id=second_id, is_error=True),
-        provider_name="opencode-go",
-        model_name=model,
-        raw_model=f"opencode-go/{model}",
-        available_tools=(_tool(),),
-    )
-    try:
-        assert provider.propose_turn(request).output == "done"
-        messages = loopback_server.requests[0]["messages"]
-        assert [message["role"] for message in messages] == ["user", "assistant", "user", "user", "assistant", "user"]
-        assert [messages[index]["content"] for index in [0, 1, 3, 4]] == ["first request", "before first", "second request", "before second"]
-        first, second = [json.loads(messages[index]["content"]) for index in [2, 5]]
-        assert (first["tool_call_id"], first["arguments"], first["content"], first["status"]) == ("call-1", {"path": "a"}, "first body", "ok")
-        assert (second["tool_call_id"], second["arguments"], second["content"], second["status"]) == (
-            second_id,
-            {"path": "b"},
-            "second body",
-            "error",
-        )
-    finally:
-        provider.close()
-
-
 def test_opaque_metadata_does_not_select_a_different_tool_protocol(loopback_server):
     loopback_server.replies.append(openai_response(message={"content": "done"}, finish="stop"))
     provider = _provider({"endpoint": {"api_key": "loopback-key", "base_url": _base_url(loopback_server)}}, name="endpoint")

@@ -203,13 +203,26 @@ def test_model_lists_the_shipped_catalog_of_one_provider() -> None:
     assert result.output is not None and all(f"`{model}`" in result.output for model in expected)
 
 
-def test_model_reports_a_provider_without_shipped_models() -> None:
+def test_model_rejects_an_unknown_provider() -> None:
     result = _invoke(_plugin(), "model", _services(), {"provider": "ghost"})
 
+    assert result.status == "error"
+    assert result.error is not None and "unknown provider id 'ghost'" in result.error
+    assert "endpoint" in result.error
+
+
+def test_model_rejects_a_known_provider_without_configuration() -> None:
+    result = _invoke(_plugin(), "model", _services(), {"provider": "openrouter"})
+
+    assert result.status == "error"
+    assert result.error == "provider 'openrouter' is not configured in this workspace"
+
+
+def test_model_lists_a_shipped_catalog_without_configuration() -> None:
+    result = _invoke(_plugin(), "model", _services(), {"provider": "openai"})
+
     assert result.status == "ok"
-    assert result.data is not None and result.data["provider"] == "ghost"
-    assert result.data is not None and not result.data["models"]
-    assert result.output is not None and "No shipped catalog models for `ghost`." in result.output
+    assert result.data is not None and tuple(result.data["models"]) == static_catalog_model_ids("openai")
 
 
 def test_model_rejects_a_blank_provider() -> None:

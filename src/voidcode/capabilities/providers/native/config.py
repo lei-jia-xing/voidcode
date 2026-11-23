@@ -7,7 +7,7 @@ from typing import Annotated, Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, ValidationError
 from pydantic.functional_validators import BeforeValidator
 
-from ..registry import PROVIDER_TABLE_BY_ID
+from ..registry import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 from .naming import (
     BUILTIN_PROVIDER_IDS,
     UnknownProviderIdError,
@@ -71,7 +71,6 @@ class _GoogleProviderConfigPayload(_ProviderPayloadModel):
 class _CopilotProviderAuthConfigPayload(_ProviderPayloadModel):
     method: CopilotAuthMethod
     token: BoundaryOptionalString = Field(default=None, repr=False)
-    token_env_var: BoundaryOptionalString = None
 
 
 class _CopilotProviderConfigPayload(_ProviderPayloadModel):
@@ -82,7 +81,6 @@ class _CopilotProviderConfigPayload(_ProviderPayloadModel):
 
 class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
     api_key: BoundaryOptionalString = Field(default=None, repr=False)
-    api_key_env_var: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
     auth_header: BoundaryOptionalString = None
     auth_scheme: EndpointAuthScheme | None = None
@@ -93,7 +91,6 @@ class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
 
 class _OpenAICompatibleProviderConfigPayload(_ProviderPayloadModel):
     api_key: BoundaryOptionalString = Field(default=None, repr=False)
-    api_key_env_var: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
     ssl_verify: BoundaryOptionalBool = None
     timeout_seconds: BoundaryOptionalTimeout = None
@@ -190,17 +187,14 @@ class _ProviderWire:
 
     ``field_name`` names the provider in both ``ProviderConfigsPayload`` and
     ``ProviderConfigs`` (the parser builds one from the other by keyword), and
-    ``payload_key`` is the spelling a config file uses for it. ``env_vars`` are
-    the environment variables that configure the provider, credential first: an
-    ``openai_compatible`` provider reads the rest as fallbacks, the generic
-    ``endpoint`` provider takes its base URL from the second, and every other
-    shape takes only the first.
+    ``payload_key`` is the spelling a config file uses for it. Credentials are
+    resolved once by the product layer into the private snapshot; this parser
+    never reads the environment.
     """
 
     field_name: str
     payload_key: str
     shape: _ProviderShape
-    env_vars: tuple[str, ...]
 
 
 #: Which config shape a ``providers.<id>`` payload field belongs to. The payload
@@ -227,15 +221,17 @@ def _payload_model_type(annotation: object) -> type[BaseModel]:
 def _provider_wires() -> dict[str, _ProviderWire]:
     """Canonical provider id -> its wire, in ``providers`` payload order.
 
-    The id -> field/payload-key half is derived from the payload model, the
-    shape from that field's own config model, and the credential environment
-    variables from ``provider_table.json``. A payload field with no table row
-    raises here instead of resolving to a provider with no endpoint.
+    The id -> field/payload-key half is derived from the payload model and the
+    shape from that field's own config model, so neither can drift from the
+    config surface.
     """
     wires: dict[str, _ProviderWire] = {}
     for provider_id, (field_name, payload_key) in _PROVIDER_CONFIG_FIELD_ENTRIES.items():
         shape = _SHAPE_BY_PAYLOAD_MODEL[_payload_model_type(ProviderConfigsPayload.model_fields[field_name].annotation)]
-        wires[provider_id] = _ProviderWire(field_name, payload_key, shape, PROVIDER_TABLE_BY_ID[provider_id].env_vars)
+        wires[provider_id] = _ProviderWire(field_name, payload_key, shape)
+    missing = [row.id for row in PROVIDER_TABLE if row.id not in wires]
+    if missing:
+        raise ValueError(f"provider-table rows have no provider-config field: {', '.join(missing)}")
     return wires
 
 
@@ -300,7 +296,6 @@ class OpenAICompatibleProviderConfig:
     """
 
     api_key: str | None = field(default=None, repr=False)
-    api_key_env_var: str | None = None
     base_url: str | None = None
     ssl_verify: bool | None = None
     timeout_seconds: float | None = None
@@ -328,7 +323,6 @@ def openai_compatible_endpoint_config(
         return ProviderEndpointConfig(base_url=default_base_url)
     return ProviderEndpointConfig(
         api_key=config.api_key,
-        api_key_env_var=config.api_key_env_var,
         base_url=config.base_url if config.base_url else default_base_url,
         ssl_verify=config.ssl_verify,
         timeout_seconds=config.timeout_seconds,
@@ -381,7 +375,6 @@ class GoogleProviderConfig:
 class CopilotProviderAuthConfig:
     method: CopilotAuthMethod
     token: str | None = field(default=None, repr=False)
-    token_env_var: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,7 +400,6 @@ type ProviderConfigEntry = (
 @dataclass(frozen=True, slots=True)
 class ProviderEndpointConfig:
     api_key: str | None = field(default=None, repr=False)
-    api_key_env_var: str | None = None
     base_url: str | None = None
     auth_header: str | None = None
     auth_scheme: EndpointAuthScheme = "bearer"
@@ -472,6 +464,28 @@ class ProviderConfigs:
         field_name = PROVIDER_CONFIG_FIELDS.get(canonical_provider_id(provider_name))
         return None if field_name is None else getattr(self, field_name)
 
+    def credential_values(self) -> tuple[str, ...]:
+        """Every configured credential value, deduplicated, for error redaction.
+
+        Covers all entries, not only the selected provider, so a gateway that
+        echoes another configured key is redacted too. ``service_account_json_path``
+        is a filesystem location, not a credential, and stays out.
+        """
+        values: list[str] = []
+        for provider_id in PROVIDER_CONFIG_FIELDS:
+            entry = self.entry(provider_id)
+            if isinstance(entry, GoogleProviderConfig):
+                if entry.auth is not None:
+                    values.extend(value for value in (entry.auth.api_key, entry.auth.access_token) if value)
+            elif isinstance(entry, CopilotProviderConfig):
+                if entry.auth is not None and entry.auth.token:
+                    values.append(entry.auth.token)
+            elif isinstance(entry, OpenAIProviderConfig | AnthropicProviderConfig | OpenAICompatibleProviderConfig | ProviderEndpointConfig):
+                if entry.api_key:
+                    values.append(entry.api_key)
+        values.extend(entry.api_key for entry in self.custom.values() if entry.api_key)
+        return tuple(dict.fromkeys(values))
+
 
 def _provider_configs_from_entries(
     entries: Mapping[str, ProviderConfigEntry | None],
@@ -519,7 +533,6 @@ def _parse_provider_config_entry(
     payload: ProviderConfigsPayload,
     *,
     field_path: str,
-    env: Mapping[str, str],
 ) -> ProviderConfigEntry | None:
     """Resolve one already validated provider block through its shape's parser."""
     raw_value = getattr(payload, wire.field_name)
@@ -527,52 +540,23 @@ def _parse_provider_config_entry(
         return None
     match wire.shape:
         case "openai":
-            return _parse_openai_provider_config(
-                raw_value,
-                env=env,
-                api_key_env_var=wire.env_vars[0],
-            )
+            return _parse_openai_provider_config(raw_value)
         case "anthropic":
-            return _parse_anthropic_provider_config(
-                raw_value,
-                env=env,
-                api_key_env_var=wire.env_vars[0],
-            )
+            return _parse_anthropic_provider_config(raw_value)
         case "google":
-            return _parse_google_provider_config(
-                raw_value,
-                field_path=field_path,
-                env=env,
-                api_key_env_var=wire.env_vars[0],
-            )
+            return _parse_google_provider_config(raw_value, field_path=field_path)
         case "copilot":
-            return _parse_copilot_provider_config(
-                raw_value,
-                field_path=field_path,
-                env=env,
-                token_env_var=wire.env_vars[0],
-            )
+            return _parse_copilot_provider_config(raw_value, field_path=field_path)
         case "endpoint":
-            return _parse_endpoint_provider_config(
-                raw_value,
-                env=env,
-                default_api_key_env_var=wire.env_vars[0],
-                default_base_url_env_var=wire.env_vars[1] if len(wire.env_vars) > 1 else None,
-            )
+            return _parse_endpoint_provider_config(raw_value)
         case "openai_compatible":
-            return _parse_openai_compatible_provider_config(
-                raw_value,
-                env=env,
-                api_key_env_var=wire.env_vars[0],
-                fallback_api_key_env_vars=wire.env_vars[1:],
-            )
+            return _parse_openai_compatible_provider_config(raw_value)
 
 
 def parse_provider_configs_payload(
     raw_providers: object,
     *,
     source: str,
-    env: Mapping[str, str] | None = None,
 ) -> ProviderConfigs | None:
     if raw_providers is None:
         return None
@@ -582,37 +566,25 @@ def parse_provider_configs_payload(
         error = exc.errors(include_url=False)[0]
         raise ValueError(_format_provider_payload_validation_error(field_path=source, error=error)) from exc
 
-    environment: Mapping[str, str] = {} if env is None else env
-
     return _provider_configs_from_entries(
         {
             wire.field_name: _parse_provider_config_entry(
                 wire,
                 payload,
                 field_path=_nested_config_field(source, wire.payload_key),
-                env=environment,
             )
             for wire in PROVIDER_WIRES.values()
         },
         custom=_parse_custom_endpoint_provider_configs(
             payload.custom,
             field_path=_nested_config_field(source, "custom"),
-            env=environment,
         ),
     )
 
 
-def _parse_openai_provider_config(
-    payload: _OpenAIProviderConfigPayload,
-    *,
-    env: Mapping[str, str],
-    api_key_env_var: str,
-) -> OpenAIProviderConfig:
-    api_key = payload.api_key
-    if api_key is None:
-        api_key = env.get(api_key_env_var)
+def _parse_openai_provider_config(payload: _OpenAIProviderConfigPayload) -> OpenAIProviderConfig:
     return OpenAIProviderConfig(
-        api_key=api_key,
+        api_key=payload.api_key,
         base_url=payload.base_url,
         organization=payload.organization,
         project=payload.project,
@@ -620,17 +592,9 @@ def _parse_openai_provider_config(
     )
 
 
-def _parse_anthropic_provider_config(
-    payload: _AnthropicProviderConfigPayload,
-    *,
-    env: Mapping[str, str],
-    api_key_env_var: str,
-) -> AnthropicProviderConfig:
-    api_key = payload.api_key
-    if api_key is None:
-        api_key = env.get(api_key_env_var)
+def _parse_anthropic_provider_config(payload: _AnthropicProviderConfigPayload) -> AnthropicProviderConfig:
     return AnthropicProviderConfig(
-        api_key=api_key,
+        api_key=payload.api_key,
         base_url=payload.base_url,
         version=payload.version,
         beta_headers=tuple(payload.beta_headers),
@@ -643,14 +607,10 @@ def _parse_google_provider_config(
     payload: _GoogleProviderConfigPayload,
     *,
     field_path: str,
-    env: Mapping[str, str],
-    api_key_env_var: str,
 ) -> GoogleProviderConfig:
     auth = _parse_google_auth_config(
         payload.auth,
         field_path=_nested_config_field(field_path, "auth"),
-        env=env,
-        api_key_env_var=api_key_env_var,
     )
     return GoogleProviderConfig(
         auth=auth,
@@ -665,8 +625,6 @@ def _parse_google_auth_config(
     payload: _GoogleProviderAuthConfigPayload | None,
     *,
     field_path: str,
-    env: Mapping[str, str],
-    api_key_env_var: str,
 ) -> GoogleProviderAuthConfig | None:
     if payload is None:
         return None
@@ -674,8 +632,6 @@ def _parse_google_auth_config(
     method = payload.method
 
     api_key = payload.api_key
-    if method == "api_key" and api_key is None:
-        api_key = env.get(api_key_env_var)
     access_token = payload.access_token
     service_account_json_path = payload.service_account_json_path
 
@@ -699,14 +655,10 @@ def _parse_copilot_provider_config(
     payload: _CopilotProviderConfigPayload,
     *,
     field_path: str,
-    env: Mapping[str, str],
-    token_env_var: str,
 ) -> CopilotProviderConfig:
     auth = _parse_copilot_auth_config(
         payload.auth,
         field_path=_nested_config_field(field_path, "auth"),
-        env=env,
-        default_token_env_var=token_env_var,
     )
     return CopilotProviderConfig(
         auth=auth,
@@ -719,53 +671,22 @@ def _parse_copilot_auth_config(
     payload: _CopilotProviderAuthConfigPayload | None,
     *,
     field_path: str,
-    env: Mapping[str, str],
-    default_token_env_var: str,
 ) -> CopilotProviderAuthConfig | None:
     if payload is None:
         return None
 
-    method = payload.method
-
-    token = payload.token
-    token_env_var = payload.token_env_var
-    if token is None and token_env_var is None:
-        token = env.get(default_token_env_var)
-    if token is None and token_env_var is None:
-        raise ValueError(f"{field_path} requires token or token_env_var")
-    if token is not None and token_env_var is not None:
-        raise ValueError(f"{field_path} token and token_env_var must not both be set")
-
+    if payload.token is None:
+        raise ValueError(f"{field_path} requires token")
     return CopilotProviderAuthConfig(
-        method=method,
-        token=token,
-        token_env_var=token_env_var,
+        method=payload.method,
+        token=payload.token,
     )
 
 
-def _parse_endpoint_provider_config(
-    payload: _ProviderEndpointConfigPayload,
-    *,
-    env: Mapping[str, str],
-    default_api_key_env_var: str,
-    default_base_url_env_var: str | None = None,
-) -> ProviderEndpointConfig:
-    api_key = payload.api_key
-    api_key_env_var = payload.api_key_env_var
-    if api_key is None:
-        if api_key_env_var is not None:
-            api_key = env.get(api_key_env_var)
-        else:
-            api_key = env.get(default_api_key_env_var)
-
-    base_url = payload.base_url
-    if base_url is None and default_base_url_env_var is not None:
-        base_url = env.get(default_base_url_env_var)
-
+def _parse_endpoint_provider_config(payload: _ProviderEndpointConfigPayload) -> ProviderEndpointConfig:
     return ProviderEndpointConfig(
-        api_key=api_key,
-        api_key_env_var=api_key_env_var,
-        base_url=base_url,
+        api_key=payload.api_key,
+        base_url=payload.base_url,
         auth_header=payload.auth_header,
         auth_scheme=payload.auth_scheme or "bearer",
         ssl_verify=payload.ssl_verify,
@@ -776,25 +697,9 @@ def _parse_endpoint_provider_config(
 
 def _parse_openai_compatible_provider_config(
     payload: _OpenAICompatibleProviderConfigPayload,
-    *,
-    env: Mapping[str, str],
-    api_key_env_var: str,
-    fallback_api_key_env_vars: tuple[str, ...] = (),
 ) -> OpenAICompatibleProviderConfig:
-    api_key = payload.api_key
-    api_key_env = payload.api_key_env_var
-    if api_key is None:
-        if api_key_env is not None:
-            api_key = env.get(api_key_env)
-        else:
-            for candidate_env_var in (api_key_env_var, *fallback_api_key_env_vars):
-                api_key = env.get(candidate_env_var)
-                if api_key is not None:
-                    break
-
     return OpenAICompatibleProviderConfig(
-        api_key=api_key,
-        api_key_env_var=api_key_env,
+        api_key=payload.api_key,
         base_url=payload.base_url,
         ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
@@ -806,7 +711,6 @@ def _parse_custom_endpoint_provider_configs(
     payload: dict[str, _ProviderEndpointConfigPayload],
     *,
     field_path: str,
-    env: Mapping[str, str],
 ) -> dict[str, ProviderEndpointConfig]:
     parsed: dict[str, ProviderEndpointConfig] = {}
     spelled: dict[str, str] = {}
@@ -834,15 +738,7 @@ def _parse_custom_endpoint_provider_configs(
             )
         spelled[normalized_provider_name] = raw_provider_name
 
-        parsed_config = _parse_endpoint_provider_config(
-            provider_payload,
-            env=env,
-            # A custom provider is an endpoint-shaped gateway: it reads the
-            # generic ENDPOINT_* variables, like the built-in ``endpoint``.
-            default_api_key_env_var=PROVIDER_TABLE_BY_ID["endpoint"].env_vars[0],
-            default_base_url_env_var=PROVIDER_TABLE_BY_ID["endpoint"].env_vars[1],
-        )
-        parsed[normalized_provider_name] = parsed_config
+        parsed[normalized_provider_name] = _parse_endpoint_provider_config(provider_payload)
     return parsed
 
 

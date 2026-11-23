@@ -23,7 +23,6 @@ class OpenRouterModelProvider:
         return vendor_endpoint_config(
             self.config,
             base_url=_OPENROUTER.default_base_url,
-            api_key_env_var=_OPENROUTER.env_vars[0],
         )
 
     def turn_provider(self) -> TurnProvider:

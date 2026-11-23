@@ -43,7 +43,6 @@ class OpenCodeZenModelProvider:
         return vendor_endpoint_config(
             self.config,
             base_url=_OPENCODE_ZEN.default_base_url,
-            api_key_env_var=_OPENCODE_ZEN.env_vars[0],
         )
 
     def _wire(self, route: RoutedWire) -> StreamableTurnProvider:

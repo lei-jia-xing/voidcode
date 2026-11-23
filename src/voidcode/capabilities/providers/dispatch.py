@@ -55,7 +55,7 @@ _CREDENTIAL_FIELD_BY_PROVIDER: Mapping[str, str] = {"google": "api_key", "github
 
 def _entry_payload(provider_name: str, entry: Mapping[str, object]) -> dict[str, object]:
     """One configured provider entry in the vendor's own configuration shape."""
-    payload = {key: value for key, value in entry.items() if key != "wire"}
+    payload = dict(entry)
     if provider_name not in _CREDENTIAL_FIELD_BY_PROVIDER:
         return payload
     credential = payload.pop("api_key", None)
@@ -73,10 +73,10 @@ def _entry_payload(provider_name: str, entry: Mapping[str, object]) -> dict[str,
 def provider_configs(config: Mapping[str, object]) -> ProviderConfigs:
     """Build the typed provider configuration from the core-injected section.
 
-    The core's provider entries select a registered provider name through
-    ``wire``; every remaining field is the vendor's own configuration, parsed by
-    the same shape rules a configuration file used. An id the product does not
-    declare resolves as a custom endpoint.
+    Every field is the vendor's own configuration, parsed by the same shape
+    rules a configuration file used. Credentials were resolved once at
+    admission; this parser never reads the environment. An id the product does
+    not declare resolves as a custom endpoint.
     """
     raw = config.get("providers")
     payload: dict[str, object] = {}
@@ -170,6 +170,44 @@ def _materialize(provider_name: str, configuration: ProviderConfigEntry | None) 
     raise UnknownProviderIdError(provider_name)
 
 
+_REDACTED = "[redacted]"
+
+
+def _redact_text(value: str, secrets: tuple[str, ...]) -> str:
+    for secret in sorted(secrets, key=len, reverse=True):
+        if secret:
+            value = value.replace(secret, _REDACTED)
+    return value
+
+
+def _redact_value(value: object, secrets: tuple[str, ...]) -> object:
+    if isinstance(value, str):
+        return _redact_text(value, secrets)
+    if isinstance(value, Mapping):
+        return {_redact_text(str(key), secrets): _redact_value(item, secrets) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(item, secrets) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_value(item, secrets) for item in value)
+    return value
+
+
+def _redacted_execution_error(error: ProviderExecutionError, secrets: tuple[str, ...]) -> ProviderExecutionError:
+    """The same provider error with every configured credential removed.
+
+    The provider's own response text is preserved for diagnosis, but a gateway
+    that echoes a key must not turn a recorded error into a credential leak.
+    """
+    if not secrets:
+        return error
+    error.message = _redact_text(error.message, secrets)
+    if error.details is not None:
+        redacted = _redact_value(error.details, secrets)
+        if isinstance(redacted, dict):
+            error.details = redacted
+    return error
+
+
 class RegisteredProvider:
     """One provider name the core can select; requests route by their own provider id."""
 
@@ -240,21 +278,27 @@ class RegisteredProvider:
         return limits if isinstance(limits, ModelContextLimits) or limits is None else None
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
-        return price_result(request, self._selected(request).propose_turn(request))
+        try:
+            return price_result(request, self._selected(request).propose_turn(request))
+        except ProviderExecutionError as exc:
+            raise _redacted_execution_error(exc, self._configs.credential_values()) from None
 
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
-        provider = self._selected(request)
-        if not isinstance(provider, StreamableTurnProvider):
-            raise ProviderExecutionError(
-                kind="unsupported_feature",
-                provider_name=request.provider_name or self._name,
-                model_name=request.model_name or "",
-                message=f"provider '{request.provider_name or self._name}' does not support streaming",
-                retryable=False,
-                fallback_allowed=False,
-            )
-        for event in provider.stream_turn(request):
-            yield price_event(request, event)
+        try:
+            provider = self._selected(request)
+            if not isinstance(provider, StreamableTurnProvider):
+                raise ProviderExecutionError(
+                    kind="unsupported_feature",
+                    provider_name=request.provider_name or self._name,
+                    model_name=request.model_name or "",
+                    message=f"provider '{request.provider_name or self._name}' does not support streaming",
+                    retryable=False,
+                    fallback_allowed=False,
+                )
+            for event in provider.stream_turn(request):
+                yield price_event(request, event)
+        except ProviderExecutionError as exc:
+            raise _redacted_execution_error(exc, self._configs.credential_values()) from None
 
     def close(self) -> None:
         with self._lock:

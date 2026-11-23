@@ -15,7 +15,7 @@ from voidcode.sdk.views import PluginViewDescriptor
 
 from .dispatch import RegisteredProvider
 from .native.model_catalog import static_catalog_model_ids
-from .native.naming import canonical_provider_id, provider_label
+from .native.naming import canonical_provider_id, provider_label, unknown_provider_id_message
 from .registry import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID, ProviderTableRow
 
 
@@ -185,6 +185,7 @@ class ModelCommand:
     def __init__(self, facts: ProviderFacts, providers: Sequence[RegisteredProvider]) -> None:
         self._facts = facts
         self._providers = {provider.name: provider for provider in providers}
+        self._configured = frozenset(item.name for item in facts.configured)
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         raw = invocation.arguments.get("provider")
@@ -192,8 +193,13 @@ class ModelCommand:
             return CommandResult(status="error", error="provider must be a non-empty provider id")
         available_models = None
         if isinstance(raw, str):
-            provider = self._providers.get(canonical_provider_id(raw))
-            if provider is not None and not static_catalog_model_ids(provider.name):
+            name = canonical_provider_id(raw)
+            provider = self._providers.get(name)
+            if provider is None:
+                return CommandResult(status="error", error=unknown_provider_id_message(name))
+            if not static_catalog_model_ids(name):
+                if name not in self._configured:
+                    return CommandResult(status="error", error=f"provider '{name}' is not configured in this workspace")
                 try:
                     available_models = provider.list_models()
                 except ProviderExecutionError as exc:

@@ -44,13 +44,13 @@ def unknown_provider_id_message(provider_name: str) -> str:
     known = ", ".join(sorted(BUILTIN_PROVIDER_IDS))
     return (
         f"unknown provider id '{canonical}': known provider ids are {known}; "
-        f"declare a custom OpenAI-compatible endpoint as providers.custom.{canonical} "
-        f"and reference it as '{canonical}/<model>'"
+        "configure the built-in 'endpoint' provider for an OpenAI-compatible gateway, "
+        "or install a plugin that declares this provider id"
     )
 
 
 class UnknownProviderIdError(ValueError):
-    """A provider id that is neither a built-in nor a declared custom provider."""
+    """A provider id that is neither built-in nor declared by an admitted plugin."""
 
     def __init__(self, provider_name: str) -> None:
         canonical = canonical_provider_id(provider_name)
