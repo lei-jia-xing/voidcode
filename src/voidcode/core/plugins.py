@@ -1227,9 +1227,24 @@ class PluginRuntime:
         cancelled = cancel_event.is_set() or bool(context.abort_signal and context.abort_signal.cancelled)
         if cancelled:
             # Cooperative cancellation discards everything this invocation staged; claimed
-            # service trees were already stopped by the cancel mirror.
+            # service trees were already stopped by the cancel mirror. A tool-returned stop
+            # observation is the exception: the engine's stop-commit path reports the result
+            # before terminating, so this invocation's staged work is preserved with it.
             self._cancel_claimed_services(lease)
-            staged = ToolInvocationOutcome(result=result)
+            if not tool_threw and isinstance(result, ToolFailure) and result.execution is not None:
+                staged_state, staged_events, staged_conts, staged_cancels, staged_receipts, staged_budget = self._staged_changes(lease)
+                staged = ToolInvocationOutcome(
+                    result=result,
+                    staged_state=staged_state,
+                    staged_events=staged_events,
+                    staged_continuations=staged_conts,
+                    staged_cancellations=staged_cancels,
+                    staged_observer_receipts=staged_receipts,
+                    staged_budget=staged_budget,
+                    staged_observations=tuple(lease.staging.observations),
+                )
+            else:
+                staged = ToolInvocationOutcome(result=result)
         elif tool_threw:
             # A thrown tool keeps no staged state — but supervisor observations are committed
             # truth about the world, not tool claims, so the prefix survives the throw.
