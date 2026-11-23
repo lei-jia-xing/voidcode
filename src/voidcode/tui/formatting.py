@@ -296,5 +296,5 @@ def footer_row(
     if visible_width(text) <= width:
         return text
 
-    # 5. If too wide (40 cols), 保底: model (clamped)
+    # 5. If too wide (40 cols), model (clamped)
     return clamp_row(model, width)
