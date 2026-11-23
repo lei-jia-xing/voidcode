@@ -14,8 +14,8 @@ from pathlib import Path
 
 from voidcode.sdk.tools import TextOutput, ToolDiagnostics, ToolFailure
 
+from ..tool_errors import raise_tool_diagnostic
 from ._common import line_ending_kinds
-from .errors import raise_tool_diagnostic
 
 
 @dataclass(frozen=True, slots=True)

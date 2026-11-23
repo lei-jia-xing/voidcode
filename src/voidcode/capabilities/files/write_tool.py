@@ -23,8 +23,8 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
+from ..tool_errors import expected_failures
 from ._common import PathEscapesWorkspaceError, make_file_change, resolve_workspace_path
-from .errors import expected_failures
 from .mutation import invalid_path_failure, outside_workspace_failure
 
 MAX_WRITE_BYTES = 64 * 1024  # Max single-file write 64 KiB to fit comfortably in 1 MiB wire frames

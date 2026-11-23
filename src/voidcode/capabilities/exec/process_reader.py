@@ -7,6 +7,7 @@ from concurrent.futures import CancelledError
 from typing import Literal
 from urllib.parse import urlsplit
 
+from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES
 from voidcode.sdk.resources import (
     ResourcePage,
     ResourceProcessStatus,
@@ -259,15 +260,13 @@ def read_process_resource(
 
     _check_cancelled(caller)
     byte_offset = request.byte_offset if request.byte_offset is not None else 0
-    if request.byte_limit is None:
-        output_page = services.read_process_output(process_id, stream=stream, offset=byte_offset)
-    else:
-        output_page = services.read_process_output(
-            process_id,
-            stream=stream,
-            offset=byte_offset,
-            limit=request.byte_limit,
-        )
+    limit = request.byte_limit if request.byte_limit is not None else MAX_RESOURCE_PAGE_BYTES
+    output_page = services.read_process_output(
+        process_id,
+        stream=stream,
+        offset=byte_offset,
+        limit=limit,
+    )
     _check_cancelled(caller)
     latest_status = next((candidate for candidate in services.list_processes() if candidate.process_id == process_id), status)
     return _output_page(request, process_id, stream, latest_status, output_page)

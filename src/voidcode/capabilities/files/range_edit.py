@@ -30,6 +30,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
+from ..tool_errors import raise_tool_diagnostic
 from ._common import (
     PathEscapesWorkspaceError,
     encode_line_endings,
@@ -38,7 +39,6 @@ from ._common import (
     resolve_workspace_path,
     summarize_diff,
 )
-from .errors import raise_tool_diagnostic
 from .mutation import (
     TextFileState,
     check_expected_hash,

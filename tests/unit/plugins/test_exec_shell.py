@@ -205,8 +205,47 @@ def test_shell_exec_passes_commands_to_the_lease(tmp_path: Path, command: str) -
 
 
 def test_shell_exec_requires_a_command(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
-        _shell_tool().invoke(ToolCall("shell_exec", {}), context=_context(tmp_path), services=_FakeLease())  # type: ignore[arg-type]
+    result = _shell_tool().invoke(ToolCall("shell_exec", {}), context=_context(tmp_path), services=_FakeLease())  # type: ignore[arg-type]
+
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "tool_input_validation"
+
+
+def test_shell_exec_rejects_an_invalid_workspace_as_a_typed_failure(tmp_path: Path) -> None:
+    lease = _FakeLease()
+
+    result = _shell_tool().invoke(
+        ToolCall("shell_exec", {"command": "echo ok"}),
+        context=_context(tmp_path / "missing"),
+        services=lease,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "invalid_workspace"
+    assert not lease.calls
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason", "text"),
+    [
+        ("failed to start process: permission denied", "process_start_failed", "could not start the command"),
+        ("failed while reading process output: OSError: broken pipe", "process_capture_failed", "failed while capturing process output"),
+        ("sandbox helper failed (exit 1): denied", "sandbox_helper_failed", "sandbox helper failed after the command ran"),
+    ],
+)
+def test_shell_exec_classifies_expected_service_failures(tmp_path: Path, failure: str, reason: str, text: str) -> None:
+    class FailingLease(_FakeLease):
+        def run_process(self, argv: object, **kwargs: object) -> ProcessResult:
+            raise ValueError(failure)
+
+    result = _invoke("echo ok", tmp_path, FailingLease())
+
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == reason
+    assert text in result.error
 
 
 def test_shell_exec_timeout_returns_a_partial_body_with_its_artifact(tmp_path: Path) -> None:
@@ -254,23 +293,25 @@ def test_shell_exec_cancellation_reports_the_abort_signal(tmp_path: Path) -> Non
 @pytest.mark.parametrize("timeout", [0, -1, 601, True, "5", 1.5])
 def test_shell_exec_rejects_invalid_timeout_before_process_start(tmp_path: Path, timeout: object) -> None:
     lease = _FakeLease()
-    with pytest.raises(ValueError):
-        _shell_tool().invoke(
-            ToolCall("shell_exec", {"command": "echo ok", "timeout": timeout}),
-            context=_context(tmp_path),
-            services=lease,
-        )
+    result = _shell_tool().invoke(
+        ToolCall("shell_exec", {"command": "echo ok", "timeout": timeout}),
+        context=_context(tmp_path),
+        services=lease,
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.kind == "tool_input_validation"
     assert not lease.calls
 
 
 def test_shell_exec_rejects_unknown_arguments(tmp_path: Path) -> None:
     lease = _FakeLease()
-    with pytest.raises(ValueError):
-        _shell_tool().invoke(
-            ToolCall("shell_exec", {"command": "echo ok", "typo": True}),
-            context=_context(tmp_path),
-            services=lease,
-        )
+    result = _shell_tool().invoke(
+        ToolCall("shell_exec", {"command": "echo ok", "typo": True}),
+        context=_context(tmp_path),
+        services=lease,
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.kind == "tool_input_validation"
     assert not lease.calls
 
 
@@ -334,3 +375,34 @@ def test_shell_exec_without_a_progress_sink_asks_for_no_callback(tmp_path: Path)
 
     assert isinstance(result, ToolSuccess)
     assert lease.calls[0]["on_output"] is None
+
+
+def test_expected_failure_boundary_is_shared_and_narrow() -> None:
+    import importlib
+
+    from voidcode.capabilities.tool_errors import expected_failures, raise_tool_diagnostic
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("voidcode.capabilities.files.errors")
+
+    @expected_failures
+    def invariant(call: ToolCall) -> object:
+        raise ValueError("programmer bug")
+
+    @expected_failures
+    def infrastructure(call: ToolCall) -> object:
+        raise OSError("io failure")
+
+    @expected_failures
+    def expected(call: ToolCall) -> object:
+        raise_tool_diagnostic(message="expected failure", error_kind="tool_execution_error", reason="expected_failure")
+
+    with pytest.raises(ValueError, match="programmer bug"):
+        invariant(ToolCall("probe", {}))
+    with pytest.raises(OSError, match="io failure"):
+        infrastructure(ToolCall("probe", {}))
+    result = expected(ToolCall("probe", {}))
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "tool_execution_error"
+    assert result.diagnostics.details["reason"] == "expected_failure"

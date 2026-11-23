@@ -199,6 +199,66 @@ def test_supervised_process_lookup_requires_creator_owner_and_session(tmp_path: 
         assert registry.cancel(process.process_id, owner="exec", session_id="session-1")
 
 
+def test_stdin_write_is_bounded_when_the_process_never_reads(tmp_path: Path) -> None:
+    registry = ProcessRegistry()
+    process = registry.spawn(
+        _python("import time", "time.sleep(120)"),
+        owner="exec",
+        session_id="session-1",
+        cwd=tmp_path,
+        env=None,
+        stdin=True,
+        stdout_path=tmp_path / "blocked.stdout",
+        stderr_path=tmp_path / "blocked.stderr",
+        process_id="blocked-1",
+    )
+    try:
+        started = time.monotonic()
+        written = registry.write(
+            process.process_id,
+            b"x" * (1024 * 1024),
+            owner="exec",
+            session_id="session-1",
+            deadline=started + 0.3,
+        )
+        elapsed = time.monotonic() - started
+        assert 0 < written < 1024 * 1024
+        assert elapsed < 3
+    finally:
+        assert registry.cancel(process.process_id, owner="exec", session_id="session-1")
+
+
+def test_stdin_write_honors_the_lease_cancel_event(tmp_path: Path) -> None:
+    registry = ProcessRegistry()
+    process = registry.spawn(
+        _python("import time", "time.sleep(120)"),
+        owner="exec",
+        session_id="session-1",
+        cwd=tmp_path,
+        env=None,
+        stdin=True,
+        stdout_path=tmp_path / "cancelled.stdout",
+        stderr_path=tmp_path / "cancelled.stderr",
+        process_id="cancelled-1",
+    )
+    cancelled = threading.Event()
+    cancelled.set()
+    try:
+        assert (
+            registry.write(
+                process.process_id,
+                b"x" * 4096,
+                owner="exec",
+                session_id="session-1",
+                deadline=time.monotonic() + 5,
+                cancel_event=cancelled,
+            )
+            == 0
+        )
+    finally:
+        assert registry.cancel(process.process_id, owner="exec", session_id="session-1")
+
+
 def test_run_process_returns_stdout_stderr_exit_code_and_stdin(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", process_tool=True)

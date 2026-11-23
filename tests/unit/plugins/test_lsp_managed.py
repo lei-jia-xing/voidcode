@@ -464,6 +464,26 @@ def test_server_eof_is_recorded_as_protocol_failure(harness: tuple[_Services, Pa
     assert "cancel_process" in services.names()
 
 
+def test_partial_stdin_write_is_a_protocol_failure(tmp_path: Path) -> None:
+    from voidcode.plugins.lsp.lsp_manager import LspProtocolError, ManagedLspManager, _encode_lsp_message, _RunningLspServer
+
+    message: dict[str, object] = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    requested = len(_encode_lsp_message(message))
+
+    class PartialWrites:
+        def write_process(self, process_id: str, data: bytes | str) -> int:
+            assert process_id == "partial-write"
+            return requested - 1
+
+    server = _RunningLspServer(
+        config=build_lsp_manager(_config(tmp_path / "unused")).configuration.servers["echo"],
+        process_id="partial-write",
+        workspace_root=tmp_path,
+    )
+    with pytest.raises(LspProtocolError, match=rf"accepted only {requested - 1} of {requested} stdin bytes"):
+        ManagedLspManager._write_message(PartialWrites(), server, message=message)
+
+
 @pytest.mark.parametrize("result", [None, {}, {"capabilities": None}, {"capabilities": []}])
 def test_malformed_initialize_stops_server_and_preserves_failure(harness: tuple[_Services, Path], result: object) -> None:
     from voidcode.plugins.lsp.lsp_manager import LspProtocolError, LspRequest

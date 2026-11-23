@@ -307,7 +307,13 @@ class RuntimeServices:
         # Bind before the potentially blocking pipe write: a reused server that stops reading
         # stdin must already be cancellable by this invocation, or the cancellation cannot reach it.
         self._mark_active_process(str(process_id))
-        return self._runtime.processes.write(str(process_id), payload, owner=lease.identity.owner, session_id=lease.identity.session_id)
+        return self._runtime.processes.write(
+            str(process_id),
+            payload,
+            owner=lease.identity.owner,
+            session_id=lease.identity.session_id,
+            cancel_event=self._runtime.cancel_event_for(lease),
+        )
 
     def read_process_output(
         self,

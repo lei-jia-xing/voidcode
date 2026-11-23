@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pathspec import GitIgnoreSpec
 
-from .errors import raise_tool_diagnostic
+from ..tool_errors import raise_tool_diagnostic
 
 
 class GitIgnoreMatcher:

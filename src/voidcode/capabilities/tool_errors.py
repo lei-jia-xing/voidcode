@@ -1,3 +1,11 @@
+"""The expected public-tool failure boundary shared by bundled capabilities.
+
+A tool converts failures it expects from its own inputs or environment into
+``ToolDiagnosticError``; :func:`expected_failures` turns those, and pydantic
+argument validation, into typed results. Bare ``ValueError``, ``OSError``, and
+every other exception remain programming or infrastructure errors and propagate.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
@@ -85,9 +93,10 @@ def _validation_failure(tool_name: str, exc: ValidationError) -> ToolFailure:
 def expected_failures[**P](invoke: Callable[P, ToolResult]) -> Callable[P, ToolResult]:
     """Turn expected public-tool failures into typed results; programming errors still raise.
 
-    Only a shared file diagnostic and pydantic argument validation are expected
-    boundary results. Bare ``ValueError``, ``OSError``, and every other exception
-    remain programming/infrastructure errors and propagate unchanged.
+    Only a capability diagnostic (``ToolDiagnosticError``) and pydantic argument
+    validation are expected boundary results. Bare ``ValueError``, ``OSError``,
+    and every other exception remain programming/infrastructure errors and
+    propagate unchanged.
     """
 
     @wraps(invoke)

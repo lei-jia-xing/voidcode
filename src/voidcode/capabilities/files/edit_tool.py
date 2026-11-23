@@ -22,6 +22,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
+from ..tool_errors import ToolDiagnosticError, expected_failures, raise_tool_diagnostic
 from ._common import (
     PathEscapesWorkspaceError,
     encode_line_endings,
@@ -30,7 +31,6 @@ from ._common import (
     resolve_workspace_path,
     summarize_diff,
 )
-from .errors import ToolDiagnosticError, expected_failures, raise_tool_diagnostic
 from .mutation import check_expected_hash, invalid_path_failure, load_text_state, outside_workspace_failure, uniform_line_ending
 from .range_edit import RangeEditResultBody, _RangeEditArgs, apply_range_edits
 

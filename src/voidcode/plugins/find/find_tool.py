@@ -16,9 +16,9 @@ from typing import ClassVar, Literal, NoReturn
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from voidcode.capabilities.files._common import validate_glob_patterns, validate_non_empty
-from voidcode.capabilities.files.errors import ToolDiagnosticError, expected_failures
 from voidcode.capabilities.files.grep_tool import MAX_MATCHES, GrepResultBody, GrepResultMatch, GrepTool
 from voidcode.capabilities.files.read_tool import ReadResultBody, ReadTool
+from voidcode.capabilities.tool_errors import ToolDiagnosticError, expected_failures
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import PluginServices

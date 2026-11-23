@@ -19,6 +19,7 @@ import pytest
 
 from voidcode.capabilities.exec.background_process import (
     MAX_PROCESS_ROWS,
+    MAX_SEND_BYTES,
     BackgroundProcessExternalBody,
     BackgroundProcessListBody,
     BackgroundProcessLogsBody,
@@ -26,11 +27,14 @@ from voidcode.capabilities.exec.background_process import (
     BackgroundProcessStartBody,
     BackgroundProcessStopBody,
 )
+from voidcode.capabilities.exec.process_reader import read_process_resource
+from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES
 from voidcode.plugins.exec import create_plugin
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.resources import ResourceReadCaller, ResourceReadRequest
 from voidcode.sdk.services import ProcessHandle, ProcessOutput
-from voidcode.sdk.tools import ToolCall, ToolEffect, ToolFailure, ToolSuccess
+from voidcode.sdk.tools import TOOL_OUTPUT_BYTES, ConfirmedStop, ToolCall, ToolEffect, ToolFailure, ToolSuccess, UnconfirmedStop
 
 _SHELL_WRAPPER = ["cmd.exe", "/c"] if os.name == "nt" else ["/bin/sh", "-c"]
 _LOG_PAGE_BYTES = 64 * 1024
@@ -191,9 +195,16 @@ def _handle(process_id: str, *, pid: int, running: bool = True, exit_code: int |
     )
 
 
-def _persisted(handle: ProcessHandle, *, description: str = "", command: str = "sleep 60", state: str = "running") -> dict[str, object]:
+def _persisted(
+    handle: ProcessHandle,
+    *,
+    description: str = "",
+    command: str = "sleep 60",
+    state: str = "running",
+    origin_session_id: str | None = "session-test",
+) -> dict[str, object]:
     """The record `start` writes: identity, where it logs, and what the caller called it."""
-    return {
+    record: dict[str, object] = {
         "process_id": handle.process_id,
         "pid": handle.pid,
         "start_time": handle.start_time,
@@ -204,6 +215,9 @@ def _persisted(handle: ProcessHandle, *, description: str = "", command: str = "
         "started_at": "2026-01-01T00:00:00+00:00",
         "state": state,
     }
+    if origin_session_id is not None:
+        record["origin_session_id"] = origin_session_id
+    return record
 
 
 def _state(*records: Mapping[str, object]) -> dict[str, object]:
@@ -220,6 +234,10 @@ class _AbortSignal:
     def __init__(self, *, cancelled: bool = False) -> None:
         self.cancelled = cancelled
         self.reason: str | None = "cancelled by test" if cancelled else None
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        self.reason = "cancelled by test"
 
 
 def _context(workspace: Path, abort_signal: object | None = None) -> ToolContext:
@@ -247,7 +265,8 @@ def test_the_plugin_registers_both_tools() -> None:
 
     assert set(definitions) == {"shell_exec", "background_process"}
     definition = definitions["background_process"]
-    assert definition.effects == frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN})
+    assert definition.effects == frozenset({ToolEffect.EXECUTE})
+    assert definitions["shell_exec"].effects == frozenset({ToolEffect.EXECUTE})
     # The core validates the schema at admission and again on every call.
     jsonschema.Draft202012Validator.check_schema(json_wire_object(definition.input_schema))
 
@@ -334,7 +353,7 @@ def test_start_launches_the_workspace_shell_and_persists_the_identity(tmp_path: 
 
 def test_a_later_start_keeps_the_identities_already_persisted(tmp_path: Path) -> None:
     first = _handle("proc-first", pid=11)
-    services = _FakeServices(state=_state(_persisted(first, description="first")), version=4)
+    services = _FakeServices(state=_state(_persisted(first, description="first", origin_session_id=None)), version=4)
 
     result = _invoke({"op": "start", "command": "serve"}, tmp_path, services)
 
@@ -412,14 +431,30 @@ def test_start_of_a_cancelled_call_launches_nothing(tmp_path: Path) -> None:
     assert services.state == {}
 
 
-def test_start_propagates_the_core_duplicate_refusal(tmp_path: Path) -> None:
+def test_start_converts_the_core_duplicate_refusal(tmp_path: Path) -> None:
     services = _FakeServices(spawn_error=ValueError("background process proc-abc is already running"))
 
-    with pytest.raises(ValueError, match="already running"):
-        _invoke({"op": "start", "command": "serve"}, tmp_path, services)
+    result = _invoke({"op": "start", "command": "serve"}, tmp_path, services)
 
+    assert isinstance(result, ToolFailure)
+    assert "already running" in result.error
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "tool_execution_error"
+    assert result.diagnostics.details["reason"] == "duplicate_spawn"
     assert services.names() == ["get_state", "spawn_process"]
     assert services.state == {}
+
+
+def test_start_converts_a_failed_process_start(tmp_path: Path) -> None:
+    services = _FakeServices(spawn_error=ValueError("failed to start background process: permission denied"))
+
+    result = _invoke({"op": "start", "command": "serve"}, tmp_path, services)
+
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "failed_process_start"
+    assert "could not start the process" in result.error
+    assert services.names() == ["get_state", "spawn_process"]
 
 
 def test_start_surfaces_a_read_only_lease_permission_error(tmp_path: Path) -> None:
@@ -428,6 +463,156 @@ def test_start_surfaces_a_read_only_lease_permission_error(tmp_path: Path) -> No
 
     with pytest.raises(PermissionError, match="read-only and hook leases do not touch the machine"):
         _invoke({"op": "start", "command": "serve"}, tmp_path, services)
+
+
+def test_start_cancelled_right_after_spawn_stops_the_process(tmp_path: Path) -> None:
+    signal = _AbortSignal()
+
+    class CancelOnSpawn(_FakeServices):
+        def spawn_process(self, *args: object, **kwargs: object) -> ProcessHandle:
+            handle = super().spawn_process(*args, **kwargs)  # type: ignore[arg-type]
+            signal.cancel()
+            return handle
+
+    services = CancelOnSpawn()
+
+    result = _invoke({"op": "start", "command": "serve"}, tmp_path, services, abort_signal=signal)
+
+    assert isinstance(result, ToolFailure)
+    assert "cancelled after starting" in result.error
+    assert "Started background process" not in result.output.text
+    assert result.execution is not None
+    assert isinstance(result.execution, ConfirmedStop)
+    assert result.execution.cancellation_signalled is True
+    assert services.call("cancel_process")["reason"] == "background_process start cancelled"
+    # The identity was never persisted, so the cancelled start leaves no success record.
+    assert "replace_state" not in services.names()
+    assert services.state == {}
+    assert result.body is None
+
+
+def test_start_cancelled_after_persisting_the_identity_marks_it_exited(tmp_path: Path) -> None:
+    signal = _AbortSignal()
+
+    class CancelOnStateWrite(_FakeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.writes = 0
+
+        def replace_state(self, state: Mapping[str, object], expected_version: int, scope: str = "session") -> int:
+            version = super().replace_state(state, expected_version, scope)
+            if self.writes == 0:
+                signal.cancel()
+            self.writes += 1
+            return version
+
+    services = CancelOnStateWrite()
+
+    result = _invoke({"op": "start", "command": "serve"}, tmp_path, services, abort_signal=signal)
+
+    assert isinstance(result, ToolFailure)
+    assert "the process and its group were stopped" in result.error
+    assert result.execution is not None and result.execution.side_effect_state == "settled"
+    assert services.names().count("cancel_process") == 1
+    process_id = services.spawn_handle.process_id
+    assert services.state["processes"][process_id]["state"] == "exited"
+    assert services.state["processes"][process_id]["exit_code"] == -15
+    assert [call["expected_version"] for call in services.spawns_of("replace_state")] == [0, 1]
+    assert isinstance(result.body, BackgroundProcessStartBody)
+    assert result.body.state == "exited"
+    assert result.body.running is False
+
+
+def test_start_cancelled_during_the_readiness_wait_cleans_up_instead_of_succeeding(tmp_path: Path) -> None:
+    signal = _AbortSignal()
+
+    class CancelOnPoll(_FakeServices):
+        def read_process_output(self, process_id: str, *, stream: str = "stdout", offset: int = 0, limit: int = _HOST_PAGE_LIMIT) -> ProcessOutput:
+            page = super().read_process_output(process_id, stream=stream, offset=offset, limit=limit)
+            signal.cancel()
+            return page
+
+    services = CancelOnPoll()
+
+    result = _invoke(
+        {"op": "start", "command": "serve", "ready_pattern": "listening", "ready_timeout": 5},
+        tmp_path,
+        services,
+        abort_signal=signal,
+    )
+
+    assert isinstance(result, ToolFailure)
+    assert "Readiness wait was cancelled; the process was started" not in result.output.text
+    assert "the process and its group were stopped" in result.error
+    assert services.names().count("cancel_process") == 1
+    process_id = services.spawn_handle.process_id
+    assert services.state["processes"][process_id]["state"] == "exited"
+
+
+def test_start_cancelled_with_an_unconfirmed_stop_reports_that_honestly(tmp_path: Path) -> None:
+    signal = _AbortSignal()
+
+    class UnconfirmedStopServices(_FakeServices):
+        def __init__(self) -> None:
+            super().__init__(cancel_result=False)
+            self.writes = 0
+
+        def replace_state(self, state: Mapping[str, object], expected_version: int, scope: str = "session") -> int:
+            version = super().replace_state(state, expected_version, scope)
+            if self.writes == 0:
+                signal.cancel()
+            self.writes += 1
+            return version
+
+    services = UnconfirmedStopServices()
+
+    result = _invoke({"op": "start", "command": "serve"}, tmp_path, services, abort_signal=signal)
+
+    assert isinstance(result, ToolFailure)
+    assert "could not confirm it stopped" in result.error
+    assert result.execution is not None
+    assert isinstance(result.execution, UnconfirmedStop)
+    assert result.execution.side_effect_state == "unknown"
+    process_id = services.spawn_handle.process_id
+    # An unconfirmed stop must not fabricate an exited record.
+    assert services.state["processes"][process_id]["state"] == "running"
+
+
+def test_start_cancelled_with_an_already_exited_leader_is_still_unconfirmed(tmp_path: Path) -> None:
+    signal = _AbortSignal()
+
+    class ExitedBeforeCancel(_FakeServices):
+        def __init__(self) -> None:
+            super().__init__(cancel_result=False)
+            self.writes = 0
+
+        def replace_state(self, state: Mapping[str, object], expected_version: int, scope: str = "session") -> int:
+            version = super().replace_state(state, expected_version, scope)
+            if self.writes == 0:
+                signal.cancel()
+                self.handles = [replace(handle, running=False, exit_code=0) for handle in self.handles]
+            self.writes += 1
+            return version
+
+    services = ExitedBeforeCancel()
+
+    result = _invoke({"op": "start", "command": "serve"}, tmp_path, services, abort_signal=signal)
+
+    assert isinstance(result, ToolFailure)
+    assert "the process leader exited, but the process group could not be confirmed stopped" in result.error
+    assert result.execution is not None
+    assert isinstance(result.execution, UnconfirmedStop)
+    assert result.execution.side_effect_state == "unknown"
+    assert result.execution.cancellation_signalled is True
+    process_id = services.spawn_handle.process_id
+    # A dead leader does not prove the recorded group is gone; keep the identity running.
+    assert services.state["processes"][process_id]["state"] == "running"
+    assert "exit_code" not in services.state["processes"][process_id]
+    assert [call["expected_version"] for call in services.spawns_of("replace_state")] == [0]
+    assert isinstance(result.body, BackgroundProcessStartBody)
+    assert result.body.state == "exited"
+    assert result.body.running is False
+    assert result.body.exit_code == 0
 
 
 def test_ps_merges_live_handles_with_the_persisted_identities(tmp_path: Path) -> None:
@@ -455,7 +640,14 @@ def test_ps_merges_live_handles_with_the_persisted_identities(tmp_path: Path) ->
     ]
     assert body.count == 3
     assert body.limit == MAX_PROCESS_ROWS
-    assert result.output.text == "Background process list: 3 process(es)."
+    text = result.output.text
+    assert text.startswith("Background process list: 3 process(es).\n")
+    assert "- proc-live (proc://proc-live): running; description='dev server'; command='python -m http.server'" in text
+    assert "- proc-done (proc://proc-done): exited, exit code 0; description='one shot'; command='ls'" in text
+    assert "- proc-gone (proc://proc-gone): externally managed; description='watcher'; command='watch'" in text
+    # The model-visible listing never exposes private spool paths.
+    assert live.stdout_path not in text
+    assert gone.stderr_path not in text
     rows = {row.process_id: row for row in body.processes}
     assert rows["proc-live"].description == "dev server"
     assert rows["proc-live"].command == "python -m http.server"
@@ -501,6 +693,69 @@ def test_ps_of_an_empty_workspace_lists_nothing(tmp_path: Path) -> None:
     assert result.output.text == "Background process list: 0 process(es)."
 
 
+def test_ps_never_shows_another_sessions_records(tmp_path: Path) -> None:
+    foreign = _handle("proc-foreign", pid=201)
+    mine = _handle("proc-mine", pid=202, running=False, exit_code=0)
+    services = _FakeServices(
+        state=_state(
+            _persisted(foreign, description="someone else", origin_session_id="other-session"),
+            _persisted(mine, description="mine", state="exited"),
+        ),
+    )
+
+    result = _invoke({"op": "ps"}, tmp_path, services)
+
+    assert isinstance(result, ToolSuccess)
+    body = result.body
+    assert isinstance(body, BackgroundProcessListBody)
+    assert [row.process_id for row in body.processes] == ["proc-mine"]
+    assert "proc-foreign" not in result.output.text
+    assert "someone else" not in result.output.text
+
+
+@pytest.mark.parametrize("op", ["logs", "send", "stop"])
+def test_a_foreign_process_id_is_indistinguishable_from_unknown(tmp_path: Path, op: str) -> None:
+    foreign = _handle("proc-foreign", pid=203)
+    services = _FakeServices(state=_state(_persisted(foreign, origin_session_id="other-session")))
+    arguments: dict[str, object] = {"op": op, "process_id": "proc-foreign"}
+    if op == "send":
+        arguments["input"] = "hi"
+
+    result = _invoke(arguments, tmp_path, services)
+
+    assert isinstance(result, ToolFailure)
+    assert result.error == "unknown background process: proc-foreign"
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "unknown_process_id"
+    assert "externally managed" not in result.error
+
+
+def test_ps_text_is_line_and_budget_bounded(tmp_path: Path) -> None:
+    from voidcode.capabilities.exec import background_process
+
+    command = "x" * 5000
+    description = "d" * 5000
+    handles = [_handle(f"proc-long-{index:02d}", pid=400 + index) for index in range(MAX_PROCESS_ROWS)]
+    services = _FakeServices(
+        handles=handles,
+        state=_state(*(_persisted(handle, description=description, command=command) for handle in handles)),
+    )
+
+    result = _invoke({"op": "ps"}, tmp_path, services)
+
+    assert isinstance(result, ToolSuccess)
+    text = result.output.text
+    assert len(text.encode("utf-8")) <= background_process._LOG_RENDER_BYTES
+    assert "... (line truncated to 2000 chars)" in text
+    assert "omitted from the model text by the render budget; the typed body retains them" in text
+    body = result.body
+    assert isinstance(body, BackgroundProcessListBody)
+    assert body.count == MAX_PROCESS_ROWS
+    assert body.processes[0].command == command
+    assert body.processes[0].description == description
+    assert result.output.bounds.truncated is True
+
+
 def test_logs_pages_lines_by_offset_and_reports_the_next_offset(tmp_path: Path) -> None:
     handle = _handle("proc-logs", pid=7)
     services = _FakeServices(
@@ -527,9 +782,13 @@ def test_logs_pages_lines_by_offset_and_reports_the_next_offset(tmp_path: Path) 
     assert body.next_offset == 3
     assert body.next_offsets == {"stdout": 3}
     assert body.truncated is True
-    assert body.guidance == "This is a bounded page from the current log snapshot; use offset to inspect another page or continue other work."
+    assert body.guidance == "This is a bounded page from the current log snapshot. Continue with the next offset(s) shown above."
     assert first.output.text.endswith(f"Guidance: {body.guidance}")
     assert first.output.text.startswith("[stdout]\ntwo\nthree\n")
+    assert "Next offset: 3." in first.output.text
+    # The model-visible page never names the private spool path.
+    assert handle.stdout_path not in first.output.text
+    assert handle.stderr_path not in first.output.text
 
     second = _invoke({"op": "logs", "process_id": "proc-logs", "stream": "stdout", "offset": body.next_offset, "limit": 2}, tmp_path, services)
 
@@ -539,8 +798,9 @@ def test_logs_pages_lines_by_offset_and_reports_the_next_offset(tmp_path: Path) 
     assert tail.stdout == "four\nfive\n"
     assert tail.next_offset is None
     assert tail.next_offsets == {}
-    # Paging past the start of the log is the only reason a completed page is still partial.
-    assert tail.truncated is True
+    # Offset > 0 alone is not truncation; this page reaches the captured end.
+    assert tail.truncated is False
+    assert "Next offset:" not in second.output.text
     # The tool reads the host's bounded byte windows, never a whole log in one call.
     reads = services.spawns_of("read_process_output")
     assert reads and all(read["limit"] == _LOG_PAGE_BYTES and read["offset"] % _LOG_PAGE_BYTES == 0 for read in reads)
@@ -569,6 +829,7 @@ def test_logs_reads_both_streams_and_keeps_their_offsets_apart(tmp_path: Path) -
     assert body.next_offsets == {"stdout": 1}
     assert "[stdout]\nout-1\n" in result.output.text
     assert "[stderr]\nerr-1\n" in result.output.text
+    assert "Next offsets: stdout=1." in result.output.text
 
 
 def test_logs_of_an_exited_process_reads_the_final_snapshot(tmp_path: Path) -> None:
@@ -585,7 +846,69 @@ def test_logs_of_an_exited_process_reads_the_final_snapshot(tmp_path: Path) -> N
     assert body.exit_code == 0
     assert body.stdout == "bye\n"
     assert body.next_offset is None
-    assert body.guidance == "This is a bounded page from the final log snapshot; use offset to inspect another page if needed."
+    assert body.guidance == "This is a bounded page from the final log snapshot."
+    assert body.truncated is False
+
+
+def test_logs_scan_cap_guides_proc_byte_paging_without_spool_paths(tmp_path, monkeypatch):
+    from voidcode.capabilities.exec import background_process
+
+    monkeypatch.setattr(background_process, "_LOG_SCAN_BYTES", 4)
+    handle = _handle("proc-cap", pid=10, running=False, exit_code=0)
+    services = _FakeServices(handles=[handle], logs={("proc-cap", "stdout"): b"one\ntwo\nthree\n"}, state=_state(_persisted(handle, state="exited")))
+
+    result = _invoke({"op": "logs", "process_id": "proc-cap", "stream": "stdout"}, tmp_path, services)
+
+    assert isinstance(result, ToolSuccess)
+    body = result.body
+    assert isinstance(body, BackgroundProcessLogsBody)
+    assert body.truncated is True
+    assert "Only the first 4 bytes of stdout were scanned" in result.output.text
+    assert "read(proc://proc-cap, byte_offset=4)" in result.output.text
+    assert handle.stdout_path not in result.output.text
+
+
+def test_logs_render_budget_advances_the_cursor_instead_of_overflowing_projection(tmp_path, monkeypatch):
+    from voidcode.capabilities.exec import background_process
+
+    monkeypatch.setattr(background_process, "_LOG_RENDER_BYTES", 10)
+    handle = _handle("proc-budget", pid=11, running=False, exit_code=0)
+    services = _FakeServices(
+        handles=[handle],
+        logs={("proc-budget", "stdout"): b"aaaa\nbbbb\ncccc\n"},
+        state=_state(_persisted(handle, state="exited")),
+    )
+
+    result = _invoke({"op": "logs", "process_id": "proc-budget", "stream": "stdout", "limit": 3}, tmp_path, services)
+
+    assert isinstance(result, ToolSuccess)
+    body = result.body
+    assert isinstance(body, BackgroundProcessLogsBody)
+    assert body.stdout == "aaaa\nbbbb\n"
+    assert body.stdout_lines == 2
+    assert body.next_offset == 2
+    assert body.next_offsets == {"stdout": 2}
+    assert body.truncated is True
+    assert "Next offset: 2." in result.output.text
+    assert len(result.output.text.encode("utf-8")) < TOOL_OUTPUT_BYTES
+
+
+def test_logs_caps_one_oversized_line_and_discloses_the_clip(tmp_path):
+    handle = _handle("proc-line", pid=12, running=False, exit_code=0)
+    services = _FakeServices(
+        handles=[handle],
+        logs={("proc-line", "stdout"): ("x" * 3000 + "\n").encode()},
+        state=_state(_persisted(handle, state="exited")),
+    )
+
+    result = _invoke({"op": "logs", "process_id": "proc-line", "stream": "stdout"}, tmp_path, services)
+
+    assert isinstance(result, ToolSuccess)
+    body = result.body
+    assert isinstance(body, BackgroundProcessLogsBody)
+    assert body.truncated is True
+    assert "... (line truncated to 2000 chars)" in result.output.text
+    assert len(body.stdout) < 2300
 
 
 def test_send_writes_the_input_and_reports_the_accepted_bytes(tmp_path: Path) -> None:
@@ -624,12 +947,106 @@ def test_send_reports_a_closed_stdin_as_an_input_failure(tmp_path: Path) -> None
     assert isinstance(result, ToolFailure)
     assert "is not accepting input" in result.error
     assert "was started without a stdin pipe" in result.error
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "stdin_unavailable"
+    assert result.diagnostics.details["requested_bytes"] == 7
+    assert result.body is None
+    assert services.names() == ["get_state", "list_processes", "write_process"]
+
+
+def test_send_refuses_oversized_input_before_touching_services(tmp_path: Path) -> None:
+    services = _FakeServices()
+    # Half the byte limit in characters, doubled by multi-byte UTF-8, plus the newline.
+    text = "é" * (MAX_SEND_BYTES // 2)
+
+    result = _invoke({"op": "send", "process_id": "proc-send", "input": text}, tmp_path, services)
+
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "tool_input_validation"
+    assert result.diagnostics.details["reason"] == "input_too_large"
+    assert result.diagnostics.details["requested_bytes"] == MAX_SEND_BYTES + 1
+    assert services.names() == []
+
+
+def test_send_refuses_input_past_the_schema_character_limit(tmp_path: Path) -> None:
+    services = _FakeServices()
+
+    result = _invoke({"op": "send", "process_id": "proc-send", "input": "x" * (MAX_SEND_BYTES + 1)}, tmp_path, services)
+
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "tool_input_validation"
+    assert services.names() == []
+
+
+def test_send_reports_a_partial_write_as_a_failure(tmp_path: Path) -> None:
+    handle = _handle("proc-send", pid=23)
+    services = _FakeServices(handles=[handle], state=_state(_persisted(handle)))
+    services.write_process = lambda process_id, data: 2  # type: ignore[method-assign]
+
+    result = _invoke({"op": "send", "process_id": "proc-send", "input": "status"}, tmp_path, services)
+
+    assert isinstance(result, ToolFailure)
+    assert "accepted only part of the input" in result.error
     body = result.body
     assert isinstance(body, BackgroundProcessSendBody)
+    assert body.written_bytes == 2
     assert body.requested_bytes == 7
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "partial_stdin_write"
+    assert result.execution is not None
+    assert isinstance(result.execution, ConfirmedStop)
+    assert result.execution.cancellation_signalled is False
+
+
+def test_send_cancelled_before_the_write_writes_nothing(tmp_path: Path) -> None:
+    signal = _AbortSignal()
+    handle = _handle("proc-send", pid=24)
+
+    class CancelOnList(_FakeServices):
+        def list_processes(self) -> tuple[ProcessHandle, ...]:
+            handles = super().list_processes()
+            signal.cancel()
+            return handles
+
+    services = CancelOnList(handles=[handle], state=_state(_persisted(handle)))
+
+    result = _invoke({"op": "send", "process_id": "proc-send", "input": "status"}, tmp_path, services, abort_signal=signal)
+
+    assert isinstance(result, ToolFailure)
+    assert "cancelled before writing" in result.error
+    assert "write_process" not in services.names()
+    body = result.body
+    assert isinstance(body, BackgroundProcessSendBody)
     assert body.written_bytes == 0
-    assert body.error == result.error
-    assert result.output.text == "Wrote 0 of 7 UTF-8 bytes to background process proc-send."
+    assert result.execution is not None
+    assert isinstance(result.execution, ConfirmedStop)
+    assert result.execution.cancellation_signalled is True
+
+
+def test_send_cancelled_after_the_write_reports_the_accepted_bytes(tmp_path: Path) -> None:
+    signal = _AbortSignal()
+    handle = _handle("proc-send", pid=25)
+
+    class CancelOnWrite(_FakeServices):
+        def write_process(self, process_id: str, data: bytes | str) -> int:
+            written = super().write_process(process_id, data)
+            signal.cancel()
+            return written
+
+    services = CancelOnWrite(handles=[handle], state=_state(_persisted(handle)))
+
+    result = _invoke({"op": "send", "process_id": "proc-send", "input": "status"}, tmp_path, services, abort_signal=signal)
+
+    assert isinstance(result, ToolFailure)
+    assert "cancelled after writing 7 of 7 bytes" in result.error
+    body = result.body
+    assert isinstance(body, BackgroundProcessSendBody)
+    assert body.written_bytes == 7
+    assert result.execution is not None
+    assert isinstance(result.execution, ConfirmedStop)
+    assert result.execution.cancellation_signalled is True
 
 
 def test_stop_cancels_the_process_group_and_records_the_exit(tmp_path: Path) -> None:
@@ -662,7 +1079,7 @@ def test_stop_of_an_id_this_host_does_not_supervise_is_externally_managed(tmp_pa
 
     assert isinstance(result, ToolFailure)
     assert "externally managed" in result.error
-    assert "survived a host restart or was started by another session" in result.error
+    assert "survived a host restart" in result.error
     body = result.body
     assert isinstance(body, BackgroundProcessExternalBody)
     assert body.process_id == "proc-gone"
@@ -683,7 +1100,8 @@ def test_stop_reports_an_unconfirmed_stop_as_a_failure(tmp_path: Path) -> None:
 
     assert isinstance(result, ToolFailure)
     assert result.error == "could not confirm background process proc-stubborn stopped; process group remains or termination is unconfirmed"
-    assert result.output.text == result.error
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "stop_unconfirmed"
     # A stop that was not confirmed leaves the persisted state alone.
     assert "replace_state" not in services.names()
 
@@ -699,9 +1117,12 @@ def test_stop_reports_an_unconfirmed_stop_as_a_failure(tmp_path: Path) -> None:
 def test_an_unknown_process_id_fails_clearly(tmp_path: Path, arguments: Mapping[str, object]) -> None:
     services = _FakeServices()
 
-    with pytest.raises(ValueError, match="unknown background process: proc-missing"):
-        _invoke(arguments, tmp_path, services)
+    result = _invoke(arguments, tmp_path, services)
 
+    assert isinstance(result, ToolFailure)
+    assert result.error == "unknown background process: proc-missing"
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "unknown_process_id"
     assert services.names() == ["get_state", "list_processes"]
 
 
@@ -726,9 +1147,11 @@ def test_an_unknown_process_id_fails_clearly(tmp_path: Path, arguments: Mapping[
 def test_invalid_arguments_fail_before_touching_services(tmp_path: Path, arguments: Mapping[str, object]) -> None:
     services = _FakeServices()
 
-    with pytest.raises(ValueError):
-        _invoke(arguments, tmp_path, services)
+    result = _invoke(arguments, tmp_path, services)
 
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "tool_input_validation"
     assert services.names() == []
 
 
@@ -756,8 +1179,10 @@ def test_corrupt_process_state_is_not_an_empty_or_fabricated_inventory(tmp_path:
             return {}, 0
 
         services.get_state = empty_state
-    with pytest.raises(ValueError):
-        _invoke({"op": "ps"}, tmp_path, services)
+    result = _invoke({"op": "ps"}, tmp_path, services)
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "corrupt_process_state"
     assert services.names() == ["get_state"]
 
 
@@ -803,3 +1228,22 @@ def test_readiness_rechecks_stdout_when_process_exits_between_stream_reads(tmp_p
     result = _invoke({"op": "start", "command": "serve", "ready_pattern": "listening", "ready_timeout": 1}, tmp_path, Services())
     assert result.body.ready is True
     assert result.body.state == "exited"
+
+
+def test_proc_output_default_page_is_not_projection_clipped(tmp_path: Path) -> None:
+    handle = _handle("proc-page", pid=61)
+    services = _FakeServices(
+        handles=[handle],
+        logs={("proc-page", "stdout"): b"x" * (MAX_RESOURCE_PAGE_BYTES + 4096)},
+    )
+    caller = ResourceReadCaller(session_id="session-test", workspace=tmp_path, revision_id="rev-test", run_id="run-test")
+
+    page = read_process_resource(ResourceReadRequest(uri="proc://proc-page"), caller, services)  # type: ignore[arg-type]
+
+    assert page is not None
+    reads = services.spawns_of("read_process_output")
+    assert reads[-1]["limit"] == MAX_RESOURCE_PAGE_BYTES
+    assert page.body["byte_count"] == MAX_RESOURCE_PAGE_BYTES
+    raw_content = page.body["raw_content"]
+    assert isinstance(raw_content, str) and len(raw_content) == MAX_RESOURCE_PAGE_BYTES
+    assert len(page.output.text.encode("utf-8")) <= TOOL_OUTPUT_BYTES

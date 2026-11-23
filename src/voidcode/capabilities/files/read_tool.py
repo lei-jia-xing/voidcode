@@ -37,8 +37,8 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
+from ..tool_errors import expected_failures, raise_tool_diagnostic
 from ._common import resolve_workspace_path, validate_non_empty
-from .errors import expected_failures, raise_tool_diagnostic
 
 
 class ReadArgs(BaseModel):

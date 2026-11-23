@@ -27,8 +27,8 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
+from ..tool_errors import expected_failures, raise_tool_diagnostic
 from ._common import MAX_RESULT_LIMIT, is_default_ignored, resolve_workspace_path, validate_glob_patterns, validate_non_empty
-from .errors import expected_failures, raise_tool_diagnostic
 from .gitignore import GitIgnoreMatcher
 
 MAX_MATCHES = 200

@@ -1400,6 +1400,8 @@ class ProcessServices(Protocol):
 
         Only for processes started with `stdin=True` in this runtime: a process that survived a
         core restart keeps running but its pipe did not, so that write is refused rather than lost.
+        The core bounds the write and honors the lease's cancellation, so a partial count is the
+        honest result of a deadline, cancellation, or a pipe the process stopped reading.
         """
         ...
 

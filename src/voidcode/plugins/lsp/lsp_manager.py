@@ -1055,10 +1055,15 @@ class ManagedLspManager:
 
     @staticmethod
     def _write_message(services: ProcessServices, running_server: _RunningLspServer, *, message: dict[str, object]) -> None:
+        payload = _encode_lsp_message(message)
         try:
-            services.write_process(running_server.process_id, _encode_lsp_message(message))
+            written = services.write_process(running_server.process_id, payload)
         except ValueError as exc:
             raise LspProtocolError(f"LSP server {running_server.process_id} is not reading its stdin: {exc}") from exc
+        if written < len(payload):
+            raise LspProtocolError(
+                f"LSP server {running_server.process_id} accepted only {written} of {len(payload)} stdin bytes; the JSON-RPC frame is truncated"
+            )
 
     @staticmethod
     def _read_message(

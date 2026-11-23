@@ -27,6 +27,10 @@ MAX_CAPTURE_BYTES: Final[int] = 256 * 1024 * 1024
 _DEFAULT_CAPTURE_BYTES: Final[int] = 256 * 1024
 _READ_CHUNK_BYTES: Final[int] = 8192
 _POLL_SECONDS: Final[float] = 0.05
+#: Retry interval while a background process's stdin pipe is full.
+_WRITE_POLL_SECONDS: Final[float] = 0.01
+#: Default bound on one stdin write when the caller supplies no deadline.
+_WRITE_DEADLINE_SECONDS: Final[float] = 5.0
 #: SIGTERM window before a group is escalated to SIGKILL.
 _STOP_GRACE_SECONDS: Final[float] = 0.25
 #: A stopped child's pipes are drained inside this budget, so its partial output is not lost.
@@ -814,7 +818,21 @@ class ProcessRegistry:
             ]
         return tuple(entry.handle() for entry in entries)
 
-    def write(self, process_id: str, data: bytes, *, owner: str, session_id: str) -> int:
+    def write(
+        self,
+        process_id: str,
+        data: bytes,
+        *,
+        owner: str,
+        session_id: str,
+        deadline: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> int:
+        """Write stdin without ever blocking this thread past the deadline or cancellation.
+
+        Returns the exact bytes the pipe accepted; a cancelled, timed-out, or broken pipe
+        reports its honest partial count instead of claiming the whole payload was written.
+        """
         entry = self.background(process_id, owner=owner, session_id=session_id)
         self._refresh_tree(entry)
         pipe = entry.process.stdin
@@ -823,11 +841,40 @@ class ProcessRegistry:
         if entry.process.poll() is not None:
             raise ValueError(f"background process {process_id} has exited")
         try:
-            written = pipe.write(data)
-            pipe.flush()
-        except (BrokenPipeError, OSError, ValueError) as exc:
-            raise ValueError(f"background process {process_id} is not reading its stdin: {exc}") from exc
-        return 0 if written is None else written
+            fd = pipe.fileno()
+            os.set_blocking(fd, False)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"background process {process_id} stdin is unavailable: {exc}") from exc
+        if deadline is None:
+            deadline = time.monotonic() + _WRITE_DEADLINE_SECONDS
+        payload = memoryview(data)
+        written = 0
+        try:
+            while written < len(payload):
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                try:
+                    count = os.write(fd, payload[written:])
+                except BlockingIOError:
+                    # A full pipe is retried inside the deadline; no writer thread is ever parked.
+                    time.sleep(_WRITE_POLL_SECONDS)
+                    continue
+                except (BrokenPipeError, OSError, ValueError) as exc:
+                    if written:
+                        # Bytes already accepted are a real side effect; report them honestly.
+                        break
+                    raise ValueError(f"background process {process_id} is not reading its stdin: {exc}") from exc
+                if count <= 0:
+                    break
+                written += count
+        finally:
+            try:
+                os.set_blocking(fd, True)
+            except OSError, ValueError:
+                pass
+        return written
 
     def read_output(
         self,

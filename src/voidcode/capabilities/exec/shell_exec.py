@@ -17,6 +17,7 @@ from typing import ClassVar, final
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from voidcode.capabilities.tool_errors import expected_failures, raise_tool_diagnostic
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices
@@ -162,26 +163,58 @@ class ShellExecTool:
         icon=Icon(glyph="⌁"),
         description="Execute a command inside the current workspace.",
         input_schema=ShellExecArgs.model_json_schema(),
-        effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
+        effects=frozenset({ToolEffect.EXECUTE}),
         output_schema=SHELL_EXEC_RESULT_SCHEMA,
     )
 
+    @expected_failures
     def invoke(self, call: ToolCall, *, context: ToolContext, services: PluginServices) -> ToolResult:
         workspace = context.require_workspace()
         args = ShellExecArgs.model_validate(dict(call.arguments))
         command_text = args.command
         workspace_root = Path(workspace).resolve()
-        if not workspace_root.exists() or not workspace_root.is_dir():
-            raise ValueError("shell_exec workspace must be an existing directory")
+        if not workspace_root.is_dir():
+            raise_tool_diagnostic(
+                message=f"shell_exec workspace is not an existing directory: {workspace_root}",
+                error_kind="tool_environment_error",
+                reason="invalid_workspace",
+                retry_guidance="Retry from an existing workspace directory.",
+            )
         timeout_seconds = args.timeout
 
-        result = services.run_process(
-            _shell_argv(command_text),
-            cwd=workspace_root,
-            timeout_seconds=float(timeout_seconds),
-            max_output_bytes=_CAPTURE_BYTES,
-            on_output=_progress_sink(context),
-        )
+        try:
+            result = services.run_process(
+                _shell_argv(command_text),
+                cwd=workspace_root,
+                timeout_seconds=float(timeout_seconds),
+                max_output_bytes=_CAPTURE_BYTES,
+                on_output=_progress_sink(context),
+            )
+        except ValueError as exc:
+            failure = str(exc)
+            if "while reading process output" in failure or "while reading helper output" in failure:
+                raise_tool_diagnostic(
+                    message=f"shell_exec failed while capturing process output: {exc}",
+                    error_kind="tool_execution_error",
+                    reason="process_capture_failed",
+                    retry_guidance="The command may have run; inspect the workspace before retrying with a narrower command.",
+                    details={"error": failure},
+                )
+            if "sandbox helper failed" in failure:
+                raise_tool_diagnostic(
+                    message=f"shell_exec sandbox helper failed after the command ran: {exc}",
+                    error_kind="tool_execution_error",
+                    reason="sandbox_helper_failed",
+                    retry_guidance="The command may have run; inspect the workspace before retrying.",
+                    details={"error": failure},
+                )
+            raise_tool_diagnostic(
+                message=f"shell_exec could not start the command: {exc}",
+                error_kind="tool_execution_error",
+                reason="process_start_failed",
+                retry_guidance="Check the command and workspace permissions, then retry.",
+                details={"error": failure},
+            )
         stdout = _spill_stream(services, result.stdout)
         stderr = _spill_stream(services, result.stderr)
         output_limit_exceeded = result.truncated
