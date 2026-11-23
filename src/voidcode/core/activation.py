@@ -13,6 +13,7 @@ import jsonschema
 
 from ..sdk.json_values import json_wire_object, own_json_object
 from ..sdk.plugin import StateSchema, StateScope
+from ..sdk.provider import ProviderReasoningEffort
 from .plugins import PluginSource
 from .storage.store import (
     PluginStateRow,
@@ -66,7 +67,7 @@ class ExecutionConfig:
     """Core execution options for model selection and policy."""
 
     model: str | None = None
-    reasoning_effort: str | int | None = None
+    reasoning_effort: ProviderReasoningEffort | None = None
     policy: ExecutionPolicy = ExecutionPolicy()
     #: How many child sessions one chain root may hold; the single governed spawn quota.
     max_root_children: int = 4

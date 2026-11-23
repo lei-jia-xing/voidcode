@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from voidcode.capabilities.tool_errors import expected_failures, raise_tool_diagnostic
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices
+from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices, ProcessStream
 from voidcode.sdk.tools import (
     EmptyOutput,
     OutputBounds,
@@ -131,7 +131,7 @@ def _spill_stream(services: ArtifactServices, text: str) -> ArtifactReference:
     return services.spill_artifact(text, media_type=_ARTIFACT_MIME)
 
 
-def _progress_sink(context: ToolContext) -> Callable[[str, bytes], None] | None:
+def _progress_sink(context: ToolContext) -> Callable[[ProcessStream, bytes], None] | None:
     """One observational hook: every chunk the lease reads is forwarded to the context's sink.
 
     The lease already swallows sink failures, so a broken sink can never alter the command result.
@@ -141,9 +141,12 @@ def _progress_sink(context: ToolContext) -> Callable[[str, bytes], None] | None:
         return None
     run_id = context.run_id
     invocation_id = context.invocation_id
-    decoders = {stream: codecs.getincrementaldecoder("utf-8")(errors="replace") for stream in ("stdout", "stderr")}
+    decoders: dict[ProcessStream, codecs.IncrementalDecoder] = {
+        "stdout": codecs.getincrementaldecoder("utf-8")(errors="replace"),
+        "stderr": codecs.getincrementaldecoder("utf-8")(errors="replace"),
+    }
 
-    def on_output(stream_name: str, chunk: bytes) -> None:
+    def on_output(stream_name: ProcessStream, chunk: bytes) -> None:
         text = decoders[stream_name].decode(chunk).replace("\r\n", "\n")
         for start in range(0, len(text), _PROGRESS_CHUNK_CHARS):
             payload: dict[str, object] = {"stream": stream_name, "text": text[start : start + _PROGRESS_CHUNK_CHARS]}

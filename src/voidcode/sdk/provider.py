@@ -32,6 +32,10 @@ type ProviderErrorKind = Literal[
     "stream_tool_feedback_shape",
     "cancelled",
 ]
+#: The canonical reasoning ladder. ``off`` is a request state, not a ladder member.
+type ProviderEffortLevel = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
+#: ``none`` is accepted at ingress as an alias for ``off``; an integer is a token budget.
+type ProviderReasoningEffort = ProviderEffortLevel | Literal["off", "none"] | int
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +111,7 @@ class ProviderTurnRequest:
     raw_model: str | None = None
     provider_name: str | None = None
     model_name: str | None = None
-    reasoning_effort: str | int | None = None
+    reasoning_effort: ProviderReasoningEffort | None = None
     cache_retention: ProviderCacheRetention | None = None
     attempt: int = 0
     abort_signal: ProviderAbortSignal | None = None

@@ -34,6 +34,7 @@ from ._wire_common import (
     OUTPUT_CAP_WHEN_UNKNOWN,
     PLACEHOLDER_API_KEY,
     OwnedResource,
+    ProviderErrorSource,
     Transport,
     TransportError,
     abort_signal_cancelled,
@@ -690,7 +691,7 @@ class OpenAIChatCompletionsProvider:
             raise TransportError(_stream_event_error_payload(exc)) from exc
 
     @staticmethod
-    def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: str) -> ProviderExecutionError:
+    def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: ProviderErrorSource) -> ProviderExecutionError:
         if isinstance(exc, OpenAIAPIError):
             return provider_execution_error_from_payload(
                 provider_name=provider_name, model_name=model_name, payload=OpenAIChatCompletionsTransport._api_error_payload(exc), source=source

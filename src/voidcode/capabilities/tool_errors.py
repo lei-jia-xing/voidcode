@@ -10,11 +10,77 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from functools import wraps
-from typing import NoReturn
+from typing import Final, Literal, NoReturn, TypeIs, get_args
 
 from pydantic import ValidationError
 
-from voidcode.sdk.tools import TextOutput, ToolCall, ToolDiagnostics, ToolFailure, ToolResult
+from voidcode.sdk.tools import TextOutput, ToolCall, ToolDiagnosticKind, ToolDiagnostics, ToolFailure, ToolResult
+
+#: Every reason a bundled tool attaches to its typed diagnostic details. The wire
+#: ``details`` object stays open; this alias types the value tools branch on.
+type ToolDiagnosticReason = Literal[
+    "ambiguous_match",
+    "byte_arguments_require_resource_uri",
+    "byte_limit_without_byte_offset",
+    "character_mid_surrogate",
+    "character_mid_utf8",
+    "character_out_of_range",
+    "content_hash_mismatch",
+    "corrupt_process_state",
+    "document_answer_shape_violation",
+    "document_content_mismatch",
+    "document_version_mismatch",
+    "document_version_unavailable",
+    "duplicate_spawn",
+    "edit_failed",
+    "empty_content",
+    "end_line_out_of_range",
+    "failed_process_start",
+    "file_changed_during_recovery",
+    "hash_only_uri",
+    "hash_only_with_page_arguments",
+    "identical_old_and_new",
+    "ignore_file_read_failed",
+    "input_too_large",
+    "invalid_arguments",
+    "invalid_path",
+    "invalid_regex",
+    "invalid_workspace",
+    "line_too_long",
+    "mixed_line_endings",
+    "nested_tool_failure",
+    "not_a_regular_file",
+    "not_text",
+    "offset_out_of_range",
+    "old_string_not_found",
+    "outside_workspace",
+    "overlapping_edits",
+    "partial_stdin_write",
+    "process_capture_failed",
+    "process_not_supervised",
+    "process_start_failed",
+    "range_out_of_bounds",
+    "range_reversed",
+    "sandbox_helper_failed",
+    "search_io_error",
+    "search_path_not_directory",
+    "search_path_not_found",
+    "send_cancelled",
+    "start_line_out_of_range",
+    "stdin_unavailable",
+    "stop_unconfirmed",
+    "target_not_found",
+    "unknown_process_id",
+    "unsupported_encoding",
+    "unsupported_resource_uri",
+]
+
+_TOOL_DIAGNOSTIC_REASONS: Final[frozenset[str]] = frozenset(value for value in get_args(ToolDiagnosticReason.__value__) if isinstance(value, str))
+
+
+def is_tool_diagnostic_reason(value: object) -> TypeIs[ToolDiagnosticReason]:
+    """Whether a detail payload's ``reason`` names one bundled reason."""
+    return isinstance(value, str) and value in _TOOL_DIAGNOSTIC_REASONS
 
 
 class ToolDiagnosticError(ValueError):
@@ -22,7 +88,7 @@ class ToolDiagnosticError(ValueError):
         self,
         *,
         message: str,
-        error_kind: str,
+        error_kind: ToolDiagnosticKind,
         error_details: dict[str, object] | None = None,
         retry_guidance: str | None = None,
     ) -> None:
@@ -32,12 +98,18 @@ class ToolDiagnosticError(ValueError):
         self.error_details = dict(error_details or {})
         self.retry_guidance = retry_guidance
 
+    @property
+    def reason(self) -> ToolDiagnosticReason | None:
+        """The typed reason discriminator, or ``None`` for an open external value."""
+        value = self.error_details.get("reason")
+        return value if is_tool_diagnostic_reason(value) else None
+
 
 def raise_tool_diagnostic(
     *,
     message: str,
-    error_kind: str,
-    reason: str,
+    error_kind: ToolDiagnosticKind,
+    reason: ToolDiagnosticReason,
     retry_guidance: str | None = None,
     details: dict[str, object] | None = None,
 ) -> NoReturn:

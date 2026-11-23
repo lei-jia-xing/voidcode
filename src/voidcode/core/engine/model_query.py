@@ -17,7 +17,7 @@ from uuid import uuid4
 import jsonschema
 
 from ...sdk.json_values import json_wire_object, own_json_object
-from ...sdk.provider import ProviderMessage, ProviderTurnRequest, ProviderTurnResult
+from ...sdk.provider import ProviderMessage, ProviderReasoningEffort, ProviderTurnRequest, ProviderTurnResult
 from ...sdk.services import StructuredModelResult, StructuredQueryParseError
 from ..cancellation import Cancellation
 from ..events import EventType
@@ -45,7 +45,7 @@ class ModelQueryHost(Protocol):
     def default_model(self) -> str | None: ...
 
     @property
-    def reasoning_effort(self) -> str | int | None: ...
+    def reasoning_effort(self) -> ProviderReasoningEffort | None: ...
 
     @property
     def abort_signal(self) -> Cancellation: ...

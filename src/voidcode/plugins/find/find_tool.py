@@ -12,7 +12,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import ClassVar, Literal, NoReturn
+from typing import ClassVar, Literal, NoReturn, Required, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -30,11 +30,13 @@ from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
     ToolDefinition,
+    ToolDiagnosticKind,
     ToolDiagnostics,
     ToolEffect,
     ToolFailure,
     ToolResult,
     ToolSuccess,
+    is_tool_diagnostic_kind,
 )
 
 #: Bounds the per-keyword grep fan-out of one find invocation; extra query
@@ -74,6 +76,75 @@ _JUDGE_PROMPT_RULES = (
 
 FindStatus = Literal["ok", "no_hit", "partial", "judge_unavailable", "judge_error"]
 JudgeFailureStatus = Literal["judge_unavailable", "judge_error"]
+type SkippedReason = Literal["candidate_cap", "prompt_budget", "unreadable"]
+type RejectedReason = Literal[
+    "verdict_not_object",
+    "unknown_candidate",
+    "duplicate_verdict",
+    "path_mismatch",
+    "line_not_prescreened",
+    "line_not_shown",
+    "invalid_range",
+    "range_too_large",
+    "invalid_verdict_field",
+    "line_out_of_range",
+    "evidence_unreadable",
+    "evidence_page_clipped",
+]
+type PrescreenSkip = Literal["prescreen match cap reached"]
+
+
+class PrescreenNote(TypedDict, total=False):
+    # Keyword-prescreen notes carry ``keyword``; literal/fallback notes carry ``pattern``/``fallback``.
+    keyword: str
+    pattern: str
+    fallback: Literal["literal"]
+    matches: int
+    files: int
+    truncated: bool
+    skipped: PrescreenSkip
+    error: str
+
+
+class SkippedMatch(TypedDict, total=False):
+    path: Required[str]
+    reason: Required[SkippedReason]
+    matches: int
+    error: str
+    error_kind: ToolDiagnosticKind
+    details: dict[str, object]
+
+
+class RejectedVerdict(TypedDict, total=False):
+    # Verdict path/line are echoed external JSON values, not trusted identifiers.
+    path: object
+    line: object
+    reason: Required[RejectedReason]
+    end_line: int
+    max_span: int
+    error: str
+    error_kind: ToolDiagnosticKind
+    details: dict[str, object]
+
+
+class UnjudgedCandidate(TypedDict):
+    candidate_id: int
+    path: str
+    reason: Literal["missing_verdict"]
+
+
+class SnippetCut(TypedDict):
+    path: str
+    matches_total: int
+    matches_shown: int
+    long_lines_cut: int
+    reason: str
+
+
+class FindCost(TypedDict):
+    model_calls: int
+    candidates_judged: int
+
 
 _FIND_STATUS_OK: FindStatus = "ok"
 _FIND_STATUS_NO_HIT: FindStatus = "no_hit"
@@ -220,13 +291,13 @@ class FindLocation:
 class FindCoverage:
     keywords: tuple[str, ...]
     dropped_terms: tuple[str, ...]
-    prescreen: tuple[dict[str, object], ...]
+    prescreen: tuple[PrescreenNote, ...]
     screened_files: tuple[str, ...]
     judged_files: tuple[str, ...]
-    skipped: tuple[dict[str, object], ...]
-    unjudged: tuple[dict[str, object], ...]
-    snippet_cuts: tuple[dict[str, object], ...]
-    rejected: tuple[dict[str, object], ...]
+    skipped: tuple[SkippedMatch, ...]
+    unjudged: tuple[UnjudgedCandidate, ...]
+    snippet_cuts: tuple[SnippetCut, ...]
+    rejected: tuple[RejectedVerdict, ...]
     declined: int
     dropped_results: int
     truncated: bool
@@ -258,7 +329,7 @@ class FindResultBody:
     detail: str
     locations: tuple[FindLocation, ...]
     coverage: FindCoverage
-    cost: dict[str, object]
+    cost: FindCost
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -329,7 +400,7 @@ def _raise_nested_failure(result: ToolFailure, *, fallback_message: str) -> NoRe
     """
     diagnostics = result.diagnostics
     message = result.error or fallback_message
-    if diagnostics is not None and diagnostics.kind is not None:
+    if diagnostics is not None and is_tool_diagnostic_kind(diagnostics.kind):
         raise ToolDiagnosticError(
             message=message,
             error_kind=diagnostics.kind,
@@ -460,9 +531,9 @@ def _fit_judge_prompt(
     return prompt, selected, dropped
 
 
-def _snippet_cuts(candidates: list[_Candidate]) -> tuple[dict[str, object], ...]:
+def _snippet_cuts(candidates: list[_Candidate]) -> tuple[SnippetCut, ...]:
     """Which judged files had judge-prompt snippets cut, and why. Empty when caps never bite."""
-    cuts: list[dict[str, object]] = []
+    cuts: list[SnippetCut] = []
     for candidate in candidates:
         total = len(candidate.match_lines)
         shown = len(candidate.snippets)
@@ -533,6 +604,7 @@ class FindTool:
         reasons = ("grep result truncated; narrow path or pattern",) if truncated else ()
         status = _FIND_STATUS_PARTIAL if truncated else (_FIND_STATUS_OK if locations else _FIND_STATUS_NO_HIT)
         detail = self._literal_detail(args, status, locations, skipped=skipped, truncated=truncated)
+        prescreen_note: PrescreenNote = {"pattern": args.query, "matches": len(body.matches), "truncated": body.truncated}
         return self._success(
             args,
             status=status,
@@ -540,7 +612,7 @@ class FindTool:
             locations=locations,
             keywords=(),
             dropped=(),
-            prescreen=({"pattern": args.query, "matches": len(body.matches), "truncated": body.truncated},),
+            prescreen=(prescreen_note,),
             screened=tuple(sorted({match.file for match in body.matches})),
             judged=(),
             skipped=skipped,
@@ -559,7 +631,7 @@ class FindTool:
 
     def _invoke_auto(self, args: FindArgs, *, context: ToolContext, services: PluginServices) -> ToolResult:
         keywords, dropped_terms = extract_keywords(args.query)
-        prescreen_notes: list[dict[str, object]] = []
+        prescreen_notes: list[PrescreenNote] = []
         matches: list[tuple[str, GrepResultMatch]] = []
         truncated = False
         truncation_reasons: list[str] = []
@@ -602,7 +674,7 @@ class FindTool:
             )
 
         candidates, skipped_cap = self._build_candidates(matches, max_candidates=args.max_candidates)
-        skipped: list[dict[str, object]] = list(skipped_cap)
+        skipped: list[SkippedMatch] = list(skipped_cap)
         if skipped_cap:
             truncated = True
             truncation_reasons.append(f"candidate cap ({args.max_candidates}) reached; {len(skipped_cap)} file(s) not judged")
@@ -745,7 +817,7 @@ class FindTool:
         *,
         keywords: list[str],
         dropped_terms: list[str],
-        prescreen_notes: list[dict[str, object]],
+        prescreen_notes: list[PrescreenNote],
         context: ToolContext,
         services: PluginServices,
     ) -> ToolResult:
@@ -760,7 +832,8 @@ class FindTool:
             status = _FIND_STATUS_OK
         else:
             status = _FIND_STATUS_NO_HIT
-        prescreen_notes = [*prescreen_notes, {"fallback": "literal", "matches": len(body.matches), "truncated": truncated}]
+        fallback_note: PrescreenNote = {"fallback": "literal", "matches": len(body.matches), "truncated": truncated}
+        prescreen_notes = [*prescreen_notes, fallback_note]
         if status == _FIND_STATUS_NO_HIT:
             failed_terms = [note["keyword"] for note in prescreen_notes if "error" in note and "keyword" in note]
             if body.matches:
@@ -798,7 +871,7 @@ class FindTool:
     # --- candidates and verdicts ---
 
     @staticmethod
-    def _build_candidates(matches: list[tuple[str, GrepResultMatch]], *, max_candidates: int) -> tuple[list[_Candidate], list[dict[str, object]]]:
+    def _build_candidates(matches: list[tuple[str, GrepResultMatch]], *, max_candidates: int) -> tuple[list[_Candidate], list[SkippedMatch]]:
         by_file: dict[str, _Candidate] = {}
         order: list[str] = []
         for _, match in matches:
@@ -815,7 +888,7 @@ class FindTool:
         for candidate in candidates:
             candidate.match_lines.sort()
             candidate.snippets.sort(key=lambda item: item[0])
-        skipped: list[dict[str, object]] = [
+        skipped: list[SkippedMatch] = [
             {"path": candidate.path, "reason": "candidate_cap", "matches": len(candidate.match_lines)} for candidate in candidates[max_candidates:]
         ]
         return candidates[:max_candidates], skipped
@@ -828,11 +901,11 @@ class FindTool:
         *,
         context: ToolContext,
         services: PluginServices,
-    ) -> tuple[list[FindLocation], list[dict[str, object]], int, list[dict[str, object]]]:
+    ) -> tuple[list[FindLocation], list[RejectedVerdict], int, list[UnjudgedCandidate]]:
         by_id = {candidate.candidate_id: candidate for candidate in candidates}
         seen: set[int] = set()
         locations: list[FindLocation] = []
-        rejected: list[dict[str, object]] = []
+        rejected: list[RejectedVerdict] = []
         declined = 0
         for verdict in verdicts:
             if not isinstance(verdict, Mapping):
@@ -855,7 +928,7 @@ class FindTool:
                 locations.append(location_or_rejection)
             else:
                 rejected.append(location_or_rejection)
-        unjudged: list[dict[str, object]] = [
+        unjudged: list[UnjudgedCandidate] = [
             {"candidate_id": candidate.candidate_id, "path": candidate.path, "reason": "missing_verdict"}
             for candidate in candidates
             if candidate.candidate_id not in seen
@@ -870,7 +943,7 @@ class FindTool:
         *,
         context: ToolContext,
         services: PluginServices,
-    ) -> FindLocation | dict[str, object]:
+    ) -> FindLocation | RejectedVerdict:
         _ = args
         line = verdict.get("line")
         if verdict.get("path") != candidate.path:
@@ -901,7 +974,7 @@ class FindTool:
         try:
             page = _read_segment(candidate.path, offset=offset, limit=limit, tool_context=context, services=services)
         except ToolDiagnosticError as exc:
-            reason = "line_out_of_range" if exc.error_details.get("reason") == "offset_out_of_range" else "evidence_unreadable"
+            reason = "line_out_of_range" if exc.reason == "offset_out_of_range" else "evidence_unreadable"
             return {
                 "path": candidate.path,
                 "line": line,
@@ -938,10 +1011,10 @@ class FindTool:
         via: Literal["grep", "grep_fallback"],
         context: ToolContext,
         services: PluginServices,
-    ) -> tuple[list[FindLocation], tuple[dict[str, object], ...]]:
+    ) -> tuple[list[FindLocation], tuple[SkippedMatch, ...]]:
         _ = args
         locations: list[FindLocation] = []
-        skipped: list[dict[str, object]] = []
+        skipped: list[SkippedMatch] = []
         for match in matches:
             offset = max(1, match.line - _EVIDENCE_CONTEXT_LINES)
             limit = 1 + 2 * _EVIDENCE_CONTEXT_LINES
@@ -987,11 +1060,11 @@ class FindTool:
         detail: str,
         keywords: list[str],
         dropped_terms: list[str],
-        prescreen_notes: list[dict[str, object]],
+        prescreen_notes: list[PrescreenNote],
         screened_files: tuple[str, ...],
         judged_files: tuple[str, ...],
-        skipped: list[dict[str, object]],
-        snippet_cuts: tuple[dict[str, object], ...],
+        skipped: list[SkippedMatch],
+        snippet_cuts: tuple[SnippetCut, ...],
         truncated: bool,
         truncation_reasons: list[str],
         dispatched: bool,
@@ -1040,7 +1113,7 @@ class FindTool:
         status: FindStatus,
         locations: list[FindLocation],
         *,
-        skipped: tuple[dict[str, object], ...],
+        skipped: tuple[SkippedMatch, ...],
         truncated: bool,
     ) -> str:
         lines = [f"find [{status}]: {len(locations)} literal location(s) for {args.query!r}"]
@@ -1058,12 +1131,12 @@ class FindTool:
         locations: list[FindLocation],
         *,
         dropped_results: int,
-        rejected: list[dict[str, object]],
+        rejected: list[RejectedVerdict],
         declined: int,
-        unjudged: list[dict[str, object]],
-        snippet_cuts: tuple[dict[str, object], ...],
+        unjudged: list[UnjudgedCandidate],
+        snippet_cuts: tuple[SnippetCut, ...],
         dropped_terms: list[str],
-        prescreen_notes: list[dict[str, object]],
+        prescreen_notes: list[PrescreenNote],
         truncated: bool,
         reasons: list[str],
     ) -> str:
@@ -1098,13 +1171,13 @@ class FindTool:
         locations: list[FindLocation],
         keywords: tuple[str, ...],
         dropped: tuple[str, ...],
-        prescreen: tuple[dict[str, object], ...],
+        prescreen: tuple[PrescreenNote, ...],
         screened: tuple[str, ...],
         judged: tuple[str, ...],
-        skipped: tuple[dict[str, object], ...],
-        unjudged: tuple[dict[str, object], ...],
-        snippet_cuts: tuple[dict[str, object], ...],
-        rejected: tuple[dict[str, object], ...],
+        skipped: tuple[SkippedMatch, ...],
+        unjudged: tuple[UnjudgedCandidate, ...],
+        snippet_cuts: tuple[SnippetCut, ...],
+        rejected: tuple[RejectedVerdict, ...],
         declined: int,
         dropped_results: int,
         truncated: bool,
@@ -1143,13 +1216,13 @@ class FindTool:
         locations: list[FindLocation],
         keywords: tuple[str, ...],
         dropped: tuple[str, ...],
-        prescreen: tuple[dict[str, object], ...],
+        prescreen: tuple[PrescreenNote, ...],
         screened: tuple[str, ...],
         judged: tuple[str, ...],
-        skipped: tuple[dict[str, object], ...],
-        unjudged: tuple[dict[str, object], ...],
-        snippet_cuts: tuple[dict[str, object], ...],
-        rejected: tuple[dict[str, object], ...],
+        skipped: tuple[SkippedMatch, ...],
+        unjudged: tuple[UnjudgedCandidate, ...],
+        snippet_cuts: tuple[SnippetCut, ...],
+        rejected: tuple[RejectedVerdict, ...],
         declined: int,
         dropped_results: int,
         truncated: bool,

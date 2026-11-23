@@ -10,6 +10,8 @@ from typing import Any
 
 from voidcode.sdk.provider import ProviderErrorKind, ProviderExecutionError
 
+from ._wire_common import ProviderErrorSource
+
 # Class-path wrapper emitted by higher-level SDK shims, e.g. `openai.AuthenticationError: ...`.
 _CLASS_PATH_WRAPPER_PREFIX = re.compile(
     r"^(?:openai|anthropic)(?:\.[A-Za-z0-9_]+)*(?:Error)?\s*:\s*",
@@ -95,7 +97,7 @@ def _retryable_for_kind(kind: ProviderErrorKind) -> bool | None:
     return True
 
 
-def guidance_for_provider_error_kind(kind: str) -> str:
+def guidance_for_provider_error_kind(kind: ProviderErrorKind) -> str:
     """Guidance for a provider-error kind token, generic for one nothing recognizes."""
     if kind == "missing_auth":
         return "Configure the provider API key or auth method, then retry."
@@ -136,7 +138,7 @@ def _is_terminal_client_status(status_code: int | None) -> bool:
     return status_code is not None and 400 <= status_code < 500 and status_code not in {408, 429}
 
 
-def parse_provider_error(payload: dict[str, Any], *, source: str = "api") -> ParsedProviderError:
+def parse_provider_error(payload: dict[str, Any], *, source: ProviderErrorSource = "api") -> ParsedProviderError:
     message = _extract_error_message(payload) or f"provider {source} error"
     status_code = _extract_status_code(payload)
     code = _extract_error_code(payload)
@@ -299,7 +301,7 @@ def provider_execution_error_from_payload(
     provider_name: str,
     model_name: str,
     payload: dict[str, Any],
-    source: str = "api",
+    source: ProviderErrorSource = "api",
 ) -> ProviderExecutionError:
     parsed = parse_provider_error(payload, source=source)
     return ProviderExecutionError(

@@ -15,6 +15,8 @@ from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, StrictBool, TypeAdapter
 from pydantic.dataclasses import dataclass
 
+from voidcode.sdk.provider import ProviderEffortLevel
+
 from ..registry import require_provider_id
 from ._resources import load_json
 
@@ -55,7 +57,7 @@ class ThinkingRule:
         """
         return self.max_tokens_field or "max_completion_tokens"
 
-    def budget_for(self, effort: str) -> int | None:
+    def budget_for(self, effort: ProviderEffortLevel) -> int | None:
         """The token budget this rule gives one ladder member, ``None`` when it has none."""
         return self.budgets.get(effort)
 

@@ -12,11 +12,12 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandP
 from voidcode.sdk.services import PluginServices
 
 from .lsp_manager import LspManager
+from .lsp_types import LspManagerMode, LspServerStatus
 
 
 class _ServerRow(TypedDict):
     name: str
-    status: str
+    status: LspServerStatus
     command: list[str]
     extensions: list[str]
     languages: list[str]
@@ -100,7 +101,7 @@ class LspInventoryCommand:
         )
 
 
-def _render_servers(servers: list[_ServerRow], *, mode: str, enabled: bool) -> str:
+def _render_servers(servers: list[_ServerRow], *, mode: LspManagerMode, enabled: bool) -> str:
     if not enabled:
         return "LSP support is disabled by configuration."
     if not servers:

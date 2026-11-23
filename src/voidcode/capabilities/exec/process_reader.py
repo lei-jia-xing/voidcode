@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import codecs
 from concurrent.futures import CancelledError
-from typing import Literal
+from typing import Literal, NotRequired, TypedDict
 from urllib.parse import urlsplit
 
 from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES
@@ -16,12 +16,21 @@ from voidcode.sdk.resources import (
     ResourceReaderServices,
     ResourceReadRequest,
 )
-from voidcode.sdk.services import ProcessOutput
+from voidcode.sdk.services import ProcessOutput, ProcessStream
 from voidcode.sdk.tools import OutputBounds, TextOutput
 
-from .background_process import MAX_PROCESS_ROWS, _ProcessRecord, _read_records
+from .background_process import MAX_PROCESS_ROWS, ProcessLiveness, _ProcessRecord, _read_records
 
-_Stream = Literal["stdout", "stderr"]
+
+class _ProcessRow(TypedDict):
+    process_id: str
+    uri: str
+    status: ProcessLiveness | Literal["unknown_not_supervised"]
+    running: bool | None
+    logs_available: bool
+    exit_code: NotRequired[int | None]
+    last_recorded_state: NotRequired[ProcessLiveness]
+    last_recorded_exit_code: NotRequired[int | None]
 
 
 def _check_cancelled(caller: ResourceReadCaller) -> None:
@@ -29,7 +38,7 @@ def _check_cancelled(caller: ResourceReadCaller) -> None:
         raise CancelledError("read cancelled")
 
 
-def _parse_uri(request: ResourceReadRequest) -> tuple[str | None, _Stream | None]:
+def _parse_uri(request: ResourceReadRequest) -> tuple[str | None, ProcessStream | None]:
     """Return (process id, stream), or (None, None) for the inventory root."""
     if "?" in request.uri or "#" in request.uri:
         raise ValueError("proc URIs do not support query strings or fragments")
@@ -61,13 +70,13 @@ def _inventory_page(
     records, _ = _read_records(services)
     visible_records = {process_id: record for process_id, record in records.items() if record.origin_session_id == caller.session_id}
 
-    rows: list[dict[str, object]] = []
+    rows: list[_ProcessRow] = []
     for _process_id, status in sorted(statuses.items()):
         rows.append(_active_row(status))
     for process_id, record in sorted(visible_records.items()):
         if process_id not in statuses:
             rows.append(_unavailable_row(record))
-    rows.sort(key=lambda row: str(row["process_id"]))
+    rows.sort(key=lambda row: row["process_id"])
 
     start = request.offset - 1
     limit = request.limit if request.limit is not None else MAX_PROCESS_ROWS
@@ -92,7 +101,7 @@ def _inventory_page(
     )
 
 
-def _active_row(status: ResourceProcessStatus) -> dict[str, object]:
+def _active_row(status: ResourceProcessStatus) -> _ProcessRow:
     return {
         "process_id": status.process_id,
         "uri": f"proc://{status.process_id}",
@@ -103,7 +112,7 @@ def _active_row(status: ResourceProcessStatus) -> dict[str, object]:
     }
 
 
-def _unavailable_row(record: _ProcessRecord) -> dict[str, object]:
+def _unavailable_row(record: _ProcessRecord) -> _ProcessRow:
     return {
         "process_id": record.process_id,
         "uri": f"proc://{record.process_id}",
@@ -115,19 +124,20 @@ def _unavailable_row(record: _ProcessRecord) -> dict[str, object]:
     }
 
 
-def _inventory_line(row: dict[str, object]) -> str:
+def _inventory_line(row: _ProcessRow) -> str:
     if row["status"] == "unknown_not_supervised":
         return (
             f"{row['uri']}: current liveness unknown; not supervised by this Core; "
-            f"logs unavailable (last recorded state: {row['last_recorded_state']})."
+            f"logs unavailable (last recorded state: {row.get('last_recorded_state')})."
         )
     line = f"{row['uri']}: {row['status']}"
-    if row["exit_code"] is not None:
-        line += f" (exit code {row['exit_code']})"
+    exit_code = row.get("exit_code")
+    if exit_code is not None:
+        line += f" (exit code {exit_code})"
     return line
 
 
-def _unavailable_page(request: ResourceReadRequest, process_id: str, stream: _Stream, record: _ProcessRecord) -> ResourcePage:
+def _unavailable_page(request: ResourceReadRequest, process_id: str, stream: ProcessStream, record: _ProcessRecord) -> ResourcePage:
     content = (
         f"{request.uri}: this process is not supervised by this Core. Current liveness is unknown and "
         f"{stream} logs are unavailable. The stored state is historical only; control is not restored. "
@@ -167,7 +177,7 @@ def _decode_page(data: bytes, *, final: bool) -> tuple[Literal["utf-8", "hex"], 
 def _output_page(
     request: ResourceReadRequest,
     process_id: str,
-    stream: _Stream,
+    stream: ProcessStream,
     status: ResourceProcessStatus,
     output_page: ProcessOutput,
 ) -> ResourcePage:

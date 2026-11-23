@@ -34,6 +34,7 @@ from ._wire_common import (
     OUTPUT_CAP_WHEN_UNKNOWN,
     PLACEHOLDER_API_KEY,
     OwnedResource,
+    ProviderErrorSource,
     Transport,
     TransportError,
     abort_signal_cancelled,
@@ -453,7 +454,7 @@ class AnthropicMessagesProvider:
         return payload
 
     @staticmethod
-    def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: str) -> ProviderExecutionError:
+    def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: ProviderErrorSource) -> ProviderExecutionError:
         if isinstance(exc, AnthropicAPIError):
             return provider_execution_error_from_payload(
                 provider_name=provider_name,
@@ -752,7 +753,7 @@ def _thinking_payload(payload: dict[str, object], *, request: ProviderTurnReques
         payload["thinking"] = {"type": "adaptive"}
         payload["output_config"] = {"effort": clamped}
         return
-    if rule.mode != "budget":
+    if rule.mode != "budget" or clamped == "off":
         return
     budget = rule.budget_for(clamped)
     if budget is None:

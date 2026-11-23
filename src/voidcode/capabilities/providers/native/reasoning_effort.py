@@ -6,16 +6,24 @@ levels clamp down through the canonical ladder, or up to its lowest supported le
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypeIs
+
+from voidcode.sdk.provider import ProviderEffortLevel
 
 if TYPE_CHECKING:
     from .thinking_rules import DisableMode, ThinkingRule
 
-CANONICAL_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
-ALL_EFFORTS: tuple[str, ...] = ("off", *CANONICAL_EFFORTS)
+type ProviderEffortToken = ProviderEffortLevel | Literal["off"]
+
+CANONICAL_EFFORTS: tuple[ProviderEffortLevel, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
+ALL_EFFORTS: tuple[ProviderEffortToken, ...] = ("off", *CANONICAL_EFFORTS)
 
 
-def normalize_reasoning_effort(value: str | int | None) -> str | int | None:
+def _is_effort_token(value: object) -> TypeIs[ProviderEffortToken]:
+    return isinstance(value, str) and value in ALL_EFFORTS
+
+
+def normalize_reasoning_effort(value: object) -> ProviderEffortToken | int | None:
     """Validate and normalize a reasoning-effort value to its canonical form."""
     if value is None:
         return None
@@ -27,12 +35,12 @@ def normalize_reasoning_effort(value: str | int | None) -> str | int | None:
         return value
     if value == "none":
         return "off"
-    if not isinstance(value, str) or value not in ALL_EFFORTS:
+    if not _is_effort_token(value):
         raise ValueError(f"reasoning_effort must be one of: {', '.join(ALL_EFFORTS)}; got {value!r}")
     return value
 
 
-def clamp_effort_to_supported(effort: str, supported: tuple[str, ...] | None) -> str:
+def clamp_effort_to_supported(effort: ProviderEffortToken, supported: tuple[str, ...] | None) -> ProviderEffortToken:
     """Clamp `effort` to the nearest level the provider/model actually supports.
 
     `supported` lists advertised canonical efforts (excluding "off").
@@ -41,13 +49,13 @@ def clamp_effort_to_supported(effort: str, supported: tuple[str, ...] | None) ->
     nearest supported level at or below `effort`; if `effort` is below every
     supported level, snaps UP to the lowest supported level.
     """
-    if supported is None or effort == "off" or effort in supported or effort not in CANONICAL_EFFORTS:
+    if supported is None or effort in supported or effort == "off":
         return effort
     candidates = [level for level in CANONICAL_EFFORTS[: CANONICAL_EFFORTS.index(effort) + 1] if level in supported]
     return candidates[-1] if candidates else lowest_supported_effort(supported) or effort
 
 
-def lowest_supported_effort(supported: tuple[str, ...] | None) -> str | None:
+def lowest_supported_effort(supported: tuple[str, ...] | None) -> ProviderEffortLevel | None:
     """Return the lowest canonical supported level, preserving absence as None."""
     return next((level for level in CANONICAL_EFFORTS if level in (supported or ())), None)
 
@@ -55,7 +63,7 @@ def lowest_supported_effort(supported: tuple[str, ...] | None) -> str | None:
 def reasoning_kwargs(
     *,
     rule: ThinkingRule,
-    effort: str,
+    effort: ProviderEffortToken,
     supported_levels: tuple[str, ...] | None,
 ) -> dict[str, object]:
     """Map a canonical effort to the OpenAI-wire request kwargs the row's format uses.

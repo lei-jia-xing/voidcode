@@ -21,11 +21,12 @@ from urllib.request import url2pathname
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
+from voidcode.capabilities.workspace_queries import PositionEncoding, is_position_encoding
 from voidcode.sdk.provider import ProviderAbortSignal
 from voidcode.sdk.services import PluginServices, ProcessServices
 
 from .contracts import ResolvedLspServerConfig
-from .lsp_types import LspDocumentState, LspRequestError, RuntimeLspConfig
+from .lsp_types import LspDocumentState, LspManagerMode, LspRequestError, LspServerStatus, RuntimeLspConfig
 from .registry import (
     derive_workspace_lsp_defaults,
     match_lsp_servers_for_path,
@@ -167,13 +168,13 @@ class LspConfigState:
 @dataclass(frozen=True, slots=True)
 class LspServerState:
     name: str
-    status: Literal["stopped", "starting", "running", "failed"] = "stopped"
+    status: LspServerStatus = "stopped"
     last_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class LspManagerState:
-    mode: Literal["disabled", "managed"] = "disabled"
+    mode: LspManagerMode = "disabled"
     configuration: LspConfigState = field(default_factory=LspConfigState)
     servers: dict[str, LspServerState] = field(default_factory=dict)
 
@@ -193,7 +194,7 @@ class LspRequest:
 class LspRequestResult:
     response: dict[str, object]
     document_state: LspDocumentState | None = None
-    position_encoding: str = "utf-16"
+    position_encoding: PositionEncoding = "utf-16"
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,7 +441,7 @@ class _RunningLspServer:
     stdout_cursor: int = 0
     initialized: bool = False
     next_request_id: int = 1
-    position_encoding: str = "utf-16"
+    position_encoding: PositionEncoding = "utf-16"
     document_sync_enabled: bool = False
     documents: dict[str, _OpenedLspDocument] = field(default_factory=dict)
 
@@ -1027,11 +1028,13 @@ class ManagedLspManager:
         server_capabilities = init_result.get("capabilities") if isinstance(init_result, dict) else None
         if not isinstance(server_capabilities, dict):
             raise LspProtocolError(f"LSP initialize response from {server_name} requires a capabilities object")
-        position_encoding = server_capabilities.get("positionEncoding")
-        if position_encoding is None:
-            position_encoding = "utf-16"
-        if not isinstance(position_encoding, str) or position_encoding not in ("utf-8", "utf-16", "utf-32"):
-            raise ValueError(f"LSP server {server_name} selected unsupported position encoding: {position_encoding}")
+        raw_position_encoding = server_capabilities.get("positionEncoding")
+        if raw_position_encoding is None:
+            position_encoding: PositionEncoding = "utf-16"
+        elif is_position_encoding(raw_position_encoding):
+            position_encoding = raw_position_encoding
+        else:
+            raise ValueError(f"LSP server {server_name} selected unsupported position encoding: {raw_position_encoding}")
         running_server.position_encoding = position_encoding
 
         text_sync = server_capabilities.get("textDocumentSync")

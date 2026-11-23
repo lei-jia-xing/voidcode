@@ -6,7 +6,7 @@ import enum
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
@@ -52,19 +52,36 @@ class LspOperation(enum.Enum):
     OUTGOING_CALLS = "callHierarchy/outgoingCalls"
 
 
-_LSP_OPERATIONS: dict[str, LspOperation] = {
-    "diagnostics": LspOperation.DIAGNOSTICS,
-    "goToDefinition": LspOperation.GO_TO_DEFINITION,
-    "findReferences": LspOperation.FIND_REFERENCES,
-    "rename": LspOperation.RENAME,
+type LspToolOperation = Literal[
+    "codeAction",
+    "diagnostics",
+    "documentSymbol",
+    "findReferences",
+    "goToDefinition",
+    "goToImplementation",
+    "hover",
+    "incomingCalls",
+    "outgoingCalls",
+    "rename",
+    "willRenameFiles",
+    "workspaceSymbol",
+]
+type WorkspaceEditKind = Literal["edit", "rename", "create", "delete"]
+
+#: The one source for the accepted tool-operation names: schema enum and lookup both read it.
+_LSP_OPERATIONS: dict[LspToolOperation, LspOperation] = {
     "codeAction": LspOperation.CODE_ACTION,
-    "willRenameFiles": LspOperation.WILL_RENAME_FILES,
-    "hover": LspOperation.HOVER,
+    "diagnostics": LspOperation.DIAGNOSTICS,
     "documentSymbol": LspOperation.DOCUMENT_SYMBOL,
-    "workspaceSymbol": LspOperation.WORKSPACE_SYMBOL,
+    "findReferences": LspOperation.FIND_REFERENCES,
+    "goToDefinition": LspOperation.GO_TO_DEFINITION,
     "goToImplementation": LspOperation.GO_TO_IMPLEMENTATION,
+    "hover": LspOperation.HOVER,
     "incomingCalls": LspOperation.INCOMING_CALLS,
     "outgoingCalls": LspOperation.OUTGOING_CALLS,
+    "rename": LspOperation.RENAME,
+    "willRenameFiles": LspOperation.WILL_RENAME_FILES,
+    "workspaceSymbol": LspOperation.WORKSPACE_SYMBOL,
 }
 
 
@@ -99,7 +116,7 @@ def _bound_requester(manager: LspManager) -> LspRequester:
 class _LspArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    operation: str
+    operation: LspToolOperation
     path: str
     line: int | None = Field(default=None, ge=1)
     character: int | None = Field(default=None, ge=1)
@@ -126,20 +143,7 @@ class LspTool:
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": [
-                        "codeAction",
-                        "diagnostics",
-                        "documentSymbol",
-                        "findReferences",
-                        "goToDefinition",
-                        "goToImplementation",
-                        "hover",
-                        "incomingCalls",
-                        "outgoingCalls",
-                        "rename",
-                        "willRenameFiles",
-                        "workspaceSymbol",
-                    ],
+                    "enum": list(_LSP_OPERATIONS),
                     "description": (
                         "LSP operation. Preferred names include diagnostics, goToDefinition, findReferences, hover, documentSymbol, "
                         "workspaceSymbol, goToImplementation, incomingCalls, and outgoingCalls."
@@ -182,15 +186,6 @@ class LspTool:
         self._requester: LspRequester = _bound_requester(manager)
 
     @staticmethod
-    def _parse_operation(value: object) -> LspOperation:
-        if not isinstance(value, str):
-            raise ValueError(f"Unsupported LSP operation: {value}")
-        operation = _LSP_OPERATIONS.get(value)
-        if operation is not None:
-            return operation
-        raise ValueError(f"Unsupported LSP operation: {value}")
-
-    @staticmethod
     def _invoke_requester(
         requester: LspRequester,
         *,
@@ -227,7 +222,7 @@ class LspTool:
         line_value, character_value = args.line, args.character
         query, server, new_name, new_path = args.query, args.server, args.newName, args.newPath
         offset_value, limit_value = args.offset, args.limit
-        operation = self._parse_operation(args.operation)
+        operation = _LSP_OPERATIONS[args.operation]
         position_required = operation not in (
             LspOperation.DIAGNOSTICS,
             LspOperation.DOCUMENT_SYMBOL,
@@ -510,7 +505,7 @@ def _uri_to_rel_path(uri: str, workspace_root: Path) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _WorkspaceEditItem:
-    kind: str
+    kind: WorkspaceEditKind
     path: str
     version_label: str | None = None
     edit: dict[str, object] | None = None
@@ -548,10 +543,10 @@ def _workspace_edit_items(payload: dict[str, object], workspace_root: Path) -> t
                     )
                 )
             continue
-        if kind in ("create", "delete"):
+        if kind == "create" or kind == "delete":
             uri = document.get("uri")
             if isinstance(uri, str):
-                items.append(_WorkspaceEditItem(kind, _uri_to_rel_path(uri, workspace_root)))
+                items.append(_WorkspaceEditItem("create" if kind == "create" else "delete", _uri_to_rel_path(uri, workspace_root)))
             continue
         text_document = document.get("textDocument", {})
         if not isinstance(text_document, dict):

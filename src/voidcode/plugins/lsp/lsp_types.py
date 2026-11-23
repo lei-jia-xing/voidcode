@@ -9,10 +9,11 @@ validated server configuration.
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from voidcode.capabilities.workspace_queries import PositionEncoding
 from voidcode.sdk.json_values import json_wire_object
 
 from .contracts import LspServerConfigOverride
@@ -22,11 +23,15 @@ if TYPE_CHECKING:
     from voidcode.sdk.services import PluginServices
 
 
+type LspServerStatus = Literal["stopped", "starting", "running", "failed"]
+type LspManagerMode = Literal["disabled", "managed"]
+
+
 @dataclass(frozen=True, slots=True)
 class LspDocumentState:
     version: int
     content_hash: str
-    position_encoding: str
+    position_encoding: PositionEncoding
 
 
 class LspRequestError(ValueError):
@@ -41,7 +46,7 @@ class LspResponse(Protocol):
     def document_state(self) -> LspDocumentState | None: ...
 
     @property
-    def position_encoding(self) -> str: ...
+    def position_encoding(self) -> PositionEncoding: ...
 
 
 class LspRequester(Protocol):

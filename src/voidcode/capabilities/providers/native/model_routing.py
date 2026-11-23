@@ -14,13 +14,14 @@ from voidcode.sdk.provider import (
     StreamableTurnProvider,
 )
 
+from ..registry import ProviderWire, is_provider_wire
 from .config import RoutedWire
 from .model_catalog import catalog_model_limits, static_catalog_metadata
 
 #: Upstream wire name -> the route VoidCode serves it at. A name absent here is a
 #: wire VoidCode does not implement: the request fails typed instead of being sent
 #: down a wire that does not serve the model.
-IMPLEMENTED_API_ROUTES: Mapping[str, RoutedWire] = {
+IMPLEMENTED_API_ROUTES: Mapping[ProviderWire, RoutedWire] = {
     "openai-completions": "openai-chat-completions",
     "anthropic-messages": "anthropic-messages",
     "google-generative-ai": "google-generative-ai",
@@ -42,12 +43,13 @@ class WireRouting:
     """
 
     provider: str
-    api_to_route: Mapping[str, RoutedWire]
-    default_api: str
+    api_to_route: Mapping[ProviderWire, RoutedWire]
+    default_api: ProviderWire
 
     def resolve(self, api: str | None) -> RoutedWire | None:
         """Resolve a declared upstream protocol, using the provider default when absent."""
-        return self.api_to_route.get(api or self.default_api)
+        declared = api or self.default_api
+        return self.api_to_route.get(declared) if is_provider_wire(declared) else None
 
 
 @dataclass(frozen=True, slots=True)

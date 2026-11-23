@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -18,6 +18,7 @@ from voidcode.sdk.transcript import ContextRecord
 
 from .projection import (
     DEFAULT_KEEP_RECENT_TOKENS,
+    ProjectionPlan,
     SummaryKind,
     clip_summary_text,
     measured_dispatch_input_tokens,
@@ -41,6 +42,8 @@ _EVENT_PAGE_SIZE = 200
 _PROJECTION_KEYS: frozenset[str] = frozenset({"covered_from_sequence", "covered_to_sequence", "covered_bytes", "dropped_bytes", "summary_kind"})
 
 ProjectionReason = Literal["threshold", "manual"]
+ProjectionOutcomeReason = ProjectionReason | Literal["nothing_new_to_cover"]
+CompactReceiptReason = ProjectionOutcomeReason | Literal["no_events"]
 
 
 # --- Durable session state ---
@@ -169,7 +172,7 @@ class ProjectionOutcome:
     """Result of one projection attempt, reported in the core's own terms."""
 
     status: Literal["projected", "noop"]
-    reason: str
+    reason: ProjectionOutcomeReason
     covered_from_sequence: int | None = None
     covered_to_sequence: int | None = None
     covered_bytes: int | None = None
@@ -179,7 +182,7 @@ class ProjectionOutcome:
     measured_input_tokens: int | None = None
 
     @property
-    def accounting(self) -> dict[str, object]:
+    def accounting(self) -> _ProjectionAccounting:
         return {
             "covered_from_sequence": self.covered_from_sequence,
             "covered_to_sequence": self.covered_to_sequence,
@@ -195,7 +198,7 @@ def _read_window(services: HistoryServices) -> tuple[tuple[ContextRecord, ...], 
     return history.records, history.reached_end
 
 
-def _replacement_text(services: ToolServices, plan) -> str:
+def _replacement_text(services: ToolServices, plan: ProjectionPlan) -> str:
     """The replacement: the model's summary, or a loud failure when it cannot be produced.
 
     A failed, blank, or unshrinkable answer raises ``ValueError``: there is no second lane to
@@ -362,19 +365,50 @@ def compaction_observer(
 # --- Command: the manual compaction ---
 
 
-def _row_accounting(row: Mapping[str, object] | None) -> dict[str, object]:
+class _ProjectionAccounting(TypedDict):
+    # The four window-projection fields are read back from core-owned JSON and echoed.
+    covered_from_sequence: object
+    covered_to_sequence: object
+    covered_bytes: object
+    dropped_bytes: object
+    covered_events: int | None
+    summary_kind: SummaryKind | None
+
+
+class CompactReceipt(TypedDict):
+    noop: bool
+    reason: CompactReceiptReason
+    covered_from_sequence: NotRequired[object]
+    covered_to_sequence: NotRequired[object]
+    covered_bytes: NotRequired[object]
+    dropped_bytes: NotRequired[object]
+    covered_events: NotRequired[int | None]
+    summary_kind: NotRequired[SummaryKind | None]
+    measured_input_tokens: NotRequired[int | None]
+
+
+def _row_accounting(row: Mapping[str, object] | None) -> _ProjectionAccounting:
     """The accounting of the projection in force, or empty fields when there is none."""
     if not isinstance(row, Mapping):
-        return {"covered_from_sequence": None, "covered_to_sequence": None, "covered_bytes": None, "dropped_bytes": None}
+        return {
+            "covered_from_sequence": None,
+            "covered_to_sequence": None,
+            "covered_bytes": None,
+            "dropped_bytes": None,
+            "covered_events": None,
+            "summary_kind": None,
+        }
     return {
         "covered_from_sequence": row.get("covered_from_sequence"),
         "covered_to_sequence": row.get("covered_to_sequence"),
         "covered_bytes": row.get("covered_bytes"),
         "dropped_bytes": row.get("dropped_bytes"),
+        "covered_events": None,
+        "summary_kind": None,
     }
 
 
-def _compact_receipt(*, output: str, data: Mapping[str, object]) -> CommandResult:
+def _compact_receipt(*, output: str, data: CompactReceipt) -> CommandResult:
     rows = [{"label": "Result", "value": "Nothing new to compact" if data["noop"] else "Compacted"}]
     labels = (
         ("reason", "Reason"),

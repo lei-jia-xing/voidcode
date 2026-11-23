@@ -8,17 +8,16 @@ range logic here (not in a ``Tool`` class) prevents a second mutation engine.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from voidcode.capabilities.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest
+from voidcode.capabilities.workspace_queries import DOCUMENT_STATES, DocumentState, DocumentStateRequest, PositionEncoding
 from voidcode.sdk.atomic_file import replace_file
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.json_values import json_wire_object, own_json_object
+from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import PluginServices, QueryContractError, QueryUnavailable
 from voidcode.sdk.tools import (
     ConfirmedStop,
@@ -30,7 +29,7 @@ from voidcode.sdk.tools import (
     ToolSuccess,
 )
 
-from ..tool_errors import raise_tool_diagnostic
+from ..tool_errors import ToolDiagnosticKind, ToolDiagnosticReason, raise_tool_diagnostic
 from ._common import (
     PathEscapesWorkspaceError,
     encode_line_endings,
@@ -77,25 +76,50 @@ class _RangeEditArgs(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class RangeEditFileResult:
+    """One committed file's typed result payload."""
+
+    path: str
+    byte_count: int
+    content_hash: str
+    diff: str
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "byte_count": self.byte_count,
+            "content_hash": self.content_hash,
+            "diff": self.diff,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RangeEditResultBody:
     paths: tuple[str, ...]
-    files: tuple[Mapping[str, object], ...] = ()
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "files", tuple(own_json_object(item) for item in self.files))
+    files: tuple[RangeEditFileResult, ...] = ()
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"paths": list(self.paths)}
         if self.files:
-            payload["files"] = [json_wire_object(item) for item in self.files]
+            payload["files"] = [json_wire_object(item.as_payload()) for item in self.files]
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedEdit:
+    """One staged file ready to commit, with its eventual result payload."""
+
+    path: Path
+    final_bytes: bytes
+    display_path: str
+    result: RangeEditFileResult
 
 
 def _diagnostic_failure(
     *,
     message: str,
-    error_kind: str,
-    reason: str,
+    error_kind: ToolDiagnosticKind,
+    reason: ToolDiagnosticReason,
     retry_guidance: str,
     details: dict[str, object] | None = None,
 ) -> ToolFailure:
@@ -235,7 +259,7 @@ def apply_range_edits(
 
         # An explicit positionEncoding always wins: it names the coordinate system the caller's
         # ranges are expressed in. The negotiated encoding only supplies the default.
-        encoding = args.positionEncoding or (document_state.position_encoding if document_state is not None else "utf-16")
+        encoding: PositionEncoding = args.positionEncoding or (document_state.position_encoding if document_state is not None else "utf-16")
 
         lines = lf_texts[path].split("\n")
         if edit.startLine > len(lines):
@@ -308,47 +332,47 @@ def apply_range_edits(
             content = content[:start] + new_text + content[end:]
         staged[path] = content
 
-    prepared: list[tuple[Path, bytes, str, dict[str, object]]] = []
+    prepared: list[_PreparedEdit] = []
     for path, final_lf in staged.items():
         state = states[path]
         final_text = encode_line_endings(final_lf, endings[path])
         final_bytes = final_text.encode("utf-8")
         display_path = display_by_path[path]
         prepared.append(
-            (
-                path,
-                final_bytes,
-                display_path,
-                {
-                    "path": display_path,
-                    "byte_count": len(final_bytes),
-                    "content_hash": hashlib.sha256(final_bytes).hexdigest(),
-                    "diff": summarize_diff(path=display_path, before=state.text, after=final_text)[0],
-                },
+            _PreparedEdit(
+                path=path,
+                final_bytes=final_bytes,
+                display_path=display_path,
+                result=RangeEditFileResult(
+                    path=display_path,
+                    byte_count=len(final_bytes),
+                    content_hash=hashlib.sha256(final_bytes).hexdigest(),
+                    diff=summarize_diff(path=display_path, before=state.text, after=final_text)[0],
+                ),
             )
         )
 
     applied_paths: list[str] = []
-    applied_files: list[dict[str, object]] = []
+    applied_files: list[RangeEditFileResult] = []
     error: str | None = None
     cancelled = False
-    for path, final_bytes, display_path, file_result in prepared:
+    for item in prepared:
         if _is_cancelled(context):
             cancelled = True
             error = "edit range cancelled before committing the next file"
             break
         try:
-            replace_file(path, final_bytes, expected_content=states[path].raw)
+            replace_file(item.path, item.final_bytes, expected_content=states[item.path].raw)
         except OSError as exc:
-            error = f"edit range failed during write on {display_path}: {exc}"
+            error = f"edit range failed during write on {item.display_path}: {exc}"
             break
-        applied_paths.append(display_path)
-        applied_files.append(file_result)
+        applied_paths.append(item.display_path)
+        applied_files.append(item.result)
 
     if error is not None:
         applied_set = set(applied_paths)
-        remaining = [display for _, _, display, _ in prepared if display not in applied_set]
-        applied_labels = [f"{item['path']} SHA-256 {item['content_hash']}" for item in applied_files]
+        remaining = [item.display_path for item in prepared if item.display_path not in applied_set]
+        applied_labels = [f"{item.path} SHA-256 {item.content_hash}" for item in applied_files]
         message = f"{error}. Applied prefix: {applied_labels}; uncommitted remaining: {remaining}"
         return ToolFailure(
             tool_name=_TOOL_NAME,
@@ -359,10 +383,10 @@ def apply_range_edits(
             execution=ConfirmedStop(cancellation_signalled=cancelled),
         )
 
-    applied_files_by_path = {str(item["path"]): item for item in applied_files}
+    applied_files_by_path = {item.path: item for item in applied_files}
     ordered_paths = tuple(sorted(applied_files_by_path))
     content = [f"Applied {len(args.edits)} range edit(s) across {len(ordered_paths)} file(s)."]
-    content.extend(f"SHA-256 content hash ({path}): {applied_files_by_path[path]['content_hash']}" for path in ordered_paths)
+    content.extend(f"SHA-256 content hash ({path}): {applied_files_by_path[path].content_hash}" for path in ordered_paths)
     return ToolSuccess(
         tool_name=_TOOL_NAME,
         output=TextOutput("\n".join(content)),
@@ -378,7 +402,7 @@ def _position_to_offset(
     line_text: str,
     character_1based: int,
     *,
-    encoding: str,
+    encoding: PositionEncoding,
     file_path: str,
     line_number: int,
 ) -> int:
@@ -436,7 +460,7 @@ def _position_to_offset(
             details={"path": file_path, "line": line_number, "character": character_1based},
         )
 
-    elif encoding == "utf-32":
+    else:
         if col > len(line_text):
             raise_tool_diagnostic(
                 message=f"edit range character {character_1based} is out of bounds for line {line_number} in {file_path} (max {len(line_text) + 1})",
@@ -447,7 +471,5 @@ def _position_to_offset(
             )
         return col
 
-    raise ValueError(f"Unsupported positionEncoding: {encoding}")
 
-
-__all__ = ["RangeEditResultBody", "_RangeEditArgs", "apply_range_edits"]
+__all__ = ["RangeEditFileResult", "RangeEditResultBody", "_RangeEditArgs", "apply_range_edits"]

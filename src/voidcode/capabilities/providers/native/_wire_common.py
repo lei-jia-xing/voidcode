@@ -16,9 +16,12 @@ from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
-from typing import Protocol
+from typing import Literal, Protocol
 
 from voidcode.sdk.provider import ProviderDoneReason, ProviderExecutionError, ProviderStreamEvent, ProviderTokenUsage
+
+type ProviderErrorSource = Literal["api", "stream", "model_listing"]
+type _StreamPumpKind = Literal["item", "done", "error"]
 
 # A declared request header may name the conversation with ``{session_id}``. The
 # transport -- and therefore its SDK client -- is cached across turns, so a value
@@ -174,10 +177,10 @@ def iter_stream_with_timeout(
     # ``utils/idle-iterator.ts:90``): with both defaults at 300s the two coincide,
     # and a longer per-chunk timeout widens the first-token allowance with it.
     first_event_budget = max(first_event_timeout_seconds or 0.0, timeout_seconds)
-    queue: Queue[tuple[str, object]] = Queue(maxsize=1)
+    queue: Queue[tuple[_StreamPumpKind, object]] = Queue(maxsize=1)
     stop_event = Event()
 
-    def enqueue(kind: str, value: object) -> None:
+    def enqueue(kind: _StreamPumpKind, value: object) -> None:
         while not stop_event.is_set():
             try:
                 queue.put((kind, value), timeout=0.01)
@@ -357,7 +360,9 @@ def open_event_stream(transport: Transport, payload: dict[str, object], *, timeo
     return stream
 
 
-def fallback_execution_error(exc: Exception, *, provider_name: str, model_name: str, source: str, network_error: bool) -> ProviderExecutionError:
+def fallback_execution_error(
+    exc: Exception, *, provider_name: str, model_name: str, source: ProviderErrorSource, network_error: bool
+) -> ProviderExecutionError:
     """Shared _map_exception tail: passthrough plus the generic provider_error."""
     if isinstance(exc, ProviderExecutionError):
         return exc

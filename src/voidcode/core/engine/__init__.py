@@ -37,7 +37,7 @@ from ...sdk.invocation import ToolContext
 from ...sdk.json_values import json_wire_object
 from ...sdk.observed_effects import MAX_OBSERVED_CHANGES
 from ...sdk.plugin import StateScope
-from ...sdk.provider import ImageAttachment, ProviderMessage
+from ...sdk.provider import ImageAttachment, ProviderMessage, ProviderReasoningEffort
 from ...sdk.services import (
     ArtifactPage,
     CancelSubtreeReceipt,
@@ -1906,7 +1906,7 @@ class Core:
         return self.config.model
 
     @property
-    def reasoning_effort(self) -> str | int | None:
+    def reasoning_effort(self) -> ProviderReasoningEffort | None:
         return self.config.reasoning_effort
 
     @property

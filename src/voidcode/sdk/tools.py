@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, ClassVar, Final, Literal, Protocol, runtime_checkable
+from typing import Any, ClassVar, Final, Literal, Protocol, TypeIs, get_args, runtime_checkable
 
 from .icons import Icon
 from .invocation import ToolContext
@@ -28,7 +28,27 @@ _MAX_DIAGNOSTIC_DEPTH = DIAGNOSTIC_DEPTH
 _MAX_DIAGNOSTIC_ITEMS = DIAGNOSTIC_ITEMS
 
 type ToolDiagnosticsDetails = Mapping[str, object]
+#: Diagnostic kinds every bundled tool may produce. The wire-facing ``ToolDiagnostics.kind``
+#: stays open because external/historical results can carry plugin-defined tokens.
+type ToolDiagnosticKind = Literal[
+    "ambiguous_match",
+    "no_op",
+    "stale_edit",
+    "stale_read",
+    "tool_cancelled",
+    "tool_environment_error",
+    "tool_execution_error",
+    "tool_input_mismatch",
+    "tool_input_validation",
+]
 type ToolReplayPolicy = Literal["safe", "never"]
+
+_TOOL_DIAGNOSTIC_KINDS: Final[frozenset[str]] = frozenset(value for value in get_args(ToolDiagnosticKind.__value__) if isinstance(value, str))
+
+
+def is_tool_diagnostic_kind(value: object) -> TypeIs[ToolDiagnosticKind]:
+    """Whether a diagnostic kind token names one bundled kind."""
+    return isinstance(value, str) and value in _TOOL_DIAGNOSTIC_KINDS
 
 
 class ToolEffect(StrEnum):
@@ -90,6 +110,7 @@ def _freeze_diagnostic_value(value: object, *, depth: int = 0) -> object:
 class ToolDiagnostics:
     """Runtime-wide diagnostic slot shared by every tool result."""
 
+    # Open on the wire; bundled producers use :data:`ToolDiagnosticKind`.
     kind: str | None = None
     summary: str | None = None
     details: ToolDiagnosticsDetails = field(default_factory=dict)

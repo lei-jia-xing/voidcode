@@ -12,12 +12,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .capabilities.providers.registry import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 from .sdk.json_values import own_json_object
+from .sdk.provider import ProviderReasoningEffort
 from .sdk.views import StyleColor
 
 CONFIG_FILE_NAME = "voidcode.json"
 CONFIG_SCHEMA_VERSION = 1
 
-ReasoningEffort = Literal["off", "none", "minimal", "low", "medium", "high", "xhigh", "max"] | int
+ReasoningEffort = ProviderReasoningEffort
 
 
 class ModelConfig(BaseModel):

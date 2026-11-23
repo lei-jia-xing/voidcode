@@ -16,7 +16,8 @@ _WIRES: Final[tuple[ProviderWire, ...]] = ("openai-completions", "anthropic-mess
 _TABLE_PATH: Final[Path] = Path(__file__).resolve().parent / "provider_table.json"
 
 
-def _is_wire(value: object) -> TypeIs[ProviderWire]:
+def is_provider_wire(value: object) -> TypeIs[ProviderWire]:
+    """Whether a wire token names one shipped provider wire."""
     return value in _WIRES
 
 
@@ -63,7 +64,7 @@ def _row(raw: object) -> ProviderTableRow:
         raise ValueError("provider table entry is missing a non-empty 'id'")
     if not isinstance(label, str) or not label:
         raise ValueError(f"provider table entry {provider_id!r} is missing a non-empty 'label'")
-    if not _is_wire(wire):
+    if not is_provider_wire(wire):
         raise ValueError(f"provider table entry {provider_id!r} has an unknown wire: {wire!r}")
     if not isinstance(default_base_url, str) or not default_base_url:
         raise ValueError(f"provider table entry {provider_id!r} is missing a non-empty 'default_base_url'")
@@ -114,5 +115,6 @@ __all__ = [
     "PROVIDER_TABLE_BY_ID",
     "ProviderTableRow",
     "ProviderWire",
+    "is_provider_wire",
     "require_provider_id",
 ]

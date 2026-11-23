@@ -73,6 +73,9 @@ _PARTIAL_WRITE_MESSAGE = "process stdin accepted only part of the input"
 
 #: The two streams the host serves; `both` is a selection, not a stream.
 type _StreamName = Literal["stdout", "stderr"]
+type ProcessLiveness = Literal["running", "exited"]
+type ProcessRowState = ProcessLiveness | Literal["externally managed"]
+type LogStreamSelection = Literal["stdout", "stderr", "both"]
 
 
 class _StrictArgs(BaseModel):
@@ -124,7 +127,7 @@ class BackgroundProcessRow:
 
     process_id: str
     pid: int
-    state: str
+    state: ProcessRowState
     description: str
     command: str
     stdout_path: str
@@ -165,7 +168,7 @@ class BackgroundProcessStartBody:
     process_id: str
     resource_uri: str
     pid: int
-    state: str
+    state: ProcessLiveness
     command: str
     cwd: str
     description: str
@@ -201,8 +204,8 @@ class BackgroundProcessStartBody:
 @dataclass(frozen=True, slots=True)
 class BackgroundProcessLogsBody:
     process_id: str
-    state: str
-    stream: str
+    state: ProcessLiveness
+    stream: LogStreamSelection
     offset: int
     limit: int
     stdout: str
@@ -213,7 +216,7 @@ class BackgroundProcessLogsBody:
     exit_code: int | None
     truncated: bool
     next_offset: int | None
-    next_offsets: Mapping[str, int]
+    next_offsets: Mapping[_StreamName, int]
     guidance: str
 
     def as_payload(self) -> dict[str, object]:
@@ -259,7 +262,7 @@ class BackgroundProcessSendBody:
 @dataclass(frozen=True, slots=True)
 class BackgroundProcessStopBody:
     process_id: str
-    state: str
+    state: ProcessLiveness
     exit_code: int | None
     running: bool
 
@@ -284,7 +287,7 @@ class BackgroundProcessExternalBody:
     stdout_path: str
     stderr_path: str
     reason: str
-    state: str = "externally managed"
+    state: Literal["externally managed"] = "externally managed"
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -325,7 +328,7 @@ class _ProcessRecord(BaseModel):
     stdout_path: str = Field(min_length=1)
     stderr_path: str = Field(min_length=1)
     started_at: str = Field(min_length=1)
-    state: Literal["running", "exited"]
+    state: ProcessLiveness
     exit_code: int | None = None
 
 
@@ -486,7 +489,7 @@ def _start_guidance(process_id: str) -> str:
     )
 
 
-def _logs_guidance(*, running: bool, next_offsets: Mapping[str, int], capped: Sequence[tuple[str, int]], process_id: str) -> str:
+def _logs_guidance(*, running: bool, next_offsets: Mapping[_StreamName, int], capped: Sequence[tuple[_StreamName, int]], process_id: str) -> str:
     parts = ["This is a bounded page from the current log snapshot." if running else "This is a bounded page from the final log snapshot."]
     if next_offsets:
         parts.append("Continue with the next offset(s) shown above.")
@@ -679,7 +682,7 @@ class BackgroundProcessTool:
             )
         current = _live_handle(services, handle.process_id) or handle
         running = current.running
-        state = "running" if running else "exited"
+        state: ProcessLiveness = "running" if running else "exited"
         if not running:
             # The mirror follows the process it names; nothing else refreshes this attempt's exit.
             record = _with_exit(record, exit_code=current.exit_code)
@@ -880,9 +883,9 @@ class BackgroundProcessTool:
         if handle is None:
             return self._unsupervised(records=records, process_id=args.process_id, session_id=context.session_id)
         selected: tuple[_StreamName, ...] = ("stdout", "stderr") if args.stream == "both" else (args.stream,)
-        pages: dict[str, list[str]] = {"stdout": [], "stderr": []}
-        next_offsets: dict[str, int] = {}
-        capped: list[tuple[str, int]] = []
+        pages: dict[_StreamName, list[str]] = {"stdout": [], "stderr": []}
+        next_offsets: dict[_StreamName, int] = {}
+        capped: list[tuple[_StreamName, int]] = []
         clipped = False
         remaining = _LOG_RENDER_BYTES
         for stream in selected:

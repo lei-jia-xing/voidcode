@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 #: service default and core's renderer must agree, and the SDK cannot import core.
 PAGE_BYTES: Final[int] = 40 * 1024
 
+type ProcessStream = Literal["stdout", "stderr"]
+
 
 @dataclass(frozen=True, slots=True)
 class StructuredQueryParseError:
@@ -507,7 +509,7 @@ class ProcessOutput:
     """One bounded page of a supervised process's log, with its liveness at read time."""
 
     process_id: str
-    stream: str
+    stream: ProcessStream
     offset: int
     total_bytes: int
     data: bytes
@@ -530,7 +532,7 @@ class RawStreamCapture:
     cause: bound truncation and post-store-failure drops both count.
     """
 
-    stream: Literal["stdout", "stderr"]
+    stream: ProcessStream
     bytes_captured: int
     bytes_dropped: int
     artifact: ArtifactReference | None
@@ -576,7 +578,7 @@ class RawStreamCapture:
                 raise ValueError(f"raw stream capture is missing {name}")
         raw_stream = payload["stream"]
         if raw_stream == "stdout":
-            stream: Literal["stdout", "stderr"] = "stdout"
+            stream: ProcessStream = "stdout"
         elif raw_stream == "stderr":
             stream = "stderr"
         else:
@@ -1347,7 +1349,7 @@ class ProcessServices(Protocol):
         stdin: bytes | str | None = None,
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
-        on_output: Callable[[str, bytes], None] | None = None,
+        on_output: Callable[[ProcessStream, bytes], None] | None = None,
         raw_capture: bool = False,
         raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
@@ -1363,7 +1365,7 @@ class ProcessServices(Protocol):
         stdin: bytes | str | None = None,
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
-        on_output: Callable[[str, bytes], None] | None = None,
+        on_output: Callable[[ProcessStream, bytes], None] | None = None,
         raw_capture: bool = False,
         raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
@@ -1409,7 +1411,7 @@ class ProcessServices(Protocol):
         self,
         process_id: str,
         *,
-        stream: Literal["stdout", "stderr"] = "stdout",
+        stream: ProcessStream = "stdout",
         offset: int = 0,
         limit: int = 65536,
     ) -> ProcessOutput:

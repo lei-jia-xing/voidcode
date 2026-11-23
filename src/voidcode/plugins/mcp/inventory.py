@@ -7,7 +7,7 @@ display-only.
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal, TypedDict
+from typing import ClassVar, Literal, Required, TypedDict
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import ContextContribution
@@ -32,11 +32,18 @@ MCP_DISABLED_MESSAGE = "MCP support is disabled by configuration."
 type McpInventoryStatus = McpServerStatus | Literal["configured", "unknown"]
 
 
+class McpInventoryTool(TypedDict, total=False):
+    name: Required[str]
+    description: str
+    enabled: bool
+    disabled_reason: str | None
+
+
 class McpInventoryServer(TypedDict):
     name: str
     status: McpInventoryStatus
     error: str | None
-    tools: list[dict[str, object]]
+    tools: list[McpInventoryTool]
     tools_known: int | None
 
 
@@ -181,7 +188,7 @@ def _inventory_servers(
         discovered = surface.servers.get(name, ())
         runtime = state.servers.get(name)
         bounded = discovered[:MAX_TOOLS_PER_SERVER]
-        tools: list[dict[str, object]] = (
+        tools: list[McpInventoryTool] = (
             [_tool_payload(tool) for tool in bounded]
             if include_tool_details
             else [{"name": _display_text(tool.tool_name, MAX_TOOL_NAME_CHARS)} for tool in bounded]
@@ -199,7 +206,7 @@ def _inventory_servers(
     return servers
 
 
-def _tool_payload(tool: McpToolDescriptor) -> dict[str, object]:
+def _tool_payload(tool: McpToolDescriptor) -> McpInventoryTool:
     return {
         "name": _display_text(tool.tool_name, MAX_TOOL_NAME_CHARS),
         "description": _display_text(tool.description, MAX_DESCRIPTION_CHARS),

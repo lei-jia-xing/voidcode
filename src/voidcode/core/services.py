@@ -35,6 +35,7 @@ from voidcode.sdk.services import (
     ProcessHandle,
     ProcessOutput,
     ProcessResult,
+    ProcessStream,
     SessionInfo,
     SessionUsageReport,
     StructuredModelResult,
@@ -163,7 +164,7 @@ class RuntimeServices:
         stdin: bytes | str | None = None,
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
-        on_output: Callable[[str, bytes], None] | None = None,
+        on_output: Callable[[ProcessStream, bytes], None] | None = None,
     ) -> ProcessResult:
         lease = self._active_lease()
         if lease.identity.hook or lease.identity.readonly:
@@ -195,7 +196,7 @@ class RuntimeServices:
         stdin: bytes | str | None = None,
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
-        on_output: Callable[[str, bytes], None] | None = None,
+        on_output: Callable[[ProcessStream, bytes], None] | None = None,
     ) -> ProcessResult:
         lease = self._active_lease()
         self._check_hook("run_query_process")
@@ -309,7 +310,7 @@ class RuntimeServices:
         self,
         process_id: str,
         *,
-        stream: Literal["stdout", "stderr"] = "stdout",
+        stream: ProcessStream = "stdout",
         offset: int = 0,
         limit: int = 65536,
     ) -> ProcessOutput:
@@ -1489,7 +1490,7 @@ class ResourceReaderServicesView:
         self,
         process_id: str,
         *,
-        stream: Literal["stdout", "stderr"] = "stdout",
+        stream: ProcessStream = "stdout",
         offset: int = 0,
         limit: int = 65536,
     ) -> ProcessOutput:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Final, Literal, TypeIs, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,13 +19,21 @@ from voidcode.sdk.services import QueryContractError, ToolServices
 DOCUMENT_VERSION_QUERY = "workspace.document_version"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
+type PositionEncoding = Literal["utf-8", "utf-16", "utf-32"]
+_POSITION_ENCODINGS: Final[frozenset[str]] = frozenset(value for value in get_args(PositionEncoding.__value__) if isinstance(value, str))
+
+
+def is_position_encoding(value: object) -> TypeIs[PositionEncoding]:
+    """Whether a wire token names one supported LSP position encoding."""
+    return isinstance(value, str) and value in _POSITION_ENCODINGS
+
 
 @dataclass(frozen=True, slots=True)
 class DocumentState:
     path: str
     version: int
     content_hash: str
-    position_encoding: str
+    position_encoding: PositionEncoding
 
     @classmethod
     def from_query(cls, value: Mapping[str, object], *, path: str) -> DocumentState | None:
@@ -38,7 +47,7 @@ class DocumentState:
             return None
         if not isinstance(content_hash, str) or _SHA256_PATTERN.fullmatch(content_hash) is None:
             return None
-        if not isinstance(encoding, str) or encoding not in ("utf-8", "utf-16", "utf-32"):
+        if not is_position_encoding(encoding):
             return None
         return cls(path=path, version=version, content_hash=content_hash, position_encoding=encoding)
 

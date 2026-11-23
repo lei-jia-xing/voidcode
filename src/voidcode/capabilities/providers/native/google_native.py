@@ -16,6 +16,7 @@ from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import (
     ModelContextLimits,
     ProviderDoneReason,
+    ProviderEffortLevel,
     ProviderExecutionError,
     ProviderMessage,
     ProviderStreamEvent,
@@ -27,6 +28,7 @@ from voidcode.sdk.tools import ToolCall
 
 from ._wire_common import (
     OwnedResource,
+    ProviderErrorSource,
     abort_signal_cancelled,
     build_usage,
     cancelled_events,
@@ -53,7 +55,7 @@ from .thinking_rules import thinking_rule_for
 # enum ``MINIMAL``/``LOW``/``MEDIUM``/``HIGH``. Which of the two a model reads is
 # a data row (``thinking_rules.json``: ``google-level`` vs ``budget``), and the
 # budgets come from that row.
-_GOOGLE_THINKING_LEVELS: dict[str, types.ThinkingLevel] = {
+_GOOGLE_THINKING_LEVELS: dict[ProviderEffortLevel, types.ThinkingLevel] = {
     # ``mapEffortToGoogleThinkingLevel`` (``model-thinking.ts:85-110``), values
     # identical to OMP's mapper including the ``xhigh``/``max`` -> HIGH clamp.
     "minimal": types.ThinkingLevel.MINIMAL,
@@ -450,7 +452,7 @@ class GoogleGenAIProvider:
             )
 
     @staticmethod
-    def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: str) -> ProviderExecutionError:
+    def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: ProviderErrorSource) -> ProviderExecutionError:
         if isinstance(exc, GoogleAPIError):
             payload = dict(exc.details) if isinstance(exc.details, Mapping) else {}
             payload["status_code"] = exc.code

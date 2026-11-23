@@ -16,7 +16,7 @@ from typing import Any, Final
 from uuid import uuid4
 
 from voidcode.sdk.observed_effects import ObservedEffects
-from voidcode.sdk.services import ProcessHandle, ProcessResult
+from voidcode.sdk.services import ProcessHandle, ProcessResult, ProcessStream
 
 from .artifacts import MAX_PAGE_BYTES
 from .sandbox import SandboxBackend, build_plan, native_backend, read_effects_file, scratch_dir
@@ -666,7 +666,7 @@ class ProcessRegistry:
         timeout_seconds: float | None,
         max_output_bytes: int,
         cancel_event: threading.Event | None = None,
-        on_output: Callable[[str, bytes], None] | None = None,
+        on_output: Callable[[ProcessStream, bytes], None] | None = None,
         sandbox: SandboxBackend | None = None,
         workspace: Path | None = None,
     ) -> ProcessResult:
@@ -806,7 +806,7 @@ class ProcessRegistry:
         timeout_seconds: float | None,
         max_output_bytes: int,
         cancel_event: threading.Event | None,
-        on_output: Callable[[str, bytes], None] | None,
+        on_output: Callable[[ProcessStream, bytes], None] | None,
     ) -> ProcessResult:
         """Run one command under the helper: its argv IS the child; effects ride report.json.
 
@@ -1261,9 +1261,9 @@ def _write_stdin(process: subprocess.Popen[Any], payload: bytes | None) -> None:
 def _read_stream(
     pipe: Any,
     capture: _StreamCapture,
-    stream_name: str,
+    stream_name: ProcessStream,
     errors: list[BaseException],
-    on_output: Callable[[str, bytes], None] | None,
+    on_output: Callable[[ProcessStream, bytes], None] | None,
 ) -> None:
     try:
         while True:

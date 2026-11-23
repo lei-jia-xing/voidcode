@@ -16,7 +16,7 @@ from voidcode.sdk.views import PluginViewDescriptor
 from .dispatch import RegisteredProvider
 from .native.model_catalog import static_catalog_model_ids
 from .native.naming import canonical_provider_id, provider_label, unknown_provider_id_message
-from .registry import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID, ProviderTableRow
+from .registry import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID, ProviderTableRow, ProviderWire
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +25,7 @@ class ConfiguredProvider:
 
     name: str
     label: str
-    wire: str | None
+    wire: ProviderWire | None
     models: int
 
     def as_payload(self) -> dict[str, object]:
