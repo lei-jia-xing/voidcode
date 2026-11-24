@@ -1,9 +1,9 @@
 """Behavioral find: natural-language behavior descriptions to verified file locations.
 
-Pipeline: bounded lexical prescreen (shared grep tool) -> one structured
+Pipeline: bounded lexical prescreen (files-plugin grep query) -> one structured
 model judgment over prescreened candidates only -> line validation plus
-evidence excerpts via the shared read tool. Every returned line number is
-checked against a real file read; judge-invented lines are rejected visibly.
+evidence excerpts via the files-plugin read query. Every returned line number
+is checked against a real file read; judge-invented lines are rejected visibly.
 """
 
 from __future__ import annotations
@@ -12,18 +12,26 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import ClassVar, Literal, NoReturn, Required, TypedDict
+from typing import ClassVar, Literal, Required, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from voidcode.capabilities.files._common import validate_glob_patterns, validate_non_empty
-from voidcode.capabilities.files.grep_tool import MAX_MATCHES, GrepResultBody, GrepResultMatch, GrepTool
-from voidcode.capabilities.files.read_tool import ReadResultBody, ReadTool
+from voidcode.capabilities.files.find_queries import (
+    FIND_GREP,
+    FIND_READ,
+    FindGrepMatch,
+    FindGrepRequest,
+    FindGrepResult,
+    FindReadRequest,
+    FindReadResult,
+)
+from voidcode.capabilities.files.grep_tool import MAX_MATCHES
 from voidcode.capabilities.tool_errors import ToolDiagnosticError, expected_failures
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.provider import ProviderExecutionError
-from voidcode.sdk.services import PluginServices
+from voidcode.sdk.services import PluginServices, QueryContractError, QueryUnavailable
 from voidcode.sdk.tools import (
     ConfirmedStop,
     OutputBounds,
@@ -36,7 +44,6 @@ from voidcode.sdk.tools import (
     ToolFailure,
     ToolResult,
     ToolSuccess,
-    is_tool_diagnostic_kind,
 )
 
 #: Bounds the per-keyword grep fan-out of one find invocation; extra query
@@ -366,55 +373,28 @@ def extract_keywords(query: str) -> tuple[list[str], list[str]]:
     return kept, dropped
 
 
-def _grep_arguments(args: FindArgs, *, pattern: str, limit: int, context: int, ignore_case: bool) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "pattern": pattern,
-        "path": args.path,
-        "ignore_case": ignore_case,
-        "context": context,
-        "respect_gitignore": args.respect_gitignore,
-        "limit": limit,
-    }
-    if args.include is not None:
-        payload["include"] = list(args.include)
-    if args.exclude is not None:
-        payload["exclude"] = list(args.exclude)
-    return payload
-
-
-# NOTE (nested-composition fence): find invokes the shared grep/read tools
-# directly instead of routing through the tool pipeline, so nested calls get
-# no separate ledger/audit entry. That is defensible ONLY while both nested
-# tools are READ-effect (approval gates mutating work only; lease auth still
-# applies through the passed context/services — a tripwire test pins their
-# effects) AND their intermediate pages reach no session model: grep matches
-# feed a tool-free side-turn judge prompt plus local validation, and read
-# pages become excerpts stored in the typed body, never in output.text — so
-# attaching zero ReadObservation coverage is correct. Revisit the day excerpts
-# enter output.text or either nested tool gains a non-read effect.
-
-
-def _raise_nested_failure(result: ToolFailure, *, fallback_message: str) -> NoReturn:
-    """Re-raise a nested file-tool failure with its diagnostic payload intact.
-
-    The find boundary converts this to a ``find`` result, so the nested result
-    is never returned under the wrong tool name.
-    """
-    diagnostics = result.diagnostics
-    message = result.error or fallback_message
-    if diagnostics is not None and is_tool_diagnostic_kind(diagnostics.kind):
-        raise ToolDiagnosticError(
-            message=message,
-            error_kind=diagnostics.kind,
-            error_details=dict(diagnostics.details),
-            retry_guidance=diagnostics.guidance,
-        )
-    raise ToolDiagnosticError(
-        message=message,
-        error_kind="tool_execution_error",
-        error_details={"reason": "nested_tool_failure", "tool": result.tool_name},
-        retry_guidance=None,
+def _grep_request(args: FindArgs, *, pattern: str, limit: int, context: int, ignore_case: bool) -> FindGrepRequest:
+    return FindGrepRequest(
+        pattern=pattern,
+        path=args.path,
+        ignore_case=ignore_case,
+        context=context,
+        include=args.include,
+        exclude=args.exclude,
+        respect_gitignore=args.respect_gitignore,
+        limit=limit,
     )
+
+
+# NOTE (query-composition fence): find asks the files plugin for its grep/read
+# results instead of importing those tools. The files plugin answers by invoking
+# the same GrepTool/ReadTool implementations the model uses, so behavior, path
+# validation and effects stay owned there; disabling files removes the query and
+# find fails visibly instead of reading the workspace itself. Intermediate pages
+# reach no session model: grep matches feed a tool-free judge prompt plus local
+# validation, and read pages become excerpts stored in the typed body, never in
+# output.text — so attaching zero ReadObservation coverage is correct. Revisit
+# the day excerpts enter output.text.
 
 
 def _run_grep(
@@ -426,45 +406,27 @@ def _run_grep(
     tool_context: ToolContext,
     services: PluginServices,
     ignore_case: bool = True,
-) -> GrepResultBody:
-    """Invoke the shared grep tool exactly as Core would; nested diagnostics propagate."""
-    result = GrepTool().invoke(
-        ToolCall(tool_name="grep", arguments=_grep_arguments(args, pattern=pattern, limit=limit, context=context, ignore_case=ignore_case)),
-        context=tool_context,
-        services=services,
-    )
-    if isinstance(result, ToolFailure):
-        if _cancelled(tool_context):
-            raise _FindCancelled(result.error or "grep search cancelled")
-        _raise_nested_failure(result, fallback_message="grep search failed")
-    body = result.body
-    if not isinstance(body, GrepResultBody):
-        raise ValueError("grep search returned no result body")
-    return body
+) -> FindGrepResult:
+    """Ask files for one grep result; unavailable/contract failures propagate."""
+    if _cancelled(tool_context):
+        raise _FindCancelled("grep search cancelled")
+    result = FIND_GREP.ask(services, _grep_request(args, pattern=pattern, limit=limit, context=context, ignore_case=ignore_case))
+    if _cancelled(tool_context):
+        raise _FindCancelled("grep search cancelled")
+    return result
 
 
-def _read_segment(path: str, *, offset: int, limit: int, tool_context: ToolContext, services: PluginServices) -> ReadResultBody:
-    """Read an evidence segment through the shared read tool; nested diagnostics propagate."""
-    result = ReadTool().invoke(
-        ToolCall(tool_name="read", arguments={"path": path, "offset": offset, "limit": limit}),
-        context=tool_context,
-        services=services,
-    )
-    if isinstance(result, ToolFailure):
-        if _cancelled(tool_context):
-            raise _FindCancelled(result.error or "read cancelled")
-        _raise_nested_failure(result, fallback_message=f"read failed for {path}")
-    if not isinstance(result.body, ReadResultBody):
-        raise ToolDiagnosticError(
-            message=f"read returned no text page for {path}",
-            error_kind="tool_execution_error",
-            error_details={"reason": "not_text", "path": path},
-            retry_guidance="Use a text file path; binary and hash-only pages are not judge evidence.",
-        )
-    return result.body
+def _read_segment(path: str, *, offset: int, limit: int, tool_context: ToolContext, services: PluginServices) -> FindReadResult:
+    """Ask files for one text page; unavailable/contract failures propagate."""
+    if _cancelled(tool_context):
+        raise _FindCancelled("read cancelled")
+    result = FIND_READ.ask(services, FindReadRequest(path=path, offset=offset, limit=limit))
+    if _cancelled(tool_context):
+        raise _FindCancelled("read cancelled")
+    return result
 
 
-def _render_excerpt(body: ReadResultBody) -> str:
+def _render_excerpt(body: FindReadResult) -> str:
     return "\n".join(f"{record.line}: {record.text}" for record in body.lines)
 
 
@@ -587,8 +549,36 @@ class FindTool:
             if args.mode == "literal":
                 return self._invoke_literal(args, context=context, services=services)
             return self._invoke_auto(args, context=context, services=services)
+        except QueryUnavailable as exc:
+            return self._dependency_failure(
+                "find_files_unavailable",
+                f"find requires the files plugin for workspace grep/read: {exc}",
+                "Enable the files plugin and retry the find.",
+            )
+        except QueryContractError as exc:
+            return self._dependency_failure(
+                "find_query_contract",
+                f"find files query contract failed: {exc}",
+                "Fix the files plugin query answer and retry the find.",
+            )
+        except ValueError as exc:
+            if isinstance(exc, ToolDiagnosticError):
+                raise
+            return self._dependency_failure(
+                "find_query_contract",
+                f"find files query contract failed: {exc}",
+                "Fix the files plugin query answer and retry the find.",
+            )
         except _FindCancelled as exc:
             return self._cancelled_result(str(exc))
+
+    def _dependency_failure(self, kind: str, error: str, guidance: str) -> ToolFailure:
+        return ToolFailure(
+            tool_name=self.definition.name,
+            error=error,
+            output=TextOutput(error),
+            diagnostics=ToolDiagnostics(kind=kind, summary=error, guidance=guidance),
+        )
 
     def _cancelled_result(self, error: str = "find cancelled") -> ToolFailure:
         return ToolFailure(
@@ -635,7 +625,7 @@ class FindTool:
     def _invoke_auto(self, args: FindArgs, *, context: ToolContext, services: PluginServices) -> ToolResult:
         keywords, dropped_terms = extract_keywords(args.query)
         prescreen_notes: list[PrescreenNote] = []
-        matches: list[tuple[str, GrepResultMatch]] = []
+        matches: list[tuple[str, FindGrepMatch]] = []
         truncated = False
         truncation_reasons: list[str] = []
         for keyword in keywords:
@@ -874,7 +864,7 @@ class FindTool:
     # --- candidates and verdicts ---
 
     @staticmethod
-    def _build_candidates(matches: list[tuple[str, GrepResultMatch]], *, max_candidates: int) -> tuple[list[_Candidate], list[SkippedMatch]]:
+    def _build_candidates(matches: list[tuple[str, FindGrepMatch]], *, max_candidates: int) -> tuple[list[_Candidate], list[SkippedMatch]]:
         by_file: dict[str, _Candidate] = {}
         order: list[str] = []
         for _, match in matches:
@@ -1009,7 +999,7 @@ class FindTool:
     def _locations_from_matches(
         self,
         args: FindArgs,
-        matches: tuple[GrepResultMatch, ...] | list[GrepResultMatch],
+        matches: tuple[FindGrepMatch, ...] | list[FindGrepMatch],
         *,
         via: Literal["grep", "grep_fallback"],
         context: ToolContext,

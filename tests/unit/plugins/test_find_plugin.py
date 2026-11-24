@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -13,9 +13,11 @@ import pytest
 from tests.fixtures.fake_services import FakeServices
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.capabilities.files.find_queries import FIND_GREP, FIND_READ
 from voidcode.capabilities.files.grep_tool import GrepTool
 from voidcode.capabilities.files.read_tool import ReadResultBody, ReadTool
 from voidcode.core.engine import Core
+from voidcode.plugins.files import create_plugin as create_files_plugin
 from voidcode.plugins.find import create_plugin
 from voidcode.plugins.find.find_tool import (
     _MAX_MODEL_QUERY_PROMPT_BYTES,
@@ -25,8 +27,9 @@ from voidcode.plugins.find.find_tool import (
     FindTool,
 )
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.plugin import PluginQueryCaller
 from voidcode.sdk.provider import ProviderExecutionError
-from voidcode.sdk.services import StructuredModelResult
+from voidcode.sdk.services import QueryUnavailable, StructuredModelResult
 from voidcode.sdk.tools import (
     ConfirmedStop,
     ToolCall,
@@ -99,7 +102,28 @@ def _context(root: Path, *, abort_signal: object | None = None) -> ToolContext:
     )
 
 
-def _invoke_raw(root: Path, services: FakeServices, arguments: Mapping[str, object]) -> ToolResult:
+_FILES_QUERY_HANDLERS = {query.name: query.handler for query in create_files_plugin(None).queries}
+
+
+def _files_query(root: Path, services: FakeServices) -> Callable[[str, Mapping[str, object] | None], Mapping[str, object] | None]:
+    def query(name: str, arguments: Mapping[str, object] | None = None) -> Mapping[str, object] | None:
+        handler = _FILES_QUERY_HANDLERS.get(name)
+        if handler is None:
+            raise QueryUnavailable(f"files plugin is disabled: {name}")
+        return handler(dict(arguments or {}), PluginQueryCaller(session_id=services.session_id, workspace=root))
+
+    return query
+
+
+def _invoke_raw(
+    root: Path,
+    services: FakeServices,
+    arguments: Mapping[str, object],
+    *,
+    query: Callable[[str, Mapping[str, object] | None], Mapping[str, object] | None] | None = None,
+) -> ToolResult:
+    services.workspace_root = root
+    services.query = query or _files_query(root, services)
     return FindTool().invoke(
         ToolCall(tool_name="find", arguments=dict(arguments), tool_call_id="find-call"),
         context=_context(root),
@@ -160,11 +184,11 @@ class _CancellingServices(FakeServices):
 
 
 def test_nested_tools_stay_read_only() -> None:
-    # Tripwire for the nested-composition fence in find_tool._run_grep: find
-    # invokes the shared grep/read tools directly, bypassing the tool
-    # pipeline, which is defensible only while both nested tools are
-    # READ-effect. If either ever gains a non-read effect, direct composition
-    # must be re-examined — do not "fix" this test by deleting it.
+    # Tripwire for the files-plugin find queries: their handlers invoke the
+    # shared grep/read tools directly, bypassing the tool pipeline. That is
+    # defensible only while both tools are READ-effect. If either ever gains a
+    # non-read effect, the query composition must be re-examined — do not
+    # "fix" this test by deleting it.
     assert GrepTool.definition.effects == frozenset({ToolEffect.READ})
     assert ReadTool.definition.effects == frozenset({ToolEffect.READ})
 
@@ -182,6 +206,57 @@ def test_find_declares_network_effect_and_never_replays() -> None:
     assert has_external_mutations(effects) is False
     assert denied_under_restriction(effects) is False
     assert is_read_tier(effects) is True
+
+
+def test_files_plugin_registers_find_queries() -> None:
+    names = {query.name for query in create_files_plugin(None).queries}
+    assert {FIND_GREP.name, FIND_READ.name} <= names
+
+
+def test_files_query_unavailable_is_typed_and_does_not_read_directly(tmp_path: Path, monkeypatch) -> None:
+    root = _tree(tmp_path / "workspace")
+    services = FakeServices()
+
+    def unavailable(name: str, arguments: Mapping[str, object] | None = None) -> Mapping[str, object] | None:
+        _ = name, arguments
+        raise QueryUnavailable("files plugin is disabled")
+
+    def direct_read(*args: object, **kwargs: object) -> ToolResult:
+        _ = args, kwargs
+        raise AssertionError("find must not instantiate files tools directly")
+
+    monkeypatch.setattr(GrepTool, "invoke", direct_read)
+    monkeypatch.setattr(ReadTool, "invoke", direct_read)
+    result = _invoke_raw(root, services, {"query": "applies discount at checkout"}, query=unavailable)
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "find_files_unavailable"
+    assert "files plugin" in result.error
+    assert services.prompts == []
+
+
+def test_malformed_files_query_answer_is_a_typed_contract_error(tmp_path: Path) -> None:
+    root = _tree(tmp_path / "workspace")
+
+    def malformed(name: str, arguments: Mapping[str, object] | None = None) -> Mapping[str, object] | None:
+        _ = name, arguments
+        return {"matches": "not-a-list"}
+
+    result = _invoke_raw(root, FakeServices(), {"query": "applies discount at checkout"}, query=malformed)
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "find_query_contract"
+    assert "contract" in result.error
+
+    def oversized(name: str, arguments: Mapping[str, object] | None = None) -> Mapping[str, object] | None:
+        _ = name, arguments
+        raise ValueError("query 'workspace.find_grep' answer exceeded 262144 bytes")
+
+    oversized_result = _invoke_raw(root, FakeServices(), {"query": "applies discount at checkout"}, query=oversized)
+    assert isinstance(oversized_result, ToolFailure)
+    assert oversized_result.diagnostics is not None
+    assert oversized_result.diagnostics.kind == "find_query_contract"
+    assert "262144" in oversized_result.error
 
 
 def test_gitignore_is_honored_by_default_with_explicit_escape_hatch(tmp_path: Path) -> None:
@@ -303,6 +378,8 @@ def test_cancelled_provider_turn_reports_confirmed_stop(tmp_path: Path) -> None:
     abort = _AbortSignal()
     services = _CancellingServices()
     services.abort = abort
+    services.workspace_root = root
+    services.query = _files_query(root, services)
     result = FindTool().invoke(
         ToolCall(tool_name="find", arguments={"query": "applies discount at checkout"}, tool_call_id="find-call"),
         context=_context(root, abort_signal=abort),
@@ -929,7 +1006,7 @@ def test_real_core_judge_round_trip(tmp_path: Path) -> None:
                             "base_url": f"http://127.0.0.1:{server.server_port}/v1",
                         }
                     },
-                    "plugins": {"files": {"enabled": False}},
+                    "plugins": {},
                 }
             ),
             encoding="utf-8",
@@ -1001,7 +1078,7 @@ def test_real_core_projection_surfaces_limit_drops(tmp_path: Path) -> None:
                             "base_url": f"http://127.0.0.1:{server.server_port}/v1",
                         }
                     },
-                    "plugins": {"files": {"enabled": False}},
+                    "plugins": {},
                 }
             ),
             encoding="utf-8",
@@ -1021,3 +1098,51 @@ def test_real_core_projection_surfaces_limit_drops(tmp_path: Path) -> None:
         assert payload.get("body_omitted") is True
         text = str(payload.get("text", ""))
         assert "showing 1 of 2 verified location(s); raise limit to include more" in text
+
+
+def test_real_core_files_disabled_makes_find_fail_visibly(tmp_path: Path) -> None:
+    workspace = _tree(tmp_path / "workspace")
+    find_call = {
+        "id": "find-no-files",
+        "type": "function",
+        "function": {"name": "find", "arguments": json.dumps({"query": "discount", "mode": "literal"})},
+    }
+    replies = [
+        openai_response(message={"role": "assistant", "content": None, "tool_calls": [find_call]}, finish="tool_calls"),
+        openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
+    ]
+    with _loopback(replies) as server:
+        (workspace / "voidcode.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "model": {"model": "endpoint/test-model"},
+                    "policy": {"approval_mode": "yolo", "read_only": False},
+                    "providers": {
+                        "endpoint": {
+                            "api_key": "loopback-secret-not-for-storage",
+                            "base_url": f"http://127.0.0.1:{server.server_port}/v1",
+                        }
+                    },
+                    "plugins": {"files": {"enabled": False}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with open_core(workspace, state_dir=tmp_path / "state") as core:
+            session_id = core.create_session("sess-find-no-files").session_id
+            result = core.run("locate discount behavior", session_id=session_id)
+            assert result.status == "completed", result.error
+
+        requests = [request for request in server.requests if isinstance(request, dict) and "messages" in request]
+        assert len(requests) == 2
+        messages = requests[-1]["messages"]
+        assert isinstance(messages, list)
+        tool_messages = [message for message in messages if isinstance(message, Mapping) and message.get("role") == "tool"]
+        assert len(tool_messages) == 1
+        payload = json.loads(str(tool_messages[0]["content"]))
+        assert payload.get("status") == "error"
+        assert "files plugin" in str(payload.get("error", ""))
+        diagnostics = payload.get("diagnostics")
+        assert isinstance(diagnostics, Mapping)
+        assert diagnostics.get("kind") == "find_files_unavailable"

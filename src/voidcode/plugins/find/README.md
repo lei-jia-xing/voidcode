@@ -29,26 +29,33 @@ Takes no plugin config; `create_plugin` ignores it. See
 
 ## Behavior and limits
 
-- Auto mode runs a bounded lexical prescreen first (one shared-`grep` call per
-  query keyword, total matches capped at grep's own `MAX_MATCHES`), then
-  exactly one structured judge call (`model_query_structured` with a strict
-  `verdicts` schema) over candidate cards. The judge prompt is capped below the
-  core's 64 KiB model-query limit, including the structured suffix. Candidate
-  cards and snippets are JSON-encoded as untrusted data; candidates that do not
-  fit are skipped with a visible `prompt_budget` reason and `partial` status.
+- Auto mode runs a bounded lexical prescreen first (one files-plugin grep
+  query per query keyword, total matches capped at grep's own `MAX_MATCHES`),
+  then exactly one structured judge call (`model_query_structured` with a
+  strict `verdicts` schema) over candidate cards. The judge prompt is capped
+  below the core's 64 KiB model-query limit, including the structured suffix.
+  Candidate cards and snippets are JSON-encoded as untrusted data; candidates
+  that do not fit are skipped with a visible `prompt_budget` reason and
+  `partial` status.
+- `find` owns no workspace reader. It asks the files plugin through the typed
+  `workspace.find_grep` and `workspace.find_read` queries; the handlers wrap the
+  same `GrepTool`/`ReadTool` implementations exposed to the model. If files is
+  disabled or unavailable, find returns a typed `find_files_unavailable` failure
+  and performs no fallback read. A malformed query answer is a typed
+  `find_query_contract` failure.
 - The judge sees at most 12 snippet lines per file and 500 characters per line;
   only those shown lines are selectable. Cuts are reported in
   `coverage.snippet_cuts`, and a verdict for a prescreened-but-unshown line is
   rejected as `line_not_shown`.
-- Every returned line is validated against a real file read through the shared
-  `read` tool: the verdict path must equal the candidate path, the line must be
-  a shown match line, the rationale must be non-empty text (bounded to 500
-  characters), an accepted end line must fit one read page, and the excerpt is
-  the read page itself. Violations are rejected visibly in `coverage.rejected`
-  (`path_mismatch`, `line_not_prescreened`, `line_not_shown`, `invalid_range`,
-  `range_too_large`, `evidence_page_clipped`, `line_out_of_range`,
-  `evidence_unreadable`, `unknown_candidate`, `duplicate_verdict`,
-  `invalid_verdict_field`) — never silently fixed.
+- Every returned line is validated against a real file read through the
+  files-plugin read query: the verdict path must equal the candidate path, the
+  line must be a shown match line, the rationale must be non-empty text (bounded
+  to 500 characters), an accepted end line must fit one read page, and the
+  excerpt is the read page itself. Violations are rejected visibly in
+  `coverage.rejected` (`path_mismatch`, `line_not_prescreened`, `line_not_shown`,
+  `invalid_range`, `range_too_large`, `evidence_page_clipped`,
+  `line_out_of_range`, `evidence_unreadable`, `unknown_candidate`,
+  `duplicate_verdict`, `invalid_verdict_field`) — never silently fixed.
 - Missing verdicts are coverage failures, not completeness: candidates with no
   verdict appear in `coverage.unjudged` (`missing_verdict`) and force `partial`.
   `ok` means every judged candidate produced a verdict and screening was not
@@ -70,8 +77,8 @@ Takes no plugin config; `create_plugin` ignores it. See
   fallback matching is case-sensitive; keyword prescreening is case-insensitive.
   If fallback grep matched but evidence could not be read, the detail says so
   rather than claiming both searches were empty.
-- `respect_gitignore` defaults to true and is passed explicitly to every
-  shared-grep prescreen/literal/fallback call; set it to false to include
+- `respect_gitignore` defaults to true and is passed to every files-plugin grep
+  query used by prescreen, literal, and fallback. Set it to false to include
   ignored files deliberately. The shared matcher loads only the search root's
   `.gitignore`; nested ignore files, `.git/info/exclude`, and global excludes
   are not read. An explicitly named file `path` is yielded by grep before its

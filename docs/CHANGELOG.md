@@ -74,6 +74,10 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 - The usage commit is strict, so a billed query whose usage fact cannot be persisted fails the call instead of disappearing; a reply that unexpectedly carries tool calls still records its measured bill before the contract error is raised. No retries or fallbacks were added.
 - Verification: `tests/unit/core/test_model_query_structured.py` + `tests/integration/test_btw_plugin.py` + the real-find judge round trip = 17 passed; related usage/budget/find batch = 65 passed; `ruff check`, `ruff format --check`, and `ty check src` green on the changed files.
 
+### Find files queries
+- `find` no longer imports or instantiates `GrepTool`/`ReadTool`. The files plugin registers typed `workspace.find_grep`/`workspace.find_read` queries whose handlers invoke the same tools, so disabling files removes find's workspace access. Find returns a visible `find_files_unavailable` failure with no direct-read fallback; malformed query answers are `find_query_contract` failures.
+- Verification: `tests/unit/plugins/test_find_plugin.py` 38 passed; `tests/unit/plugins/test_files.py` 90 passed; `tests/unit/test_bundled_sources.py` 1 passed; `ruff check`, `ruff format --check`, and `ty check src` green.
+
 ### Find: judge coverage, network effect, bounded evidence
 - `find` now compares candidate ids against returned verdicts: candidates with no verdict appear in `coverage.unjudged` as `missing_verdict`, force `partial`, and add a model-visible detail line. This replaces the previous `ok`/`no_hit` claims when a judge silently omitted candidates.
 - Effects move to the honest whole-tool union `READ`+`NETWORK`; `find` is therefore never replayed after a crash. Literal mode remains model-free. The tool-level declaration and future per-operation effects are documented in the find README and the plugin-authoring contract.
