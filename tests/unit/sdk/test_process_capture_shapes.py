@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from tests.fixtures.fake_services import FakeServices
 from voidcode.sdk.services import ArtifactReference, ProcessResult, RawStreamCapture
 
 REF = ArtifactReference(sha256="ab" * 32, bytes=4, media_type="application/octet-stream")
@@ -83,10 +82,3 @@ def test_process_result_raw_pair_rules() -> None:
         ProcessResult(exit_code=0, stdout="", stderr="", duration_ms=3, raw=(out, out))
     with pytest.raises(ValueError, match="RawStreamCapture"):
         ProcessResult(exit_code=0, stdout="", stderr="", duration_ms=3, raw=("x",))  # type: ignore[arg-type]
-
-
-def test_fake_process_accepts_raw_params() -> None:
-    fake = FakeServices()
-    result = fake.run_process(["true"], raw_capture=True, raw_media_type="image/png")
-    assert isinstance(result, ProcessResult)
-    assert fake.run_query_process(["true"], raw_capture=True).raw == ()

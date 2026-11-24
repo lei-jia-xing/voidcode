@@ -8,6 +8,7 @@ from typing import Any, Literal
 import pytest
 
 from voidcode.sdk.client import (
+    CancelReceipt,
     CommandCatalog,
     CommandResult,
     CoreClientError,
@@ -2057,10 +2058,102 @@ def test_shell_syntax_stays_reachable_as_slash_and_help_lists_spaced_names() -> 
         time.sleep(0.01)
     assert [(name, args) for _, name, args, _ in client.invoked] == [("shell", {"command": "echo bang"})]
 
+    client.invoked.clear()
+    app._outcome(ComposerOutcome(ComposerAction.SUBMIT, "!!echo literal"))
+    deadline = time.monotonic() + 5
+    while not client.invoked and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [(name, args) for _, name, args, _ in client.invoked] == [("shell", {"command": "!echo literal"})]
+
     terminal.committed.clear()
     app._dispatch_slash_command("/tui help")
     assert any("/goal set" in row for row in terminal.committed), terminal.committed
     assert not any("goal.set" in row for row in terminal.committed), terminal.committed
+
+
+def test_disabled_shell_escape_is_visible_and_never_becomes_a_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A `!` line with no user_shell descriptor errors visibly instead of reaching the model."""
+    from voidcode.tui.composer import ComposerAction, ComposerOutcome
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_CommandClient(catalog=[], results={}), session_id="s1", terminal=terminal)
+    prompts: list[str] = []
+    monkeypatch.setattr(app, "_dispatch_user_prompt", lambda prompt: prompts.append(prompt))
+
+    app._outcome(ComposerOutcome(ComposerAction.SUBMIT, "!echo should-not-reach-model"))
+
+    assert prompts == []
+    assert app.composer.value == "!echo should-not-reach-model"
+    assert any("user_shell plugin is not enabled" in row for row in terminal.committed), terminal.committed
+
+
+def test_idle_shell_command_can_be_cancelled_without_a_run() -> None:
+    """An idle-session `!` is a cancellable command, not only a run-bound operation."""
+    import time
+
+    from voidcode.tui.composer import ComposerAction, ComposerOutcome
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    class _BlockingShellClient(_CommandClient):
+        def __init__(self) -> None:
+            super().__init__(
+                catalog=[
+                    CommandDescriptor(
+                        name="shell",
+                        owner="user_shell",
+                        description="shell",
+                        argument_schema={"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+                        effects=(ToolEffect.EXECUTE,),
+                        client_syntax="!",
+                    )
+                ],
+                results={},
+            )
+            self.started = False
+            self.release = False
+            self.cancelled: list[str] = []
+
+        def invoke_command(
+            self, session_id: str, name: str, arguments: Mapping[str, object] | None = None, expected_revision: str = ""
+        ) -> CommandResult:
+            self.invoked.append((session_id, name, dict(arguments or {}), expected_revision))
+            self.started = True
+            while not self.release:
+                time.sleep(0.005)
+            return CommandResult(status="error", error="shell command was cancelled", data={"error": "cancelled"})
+
+        def cancel(self, session_id: str) -> CancelReceipt:
+            self.cancelled.append(session_id)
+            return CancelReceipt(session_id=session_id, cancellation_requested=True)
+
+    terminal = _StubTerminal()
+    client = _BlockingShellClient()
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+    app._outcome(ComposerOutcome(ComposerAction.SUBMIT, "!sleep 30"))
+
+    deadline = time.monotonic() + 5
+    while not client.started and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client.started
+    assert app._run_active is False
+    assert app._commands_in_flight == 1
+
+    app._cancel_active_run()
+    deadline = time.monotonic() + 5
+    while not client.cancelled and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client.cancelled == ["s1"]
+
+    client.release = True
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        app._drain_events()
+        if app._commands_in_flight == 0 and app.event_queue.empty():
+            break
+        time.sleep(0.005)
+    assert app._commands_in_flight == 0
+    assert app._cancel_pending is False
 
 
 def test_welcome_shows_once_on_empty_session_only() -> None:

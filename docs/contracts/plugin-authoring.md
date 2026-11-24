@@ -123,6 +123,10 @@ Clients render namespace dots as spaces (`/goal set`); CLI/RPC invocation and pe
 
 All commands follow the same effects/read-only rules: there is no command
 trust classification and no read-only exemption for particular commands.
+Commands have no approval-mode, pre-tool-hook, or tool-allowlist gate; a client
+invoking a command is the consent boundary. A command may set
+`preserve_cancelled_result=True` to keep its own explicit cancelled error result
+and staged events; the default discards a cancelled command's partial/paid body.
 `actor="client"` is the ordinary command provenance; `actor="user"` appears
 only on an accepted confirmation's re-execution, as explicit-decision provenance.
 

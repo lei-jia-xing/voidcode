@@ -15,8 +15,10 @@ from .keys import Key
 from .styles import Styles, symbol
 from .term import cell_len, clamp_row, escape_terminal_controls, grapheme_spans, visible_width
 
-__all__ = ["Composer", "ComposerAction", "ComposerOutcome"]
+__all__ = ["SHELL_ESCAPE_PREFIX", "Composer", "ComposerAction", "ComposerOutcome"]
 
+#: The reserved human shell escape; the client strips exactly one prefix before dispatch.
+SHELL_ESCAPE_PREFIX: Final[str] = "!"
 #: omp ``DOUBLE_INTERRUPT_MS`` (``prompt/composer.ts:22``).
 _DOUBLE_INTERRUPT_SECONDS = 0.5
 #: omp session history depth (``editor.ts:915-919``).
@@ -328,7 +330,7 @@ class Composer:
     @property
     def is_bash_mode(self) -> bool:
         """Whether the draft is a native `!` shell escape (upstream bash mode)."""
-        return self._text.startswith("!")
+        return self._text.startswith(SHELL_ESCAPE_PREFIX)
 
     # -- accessors ---------------------------------------------------------
 

@@ -66,7 +66,7 @@ from voidcode.tui.gates import (
 
 from . import catalog, events, operations
 from .artifact_viewer import ArtifactSource, InteractiveArtifactViewer, artifact_sources, png_dimensions, read_artifact_bytes
-from .composer import Composer, ComposerAction
+from .composer import SHELL_ESCAPE_PREFIX, Composer, ComposerAction
 from .event_pump import drain_events
 from .formatting import (
     NoticeTone,
@@ -244,6 +244,7 @@ class CoreTuiApp:
         self._spinner_tick = 0
         self._run_active = False
         self._run_started_at: float | None = None
+        self._commands_in_flight = 0
         self._quit_armed_at = float("-inf")
         self._cancel_pending = False
         self._queued_followups: tuple[QueuedFollowup, ...] = ()
@@ -730,6 +731,14 @@ class CoreTuiApp:
         if not self._active_tools:
             self._run_started_at = None
 
+    def _mark_command_active(self) -> None:
+        self._commands_in_flight += 1
+
+    def _mark_command_finished(self) -> None:
+        self._commands_in_flight = max(0, self._commands_in_flight - 1)
+        if not self._commands_in_flight and not self._run_active:
+            self._cancel_pending = False
+
     def _render_run_notice(self, status: str, detail: object, rows: list[str], *, stop_cause: object = None) -> None:
         rows.extend(run_notice_rows(status, detail, self.styles, stop_cause=stop_cause))
 
@@ -983,7 +992,7 @@ class CoreTuiApp:
         return False
 
     def _cancel_active_run(self) -> None:
-        if not self._run_active or self._cancel_pending:
+        if not (self._run_active or self._commands_in_flight) or self._cancel_pending:
             return
         self._cancel_pending = True
         self.status_line = ""
@@ -1358,7 +1367,9 @@ class CoreTuiApp:
                     )
                 )
 
-        self._work.submit("CoreInvoke", worker)
+        self._mark_command_active()
+        if self._work.submit("CoreInvoke", worker) is None:
+            self._mark_command_finished()
 
     def _queue_notice(
         self,
@@ -1486,7 +1497,8 @@ class CoreTuiApp:
                 nbytes = len(outcome.text.encode("utf-8"))
                 self.status_line = f"Copied {nbytes} bytes to clipboard"
         elif outcome.action == ComposerAction.SUBMIT and outcome.text is not None:
-            line = outcome.text.strip()
+            raw_line = outcome.text
+            line = raw_line.strip()
             if not line:
                 return
             if line.startswith("/"):
@@ -1498,10 +1510,21 @@ class CoreTuiApp:
                 catalog.unavailable(self)
                 self.composer.set_text(outcome.text)
                 return
-            client_syntax = self._client_syntax_command(line)
+            client_syntax = self._client_syntax_command(raw_line)
             if client_syntax is not None:
                 descriptor, argument = client_syntax
                 self._dispatch_catalog_command(descriptor, argument)
+                return
+            if raw_line.startswith(SHELL_ESCAPE_PREFIX):
+                self.composer.set_text(outcome.text)
+                self.terminal.commit_rows(
+                    [
+                        self.styles.fg(
+                            "error",
+                            f"Shell escape `{SHELL_ESCAPE_PREFIX}` is unavailable: the user_shell plugin is not enabled",
+                        )
+                    ]
+                )
                 return
             self._dispatch_user_prompt(line)
 
@@ -1514,7 +1537,7 @@ class CoreTuiApp:
         for descriptor in descriptors:
             syntax = descriptor.client_syntax
             if syntax and not syntax.startswith("/") and line.startswith(syntax):
-                return descriptor, line[len(syntax) :].lstrip()
+                return descriptor, line[len(syntax) :]
         return None
 
     @property
@@ -1926,6 +1949,7 @@ class CoreTuiApp:
         self._live_views = ()
         self._live_views_inflight = False
         self._live_views_refresh_at = 0.0
+        self._commands_in_flight = 0
         self._clear_stream()
         self.latest_input_tokens = None
         self.cumulative_input_tokens = 0

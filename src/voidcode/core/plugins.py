@@ -1445,14 +1445,23 @@ class PluginRuntime:
         cancelled = cancel_event.is_set() or bool(context.abort_signal and context.abort_signal.cancelled)
         if cancelled:
             self._cancel_claimed_services(lease)
-            # A cancelled invocation's partial result is not a settled output: keep
-            # only the cancellation fact, never a paid/partial body in the receipt.
-            result = CommandResult(
-                status="error",
-                error="command invocation was cancelled; external effects may be incomplete",
-                data={"cancelled": True},
-            )
-            staged: _Staged = ((), (), (), (), (), None, (), ())
+            # A cancelled invocation's partial result is not a settled output by default:
+            # keep only the cancellation fact, never a paid/partial body in the receipt.
+            # A command that opts in may return its own explicit cancelled error and
+            # bounded partial body, which is then committed like any other result.
+            preserve_cancelled = cmd_definition.preserve_cancelled_result and not cmd_threw and result.status == "error"
+            if preserve_cancelled:
+                changes = self._staged_changes(lease)
+                # Opt-in covers the cancelled result and its audit event only; a cancelled
+                # command cannot commit state, continuations, budgets, or cancellations.
+                staged = ((), changes[1], (), (), (), None, (), ())
+            else:
+                result = CommandResult(
+                    status="error",
+                    error="command invocation was cancelled; external effects may be incomplete",
+                    data={"cancelled": True},
+                )
+                staged: _Staged = ((), (), (), (), (), None, (), ())
         elif cmd_threw:
             staged = ((), (), (), (), (), None, (), ())
         else:

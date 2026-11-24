@@ -41,7 +41,7 @@ from voidcode.sdk.tools import (
 )
 
 from .args import NonEmptyCommand, NonEmptyProcessId, OptionalDescription
-from .shell_exec import _shell_argv
+from .shell_exec import shell_argv
 
 #: Row bound of one `ps` listing, as the legacy command had.
 MAX_PROCESS_ROWS = 64
@@ -607,7 +607,7 @@ class BackgroundProcessTool:
         # The host refuses a duplicate id outright, so a start can never shadow a live process.
         try:
             handle = services.spawn_process(
-                _shell_argv(args.command),
+                shell_argv(args.command),
                 cwd=workspace,
                 stdin=True,
                 process_id=process_id,

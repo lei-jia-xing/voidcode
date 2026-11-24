@@ -284,6 +284,7 @@ def _handle_notice(app: CoreTuiApp, frame: NoticeEvent, rows: list[str]) -> None
 
 
 def _handle_command_done(app: CoreTuiApp, frame: CommandDoneEvent, rows: list[str]) -> None:
+    app._mark_command_finished()
     fenced = app.upgrade is not None and app.upgrade.fenced
     gate_open = app.pending_approval is not None or isinstance(app.active_overlay, InteractiveConfirmation)
     if frame.status in ("ok", "error") and not fenced and not gate_open:

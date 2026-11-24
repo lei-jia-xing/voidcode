@@ -711,10 +711,8 @@ class FakeServices(PluginServices):
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
         on_output: Callable[[str, bytes], None] | None = None,
-        raw_capture: bool = False,
-        raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
-        _ = argv, cwd, env, stdin, timeout_seconds, max_output_bytes, on_output, raw_capture, raw_media_type
+        _ = argv, cwd, env, stdin, timeout_seconds, max_output_bytes, on_output
         return self.process_result or ProcessResult(exit_code=0, stdout="", stderr="", duration_ms=0)
 
     def run_query_process(
@@ -727,8 +725,6 @@ class FakeServices(PluginServices):
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
         on_output: Callable[[str, bytes], None] | None = None,
-        raw_capture: bool = False,
-        raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
         return self.run_process(
             argv,
@@ -738,8 +734,6 @@ class FakeServices(PluginServices):
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
             on_output=on_output,
-            raw_capture=raw_capture,
-            raw_media_type=raw_media_type,
         )
 
     def spawn_service_process(

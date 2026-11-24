@@ -1455,10 +1455,12 @@ class ProcessServices(Protocol):
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
         on_output: Callable[[ProcessStream, bytes], None] | None = None,
-        raw_capture: bool = False,
-        raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
-        """Run one child process synchronously in its own process group under this lease."""
+        """Run one child process synchronously in its own process group under this lease.
+
+        Raw byte capture is not implemented by the runtime; ``ProcessResult.raw`` and
+        ``RawStreamCapture`` remain the shape a future capture implementation must use.
+        """
         ...
 
     def run_query_process(
@@ -1471,8 +1473,6 @@ class ProcessServices(Protocol):
         timeout_seconds: float | None = None,
         max_output_bytes: int = 262144,
         on_output: Callable[[ProcessStream, bytes], None] | None = None,
-        raw_capture: bool = False,
-        raw_media_type: str = "application/octet-stream",
     ) -> ProcessResult:
         """Run one read-only query child process under this lease."""
         ...

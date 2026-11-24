@@ -13,7 +13,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import ClassVar, final
+from typing import ClassVar, Final, final
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,7 +39,7 @@ MAX_TIMEOUT_SECONDS = 600
 
 #: Chosen per-stream in-memory capture policy under the process service's 256 MiB ceiling.
 #: The service buffers bytes then joins/decodes them; this is not an output/UI transport threshold.
-_CAPTURE_BYTES = 128 * 1024 * 1024
+SHELL_CAPTURE_BYTES: Final[int] = 128 * 1024 * 1024
 _ARTIFACT_MIME = "text/plain; charset=utf-8"
 _PROGRESS_CHUNK_CHARS = 12_000
 
@@ -119,7 +119,7 @@ class ShellExecArgs(BaseModel):
     description: OptionalDescription = Field(default=None, description="Human-readable description of the command.")
 
 
-def _shell_argv(command: str) -> list[str]:
+def shell_argv(command: str) -> list[str]:
     """The shell wrapper the lease spawns directly; the lease never interprets a command string."""
     if os.name == "nt":
         return ["cmd.exe", "/c", command]
@@ -187,10 +187,10 @@ class ShellExecTool:
 
         try:
             result = services.run_process(
-                _shell_argv(command_text),
+                shell_argv(command_text),
                 cwd=workspace_root,
                 timeout_seconds=float(timeout_seconds),
-                max_output_bytes=_CAPTURE_BYTES,
+                max_output_bytes=SHELL_CAPTURE_BYTES,
                 on_output=_progress_sink(context),
             )
         except ValueError as exc:

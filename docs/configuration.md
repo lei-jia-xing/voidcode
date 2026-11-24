@@ -103,10 +103,12 @@ The banner uses a centered header layout inspired by [dashboard-nvim](https://gi
 
 Policy semantics:
 
-- **`ask`** — externally mutating work (`WRITE`, `EXECUTE`, `SPAWN`) waits for an explicit approval; reads and internal session state changes proceed.
-- **`write`** — file mutations proceed; command execution and process spawning still wait.
-- **`yolo`** — mutating work proceeds without a gate.
+- **`ask`** — externally mutating **tool** work (`WRITE`, `EXECUTE`, `SPAWN`) waits for an explicit approval; reads and internal session state changes proceed.
+- **`write`** — file mutations proceed; tool command execution and process spawning still wait.
+- **`yolo`** — mutating tool work proceeds without a gate.
 - **`read_only`** — checked before approval mode, so it is stronger than `yolo`: a tool that declares `WRITE` or `EXECUTE` is refused outright rather than prompted. It is not a blanket "no mutation" mode: `READ` and `SESSION` effects are never refused, and a `SPAWN`-only tool stays available because a restricted session may delegate only to a child that inherits the same restriction, which the core records on that child.
+
+Commands are a separate, client-invoked surface: they follow the same `read_only` effect refusal, but they have no approval-mode gate, no pre-tool-hook gate, and no tool-allowlist check. A human invoking a command is the consent boundary; automation with client credentials inherits that trust. The `user_shell` `!` escape is therefore available under `ask`/`write`/`yolo` and is only refused by `read_only`.
 
 There is no per-invocation override (no `--model`, `--approval-mode`, or in-session policy command): the active policy comes from `voidcode.json` for the workspace.
 
@@ -329,7 +331,7 @@ Legacy session/state databases from the pre-core architecture are neither import
 
 ## Plugin-only architecture
 
-The core has no built-in tools or fallback providers: files, execution, and model providers are ordinary plugins. Disabling `files`, `exec`, or `providers` genuinely disables those capabilities without fallback.
+The core has no built-in tools or fallback providers: files, execution, and model providers are ordinary plugins. Disabling `files`, `exec`, or `providers` genuinely disables those model-facing capabilities without fallback. `user_shell` is an independent human shell surface: disabling `exec` removes the model-facing shell/background tools but not the `!` escape; disable both to remove shell execution.
 
 `plugins: {}` keeps the bundled default set; it does not request zero plugins. To admit none, set `enabled: false` for each bundled id listed in `bootstrap.py` (`BUNDLED_PLUGIN_IDS`). A zero-plugin core manages sessions and SQLite persistence only, with no assumption of file, shell, or model execution.
 
