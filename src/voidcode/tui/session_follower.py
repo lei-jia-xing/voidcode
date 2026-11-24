@@ -11,7 +11,17 @@ from collections.abc import Callable
 
 from voidcode.sdk.client import CoreClientError, ErrorFrame, EventFrame, HeadFrame, RestartFrame, SessionClient, StreamCancellation
 
-from .events import AbortToken, HealthEvent, ReconciledEvent, ServerRestartEvent, StreamErrorEvent, StreamEventEvent, StreamHeadEvent, TuiFrame
+from .events import (
+    AbortToken,
+    HealthEvent,
+    ReconciledEvent,
+    ReconcileFailure,
+    ServerRestartEvent,
+    StreamErrorEvent,
+    StreamEventEvent,
+    StreamHeadEvent,
+    TuiFrame,
+)
 from .work import WorkGroup
 
 logger = logging.getLogger(__name__)
@@ -181,17 +191,17 @@ class SessionFollower:
                 health = self._client.health()
             except Exception:
                 return  # handoff gap: keep last known identity, stay silent
-            failures: list[str] = []
+            failures: list[ReconcileFailure] = []
             try:
                 catalog = self._client.command_catalog()
             except Exception as exc:
                 catalog = None
-                failures.append(f"catalog ({exc})")
+                failures.append(ReconcileFailure(stage="catalog", detail=str(exc)))
             try:
                 session_status = self._client.get_session(session_id).status
             except Exception as exc:
                 session_status = ""
-                failures.append(f"session status ({exc})")
+                failures.append(ReconcileFailure(stage="session_status", detail=str(exc)))
             self._queue.put(HealthEvent(health=health, token=token, session_id=session_id, generation=generation))
             self._queue.put(
                 ReconciledEvent(

@@ -70,6 +70,7 @@ from .composer import SHELL_ESCAPE_PREFIX, Composer, ComposerAction
 from .event_pump import drain_events
 from .formatting import (
     NoticeTone,
+    StatusLineKind,
 )
 from .formatting import (
     command_result_rows as _command_result_rows,
@@ -255,7 +256,8 @@ class CoreTuiApp:
         self.catalog_revision: str = ""
         #: Last catalog acquisition failure; visible until a reload succeeds.
         self._catalog_error: str | None = None
-        self.status_line = "Connecting to server..."
+        self._status_line = "Connecting to server..."
+        self._status_line_kind = StatusLineKind.NOTICE
         self._stop_event = threading.Event()
         #: Every background operation and lifecycle thread is owned here.
         self._work = WorkGroup()
@@ -283,6 +285,31 @@ class CoreTuiApp:
         self._latest_tool_artifacts: tuple[str, tuple[ArtifactSource, ...]] | None = None
         self._artifact_exports = tempfile.TemporaryDirectory(prefix="voidcode-artifact-")
         self._artifact_ack_deadline: tuple[str, str, float] | None = None
+
+    @property
+    def status_line(self) -> str:
+        return self._status_line
+
+    @status_line.setter
+    def status_line(self, value: str) -> None:
+        self._status_line = value
+        self._status_line_kind = StatusLineKind.NOTICE
+
+    def set_loading_status(self, text: str) -> None:
+        self._status_line = text
+        self._status_line_kind = StatusLineKind.LOADING
+
+    def clear_loading_status(self) -> None:
+        if self._status_line_kind is StatusLineKind.LOADING:
+            self.status_line = ""
+
+    def set_followup_queued_status(self, text: str) -> None:
+        self._status_line = text
+        self._status_line_kind = StatusLineKind.FOLLOWUP_QUEUED
+
+    def clear_followup_queued_status(self) -> None:
+        if self._status_line_kind is StatusLineKind.FOLLOWUP_QUEUED:
+            self.status_line = ""
 
     @property
     def _generation(self) -> int:
@@ -1420,8 +1447,7 @@ class CoreTuiApp:
         self._follower.reconcile_connection(self.session_id)
 
     def _handle_composer_key(self, key: Any) -> None:
-        if self.status_line.startswith("Loading "):
-            self.status_line = ""
+        self.clear_loading_status()
         self._follower.abort_interaction()
         name = key.name
         chord = _normalize_chord(name)
@@ -2125,7 +2151,7 @@ class CoreTuiApp:
     def _show_sessions(self) -> None:
         """List sessions off the UI thread; stale results never replace a newer binding."""
         session_id, generation = self.session_id, self._generation
-        self.status_line = "Loading sessions..."
+        self.set_loading_status("Loading sessions...")
         client = self.client
 
         self._work.submit(
@@ -2176,7 +2202,7 @@ class CoreTuiApp:
         """
         self._follower.abort_interaction()
         session_id, generation = self.session_id, self._generation
-        self.status_line = "Loading views..."
+        self.set_loading_status("Loading views...")
         client = self.client
 
         self._work.submit(
@@ -2263,7 +2289,8 @@ class CoreTuiApp:
         owned_arguments = dict(arguments or {})
         # Hidden actions (Alt+A monitor) show their human description, never a
         # raw /dotted id a user could mistake for a slash command.
-        self.status_line = f"Loading {_safe(descriptor.description) if not descriptor.slash_visible else '/' + _slash_public_path(descriptor)}..."
+        shown = _safe(descriptor.description) if not descriptor.slash_visible else "/" + _slash_public_path(descriptor)
+        self.set_loading_status(f"Loading {shown}...")
 
         self._work.submit(
             "CoreCommandInput",

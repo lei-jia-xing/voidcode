@@ -141,8 +141,8 @@ def _followup_withdrawn(app: CoreTuiApp, payload: Mapping[str, object]) -> None:
     cid = payload.get("continuation_id")
     if isinstance(cid, str) and cid:
         app._queued_followups = tuple(item for item in app._queued_followups if item.continuation_id != cid)
-    if not app._queued_followups and app.status_line.startswith("Follow-up queued"):
-        app.status_line = ""
+    if not app._queued_followups:
+        app.clear_followup_queued_status()
 
 
 def _transcript_entry(

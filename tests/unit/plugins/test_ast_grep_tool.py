@@ -256,6 +256,15 @@ def test_malformed_pattern_is_not_reported_as_zero_matches(tmp_path: Path) -> No
     assert services.artifacts == []
 
 
+def test_cli_argument_errors_are_classified_by_exit_code_not_stderr_text(tmp_path: Path) -> None:
+    services = _services(tmp_path, ProcessResult(2, "", "unrecognized invocation shape\n", 1))
+    result = _failure(_invoke_search(tmp_path, services))
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "tool_input_mismatch"
+    assert _detail(result, "reason") == "invalid_arguments"
+    assert "rejected the search arguments" in result.error
+
+
 def test_success_warnings_are_visible_in_output_and_body(tmp_path: Path) -> None:
     services = _services(tmp_path, ProcessResult(0, services_stdout(tmp_path), "Warning: check this\n", 1))
     result = _success(_invoke_search(tmp_path, services))

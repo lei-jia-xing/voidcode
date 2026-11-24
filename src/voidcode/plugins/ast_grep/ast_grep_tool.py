@@ -495,7 +495,7 @@ def _raise_on_process_failure(*, completed: ProcessResult, fallback_message: str
     stderr = completed.stderr.strip()
     if _has_invalid_pattern_warning(stderr):
         _raise_invalid_pattern(stderr)
-    if "invalid value" in stderr.lower() or "not supported" in stderr.lower() or "unexpected argument" in stderr.lower():
+    if completed.exit_code == 2:
         raise_tool_diagnostic(
             message=f"ast-grep rejected the {stage} arguments: {_short(stderr) or fallback_message}",
             error_kind="tool_input_mismatch",

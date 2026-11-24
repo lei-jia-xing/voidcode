@@ -166,7 +166,7 @@ def _key_rows(
     for chord, summary in rows:
         clean_chord = _clean(chord)
         clean_summary = _clean(summary)
-        is_conflict = clean_summary.startswith("conflicts:")
+        is_conflict = chord in conflicts
         summary_style = "warning" if is_conflict else None
         if not table:
             for line in wrap_plain(clean_chord, max(1, width - 2)):

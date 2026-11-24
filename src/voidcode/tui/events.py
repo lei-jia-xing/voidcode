@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from voidcode.sdk.client import (
     CommandCatalog,
@@ -94,11 +95,22 @@ class HealthEvent(TuiEvent):
     token: AbortToken
 
 
+@dataclass(frozen=True, slots=True)
+class ReconcileFailure:
+    """One optional read that failed during connection reconciliation."""
+
+    stage: Literal["catalog", "session_status"]
+    detail: str
+
+    def __str__(self) -> str:
+        return f"{self.stage} ({self.detail})"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReconciledEvent(TuiEvent):
     catalog: CommandCatalog | None
     session_status: str
-    failures: tuple[str, ...]
+    failures: tuple[ReconcileFailure, ...]
     token: AbortToken
 
 

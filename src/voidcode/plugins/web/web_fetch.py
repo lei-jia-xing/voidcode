@@ -86,12 +86,12 @@ def _validate_host_not_restricted(host: str) -> None:
         raise ValueError("url points to a restricted/private network address")
     try:
         ip = ipaddress.ip_address(stripped_host)
+    except ValueError:
+        pass
+    else:
         if _is_restricted_ip(ip):
             raise ValueError("url points to a restricted/private network address")
         return
-    except ValueError as exc:
-        if str(exc) == "url points to a restricted/private network address":
-            raise
     try:
         addr_info = socket.getaddrinfo(stripped_host, None)
         for _, _, _, _, sockaddr in addr_info:

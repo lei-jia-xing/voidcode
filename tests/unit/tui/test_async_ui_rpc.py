@@ -108,6 +108,30 @@ def _settle(app: CoreTuiApp, *, timeout: float = 5.0) -> None:
     raise AssertionError("background frames did not settle")
 
 
+def test_loading_status_clears_by_kind_even_when_the_text_differs() -> None:
+    app, _ = _app(_BlockingClient())
+
+    app.set_loading_status("Loading the sessions palette...")
+    app.clear_loading_status()
+    assert app.status_line == ""
+
+    app.status_line = "Error: keep me"
+    app.clear_loading_status()
+    assert app.status_line == "Error: keep me"
+
+
+def test_followup_status_clears_by_kind_even_when_the_text_differs() -> None:
+    app, _ = _app(_BlockingClient())
+
+    app.set_followup_queued_status("Queued status with arbitrary wording")
+    app.clear_followup_queued_status()
+    assert app.status_line == ""
+
+    app.status_line = "Error: keep me"
+    app.clear_followup_queued_status()
+    assert app.status_line == "Error: keep me"
+
+
 def test_show_sessions_returns_before_the_rpc_and_mounts_afterward() -> None:
     client = _BlockingClient()
     app, _ = _app(client)

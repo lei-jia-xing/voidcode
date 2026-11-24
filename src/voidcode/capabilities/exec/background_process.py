@@ -24,7 +24,7 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.plugin import StateScope
 from voidcode.sdk.resources import ResourceReaderServices
-from voidcode.sdk.services import PluginServices, ProcessHandle, ProcessServices, StateServices
+from voidcode.sdk.services import PluginServices, ProcessAlreadyRunningError, ProcessHandle, ProcessServices, StateServices
 from voidcode.sdk.tools import (
     TOOL_OUTPUT_BYTES,
     ConfirmedStop,
@@ -613,7 +613,7 @@ class BackgroundProcessTool:
                 process_id=process_id,
             )
         except ValueError as exc:
-            duplicate = "already running" in str(exc)
+            duplicate = isinstance(exc, ProcessAlreadyRunningError)
             raise_tool_diagnostic(
                 message=f"background_process could not start the process: {exc}",
                 error_kind="tool_execution_error",

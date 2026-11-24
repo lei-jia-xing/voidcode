@@ -40,6 +40,8 @@ def _run_git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
             errors="replace",
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
+            # The not-a-repository refusal is classified by its stable C-locale text.
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"},
         )
     except FileNotFoundError as exc:
         raise ValueError("git executable was not found") from exc

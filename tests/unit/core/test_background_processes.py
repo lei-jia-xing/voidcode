@@ -246,7 +246,7 @@ def test_a_live_id_cannot_be_started_twice_and_cancel_kills_the_group(tmp_path: 
 
         # A retried start must never silently create a second process.
         assert core.run("start it again", session_id="sess-bg-cancel").status == "completed"
-        assert _payload(server, 3)["error"].startswith("ValueError: background process fixed-id is already running")
+        assert "background process fixed-id is already running" in str(_payload(server, 3)["error"])
 
         assert core.run("stop it", session_id="sess-bg-cancel").status == "completed"
         assert _payload(server, 5)["stopped"] is True

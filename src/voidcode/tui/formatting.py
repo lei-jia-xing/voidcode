@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from enum import StrEnum
 from typing import Literal
 
 from voidcode.sdk.client import CommandResult
@@ -19,6 +20,15 @@ from .styles import Styles
 from .term import clamp_row, crop_row_right, escape_terminal_controls, visible_width
 
 type NoticeTone = Literal["info", "success", "warning", "error"]
+
+
+class StatusLineKind(StrEnum):
+    """Why the status line is showing; branch on this, never on its text."""
+
+    NOTICE = "notice"
+    LOADING = "loading"
+    FOLLOWUP_QUEUED = "followup_queued"
+
 
 TONE_PREFIX: dict[NoticeTone | str, str] = {"warning": "Warning: ", "error": "Error: "}
 TONE_SLOT: dict[NoticeTone | str, str] = {

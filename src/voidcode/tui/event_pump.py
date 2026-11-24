@@ -268,13 +268,13 @@ def _handle_reconciled(app: CoreTuiApp, frame: ReconciledEvent, rows: list[str])
     if frame.catalog is not None:
         catalog.cache(app, frame.catalog.commands, frame.catalog.revision_id)
     elif frame.failures and not app.catalog_revision:
-        detail = next((item for item in frame.failures if item.startswith("catalog (")), None)
-        if detail is not None:
-            catalog.unavailable(app, detail.removeprefix("catalog (").removesuffix(")"))
+        failure = next((item for item in frame.failures if item.stage == "catalog"), None)
+        if failure is not None:
+            catalog.unavailable(app, failure.detail)
     if frame.session_status:
         app.status_line = f"Run {frame.session_status}" if frame.session_status in ("running", "waiting") else app.status_line
     if frame.failures:
-        rows.append(app.styles.fg("warning", f"[Reconnect refresh incomplete: {', '.join(frame.failures)}]"))
+        rows.append(app.styles.fg("warning", f"[Reconnect refresh incomplete: {', '.join(map(str, frame.failures))}]"))
     app._refresh_followups()
     app._refresh_live_views()
 
@@ -296,8 +296,7 @@ def _handle_command_done(app: CoreTuiApp, frame: CommandDoneEvent, rows: list[st
 def _handle_command_input_ready(app: CoreTuiApp, frame: CommandInputReadyEvent, rows: list[str]) -> None:
     if frame.token.aborted or frame.revision_id != app.catalog_revision:
         return
-    if app.status_line.startswith("Loading "):
-        app.status_line = ""
+    app.clear_loading_status()
     if app.active_overlay is not None or app.pending_approval is not None:
         return
     if app.upgrade is not None and app.upgrade.fenced:
@@ -428,7 +427,7 @@ def _handle_run_status(app: CoreTuiApp, frame: RunStatusEvent, rows: list[str]) 
         app._cancel_pending = False
         app.status_line = ""
     elif frame.status == "queued":
-        app.status_line = "Follow-up queued for when run yields · Esc to interrupt"
+        app.set_followup_queued_status("Follow-up queued for when run yields · Esc to interrupt")
     elif frame.status in ("running", "waiting"):
         app._mark_run_active()
         app.status_line = ""
@@ -440,7 +439,7 @@ def _handle_cancel_done(app: CoreTuiApp, _frame: CancelDoneEvent, _rows: list[st
 
 
 def _handle_followup_queued(app: CoreTuiApp, _frame: FollowupQueuedEvent, _rows: list[str]) -> None:
-    app.status_line = "Follow-up queued for when run yields · Esc to interrupt"
+    app.set_followup_queued_status("Follow-up queued for when run yields · Esc to interrupt")
     app._refresh_followups()
 
 

@@ -1778,12 +1778,23 @@ def test_queued_followup_panel_and_alt_up_withdraw_to_composer() -> None:
         rows,
     )
     assert len(app._queued_followups) == 1
+    app.set_followup_queued_status("Queued status with arbitrary wording")
     handle_stream_event(
         app,
         _event(3, "core.followup_withdrawn", continuation_id="cid-2", prompt="second"),
         rows,
     )
     assert app._queued_followups == ()
+    assert app.status_line == ""
+
+    # A notice that merely mentions a queued follow-up is not this status kind.
+    app.status_line = "Error: queued follow-up could not be withdrawn"
+    handle_stream_event(
+        app,
+        _event(4, "core.followup_withdrawn", continuation_id="cid-3", prompt="third"),
+        rows,
+    )
+    assert app.status_line == "Error: queued follow-up could not be withdrawn"
 
 
 def test_short_terminal_reserves_input_and_bounds_completion() -> None:

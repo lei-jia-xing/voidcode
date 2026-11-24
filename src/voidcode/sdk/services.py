@@ -205,6 +205,17 @@ class ProcessFailure(ValueError):
         self.detail = detail
 
 
+class ProcessAlreadyRunningError(ValueError):
+    """A spawn reuses a process id held by a live process.
+
+    Callers branch on this type, never on the message, so wording is free.
+    """
+
+    def __init__(self, process_id: str) -> None:
+        super().__init__(f"background process {process_id} is already running")
+        self.process_id = process_id
+
+
 type BudgetExhaustionDimension = Literal[
     "provider_turns",
     "root_actions",

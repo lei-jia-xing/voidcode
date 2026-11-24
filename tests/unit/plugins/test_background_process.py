@@ -33,7 +33,7 @@ from voidcode.plugins.exec import create_plugin
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.resources import ResourceReadCaller, ResourceReadRequest
-from voidcode.sdk.services import ProcessHandle, ProcessOutput
+from voidcode.sdk.services import ProcessAlreadyRunningError, ProcessHandle, ProcessOutput
 from voidcode.sdk.tools import TOOL_OUTPUT_BYTES, ConfirmedStop, ToolCall, ToolEffect, ToolFailure, ToolSuccess, UnconfirmedStop
 
 _SHELL_WRAPPER = ["cmd.exe", "/c"] if os.name == "nt" else ["/bin/sh", "-c"]
@@ -432,7 +432,7 @@ def test_start_of_a_cancelled_call_launches_nothing(tmp_path: Path) -> None:
 
 
 def test_start_converts_the_core_duplicate_refusal(tmp_path: Path) -> None:
-    services = _FakeServices(spawn_error=ValueError("background process proc-abc is already running"))
+    services = _FakeServices(spawn_error=ProcessAlreadyRunningError("proc-abc"))
 
     result = _invoke({"op": "start", "command": "serve"}, tmp_path, services)
 
@@ -443,6 +443,16 @@ def test_start_converts_the_core_duplicate_refusal(tmp_path: Path) -> None:
     assert result.diagnostics.details["reason"] == "duplicate_spawn"
     assert services.names() == ["get_state", "spawn_process"]
     assert services.state == {}
+
+
+def test_start_does_not_classify_a_duplicate_from_message_text(tmp_path: Path) -> None:
+    services = _FakeServices(spawn_error=ValueError("background process proc-abc is already running"))
+
+    result = _invoke({"op": "start", "command": "serve"}, tmp_path, services)
+
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.details["reason"] == "failed_process_start"
 
 
 def test_start_converts_a_failed_process_start(tmp_path: Path) -> None:
