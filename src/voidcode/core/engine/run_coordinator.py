@@ -381,7 +381,7 @@ class RunCoordinator:
                         self._host.interrupt_batch(execution)
                     # The new user turn has its own root identity and optional authorization.
                     execution.cursor = _Cursor(root_id=root_id, initial_root_budget=initial_root_budget, max_steps=max_steps)
-                user_payload: dict[str, object] = {"content": prompt}
+                user_payload: dict[str, object] = {"content": prompt, "trigger": "user"}
                 if max_steps is not None:
                     user_payload["max_steps"] = max_steps
                 if root_action_budget is not None:
@@ -507,7 +507,7 @@ class RunCoordinator:
                     if not self._host.ask_binding_expired(binding):
                         raise ValueError(f"session is waiting for ask {cursor.ask_request_id!r}; answer via ask.answer or ask.cancel")
                     self._host.adopt_ask_terminal(execution, binding, AskExpired())
-                resume_payload: dict[str, object] = {"max_steps": max_steps}
+                resume_payload: dict[str, object] = {"max_steps": max_steps, "trigger": "resume"}
                 root_budget_grant: tuple[str, int, str] | None = None
                 if extend_root_actions is not None:
                     if not cursor.root_id:

@@ -13,7 +13,7 @@ Plugins depend on SDK contracts, rather than another plugin's tool names or the 
 | `InvocationFinishedFact` | Outcome, frozen owner/effects/semantics, model attribution, measured JSON envelope sizes, result bounds, diagnostic category, read/change observations, and declared resource paths. |
 | `WakeupFiredFact` | One atomic wakeup claim, with recorded owner, wakeup identity, declared role and immutable payload. It is not a user request or a run completion. |
 | `ChildSpawnedFact` | One actual child session. A batch with three children yields three source facts, regardless of its tool name. |
-| `RunRequestedFact.resumed` | An explicit resume request. A second user prompt is not a resume. |
+| `RunRequestedFact.trigger` | Authoritative run-request identity: `user` (fresh prompt), `followup` (queued user follow-up), `resume` (explicit resume), or `continuation` (automatic owner work). `resumed` remains the explicit-resume bit. |
 | `ApprovalRequestedFact` | One actual approval request. |
 | `ContextProjectedFact` | An applied core window projection with measured covered/dropped UTF-8 bytes. It does not depend on a compressor plugin id. |
 | `UsageFact` | One truthful provider dispatch: session/run/revision, logical turn, exact event and dispatch sequences, provider/model, usage (missing stays unknown), cost, elapsed time, `source` (`turn` or `model_query`), and the invoking owner for a side query. A governed model query has no separate provider intent, so its own committed event is the dispatch record and `dispatch_sequence == event_sequence`. |

@@ -113,6 +113,9 @@ def test_todo_add_actions_and_restart_replay_in_real_terminal(tmp_path: Path, wi
         assert data["revision"] == 1
         assert [task["content"] for task in data["phases"][0]["tasks"]] == ["PTY first", "PTY second"]
         assert [task["status"] for task in data["phases"][0]["tasks"]] == ["in_progress", "pending"]
+        stored_ids = [task["id"] for task in data["phases"][0]["tasks"]]
+        assert len(stored_ids) == len(set(stored_ids)) == 2
+        assert all(len(task_id) == 32 for task_id in stored_ids)
     finally:
         store.close()
     reopened = _TerminalProcess(workspace, state, width=width, height=height, palette=palette, session_id=session_id)

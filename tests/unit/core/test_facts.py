@@ -9,7 +9,7 @@ from voidcode.core.facts import fact_for_event
 from voidcode.core.plugins import LeaseContext, LeaseIdentity, PluginRuntime
 from voidcode.core.storage.store import EventDraft, SessionStatus, SqliteStore
 from voidcode.sdk.codec import decode_tool_result, encode_provider_result, encode_tool_result
-from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, RunFinishedFact, UsageFact
+from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, RunFinishedFact, RunRequestedFact, UsageFact
 from voidcode.sdk.provider import ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.services import BudgetExhaustion
 from voidcode.sdk.tools import Change, ReadObservation, TextOutput, ToolSuccess
@@ -309,3 +309,16 @@ def test_wakeup_fact_retains_owner_identity_role_and_immutable_payload(runtime):
         fact.payload["text"] = "changed"
     with pytest.raises(ValueError):
         WakeupFiredFact("s", "r", "v", "t", 1, "", "w", "user", {})
+
+
+def test_run_requested_trigger_distinguishes_fresh_followup_continuation_and_resume(runtime) -> None:
+    append(
+        runtime,
+        event("core.user_message", content="fresh"),
+        event("core.user_message", content="queued", continuation_id="cid", trigger="followup"),
+        event("core.user_message", content="automatic", continuation_id="cid-2"),
+        event("core.run_resumed", max_steps=None),
+    )
+    facts = [fact for fact in runtime.fact_page("session", 0, 10).facts if isinstance(fact, RunRequestedFact)]
+    assert [fact.trigger for fact in facts] == ["user", "followup", "continuation", "resume"]
+    assert [fact.resumed for fact in facts] == [False, False, False, True]

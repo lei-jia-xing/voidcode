@@ -118,7 +118,7 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `lsp` | `lsp` tool and `/lsp` command |
 | `mcp` | `mcp` tool and `/mcp` inventory |
 | `providers` | turn providers for OpenAI-compatible, Anthropic, and Google families, plus `/model` and `/providers` panels |
-| `todo` | `todo` tool, `/todo`, `/todo clear` |
+| `todo` | `todo` tool, `/todo`, `/todo add`, `/todo edit`, `/todo clear` |
 | `plan` | `/plan`, `/plan off`, `/plan status`; overlay-backed read-only collaboration mode |
 | `skills` | `skill://` reader (loaded through the `read` tool), `/skills`, `/skills show`, and workspace rule context (`AGENTS.md` hierarchy + `.voidcode/rules`) |
 | `review` | `/review` |

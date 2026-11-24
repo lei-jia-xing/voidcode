@@ -202,7 +202,13 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[Obse
     }
     match kind:
         case "run_requested":
-            return kind, {**common, "resumed": ev.event_type == EventType.RUN_RESUMED}
+            trigger = ev.payload.get("trigger")
+            if trigger is None:
+                if ev.payload.get("continuation_id") is not None:
+                    trigger = "continuation"
+                else:
+                    trigger = "resume" if ev.event_type == EventType.RUN_RESUMED else "user"
+            return kind, {**common, "resumed": ev.event_type == EventType.RUN_RESUMED, "trigger": trigger}
         case "approval_requested":
             return kind, {**common, "request_id": ev.payload["request_id"]}
         case "child_spawned":

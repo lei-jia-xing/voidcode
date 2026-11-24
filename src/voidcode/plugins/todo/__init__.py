@@ -6,6 +6,11 @@ from functools import partial
 from voidcode.sdk.plugin import Plugin, StateSchema
 
 from .todo_plugin import (
+    MAX_TODO_BLOCKER_BYTES,
+    MAX_TODO_PHASE_NAME_BYTES,
+    MAX_TODO_PHASES,
+    MAX_TODO_TASK_CONTENT_BYTES,
+    MAX_TODO_TASKS_PER_PHASE,
     SCHEMA_VERSION,
     TODO_STATUSES,
     TodoAddCommand,
@@ -40,22 +45,25 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                     "revision": {"type": "integer", "minimum": 0},
                     "phases": {
                         "type": "array",
+                        "maxItems": MAX_TODO_PHASES,
                         "items": {
                             "type": "object",
                             "required": ["name", "tasks"],
                             "additionalProperties": False,
                             "properties": {
-                                "name": {"type": "string"},
+                                "name": {"type": "string", "maxLength": MAX_TODO_PHASE_NAME_BYTES},
                                 "tasks": {
                                     "type": "array",
+                                    "maxItems": MAX_TODO_TASKS_PER_PHASE,
                                     "items": {
                                         "type": "object",
-                                        "required": ["content", "status"],
+                                        "required": ["id", "content", "status"],
                                         "additionalProperties": False,
                                         "properties": {
-                                            "content": {"type": "string"},
+                                            "id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+                                            "content": {"type": "string", "maxLength": MAX_TODO_TASK_CONTENT_BYTES},
                                             "status": {"type": "string", "enum": list(TODO_STATUSES)},
-                                            "blocker": {"type": "string"},
+                                            "blocker": {"type": "string", "maxLength": MAX_TODO_BLOCKER_BYTES},
                                         },
                                     },
                                 },

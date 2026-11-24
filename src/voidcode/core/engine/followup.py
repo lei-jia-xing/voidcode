@@ -384,7 +384,7 @@ class FollowupManager:
                         max_steps=max_steps,
                         continuation_id=continuation_id,
                     )
-                user_payload: dict[str, object] = {"content": prompt, "continuation_id": continuation_id}
+                user_payload: dict[str, object] = {"content": prompt, "continuation_id": continuation_id, "trigger": "followup"}
                 if max_steps is not None:
                     user_payload["max_steps"] = max_steps
                 if images:

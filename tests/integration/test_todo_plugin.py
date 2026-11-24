@@ -6,6 +6,7 @@ Smoke test verifying model tool invocation, plan context injection, and state pe
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 from tests.fixtures.core_factory import discard_core, loopback_server, register_core
@@ -18,11 +19,21 @@ from voidcode.sdk.commands import CommandResult
 _TODO_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "todo"
 
 
-def _core(tmp_path: Path, server: OpenAILoopbackServer, *, todo_enabled: bool, state_dir: Path | None = None) -> Core:
+def _core(
+    tmp_path: Path,
+    server: OpenAILoopbackServer,
+    *,
+    todo_enabled: bool,
+    state_dir: Path | None = None,
+    todo_config: Mapping[str, object] | None = None,
+) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     resolved_state = state_dir if state_dir is not None else tmp_path / "state"
     resolved_state.mkdir(parents=True, exist_ok=True)
+    todo_entry: dict[str, object] = {"path": str(_TODO_PLUGIN_ROOT), "enabled": todo_enabled}
+    if todo_config is not None:
+        todo_entry["config"] = dict(todo_config)
     config = {
         "schema_version": 1,
         "model": {"model": "endpoint/test-model"},
@@ -37,7 +48,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, todo_enabled: bool, s
             # The bundled files plugin is not under test here and is rewritten by another P4
             # lane; booting it would make this suite depend on their in-flight tree.
             "files": {"enabled": False},
-            "todo": {"path": str(_TODO_PLUGIN_ROOT), "enabled": todo_enabled},
+            "todo": todo_entry,
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
@@ -141,3 +152,78 @@ def test_todo_tool_call_writes_plan_context_and_survives_restart(tmp_path: Path)
         assert after_restart.status == "ok"
         assert after_restart.output == status.output
         assert after_restart.data["revision"] == 1
+
+
+def test_todo_clear_cancels_only_todo_owner_queue(tmp_path: Path) -> None:
+    with loopback_server([]) as server:
+        core = _core(tmp_path, server, todo_enabled=True)
+        try:
+            core.auto_drain = False
+            session_id = core.create_session().session_id
+            created = _invoke(core, session_id, "goal.set", {"objective": "keep this goal queued"})
+            assert created.status == "ok", created.error
+            before = core.store.pending_continuations(session_id, limit=10)
+            assert [record.owner for record in before] == ["goal"]
+
+            cleared = _invoke(core, session_id, "todo.clear", {})
+            assert cleared.status == "ok", cleared.error
+            after = core.store.pending_continuations(session_id, limit=10)
+            assert [record.owner for record in after] == ["goal"]
+        finally:
+            core.close()
+            discard_core(core)
+
+
+def test_completion_reminder_continuation_does_not_reset_cycle_budget(tmp_path: Path) -> None:
+    replies: list[dict[str, object]] = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [_todo_call("call-init-reminder", {"op": "init", "items": ["unfinished"]})],
+            },
+            finish="tool_calls",
+            usage={"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+        ),
+        openai_response(
+            message={"role": "assistant", "content": "Plan recorded."},
+            finish="stop",
+            usage={"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35},
+        ),
+        openai_response(
+            message={"role": "assistant", "content": "Reminder handled."},
+            finish="stop",
+            usage={"prompt_tokens": 40, "completion_tokens": 5, "total_tokens": 45},
+        ),
+    ]
+    with loopback_server(replies) as server:
+        core = _core(
+            tmp_path,
+            server,
+            todo_enabled=True,
+            todo_config={"reminders": {"enabled": True, "todo": {"max_per_cycle": 1}}},
+        )
+        try:
+            core.auto_drain = False
+            session_id = core.create_session().session_id
+            result = core.run("plan this", session_id=session_id)
+            assert result.status == "completed"
+            pending = core.store.pending_continuations(session_id, limit=10)
+            assert len(pending) == 1
+            assert pending[0].owner == "todo"
+
+            drained = core.drain_continuations(session_id, limit=1)
+            assert len(drained) == 1
+            assert drained[0].status == "completed"
+
+            assert len(server.requests) == 3
+            reminder_request = _request_text(server.requests[2])
+            assert "incomplete todo item(s)" in reminder_request
+            assert "<untrusted_todos>" in reminder_request
+            assert not core.store.pending_continuations(session_id, limit=10)
+
+            reminder_events = [event for event in core.events_after(session_id) if event.event_type == "plugin.todo.reminder_injected"]
+            assert len(reminder_events) == 1
+        finally:
+            core.close()
+            discard_core(core)

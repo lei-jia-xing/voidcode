@@ -19,6 +19,10 @@ ObservedFactKind = Literal[
 RunStatus = Literal["completed", "failed", "interrupted"]
 #: Canonical neutral stop cause shared by core and SDK.
 StopCause = Literal["completed", "error", "user_stop", "owner_cancel", "limit_reached", "shutdown"]
+#: What produced a run-requested fact. Only ``user`` is a fresh user turn; a
+#: follow-up was queued by the user while an earlier run was active; resume is an
+#: explicit resume; continuation is automatic owner-produced work.
+RunTrigger = Literal["user", "followup", "resume", "continuation"]
 
 
 def is_stop_cause(value: object) -> TypeGuard[StopCause]:
@@ -135,6 +139,8 @@ class RunRequestedFact:
     logical_turn: str
     event_sequence: int
     resumed: bool
+    #: Authoritative run-request identity. ``resumed`` remains the explicit-resume bit.
+    trigger: RunTrigger
 
 
 @dataclass(frozen=True, slots=True)

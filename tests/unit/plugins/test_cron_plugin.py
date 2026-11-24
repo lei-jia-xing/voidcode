@@ -170,6 +170,7 @@ def _run_requested(sequence: int, *, run_id: str = "run-1", resumed: bool = Fals
         logical_turn="turn-1",
         event_sequence=sequence,
         resumed=resumed,
+        trigger="resume" if resumed else "user",
     )
 
 
