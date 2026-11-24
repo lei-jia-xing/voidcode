@@ -267,14 +267,19 @@ class ContextProjector:
         ineffective = 0
         for entry in shrinkable:
             try:
-                text, images, _clipped = project_tool_result(entry.result, max_bytes=budget, artifact_reader=self._host.artifact_page)
+                text, _images, _clipped = project_tool_result(
+                    entry.result,
+                    max_bytes=budget,
+                    artifact_reader=self._host.artifact_page,
+                    include_images=False,
+                )
             except ValueError, OSError, RuntimeError:
                 # The ceiling rendering in hand is authoritative; a budget that
                 # cannot fit this tool's identities keeps it instead of failing.
                 ineffective += 1
                 continue
             current = messages[entry.index]
-            messages[entry.index] = replace(current, content=(entry.label or "") + text, images=images)
+            messages[entry.index] = replace(current, content=(entry.label or "") + text)
         execution.allocation_ineffective_tools = ineffective
 
     def _activation_outcome_note(self, execution: _Execution) -> str | None:

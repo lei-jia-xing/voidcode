@@ -10,12 +10,12 @@ import pytest
 from jsonschema import validate
 
 from voidcode.core.history_renderer import HistoryPage
-from voidcode.plugins.subagents.monitor import MONITOR_COMMAND, MonitorCommand
+from voidcode.plugins.subagents.monitor import MONITOR_COMMAND, MonitorCommand, SubagentStatusView
 from voidcode.sdk.commands import CommandInvocation, CommandPresentation
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import DescendantNode, PluginServices
-from voidcode.sdk.views import MAX_VIEW_DATA_BYTES, ChoicesViewData, MarkdownViewData, choices_dispatch
+from voidcode.sdk.views import MAX_VIEW_DATA_BYTES, ChoicesViewData, MarkdownViewData, StatusViewData, TableViewData, ViewAction, choices_dispatch
 
 
 class MonitorServices(PluginServices):
@@ -165,3 +165,91 @@ def test_single_oversized_label_and_parent_activity_are_readable_via_detail_page
     assert len(pieces) > 1
     back = next(action for action in detail.actions if action.label == "Back to roster")
     assert ChoicesViewData.from_payload(_open(tmp_path, services, back.arguments, invoke=invoke).data) == roster
+
+
+def test_subagent_status_view_projects_live_state_and_elapsed_time() -> None:
+    view = SubagentStatusView()
+    empty = view.render("root", MonitorServices(()))
+    assert empty.live is False
+    assert empty.live_action is None
+    assert StatusViewData.from_payload(empty.data).value == "No subagents"
+
+    completed_only = view.render(
+        "root",
+        MonitorServices(
+            (
+                DescendantNode(
+                    session_id="done-1",
+                    parent_session_id="root",
+                    depth=1,
+                    status="completed",
+                    run_id="run-1",
+                    label="Done worker",
+                    activity="finished task",
+                    elapsed_ms=12500,
+                ),
+            )
+        ),
+    )
+    assert completed_only.live is False
+
+    mixed = view.render(
+        "root",
+        MonitorServices(
+            (
+                DescendantNode(
+                    session_id="run-1",
+                    parent_session_id="root",
+                    depth=1,
+                    status="running",
+                    run_id="r-1",
+                    label="Researcher",
+                    activity="reading docs",
+                    elapsed_ms=65000,
+                ),
+                DescendantNode(
+                    session_id="wait-1",
+                    parent_session_id="root",
+                    depth=1,
+                    status="waiting",
+                    run_id="r-2",
+                    label="Patcher",
+                    activity="edit src/app.py",
+                    awaiting_approval=True,
+                    elapsed_ms=3400,
+                ),
+                DescendantNode(
+                    session_id="queue-1",
+                    parent_session_id="root",
+                    depth=1,
+                    status="idle",
+                    run_id="r-3",
+                    label="Verifier",
+                    activity="pytest run",
+                    has_queued_followup=True,
+                    elapsed_ms=500,
+                ),
+                DescendantNode(
+                    session_id="fail-1",
+                    parent_session_id="root",
+                    depth=1,
+                    status="failed",
+                    run_id="r-4",
+                    label="Migrator",
+                    activity="migration error",
+                    elapsed_ms=8000,
+                ),
+            )
+        ),
+    )
+    assert mixed.live is True
+    assert mixed.title == "Subagents (3 active)"
+    assert mixed.live_action == ViewAction(label="Alt+A monitor", action=MONITOR_COMMAND, prepare_input=True)
+    table = TableViewData.from_payload(mixed.data)
+    assert table.columns == ("Subagent", "Status", "Activity", "Elapsed")
+    assert table.rows == (
+        ("Researcher", "running", "reading docs", "1m05s"),
+        ("Patcher", "approval", "edit src/app.py", "3s"),
+        ("Verifier", "queued", "pytest run", "0s"),
+        ("Migrator", "failed", "migration error", "8s"),
+    )

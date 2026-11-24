@@ -98,7 +98,7 @@ def test_todo_add_actions_and_restart_replay_in_real_terminal(tmp_path: Path, wi
         footer_spans = re.findall(r"\x1b\[([0-9;]+)m([^\x1b]*no model[^\x1b]*)", terminal.output.decode("utf-8", errors="replace"))
         assert any("39" in codes.split(";") for codes, _text in footer_spans), "Footer did not use terminal default foreground"
         terminal.send(b"/todo\r")
-        terminal.until("Add tasks")
+        terminal.until("❯ Add tasks")
         terminal.send(b"\r")
         terminal.until("Tasks (one per line)")
         terminal.send(b"\t\x1b[200~PTY first\nPTY second\x1b[201~\x13")

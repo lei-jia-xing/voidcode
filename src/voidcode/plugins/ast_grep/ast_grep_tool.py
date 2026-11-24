@@ -13,6 +13,7 @@ from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices, ProcessResult, ProcessServices
 from voidcode.sdk.tools import (
+    TOOL_OUTPUT_BYTES,
     Change,
     OpaqueToolBody,
     OutputBounds,
@@ -93,44 +94,63 @@ def _parse_stream_output(stdout: str) -> list[dict[str, Any]]:
     return matches
 
 
-def _render_matches(matches: list[dict[str, Any]], *, rewrite: str | None = None) -> str:
-    rendered: list[str] = []
-    for match in matches:
-        file = match.get("file", "<unknown>")
-        text = match.get("text", "")
-        range_value = match.get("range")
-        start = range_value.get("start") if isinstance(range_value, dict) else None
-        if isinstance(start, dict):
-            line, column = start.get("line"), start.get("column")
-            location = f"{file}:{line + 1}:{column + 1}" if isinstance(line, int) and isinstance(column, int) else str(file)
-        else:
-            location = str(file)
-        rendered.append(f"{location}: {text}")
-        if rewrite is not None and match.get("replacement") is not None:
-            rendered.append(f"  -> {match['replacement']}")
-    return "\n".join(rendered)
+def _render_single_match(match: dict[str, Any], *, rewrite: str | None = None) -> str:
+    file = match.get("file", "<unknown>")
+    text = match.get("text", "")
+    range_value = match.get("range")
+    start = range_value.get("start") if isinstance(range_value, dict) else None
+    if isinstance(start, dict):
+        line, column = start.get("line"), start.get("column")
+        location = f"{file}:{line + 1}:{column + 1}" if isinstance(line, int) and isinstance(column, int) else str(file)
+    else:
+        location = str(file)
+    lines = [f"{location}: {text}"]
+    if rewrite is not None and match.get("replacement") is not None:
+        lines.append(f"  -> {match['replacement']}")
+    return "\n".join(lines)
 
 
-_MATCH_PREVIEW_LIMIT = 50
+_MATCH_PROJECTION_BUDGET_BYTES = TOOL_OUTPUT_BYTES - 4 * 1024
 
 
-def _match_body_preview(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _match_body_entry(match: dict[str, Any]) -> dict[str, Any]:
+    raw_path = match.get("file")
+    path = raw_path if isinstance(raw_path, str) else "<unknown>"
+    item: dict[str, Any] = {"file": path}
+    range_value = match.get("range")
+    start = range_value.get("start") if isinstance(range_value, dict) else None
+    if isinstance(start, dict):
+        line = start.get("line")
+        column = start.get("column")
+        if isinstance(line, int):
+            item["line"] = line + 1
+        if isinstance(column, int):
+            item["column"] = column + 1
+    return item
+
+
+def _select_matches_for_budget(
+    matches: list[dict[str, Any]],
+    *,
+    header_text: str,
+    rewrite: str | None = None,
+    budget_bytes: int = _MATCH_PROJECTION_BUDGET_BYTES,
+) -> tuple[list[dict[str, Any]], str, bool]:
     preview: list[dict[str, Any]] = []
-    for match in matches[:_MATCH_PREVIEW_LIMIT]:
-        raw_path = match.get("file")
-        path = raw_path if isinstance(raw_path, str) else "<unknown>"
-        item: dict[str, Any] = {"file": path}
-        range_value = match.get("range")
-        start = range_value.get("start") if isinstance(range_value, dict) else None
-        if isinstance(start, dict):
-            line = start.get("line")
-            column = start.get("column")
-            if isinstance(line, int):
-                item["line"] = line + 1
-            if isinstance(column, int):
-                item["column"] = column + 1
-        preview.append(item)
-    return preview
+    rendered_lines: list[str] = []
+    used_bytes = len(header_text.encode("utf-8"))
+    truncated = False
+    for match in matches:
+        rendered = _render_single_match(match, rewrite=rewrite)
+        entry = _match_body_entry(match)
+        item_bytes = len(rendered.encode("utf-8")) + 1 + len(json.dumps(entry, ensure_ascii=False).encode("utf-8")) + 2
+        if used_bytes + item_bytes > budget_bytes:
+            truncated = True
+            break
+        used_bytes += item_bytes
+        rendered_lines.append(rendered)
+        preview.append(entry)
+    return preview, "\n".join(rendered_lines), truncated
 
 
 def _match_result_output(
@@ -152,13 +172,15 @@ def _match_result_output(
     )
 
 
-def _with_match_counts(matches: list[dict[str, Any]]) -> dict[str, Any]:
-    match_count = len(matches)
-    preview = _match_body_preview(matches)
-    truncated = match_count > len(preview)
+def _with_match_counts(
+    preview: list[dict[str, Any]],
+    *,
+    total_count: int,
+    truncated: bool,
+) -> dict[str, Any]:
     return {
         "matches": preview,
-        "match_count": match_count,
+        "match_count": total_count,
         "matches_truncated": truncated,
         "truncated": truncated,
     }
@@ -341,12 +363,13 @@ class AstGrepTool:
             matches = _parse_stream_output(completed.stdout)
 
         match_count = len(matches)
-        preview = matches[:_MATCH_PREVIEW_LIMIT]
-        truncated = match_count > len(preview)
         output = f"Found {match_count} AST match(es) in {relative_path}"
+        preview, rendered_matches, truncated = _select_matches_for_budget(
+            matches,
+            header_text=output,
+        )
         if truncated:
             output += f"\nShowing the first {len(preview)} matches."
-        rendered_matches = _render_matches(preview)
         if rendered_matches:
             output += "\n" + rendered_matches
         output, _ = _match_result_output(
@@ -361,7 +384,7 @@ class AstGrepTool:
             "lang": args.lang,
             "mode": "search",
             "timeout_seconds": timeout_seconds,
-            **_with_match_counts(matches),
+            **_with_match_counts(preview, total_count=match_count, truncated=truncated),
         }
         return ToolSuccess(
             tool_name=self.definition.name,
@@ -391,13 +414,14 @@ class AstGrepTool:
             timeout_seconds=timeout_seconds,
             query=True,
         )
-        preview_matches = matches[:_MATCH_PREVIEW_LIMIT]
-        truncated = replacement_count > len(preview_matches)
-
         output_text = f"Previewed {replacement_count} AST replacement(s) in {relative_path}"
+        preview_entries, rendered_matches, truncated = _select_matches_for_budget(
+            matches,
+            header_text=output_text,
+            rewrite=rewrite,
+        )
         if truncated:
-            output_text += f"\nShowing the first {len(preview_matches)} matches."
-        rendered_matches = _render_matches(preview_matches, rewrite=rewrite)
+            output_text += f"\nShowing the first {len(preview_entries)} matches."
         if rendered_matches:
             output_text += "\n" + rendered_matches
         output, _ = _match_result_output(
@@ -412,7 +436,7 @@ class AstGrepTool:
             "rewrite": args.rewrite,
             "lang": args.lang,
             "replacement_count": replacement_count,
-            **_with_match_counts(matches),
+            **_with_match_counts(preview_entries, total_count=len(matches), truncated=truncated),
             "applied": False,
             "mode": "preview",
             "timeout_seconds": timeout_seconds,
@@ -467,8 +491,6 @@ class AstGrepReplaceTool:
             timeout_seconds=timeout_seconds,
             query=False,
         )
-        preview_matches = matches[:_MATCH_PREVIEW_LIMIT]
-        truncated = replacement_count > len(preview_matches)
 
         candidate, _ = _resolve_candidate(workspace=workspace, path_text=args.path)
         display_paths, original_bytes, source_hashes = _preflight_replace_targets(
@@ -494,7 +516,7 @@ class AstGrepReplaceTool:
             "",
             native_jsonl,
             services=services,
-            truncated=truncated,
+            truncated=False,
         )
         apply_paths = [display_paths[target] for target in ordered_targets]
         if apply_paths:
@@ -538,9 +560,13 @@ class AstGrepReplaceTool:
         if len(file_results) > 1:
             output_text += f" across {len(file_results)} files."
             output_text += "\n" + "\n".join(f"{file['path']}: {file['byte_count']} bytes; SHA-256 {file['content_hash']}" for file in file_results)
+        preview_entries, rendered_matches, truncated = _select_matches_for_budget(
+            matches,
+            header_text=output_text,
+            rewrite=rewrite,
+        )
         if truncated:
-            output_text += f"\nShowing the first {len(preview_matches)} matches."
-        rendered_matches = _render_matches(preview_matches, rewrite=rewrite)
+            output_text += f"\nShowing the first {len(preview_entries)} matches."
         if rendered_matches:
             output_text += "\n" + rendered_matches
         output, _ = _match_result_output(
@@ -556,7 +582,7 @@ class AstGrepReplaceTool:
             "rewrite": args.rewrite,
             "lang": args.lang,
             "replacement_count": replacement_count,
-            **_with_match_counts(matches),
+            **_with_match_counts(preview_entries, total_count=len(matches), truncated=truncated),
             "applied": True,
             "mode": "replace",
             "timeout_seconds": timeout_seconds,

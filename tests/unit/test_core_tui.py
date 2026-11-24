@@ -2471,3 +2471,69 @@ def test_model_turn_updates_footer_context() -> None:
     assert "total" not in reset_ctx
     assert "ctx" not in reset_ctx
     assert "session" not in reset_ctx
+
+
+def test_live_subagent_view_renders_above_composer_with_active_tools_and_resets_on_switch() -> None:
+    from voidcode.sdk.views import ViewAction
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    class _LiveViewClient(_RunClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.snapshot = ViewsSnapshot(
+                revision_id="rev-1",
+                views=(
+                    PluginViewDescriptor(
+                        owner="subagents",
+                        name="subagents",
+                        title="Subagents (2 active)",
+                        view_type="table",
+                        data={
+                            "columns": ["Subagent", "Status", "Activity", "Elapsed"],
+                            "rows": [
+                                ["Researcher", "running", "read file", "12s"],
+                                ["Patcher", "approval", "write diff", "4s"],
+                            ],
+                        },
+                        live=True,
+                        live_action=ViewAction(label="Alt+A monitor", action="subagents.monitor", prepare_input=True),
+                    ),
+                ),
+            )
+            self.views_calls = 0
+
+        def views(self, session_id: str) -> ViewsSnapshot:
+            self.views_calls += 1
+            return self.snapshot
+
+    client = _LiveViewClient()
+    terminal = _StubTerminal()
+    terminal.height = 18
+    terminal.width = 90
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal)
+    app.status_line = ""
+    handle_stream_event(
+        app,
+        _event(1, "core.tool_intent", invocation_id="inv-1", call={"tool_name": "read", "arguments": {"path": "a.py"}}),
+        [],
+    )
+    app._refresh_live_views()
+    _settle_async(app)
+
+    assert client.views_calls >= 1
+    assert app._live_views_armed() is True
+    app._render_frame()
+    frame_text = "\n".join(terminal.frames[-1])
+    assert "Subagents (2 active) · Alt+A monitor" in frame_text
+    assert "Researcher" in frame_text
+    assert "running" in frame_text
+    assert "Patcher" in frame_text
+    assert "approval" in frame_text
+    assert "12s" in frame_text
+    assert "read" in frame_text
+
+    # Switching session clears cached live views immediately.
+    app._switch_session("s2")
+    assert app._live_views == ()
+    assert app._live_views_armed() is False
+    assert rendering.live_view_rows(app._live_views, width=90, max_rows=6, styles=app.styles) == []

@@ -44,6 +44,8 @@ from .events import (
     InvokeAcceptedEvent,
     KittyReplyEvent,
     LiveInputReadyEvent,
+    LiveViewsFailedEvent,
+    LiveViewsLoadedEvent,
     ModelSwitchDoneEvent,
     NoticeEvent,
     ReconciledEvent,
@@ -167,6 +169,10 @@ def drain_events(app: CoreTuiApp, timeout: float | None = None) -> int:
                 _handle_views_loaded(app, frame, rows_to_commit)
             case ViewsFailedEvent():
                 _handle_views_failed(app, frame, rows_to_commit)
+            case LiveViewsLoadedEvent():
+                _handle_live_views_loaded(app, frame, rows_to_commit)
+            case LiveViewsFailedEvent():
+                _handle_live_views_failed(app, frame, rows_to_commit)
             case ModelSwitchDoneEvent():
                 _handle_model_switch_done(app, frame, rows_to_commit)
             case ArtifactPageEvent():
@@ -212,11 +218,24 @@ def _handle_stream_head(app: CoreTuiApp, frame: StreamHeadEvent, rows: list[str]
     for event in frame.frame.events:
         handle_stream_event(app, event, rows)
     app._refresh_followups()
+    app._refresh_live_views()
 
 
 def _handle_stream_event(app: CoreTuiApp, frame: StreamEventEvent, rows: list[str]) -> None:
     app._welcomed_sessions.add(app.session_id)
-    handle_stream_event(app, frame.frame.event, rows)
+    event = frame.frame.event
+    handle_stream_event(app, event, rows)
+    if event.type in {
+        "core.child_spawned",
+        "core.child_finished",
+        "core.tool_intent",
+        "core.tool_completed",
+        "core.tool_interrupted",
+        "core.run_completed",
+        "core.run_failed",
+        "core.run_interrupted",
+    }:
+        app._refresh_live_views()
 
 
 def _handle_server_restart(app: CoreTuiApp, _frame: ServerRestartEvent, _rows: list[str]) -> None:
@@ -257,6 +276,7 @@ def _handle_reconciled(app: CoreTuiApp, frame: ReconciledEvent, rows: list[str])
     if frame.failures:
         rows.append(app.styles.fg("warning", f"[Reconnect refresh incomplete: {', '.join(frame.failures)}]"))
     app._refresh_followups()
+    app._refresh_live_views()
 
 
 def _handle_notice(app: CoreTuiApp, frame: NoticeEvent, rows: list[str]) -> None:
@@ -509,6 +529,23 @@ def _handle_views_loaded(app: CoreTuiApp, frame: ViewsLoadedEvent, _rows: list[s
 
 def _handle_views_failed(app: CoreTuiApp, frame: ViewsFailedEvent, rows: list[str]) -> None:
     rows.append(app.styles.fg("error", f"Failed to read views: {safe(frame.error or 'unknown error')}"))
+
+
+def _handle_live_views_loaded(app: CoreTuiApp, frame: LiveViewsLoadedEvent, _rows: list[str]) -> None:
+    app._live_views_inflight = False
+    app._live_views = tuple(view for view in frame.views if view.live)
+    if app._run_active or app._active_tools or app._live_views:
+        app._live_views_refresh_at = time.monotonic() + 1.0
+    else:
+        app._live_views_refresh_at = 0.0
+
+
+def _handle_live_views_failed(app: CoreTuiApp, _frame: LiveViewsFailedEvent, _rows: list[str]) -> None:
+    app._live_views_inflight = False
+    if app._run_active or app._active_tools or app._live_views:
+        app._live_views_refresh_at = time.monotonic() + 2.0
+    else:
+        app._live_views_refresh_at = 0.0
 
 
 def _handle_model_switch_done(app: CoreTuiApp, frame: ModelSwitchDoneEvent, rows: list[str]) -> None:

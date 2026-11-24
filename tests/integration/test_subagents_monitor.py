@@ -955,6 +955,8 @@ def test_reserved_cancel_wins_without_exposing_a_fake_run(tmp_path: Path, monkey
             assert receipt.claimed_reserved == (child,)
             node = next(node for node in core.list_descendants("root") if node.session_id == child)
             assert node.run_id is None and node.status == "interrupted" and node.stop_cause == "owner_cancel"
+            assert node.started_at_ms is not None and node.updated_at_ms is not None
+            assert node.elapsed_ms is not None and node.elapsed_ms >= 0
             again = core.cancel_descendant_subtree("root", child, expected_run_id=None)
             assert again.already_terminal == (child,)
             release_driver.set()

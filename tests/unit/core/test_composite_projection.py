@@ -262,3 +262,34 @@ def test_openai_tool_images_use_synthetic_in_order_unknown_stays_unknown() -> No
     )
     with pytest.raises(Exception, match="does not support image input"):
         provider._payload(known_text_only, stream=False)
+
+
+def test_prepare_report_compacts_oversized_composite_with_long_presentation(tmp_path: Path) -> None:
+    from voidcode.core.output_projection import ResultProjector
+
+    services = _Services(tmp_path)
+    projector = ResultProjector(services.store)
+    raw_text = "alpha-" + "x" * (TOOL_OUTPUT_BYTES + 12000)
+    raw = ToolSuccess(
+        "big_tool",
+        output=CompositeOutput(
+            parts=(TextPart(raw_text),),
+            presentation="summary-" + "p" * 20000,
+        ),
+        body=OpaqueToolBody({"huge": "b" * 10000}),
+    )
+    compact, raw_size, clipped = projector.prepare_report(raw)
+    assert raw_size > TOOL_OUTPUT_BYTES
+    assert clipped is True
+    encoded_bytes = len(json.dumps(encode_tool_result(compact), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    assert encoded_bytes <= TOOL_OUTPUT_BYTES
+    assert compact.body is None
+    assert compact.result_reference is not None
+    assert isinstance(compact.output, CompositeOutput)
+    assert compact.output.bounds.partial is True
+    part = compact.output.parts[0]
+    assert isinstance(part, TextPart)
+    assert len(part.text) < len(raw_text)
+    assert part.reference is not None
+    raw_data, _, _, _ = services.store.read(part.reference.sha256, offset=0, limit=len(raw_text) + 1024)
+    assert raw_data.decode("utf-8") == raw_text

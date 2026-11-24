@@ -781,6 +781,40 @@ def test_write_tool_honors_cancellation_before_side_effects(tmp_path: Path) -> N
     assert not target.exists()
 
 
+def test_write_tool_returns_diff_on_overwrite_and_omits_on_create(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    write_tool = next(t for t in plugin.tools if t.definition.name == "write")
+
+    created = write_tool.invoke(
+        ToolCall(tool_name="write", arguments={"path": "notes.txt", "content": "one\ntwo\n"}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(created, ToolSuccess)
+    assert isinstance(created.body, WriteResultBody)
+    assert created.body.diff is None
+    assert "diff" not in created.body.as_payload()
+
+    overwritten = write_tool.invoke(
+        ToolCall(
+            tool_name="write",
+            arguments={
+                "path": "notes.txt",
+                "content": "one\nthree\n",
+                "expectedHash": created.body.sha256,
+            },
+        ),
+        context=_context(tmp_path),
+    )
+    assert isinstance(overwritten, ToolSuccess)
+    assert isinstance(overwritten.body, WriteResultBody)
+    payload = overwritten.body.as_payload()
+    assert payload["additions"] == 1
+    assert payload["deletions"] == 1
+    assert isinstance(payload["diff"], str)
+    assert "-two\n" in payload["diff"]
+    assert "+three\n" in payload["diff"]
+
+
 class _UriServices:
     """Scripted ``read_resource`` dispatcher backed by the real default readers."""
 

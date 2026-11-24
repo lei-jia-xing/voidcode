@@ -21,6 +21,8 @@ from .events import (
     FollowupWithdrawFailedEvent,
     FollowupWithdrawnEvent,
     LiveInputReadyEvent,
+    LiveViewsFailedEvent,
+    LiveViewsLoadedEvent,
     ModelSwitchDoneEvent,
     SessionCreatedEvent,
     SessionCreateFailedEvent,
@@ -53,6 +55,14 @@ def load_views(client: SessionClient, *, session_id: str, generation: int, name_
     except Exception as exc:
         return ViewsFailedEvent(error=str(exc), session_id=session_id, generation=generation)
     return ViewsLoadedEvent(snapshot=snapshot, name_filter=name_filter, session_id=session_id, generation=generation)
+
+
+def load_live_views(client: SessionClient, *, session_id: str, generation: int) -> LiveViewsLoadedEvent | LiveViewsFailedEvent:
+    try:
+        snapshot = client.views(session_id)
+    except Exception as exc:
+        return LiveViewsFailedEvent(error=str(exc), session_id=session_id, generation=generation)
+    return LiveViewsLoadedEvent(revision_id=snapshot.revision_id, views=snapshot.views, session_id=session_id, generation=generation)
 
 
 def load_followups(client: SessionClient, *, session_id: str, generation: int) -> FollowupsLoadedEvent | FollowupsLoadFailedEvent:

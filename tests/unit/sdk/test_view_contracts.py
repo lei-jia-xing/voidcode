@@ -12,6 +12,7 @@ from voidcode.sdk.views import (
     FormViewData,
     NoticeViewData,
     PluginViewDescriptor,
+    ViewAction,
     ViewsSnapshot,
     choices_dispatch,
     is_read_only_load,
@@ -228,5 +229,33 @@ def test_form_fixed_arguments_are_submitted_without_editable_shadow_fields() -> 
         {"action": "todo.update", "arguments": {"expected_revision": 7, "task_id": "opaque"}, "fields": [{"name": "op", "label": "Operation"}]}
     )
     assert validate_form_submission(form, {"op": "done", "expected_revision": 99}) == {"op": "done", "expected_revision": 7, "task_id": "opaque"}
+
+
+def test_plugin_view_descriptor_live_and_action_roundtrip() -> None:
+    descriptor = PluginViewDescriptor(
+        owner="subagents",
+        name="subagents",
+        title="Subagents (1 active)",
+        view_type="table",
+        data={"columns": ["Subagent", "Status"], "rows": [["Worker", "running"]]},
+        live=True,
+        live_action=ViewAction(label="Alt+A monitor", action="subagents.monitor", prepare_input=True),
+    )
+    decoded = PluginViewDescriptor.from_payload(descriptor.as_payload())
+    assert decoded == descriptor
+    assert decoded.live is True
+    assert decoded.live_action == ViewAction(label="Alt+A monitor", action="subagents.monitor", prepare_input=True)
+
+    with pytest.raises(ValueError, match="boolean"):
+        PluginViewDescriptor.from_payload(
+            {
+                "owner": "o",
+                "name": "n",
+                "title": "t",
+                "view_type": "notice",
+                "data": {"message": "ok"},
+                "live": "yes",
+            }
+        )
     with pytest.raises(ValueError, match="cannot shadow"):
         FormViewData.from_payload({"action": "edit", "arguments": {"revision": 7}, "fields": [{"name": "revision", "label": "Revision"}]})

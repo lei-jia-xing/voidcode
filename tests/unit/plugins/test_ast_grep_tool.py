@@ -280,7 +280,28 @@ def test_ast_grep_returns_usable_long_paths_and_complete_native_matches(tmp_path
     assert payload["matches"][0]["file"] == relative_path
     assert (tmp_path / payload["matches"][0]["file"]).read_text(encoding="utf-8") == "foo()\n" * 60
     assert payload["match_count"] == len(matches)
-    assert payload["matches_truncated"] is True
-    assert result.output.bounds.partial is True
+    assert payload["matches_truncated"] is False
+    assert result.output.bounds.partial is False
     assert result.output.bounds.reference.sha256 == hashlib.sha256(native_jsonl.encode("utf-8")).hexdigest()
     assert [json.loads(line) for line in services.artifacts[0].splitlines()] == matches
+
+    # Oversized result packs as many matches as fit in the transport byte budget without silent fixed count caps.
+    many_matches = [
+        {
+            "file": relative_path,
+            "text": "foo()",
+            "range": {"start": {"line": index, "column": 0}, "end": {"line": index, "column": 5}},
+        }
+        for index in range(120)
+    ]
+    oversized_jsonl = "\n".join(json.dumps(match, ensure_ascii=False) for match in many_matches)
+    oversized_services = NativeResults(ProcessResult(0, oversized_jsonl, "", 1), target)
+    oversized = _invoke_query(tmp_path, oversized_services, path=relative_path)
+    assert isinstance(oversized, ToolSuccess)
+    oversized_payload = oversized.body.as_payload()
+    assert oversized_payload["match_count"] == len(many_matches)
+    assert 60 <= len(oversized_payload["matches"]) < len(many_matches)
+    assert oversized_payload["matches_truncated"] is True
+    assert oversized.output.bounds.partial is True
+    assert oversized.output.bounds.reference.sha256 == hashlib.sha256(oversized_jsonl.encode("utf-8")).hexdigest()
+    assert [json.loads(line) for line in oversized_services.artifacts[0].splitlines()] == many_matches

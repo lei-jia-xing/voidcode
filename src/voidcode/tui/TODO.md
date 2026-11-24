@@ -16,10 +16,9 @@ TUI 是服务端事件流之上的内联终端客户端：不持有业务真相�
 
 ## P0：可见性与失败留痕
 
-- [ ] **让后台子 Agent 状态可见，沿现有 monitor 进入跟进与结果。**
-  - 按服务端真实投影显示运行/审批/排队/失败及最近活动，并可发现地进入现有 monitor。
-  - live 区每个子任务一行：状态、最近活动、已用时间；不再只有 `running N tools`。
-  - 依赖：`plugins/TODO.md` 子 Agent 状态投影。
+- [x] **让后台子 Agent 状态可见，沿现有 monitor 进入跟进与结果。**
+  - 通过通用 `PluginViewDescriptor(live=True, live_action=...)` 契约在输入框上方实时投影活跃子任务（每行显示标签、状态 `running`/`approval`/`queued`/`failed`/`interrupted`、最近活动、已用时间），并提示 `Alt+A monitor` 入口进入现有 monitor 交互（无活跃/等待/排队子任务时自动收起，TUI 与 `subagents` 插件零硬编码耦合）。
+  - 依赖：`plugins/TODO.md` 子 Agent 状态投影（已完成）。
 - [x] **运行失败原因进入 transcript。**
   - `content_rows` 与 `CoreApp` 现复用持久 `TranscriptRun` 的 `error` / `reason` / `stop_cause`，与实时 `run_notice_rows` 保持一致，不再只显示泛化的 `Error: Run failed` / `Interrupted`。
 - [x] **排队追问可见、可撤回。**

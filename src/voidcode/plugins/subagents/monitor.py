@@ -23,7 +23,7 @@ from voidcode.sdk.commands import (
 )
 from voidcode.sdk.services import DescendantNode, PluginServices
 from voidcode.sdk.tools import ToolEffect
-from voidcode.sdk.views import MAX_VIEW_DATA_BYTES
+from voidcode.sdk.views import MAX_VIEW_DATA_BYTES, PluginViewDescriptor, ViewAction
 
 MONITOR_COMMAND = "subagents.monitor"
 MONITOR_CANCEL_COMMAND = "subagents.monitor.cancel"
@@ -143,7 +143,7 @@ def _bounded_limit(raw: object) -> int:
     return raw
 
 
-def _roster(nodes: tuple[DescendantNode, ...], *, offset: int = 0) -> CommandPresentation:
+def _ordered_descendants(nodes: tuple[DescendantNode, ...]) -> list[tuple[DescendantNode, int]]:
     by_parent: dict[str | None, list[DescendantNode]] = {}
     for node in nodes:
         by_parent.setdefault(node.parent_session_id, []).append(node)
@@ -158,6 +158,11 @@ def _roster(nodes: tuple[DescendantNode, ...], *, offset: int = 0) -> CommandPre
     for node in nodes:
         if node.parent_session_id not in known:
             _visit(node, 0)
+    return ordered
+
+
+def _roster(nodes: tuple[DescendantNode, ...], *, offset: int = 0) -> CommandPresentation:
+    ordered = _ordered_descendants(nodes)
 
     options: list[dict[str, object]] = []
     if offset:
@@ -493,4 +498,89 @@ def _is_below(node: DescendantNode, root: str, nodes: Mapping[str, DescendantNod
     return False
 
 
-__all__ = ["MONITOR_CANCEL_COMMAND", "MONITOR_COMMAND", "MonitorCancelCommand", "MonitorCommand"]
+def _format_elapsed_ms(elapsed_ms: int | None) -> str:
+    if elapsed_ms is None or elapsed_ms < 0:
+        return "-"
+    total = elapsed_ms // 1000
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        minutes, secs = divmod(total, 60)
+        return f"{minutes}m{secs:02d}s"
+    hours, rem = divmod(total, 3600)
+    minutes, _ = divmod(rem, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def _live_status_text(node: DescendantNode) -> str:
+    if node.awaiting_approval:
+        return "approval"
+    if node.has_queued_followup and node.status == "idle":
+        return "queued"
+    if node.status == "running" and node.has_queued_followup:
+        return "running (+queued)"
+    if node.stop_cause:
+        return f"{node.status} ({node.stop_cause})"
+    return node.status
+
+
+def _bound_cell(text: str, limit: int) -> str:
+    clean = _clean_text(text)
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(1, limit - 1)] + "…"
+
+
+class SubagentStatusView:
+    """Declarative subtask status projection for live client strips and view panels."""
+
+    name: str = "subagents"
+
+    def render(self, session_id: str, services: PluginServices) -> PluginViewDescriptor:
+        _ = session_id
+        nodes = services.list_descendants()
+        if not nodes:
+            return PluginViewDescriptor(
+                owner="subagents",
+                name=self.name,
+                title="Subagents",
+                view_type="status",
+                data={"label": "Subagents", "value": "No subagents"},
+                live=False,
+            )
+        ordered = _ordered_descendants(nodes)
+        active = [(node, level) for node, level in ordered if node.status in ("running", "waiting", "idle") or node.has_queued_followup]
+        has_live = bool(active)
+        if has_live:
+            selected = [
+                (node, level)
+                for node, level in ordered
+                if node.status in ("running", "waiting", "idle", "failed", "interrupted") or node.has_queued_followup
+            ]
+        else:
+            selected = ordered
+        rows: list[list[str]] = []
+        columns = ["Subagent", "Status", "Activity", "Elapsed"]
+        for node, level in selected:
+            indent = "  " * min(level, 4)
+            label = indent + _bound_cell(node.label or _short(node.session_id), 48)
+            status = _live_status_text(node)
+            activity = _bound_cell(node.activity, 64) if node.activity else (f"turn {node.turn}" if node.turn else "starting")
+            elapsed = _format_elapsed_ms(node.elapsed_ms)
+            candidate = [*rows, [label, status, activity, elapsed]]
+            if _view_bytes({"columns": columns, "rows": candidate}) > MAX_VIEW_DATA_BYTES - 512:
+                break
+            rows = candidate
+        title = f"Subagents ({len(active)} active)" if has_live else f"Subagents ({len(nodes)})"
+        return PluginViewDescriptor(
+            owner="subagents",
+            name=self.name,
+            title=title,
+            view_type="table",
+            data={"columns": columns, "rows": rows},
+            live=has_live,
+            live_action=ViewAction(label="Alt+A monitor", action=MONITOR_COMMAND, prepare_input=True),
+        )
+
+
+__all__ = ["MONITOR_CANCEL_COMMAND", "MONITOR_COMMAND", "MonitorCancelCommand", "MonitorCommand", "SubagentStatusView"]

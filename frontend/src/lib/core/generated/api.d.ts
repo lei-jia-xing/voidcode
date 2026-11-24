@@ -987,6 +987,13 @@ export interface components {
          */
         PluginViewDescriptor: {
             data: components["schemas"]["PluginViewData"];
+            /**
+             * Live
+             * @default false
+             */
+            live?: boolean;
+            /** @default null */
+            live_action?: components["schemas"]["ViewAction"] | null;
             /** Name */
             name: string;
             /** Owner */

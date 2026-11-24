@@ -24,7 +24,7 @@ from voidcode.sdk.tools import (
 )
 
 from ..tool_errors import expected_failures
-from ._common import PathEscapesWorkspaceError, make_file_change, resolve_workspace_path
+from ._common import PathEscapesWorkspaceError, make_file_change, resolve_workspace_path, summarize_diff
 from .mutation import invalid_path_failure, outside_workspace_failure
 
 MAX_WRITE_BYTES = 64 * 1024  # Max single-file write 64 KiB to fit comfortably in 1 MiB wire frames
@@ -35,13 +35,21 @@ class WriteResultBody:
     path: str
     sha256: str
     bytes: int
+    diff: str | None = None
+    additions: int | None = None
+    deletions: int | None = None
 
     def as_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "path": self.path,
             "sha256": self.sha256,
             "bytes": self.bytes,
         }
+        if self.diff is not None:
+            payload["diff"] = self.diff
+            payload["additions"] = self.additions
+            payload["deletions"] = self.deletions
+        return payload
 
 
 def _hash_file(path: Path) -> str:
@@ -167,13 +175,16 @@ class WriteTool:
                     execution=ConfirmedStop(cancellation_signalled=True),
                 )
 
+            before_text: str | None = None
             # Recheck path identity and content hash at replace boundary to reject concurrent modification
             if initial_stat is not None:
                 if not candidate.exists():
                     return ToolFailure(self.definition.name, error=f"File deleted concurrently during write: {raw_path}")
                 cur_stat = candidate.stat()
-                if cur_stat.st_ino != initial_stat.st_ino or _hash_file(candidate) != initial_hash:
+                before_bytes = candidate.read_bytes()
+                if cur_stat.st_ino != initial_stat.st_ino or hashlib.sha256(before_bytes).hexdigest() != initial_hash:
                     return ToolFailure(self.definition.name, error=f"File modified concurrently during write: {raw_path}")
+                before_text = before_bytes.decode("utf-8", errors="replace")
             else:
                 if candidate.exists():
                     return ToolFailure(self.definition.name, error=f"File created concurrently during write: {raw_path}")
@@ -186,11 +197,19 @@ class WriteTool:
 
         written_hash = hashlib.sha256(content_bytes).hexdigest()
         output_text = f"Wrote {len(content_bytes)} byte(s) to {display_path} (SHA-256: {written_hash})"
+        diff_text: str | None = None
+        additions: int | None = None
+        deletions: int | None = None
+        if before_text is not None and before_text != content:
+            diff_text, additions, deletions = summarize_diff(path=display_path, before=before_text, after=content)
 
         body = WriteResultBody(
             path=display_path,
             sha256=written_hash,
             bytes=len(content_bytes),
+            diff=diff_text,
+            additions=additions,
+            deletions=deletions,
         )
         return ToolSuccess(
             self.definition.name,

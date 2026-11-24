@@ -1299,6 +1299,8 @@ class DelegationManager:
         """Every transitive descendant of one session with verbatim lifecycle facts."""
         self.core.ensure_open()
         caller = self.core.session(session_id)
+        timestamps = self.core.store.descendant_timestamps(session_id)
+        now_ms = int(time.time() * 1000)
         nodes: list[DescendantNode] = []
         for child in self.core.store.descendant_sessions(session_id):
             if child.workspace != caller.workspace:
@@ -1310,6 +1312,13 @@ class DelegationManager:
             queued = self.core.store.has_queued_child_followup(child.session_id)
             tool_fact = self.core.store.latest_tool_fact(child.session_id)
             activity = None if tool_fact is None else f"{tool_fact[0]} {tool_fact[1]}"
+            created_ms, updated_ms = timestamps.get(child.session_id, (None, None))
+            elapsed_ms: int | None = None
+            if created_ms is not None and updated_ms is not None:
+                if child.status in (SessionStatus.IDLE, SessionStatus.RUNNING, SessionStatus.WAITING):
+                    elapsed_ms = max(0, now_ms - created_ms)
+                else:
+                    elapsed_ms = max(0, updated_ms - created_ms)
             nodes.append(
                 DescendantNode(
                     session_id=child.session_id,
@@ -1327,6 +1336,9 @@ class DelegationManager:
                     last_event_sequence=child.last_event_sequence,
                     has_queued_followup=queued,
                     awaiting_approval=child.status is SessionStatus.WAITING,
+                    started_at_ms=created_ms,
+                    updated_at_ms=updated_ms,
+                    elapsed_ms=elapsed_ms,
                 )
             )
         return tuple(nodes)

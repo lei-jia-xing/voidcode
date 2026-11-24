@@ -219,6 +219,10 @@ class CoreTuiApp:
         self._live_input: dict[str, Any] | None = None
         #: Next monotonic deadline for the live-input refresh worker.
         self._live_refresh_at: float = 0.0
+        #: Active plugin live views (`live=True`) projected above the composer.
+        self._live_views: tuple[PluginViewDescriptor, ...] = ()
+        self._live_views_inflight: bool = False
+        self._live_views_refresh_at: float = 0.0
         #: Retained live view while a confirmation overlays it: (overlay, live_input).
         self._suspended_live: tuple[Any, dict[str, Any] | None] | None = None
         # Native tool approval (core permission gate) is not a plugin Action
@@ -451,6 +455,8 @@ class CoreTuiApp:
             consider(self._escape_flush_at)
         if self._live_refresh_armed():
             consider(self._live_refresh_at)
+        if self._live_views_armed():
+            consider(self._live_views_refresh_at)
         if self._artifact_ack_deadline is not None:
             consider(self._artifact_ack_deadline[2])
         if self._quit_armed_at != float("-inf"):
@@ -467,6 +473,7 @@ class CoreTuiApp:
         now = time.monotonic()
         fired = False
         self._poll_live_input()
+        self._poll_live_views()
         if self._handle_input_bytes(b""):
             fired = True
         if self.terminal.resize_pending():
@@ -495,6 +502,27 @@ class CoreTuiApp:
             return
         self._live_refresh_at = time.monotonic() + 60.0  # rearmed by the reply; never stacks workers
         self._refresh_live_input_async()
+
+    def _live_views_armed(self) -> bool:
+        return self._live_views_refresh_at > 0.0 and (self._run_active or bool(self._active_tools) or bool(self._live_views))
+
+    def _poll_live_views(self) -> None:
+        if not self._live_views_armed():
+            return
+        if time.monotonic() < self._live_views_refresh_at:
+            return
+        self._live_views_refresh_at = time.monotonic() + 60.0
+        self._refresh_live_views()
+
+    def _refresh_live_views(self) -> None:
+        if self._live_views_inflight:
+            return
+        self._live_views_inflight = True
+        session_id, generation = self.session_id, self._generation
+        self._work.submit(
+            "CoreLiveViews",
+            lambda: self.event_queue.put(operations.load_live_views(self.client, session_id=session_id, generation=generation)),
+        )
 
     def _live_stream_rows(self, width: int) -> list[str]:
         """Partial markdown of the in-flight dispatch for the live region, or nothing."""
@@ -1744,6 +1772,9 @@ class CoreTuiApp:
         self._active_tools.clear()
         self._queued_followups = ()
         self._followup_withdrawing = False
+        self._live_views = ()
+        self._live_views_inflight = False
+        self._live_views_refresh_at = 0.0
         self._clear_stream()
         self.latest_input_tokens = None
         self.cumulative_input_tokens = 0

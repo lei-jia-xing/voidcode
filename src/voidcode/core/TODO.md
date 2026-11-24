@@ -2,10 +2,9 @@
 
 ## P0: 输出策略不制造新的业务 MAX
 
-- [ ] **分离原始结果、模型投影和 UI 折叠，删除层叠截断与重复载荷。**
-  - 投影只携带必要的一份内容，状态、错误、完整结果 URI/游标保持可用。
-  - 超出当前模型上下文预算的数据按需读，而非生产者、Core、客户端各截一遍。
-  - UI 行数是折叠策略，不是结果大小或任务可接受性的限制；依据已知上下文/真实传输边界选择预算，不再因为“以防万一”增加常量。
+- [x] **分离原始结果、模型投影和 UI 折叠，删除层叠截断与重复载荷。**
+  - `ResultProjector._compact_composite_parts` 在计算预算时计入 `presentation`，超限时优先淘汰重复顶层 `presentation` 并按精确 UTF-8 JSON 预算一次性二分截断溢出 `TextPart`（保留完整 raw artifact `reference`）。
+  - `context_projection._apply_projection_allocation` 二次收缩阶段传入 `include_images=False` 复用已加载图片列表，消除重复读取与 base64 编码，保留唯一真实边界与 URI 游标。
 
 ## P1: 现代 Agent 的交互契约（客户端依赖，见 `tui/TODO.md`）
 

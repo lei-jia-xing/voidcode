@@ -26,7 +26,7 @@ from ..sdk.tools import (
     ToolResult,
 )
 from .artifacts import ArtifactNotFoundError, ArtifactStore
-from .coverage import ProjectionRequiresReference, project_tool_result
+from .coverage import ProjectionRequiresReference, _escaped_prefix_bytes, project_tool_result
 
 
 class ResultProjector:
@@ -111,11 +111,15 @@ class ResultProjector:
                 bounds=replace(output.bounds, reference=reference, partial=output.bounds.partial or clipped),
             )
         elif isinstance(output, CompositeOutput):
-            compact_parts, compact_truncated = self._compact_composite_parts(stored)
-            presentation = projection.get("presentation")
+            raw_presentation = projection.get("presentation")
+            initial_presentation = raw_presentation if isinstance(raw_presentation, str) else None
+            compact_parts, compact_presentation, compact_truncated = self._compact_composite_parts(
+                stored,
+                presentation=initial_presentation,
+            )
             output = CompositeOutput(
                 parts=tuple(compact_parts),
-                presentation=presentation if isinstance(presentation, str) else None,
+                presentation=compact_presentation,
                 bounds=replace(output.bounds, partial=output.bounds.partial or clipped or compact_truncated),
             )
             clipped = clipped or compact_truncated
@@ -155,22 +159,33 @@ class ResultProjector:
             raise
         return ArtifactReference(digest, total, media_type)
 
-    def _compact_composite_parts(self, stored: ToolResult) -> tuple[list[ContentPart], bool]:
+    def _compact_composite_parts(
+        self,
+        stored: ToolResult,
+        *,
+        presentation: str | None = None,
+    ) -> tuple[list[ContentPart], str | None, bool]:
         output = stored.output
         if not isinstance(output, CompositeOutput):
             raise ValueError("composite compaction requires a composite output")
         parts: list[ContentPart] = list(output.parts)
+        current_presentation = presentation
         truncated = False
 
-        def _candidate_size(candidate: list[ContentPart]) -> int:
-            candidate_output = CompositeOutput(parts=tuple(candidate), presentation=None, bounds=output.bounds)
+        def _candidate_size(candidate: list[ContentPart], candidate_presentation: str | None) -> int:
+            candidate_output = CompositeOutput(parts=tuple(candidate), presentation=candidate_presentation, bounds=output.bounds)
             candidate_result = replace(stored, body=None, output=candidate_output, steering_context=None)
             if isinstance(candidate_result, ToolFailure):
                 candidate_result = replace(candidate_result, diagnostics=None)
             payload = encode_tool_result(candidate_result)
             return len(json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":")).encode("utf-8"))
 
-        while _candidate_size(parts) > TOOL_OUTPUT_BYTES:
+        if current_presentation is not None and _candidate_size(parts, current_presentation) > TOOL_OUTPUT_BYTES:
+            # Drop duplicated composite presentation first before truncating parts; complete presentation stays on result_reference.
+            current_presentation = None
+            truncated = True
+
+        while _candidate_size(parts, current_presentation) > TOOL_OUTPUT_BYTES:
             best_index: int | None = None
             best_size = 0
             for index, part in enumerate(parts):
@@ -206,16 +221,21 @@ class ResultProjector:
                     parts[best_index] = replace(part, rows=part.rows[:keep])
                 truncated = True
             elif isinstance(part, TextPart):
-                if part.reference is None:
-                    reference = self._spill_composite_text(part.text)
-                    keep = len(part.text) // 2
-                    parts[best_index] = TextPart(text=part.text[:keep], reference=reference)
-                else:
-                    keep = len(part.text) // 2
-                    parts[best_index] = TextPart(text=part.text[:keep], reference=part.reference)
+                reference = part.reference if part.reference is not None else self._spill_composite_text(part.text)
+                parts[best_index] = TextPart(text="", reference=reference)
+                overhead = _candidate_size(parts, current_presentation)
+                room = max(0, TOOL_OUTPUT_BYTES - overhead)
+                if room > 0:
+                    bounds = _escaped_prefix_bytes(part.text)
+                    from bisect import bisect_right
+
+                    length = max(0, bisect_right(bounds, room) - 1)
+                    if length >= len(part.text):
+                        length = max(0, len(part.text) // 2)
+                    parts[best_index] = TextPart(text=part.text[:length], reference=reference)
                 truncated = True
             elif isinstance(part, JsonPart):
                 keep = max(1, len(part.preview) // 2)
                 parts[best_index] = JsonPart(reference=part.reference, preview=part.preview[:keep], media_type=part.media_type)
                 truncated = True
-        return parts, truncated
+        return parts, current_presentation, truncated

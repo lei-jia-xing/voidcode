@@ -662,9 +662,10 @@ def test_live_remote_tui_cancel_deny_preserves_and_allow_settles(tmp_path: Path)
             terminal.until("keep-draft")
             time.sleep(0.05)
             terminal.send(b"\x1ba")
+            terminal.until("Running subagents")
             terminal.until("LIVE-CHILD-label")
             terminal.send(b"\r")
-            terminal.until("Subagent")
+            terminal.until("Back to roster")
             visible = terminal.settle(0.05)
             assert scene.child_id in visible, f"child detail not on screen:\n{visible}"
             assert "Cancel subtree" in visible, f"cancel action missing:\n{visible}"
@@ -708,7 +709,7 @@ def test_live_remote_tui_cancel_deny_preserves_and_allow_settles(tmp_path: Path)
             # One Esc from the confirmed-open detail returns to the composer;
             # typing then proves the retained draft/caret.
             terminal.send(b"\x1b")
-            terminal.until_gone("Subagent")
+            terminal.until_gone("Back to roster")
             terminal.send(b"Z")
             terminal.until("keep-draZft")
             visible = terminal.settle(0.05)

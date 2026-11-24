@@ -252,6 +252,25 @@ class _SessionsMixin(_ConnectionStore):
             )
             return tuple(_decode_session(row) for row in cursor.fetchall())
 
+    def descendant_timestamps(self, session_id: str) -> dict[str, tuple[int, int]]:
+        """Return `(created_at, updated_at)` millisecond timestamps for transitive descendants."""
+        with self._lock:
+            self._check_open()
+            self.session(session_id)
+            cursor = self._connection.execute(
+                """
+                WITH RECURSIVE subtree(session_id) AS (
+                    SELECT session_id FROM sessions WHERE parent_session_id = ?
+                    UNION
+                    SELECT s.session_id FROM sessions s JOIN subtree t ON s.parent_session_id = t.session_id
+                )
+                SELECT s.session_id, s.created_at, s.updated_at
+                FROM sessions s JOIN subtree t ON s.session_id = t.session_id
+                """,
+                (session_id,),
+            )
+            return {str(row[0]): (int(row[1]), int(row[2])) for row in cursor.fetchall()}
+
     def latest_stop_payload(self, session_id: str, run_id: str | None) -> Mapping[str, object] | None:
         """Return the exact latest committed interruption payload for one run."""
         event = self.latest_stop_event(session_id, run_id)

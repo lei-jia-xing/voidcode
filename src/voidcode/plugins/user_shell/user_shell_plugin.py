@@ -89,7 +89,7 @@ class ShellCommand:
                 data["artifact"] = artifact.as_payload()
             if hasattr(artifact, "uri"):
                 data["artifact_uri"] = artifact.uri
-        services.stage_event("shell_executed", {**data, "stdout": result.stdout, "stderr": result.stderr, "output": output})
+        services.stage_event("shell_executed", {**data, "stdout": result.stdout, "stderr": result.stderr})
         return CommandResult(
             status="ok",
             output=output or f"(no output; exit code {result.exit_code})",

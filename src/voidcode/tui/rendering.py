@@ -18,6 +18,7 @@ from voidcode.sdk.transcript import (
     TranscriptRun,
     TranscriptTool,
 )
+from voidcode.sdk.views import FieldsViewData, PluginViewDescriptor, StatusViewData, TableViewData, parse_view_data
 
 from .artifact_viewer import InteractiveArtifactViewer
 from .formatting import effort_segment, footer_row, json_safe, model_segment, prefixed_rows, safe, short_workspace
@@ -224,6 +225,47 @@ def queued_followup_rows(followups: tuple[QueuedFollowup, ...], *, width: int, s
     return [clamp_row(row, width) for row in rows]
 
 
+def live_view_rows(views: tuple[PluginViewDescriptor, ...], *, width: int, max_rows: int, styles: Styles) -> list[str]:
+    """Render live-enabled declarative plugin views above the composer."""
+    if not views or width <= 0 or max_rows <= 0:
+        return []
+    rows: list[str] = []
+    for view in views:
+        if not view.live or len(rows) >= max_rows:
+            continue
+        parsed = parse_view_data(view.view_type, view.data)
+        action_hint = f" · {safe(view.live_action.label)}" if view.live_action is not None else ""
+        header = clamp_row(f"◈ {safe(view.title)}{action_hint}", width)
+        rows.append(styles.fg("accent", header))
+        if isinstance(parsed, TableViewData):
+            remaining_rows = max_rows - len(rows)
+            if remaining_rows <= 0:
+                continue
+            shown_count = remaining_rows if len(parsed.rows) <= remaining_rows else max(0, remaining_rows - 1)
+            for cells in parsed.rows[:shown_count]:
+                text = " · ".join(safe(cell) for cell in cells if cell)
+                lower = text.lower()
+                tone = "dim"
+                if "approval" in lower:
+                    tone = "warning"
+                elif "failed" in lower or "interrupted" in lower:
+                    tone = "error"
+                elif "running" in lower or "queued" in lower:
+                    tone = "accent"
+                rows.append(styles.fg(tone, clamp_row(f"  {text}", width)))
+            hidden = len(parsed.rows) - shown_count
+            if hidden > 0 and len(rows) < max_rows:
+                rows.append(styles.fg("dim", clamp_row(f"  +{hidden} more", width)))
+        elif isinstance(parsed, StatusViewData) and len(rows) < max_rows:
+            rows.append(styles.fg("text", clamp_row(f"  {safe(parsed.label)}: {safe(parsed.value)}", width)))
+        elif isinstance(parsed, FieldsViewData):
+            for field_row in parsed.rows:
+                if len(rows) >= max_rows:
+                    break
+                rows.append(styles.fg("text", clamp_row(f"  {safe(field_row.label)}: {safe(field_row.value)}", width)))
+    return rows[:max_rows]
+
+
 def footer_context(app: CoreTuiApp, width: int) -> str:
     """Context row from health DTO and turn usage: workspace · model · effort · context · usage."""
     if app.footer_mode == "off":
@@ -352,7 +394,11 @@ def _render_composer(app: CoreTuiApp, width: int, footer_rows: tuple[str, ...]) 
     cursor = app.composer.cursor_position
     popup = list(app.composer.completion_rows(max_rows=max(1, min(6, available - len(composer_rows)))))
     queued = queued_followup_rows(app._queued_followups, width=width, styles=app.styles) if available > len(composer_rows) else []
-    live_space = max(0, available - len(composer_rows) - len(popup) - len(queued))
+    remaining_live = max(0, available - len(composer_rows) - len(popup) - len(queued))
+    has_other_live = bool(app._active_tools or app._stream_dispatch is not None)
+    view_budget = remaining_live if not has_other_live else max(0, remaining_live - 1)
+    view_rows = live_view_rows(app._live_views, width=width, max_rows=view_budget, styles=app.styles)
+    live_space = max(0, remaining_live - len(view_rows))
     live: list[str] = []
     if live_space > 0:
         tools = list(app._active_tools.values())
@@ -397,7 +443,8 @@ def _render_composer(app: CoreTuiApp, width: int, footer_rows: tuple[str, ...]) 
         else:
             stream_rows = app._live_stream_rows(width)
             live = stream_rows[-live_space:] if stream_rows else []
-    if cursor is not None and (live or popup or queued):
+    combined_live = [*view_rows, *live]
+    if cursor is not None and (combined_live or popup or queued):
         row, column = cursor
-        cursor = (row + len(live) + len(popup) + len(queued), column)
-    app.terminal.paint_frame(TuiFrame(transcript_rows=(), chrome_rows=(*live, *popup, *queued, *composer_rows, *footer_rows), cursor=cursor))
+        cursor = (row + len(combined_live) + len(popup) + len(queued), column)
+    app.terminal.paint_frame(TuiFrame(transcript_rows=(), chrome_rows=(*combined_live, *popup, *queued, *composer_rows, *footer_rows), cursor=cursor))

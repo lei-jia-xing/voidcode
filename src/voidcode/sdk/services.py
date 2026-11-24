@@ -365,9 +365,12 @@ class DescendantNode:
     last_event_sequence: int = 0
     has_queued_followup: bool = False
     awaiting_approval: bool = False
+    started_at_ms: int | None = None
+    updated_at_ms: int | None = None
+    elapsed_ms: int | None = None
 
     def as_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "session_id": self.session_id,
             "parent_session_id": self.parent_session_id,
             "depth": self.depth,
@@ -381,6 +384,13 @@ class DescendantNode:
             "has_queued_followup": self.has_queued_followup,
             "awaiting_approval": self.awaiting_approval,
         }
+        if self.started_at_ms is not None:
+            payload["started_at_ms"] = self.started_at_ms
+        if self.updated_at_ms is not None:
+            payload["updated_at_ms"] = self.updated_at_ms
+        if self.elapsed_ms is not None:
+            payload["elapsed_ms"] = self.elapsed_ms
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

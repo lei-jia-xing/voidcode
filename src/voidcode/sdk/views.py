@@ -366,6 +366,8 @@ class PluginViewDescriptor:
     title: str
     view_type: ConfirmationUIType
     data: Mapping[str, object]
+    live: bool = False
+    live_action: ViewAction | None = None
 
     def __post_init__(self) -> None:
         if not self.owner or not isinstance(self.owner, str):
@@ -374,17 +376,31 @@ class PluginViewDescriptor:
             raise ValueError("name must be a non-empty string")
         if not self.title or not isinstance(self.title, str):
             raise ValueError("title must be a non-empty string")
+        if type(self.live) is not bool:
+            raise ValueError("live must be a boolean")
+        if self.live_action is not None and not isinstance(self.live_action, ViewAction):
+            raise ValueError("live_action must be a ViewAction or null")
         validated = validate_view_data(self.view_type, self.data)
         object.__setattr__(self, "data", validated)
 
     def as_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "owner": self.owner,
             "name": self.name,
             "title": self.title,
             "view_type": self.view_type,
             "data": json_wire_object(self.data),
         }
+        if self.live:
+            payload["live"] = True
+        if self.live_action is not None:
+            payload["live_action"] = {
+                "label": self.live_action.label,
+                "action": self.live_action.action,
+                "arguments": json_wire_object(self.live_action.arguments),
+                "prepare_input": self.live_action.prepare_input,
+            }
+        return payload
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> PluginViewDescriptor:

@@ -260,6 +260,17 @@ class ViewsFailedEvent(TuiEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class LiveViewsLoadedEvent(TuiEvent):
+    revision_id: str
+    views: tuple[PluginViewDescriptor, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiveViewsFailedEvent(TuiEvent):
+    error: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ModelSwitchDoneEvent(TuiEvent):
     ok: bool
     revision: str = ""
@@ -350,6 +361,8 @@ type TuiFrame = (
     | SessionCreateFailedEvent
     | ViewsLoadedEvent
     | ViewsFailedEvent
+    | LiveViewsLoadedEvent
+    | LiveViewsFailedEvent
     | ModelSwitchDoneEvent
     | ArtifactPageEvent
     | ArtifactErrorEvent
