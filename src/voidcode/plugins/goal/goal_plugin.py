@@ -1704,7 +1704,8 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
         new_status = goal.status
         updated_windows = goal.active_windows
         paused_by_user_stop = stop_cause == "user_stop" and goal.is_active
-        if paused_by_user_stop:
+        paused_by_core_limit = stop_cause == "limit_reached" and goal.is_active
+        if paused_by_user_stop or paused_by_core_limit:
             new_status = "paused"
             stop_seq = fact.event_sequence
             updated_windows = tuple(replace(w, end_sequence=stop_seq) if w.end_sequence is None else w for w in goal.active_windows)
@@ -1730,6 +1731,19 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
                 services.clear_budget()
                 services.cancel_continuations()
                 services.stage_event("goal_paused", {"goal_id": goal.goal_id, "reason": "user_stop"})
+            elif paused_by_core_limit:
+                # A core/provider/root limit stops automatic pursuit but is not evidence that
+                # the user's goal token budget was exhausted. Keep the goal budget intact for
+                # edit/resume and record only the source the core actually typed.
+                services.cancel_continuations()
+                limit_payload: dict[str, object] = {
+                    "goal_id": goal.goal_id,
+                    "reason": "limit_reached",
+                    "stop_cause": stop_cause,
+                }
+                if fact.budget_exhaustion is not None:
+                    limit_payload["budget_exhaustion"] = fact.budget_exhaustion.as_payload()
+                services.stage_event("goal_paused", limit_payload)
             _store(services).save(updated, version)
         else:
             # No-op run facts (complete/paused goals, clean active turns) must not churn

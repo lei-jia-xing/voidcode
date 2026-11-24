@@ -38,7 +38,7 @@ from voidcode.sdk.commands import CommandInvocation, ConfirmationRequest
 from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.provider import ProviderTokenUsage
-from voidcode.sdk.services import SessionUsageReport
+from voidcode.sdk.services import BudgetExhaustion, SessionUsageReport
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
 
 
@@ -2033,3 +2033,188 @@ def test_goal_plugin_rejects_unknown_config_but_accepts_injected_providers() -> 
     assert plugin.state.version == SCHEMA_VERSION
     with pytest.raises(ValueError, match="does not support field"):
         create_plugin({"endpoint": {}})
+
+
+@pytest.mark.parametrize(
+    "exhaustion",
+    [
+        BudgetExhaustion(
+            dimension="provider_turns",
+            source="max_steps",
+            limit=5,
+            consumed=5,
+            remaining=0,
+            continue_with="resume_with_max_steps",
+        ),
+        BudgetExhaustion(
+            dimension="root_actions",
+            source="root_action_budget",
+            limit=4,
+            consumed=4,
+            remaining=0,
+            continue_with="extend_root_actions",
+        ),
+    ],
+    ids=["provider-turns", "root-actions"],
+)
+def test_limit_reached_pauses_active_goal_with_typed_exhaustion(tmp_path: Path, exhaustion: BudgetExhaustion) -> None:
+    services = _QueueServices(through_sequence=35)
+    services.set_budget(since_sequence=0, max_total_tokens=1000)
+    services.enqueue_continuation({"action": "pursue_goal", "goal_id": "g1"}, idempotency_key="stale-pursuit")
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Long-running task",
+        created_at=1,
+        updated_at=1,
+        token_budget=1000,
+        tokens_used=100,
+        window_tokens_used=100,
+        window_allowance=900,
+        active_windows=(ActiveWindow(20),),
+        blocked_turns_count=2,
+        last_blocked_logical_turn="turn-2",
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    ctx = _make_context(tmp_path)
+
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="run-1",
+            revision_id="rev-1",
+            logical_turn="turn-limit",
+            event_sequence=35,
+            status="interrupted",
+            stop_cause="limit_reached",
+            budget_exhaustion=exhaustion,
+        ),
+        ctx,
+        services,
+    )
+
+    state, _ = services.get_state("session")
+    assert state is not None
+    assert state["status"] == "paused"
+    assert state["active_windows"] == [{"start_sequence": 20, "end_sequence": 35}]
+    assert state["token_budget"] == 1000
+    assert state["window_allowance"] == 900
+    assert state["tokens_used"] == 100
+    assert state["blocked_turns_count"] == 2
+    # The goal's own budget and the Core constraint stay in place for edit/resume.
+    assert services.budget is not None
+    assert services.budget.max_total_tokens == 1000
+    assert services.pending_pursuits == {}
+    assert [event[0] for event in services.staged_events] == ["goal_paused"]
+    payload = services.staged_events[0][1]
+    assert payload["reason"] == "limit_reached"
+    assert payload["stop_cause"] == "limit_reached"
+    assert payload["budget_exhaustion"] == exhaustion.as_payload()
+
+    resumed = GoalResumeCommand().invoke(CommandInvocation(context=ctx, name="goal.resume"), services)
+    assert resumed.status == "ok"
+    state, _ = services.get_state("session")
+    assert state is not None
+    assert state["status"] == "active"
+    assert services.budget is not None
+    assert len(services.pending_pursuits) == 1
+
+
+def test_limit_reached_without_typed_source_still_pauses_active_goal(tmp_path: Path) -> None:
+    """An owner-budget stop has no typed exhaustion yet; it pauses without guessing a source."""
+    services = _QueueServices(through_sequence=35)
+    services.set_budget(since_sequence=0, max_total_tokens=1000)
+    services.enqueue_continuation({"action": "pursue_goal", "goal_id": "g1"}, idempotency_key="stale-pursuit")
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Owner budget stop",
+        created_at=1,
+        updated_at=1,
+        token_budget=1000,
+        tokens_used=100,
+        window_tokens_used=100,
+        window_allowance=900,
+        active_windows=(ActiveWindow(20),),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    ctx = _make_context(tmp_path)
+
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="run-1",
+            revision_id="rev-1",
+            logical_turn="turn-owner-limit",
+            event_sequence=35,
+            status="interrupted",
+            stop_cause="limit_reached",
+            budget_exhaustion=None,
+        ),
+        ctx,
+        services,
+    )
+
+    state, _ = services.get_state("session")
+    assert state is not None
+    assert state["status"] == "paused"
+    assert state["token_budget"] == 1000
+    assert state["window_allowance"] == 900
+    assert services.budget is not None
+    assert services.pending_pursuits == {}
+    assert [event[0] for event in services.staged_events] == ["goal_paused"]
+    payload = services.staged_events[0][1]
+    assert payload["reason"] == "limit_reached"
+    assert payload["stop_cause"] == "limit_reached"
+    assert "budget_exhaustion" not in payload
+
+    resumed = GoalResumeCommand().invoke(CommandInvocation(context=ctx, name="goal.resume"), services)
+    assert resumed.status == "ok"
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["complete", "paused", "usage-limited", "budget-limited"],
+)
+def test_limit_reached_does_not_rewrite_non_active_goal(tmp_path: Path, status: GoalStatus) -> None:
+    services = FakeServices(through_sequence=35)
+    services.set_budget(since_sequence=0, max_total_tokens=1000)
+    windows = (ActiveWindow(0, 30),) if status in {"complete", "paused"} else (ActiveWindow(20),)
+    goal = GoalState(
+        goal_id="g1",
+        status=status,
+        objective="Already halted",
+        created_at=1,
+        updated_at=123,
+        token_budget=1000,
+        window_allowance=900,
+        active_windows=windows,
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    before = services.get_state()
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="run-1",
+            revision_id="rev-1",
+            logical_turn="turn-limit",
+            event_sequence=35,
+            status="interrupted",
+            stop_cause="limit_reached",
+            budget_exhaustion=BudgetExhaustion(
+                dimension="provider_turns",
+                source="max_steps",
+                limit=5,
+                consumed=5,
+                remaining=0,
+                continue_with="resume_with_max_steps",
+            ),
+        ),
+        _make_context(tmp_path),
+        services,
+    )
+    assert services.get_state() == before
+    assert services.budget is not None
+    assert services.budget.max_total_tokens == 1000
+    assert not services.cancelled_continuations
+    assert not services.staged_events
