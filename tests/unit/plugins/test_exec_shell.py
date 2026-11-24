@@ -17,7 +17,7 @@ import pytest
 from voidcode.capabilities.exec.shell_exec import ShellExecResultBody
 from voidcode.plugins.exec import create_plugin
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import ArtifactReference, ProcessResult
+from voidcode.sdk.services import ArtifactReference, ProcessFailure, ProcessResult
 from voidcode.sdk.tools import EmptyOutput, ToolCall, ToolFailure, ToolSuccess
 
 _SHELL_WRAPPER = ["cmd.exe", "/c"] if os.name == "nt" else ["/bin/sh", "-c"]
@@ -230,15 +230,24 @@ def test_shell_exec_rejects_an_invalid_workspace_as_a_typed_failure(tmp_path: Pa
 @pytest.mark.parametrize(
     ("failure", "reason", "text"),
     [
-        ("failed to start process: permission denied", "process_start_failed", "could not start the command"),
-        ("failed while reading process output: OSError: broken pipe", "process_capture_failed", "failed while capturing process output"),
-        ("sandbox helper failed (exit 1): denied", "sandbox_helper_failed", "sandbox helper failed after the command ran"),
+        # Deliberately misleading text proves classification uses only the typed kind.
+        (ProcessFailure("start_failed", "sandbox helper failed"), "process_start_failed", "could not start the command"),
+        (
+            ProcessFailure("capture_failed", "failed to start process"),
+            "process_capture_failed",
+            "failed while capturing process output",
+        ),
+        (
+            ProcessFailure("sandbox_failed", "while reading process output"),
+            "sandbox_helper_failed",
+            "sandbox helper failed after the command ran",
+        ),
     ],
 )
-def test_shell_exec_classifies_expected_service_failures(tmp_path: Path, failure: str, reason: str, text: str) -> None:
+def test_shell_exec_classifies_expected_service_failures(tmp_path: Path, failure: ProcessFailure, reason: str, text: str) -> None:
     class FailingLease(_FakeLease):
         def run_process(self, argv: object, **kwargs: object) -> ProcessResult:
-            raise ValueError(failure)
+            raise failure
 
     result = _invoke("echo ok", tmp_path, FailingLease())
 

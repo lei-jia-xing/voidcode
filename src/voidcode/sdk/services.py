@@ -150,12 +150,59 @@ class QueryContractError(ValueError):
     """Raised when a query answer violates its expected contract schema."""
 
 
-class ModelQueryCancelled(RuntimeError):
+class ContextContributionFailed(RuntimeError):
+    """A registered plugin context provider failed while assembling context."""
+
+
+class ModelQueryError(Exception):
+    """Base type for governed model-query failures; classification never uses message text."""
+
+
+class ModelQueryCancelled(RuntimeError, ModelQueryError):
     """A governed model query was cancelled before it produced a usable answer."""
 
 
-class ModelQueryToolCalls(RuntimeError):
+class ModelQueryToolCalls(RuntimeError, ModelQueryError):
     """A governed model query returned native tool calls although none were offered."""
+
+
+class ModelQueryBudgetExhausted(RuntimeError, ModelQueryError):
+    """An active session/plugin budget refused a governed model query before dispatch."""
+
+
+class ModelQueryContextFailed(ContextContributionFailed, ModelQueryError):
+    """A context provider failed while a governed model query assembled its context."""
+
+
+class ModelQueryUnavailable(RuntimeError, ModelQueryError):
+    """This runtime has no governed model-query callback."""
+
+
+class ModelQueryModelUnavailable(ValueError, ModelQueryError):
+    """No configured model, or a model name that is not an admitted provider/model."""
+
+
+class ModelQueryPromptTooLong(ValueError, ModelQueryError):
+    """The model-query prompt exceeds the core's UTF-8 prompt ceiling."""
+
+
+type ProcessFailureKind = Literal["start_failed", "capture_failed", "sandbox_failed", "process_failed"]
+
+
+class ProcessFailure(ValueError):
+    """A process invocation failed; ``kind`` is the stable classification."""
+
+    kind: ProcessFailureKind
+    detail: str
+
+    def __init__(self, kind: ProcessFailureKind, detail: str) -> None:
+        if kind not in {"start_failed", "capture_failed", "sandbox_failed", "process_failed"}:
+            raise ValueError(f"unknown process failure kind: {kind!r}")
+        if not isinstance(detail, str) or not detail:
+            raise ValueError("process failure detail must be non-empty text")
+        super().__init__(detail)
+        self.kind = kind
+        self.detail = detail
 
 
 type BudgetExhaustionDimension = Literal[
@@ -1362,7 +1409,10 @@ class ToolServices(Protocol):
         dispatch, missing usage stays unknown, and a usage fact that cannot be
         recorded fails the call. The invoking lease's abort signal cancels the
         provider request; a cancelled turn raises ``ModelQueryCancelled`` and never
-        returns an answer. A tool-call reply raises ``ModelQueryToolCalls``.
+        returns an answer. Typed failures also cover ``ModelQueryBudgetExhausted``,
+        ``ModelQueryContextFailed``, ``ModelQueryUnavailable``,
+        ``ModelQueryModelUnavailable``, ``ModelQueryPromptTooLong``, and
+        ``ModelQueryToolCalls``; callers classify by type, never message text.
         """
         ...
 

@@ -13,6 +13,7 @@ import pytest
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import MODEL_CONFIGURATION_GUIDANCE
 from voidcode.core.storage.store import SqliteStore
+from voidcode.sdk.services import ModelQueryModelUnavailable
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -59,7 +60,7 @@ def test_fresh_state_without_config_opens_providerless_and_keeps_commands(tmp_pa
         failed = core.run("hello", session_id="fresh-session")
         assert failed.status == "failed"
         assert failed.error == MODEL_CONFIGURATION_GUIDANCE
-        with pytest.raises(ValueError, match="no model configured"):
+        with pytest.raises(ModelQueryModelUnavailable, match="no model configured"):
             core.governed_model_query("fresh-session", "hello")
 
         assert not (workspace / "voidcode.json").exists()

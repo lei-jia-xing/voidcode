@@ -10,8 +10,13 @@ from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandR
 from voidcode.sdk.plugin import Plugin
 from voidcode.sdk.provider import ProviderAbortSignal, ProviderExecutionError
 from voidcode.sdk.services import (
+    ModelQueryBudgetExhausted,
     ModelQueryCancelled,
+    ModelQueryContextFailed,
+    ModelQueryModelUnavailable,
+    ModelQueryPromptTooLong,
     ModelQueryToolCalls,
+    ModelQueryUnavailable,
     PluginServices,
 )
 from voidcode.sdk.tools import ToolEffect
@@ -90,28 +95,23 @@ def _error(code: BtwErrorCode) -> CommandResult:
 
 
 def _failure_code(exc: Exception, abort_signal: ProviderAbortSignal | None) -> BtwErrorCode:
-    """Map every failure to a stable code; the original text never leaves the process."""
+    """Map every failure to a stable code using types and structured fields only."""
     if _is_cancelled(abort_signal) or isinstance(exc, ModelQueryCancelled):
         return BtwErrorCode.CANCELLED
     if isinstance(exc, ModelQueryToolCalls):
         return BtwErrorCode.TOOL_CALL
+    if isinstance(exc, ModelQueryPromptTooLong):
+        return BtwErrorCode.QUESTION_TOO_LONG
+    if isinstance(exc, ModelQueryBudgetExhausted):
+        return BtwErrorCode.BUDGET
+    if isinstance(exc, ModelQueryContextFailed):
+        return BtwErrorCode.CONTEXT
+    if isinstance(exc, ModelQueryUnavailable):
+        return BtwErrorCode.UNAVAILABLE
+    if isinstance(exc, ModelQueryModelUnavailable):
+        return BtwErrorCode.MODEL
     if isinstance(exc, ProviderExecutionError):
         return BtwErrorCode.CANCELLED if exc.kind == "cancelled" else BtwErrorCode.PROVIDER
-    message = str(exc)
-    if isinstance(exc, RuntimeError):
-        if "budget limit exceeded" in message:
-            return BtwErrorCode.BUDGET
-        if message.startswith("Context provider"):
-            return BtwErrorCode.CONTEXT
-        if "governed model queries are unavailable" in message:
-            return BtwErrorCode.UNAVAILABLE
-        if "governed model query returned tool calls" in message:
-            return BtwErrorCode.TOOL_CALL
-    if isinstance(exc, ValueError):
-        if "no model configured" in message or "model must name" in message:
-            return BtwErrorCode.MODEL
-        if "model query prompt" in message:
-            return BtwErrorCode.QUESTION_TOO_LONG
     return BtwErrorCode.UNKNOWN
 
 

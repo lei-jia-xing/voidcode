@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Typed model-query and process failure classification
+- Governed model-query failures now have dedicated SDK types raised at their source: budget exhaustion, context-provider failure, unavailable runtime, missing/malformed model, oversize prompt, cancellation, and unexpected native tool calls. `/btw` maps these by `isinstance` only; message text is never parsed for classification.
+- Process invocation failures now carry a stable `ProcessFailure.kind` (`start_failed`, `capture_failed`, `sandbox_failed`, `process_failed`). The `!` command and `shell_exec` map that field instead of matching exception substrings; misleading messages no longer affect the reported code.
+- Tests deliberately use contradictory messages to prove classification is type/field-based, and core tests assert the typed classes at their sources.
+- Verification: `/btw` unit/integration, model-query, first-boot, user-shell, and exec-shell suites; `ruff check`, `ruff format --check`, and `ty check src`.
+
 ### Workflows: conflict-safe state, owned failure lifetime, and schema versioning
 - Workflow state commits are serialized per session across concurrent runs and pause/resume/cancel; a lost owner-state CAS is retried by re-reading and re-applying the pure callback (bounded). Mutating control commands opt into a core-command re-run (`CommandDefinition.retry_state_conflict`) only because their calls are idempotent.
 - A keyed node adopts an already-started child via `find_child` before spawning, including after a resume with a new captured root; a spawn whose node-row save is lost is recorded separately or named in the parked-run error. Pristine reserved-but-unstarted children still go through keyed spawn.

@@ -61,6 +61,7 @@ from voidcode.sdk.services import (
     ChildOutcome,
     ChildSendReceipt,
     ChildSessionSnapshot,
+    ContextContributionFailed,
     DescendantNode,
     EventView,
     PluginBudget,
@@ -1703,7 +1704,7 @@ class PluginRuntime:
             try:
                 contribution = callback(context, services)
             except Exception as exc:
-                raise RuntimeError(f"Context provider {plugin_id} failed: {type(exc).__name__}: {exc}") from exc
+                raise ContextContributionFailed(f"Context provider {plugin_id} failed: {type(exc).__name__}: {exc}") from exc
             finally:
                 self._revoke_lease(lease)
             if isinstance(contribution, ContextContribution):

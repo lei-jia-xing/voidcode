@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
+import pytest
+
 from tests.fixtures.fake_services import FakeServices
 from voidcode.plugins.btw import create_plugin
 from voidcode.plugins.btw.btw_plugin import (
@@ -21,7 +23,15 @@ from voidcode.plugins.btw.btw_plugin import (
 from voidcode.sdk.commands import CommandInvocation, CommandResult
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.provider import ProviderExecutionError
-from voidcode.sdk.services import ModelQueryCancelled, ModelQueryToolCalls
+from voidcode.sdk.services import (
+    ModelQueryBudgetExhausted,
+    ModelQueryCancelled,
+    ModelQueryContextFailed,
+    ModelQueryModelUnavailable,
+    ModelQueryPromptTooLong,
+    ModelQueryToolCalls,
+    ModelQueryUnavailable,
+)
 
 
 class _Abort:
@@ -174,6 +184,47 @@ def test_provider_failure_is_stable_and_does_not_echo_exception_text(tmp_path: P
     assert result.error == "side question failed: provider error"
     assert result.data == {"error": BtwErrorCode.PROVIDER.value}
     assert "secret-hint" not in str(result.as_payload())
+    assert result.output is None
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        # Every message is deliberately misleading: classification is type-only.
+        (ModelQueryBudgetExhausted("model query prompt too long"), BtwErrorCode.BUDGET),
+        (ModelQueryContextFailed("no model configured"), BtwErrorCode.CONTEXT),
+        (ModelQueryUnavailable("budget limit exceeded"), BtwErrorCode.UNAVAILABLE),
+        (ModelQueryModelUnavailable("context provider failed"), BtwErrorCode.MODEL),
+        (ModelQueryPromptTooLong("provider error"), BtwErrorCode.QUESTION_TOO_LONG),
+        (ModelQueryCancelled("tool calls returned"), BtwErrorCode.CANCELLED),
+        (ModelQueryToolCalls("budget limit exceeded"), BtwErrorCode.TOOL_CALL),
+        (
+            ProviderExecutionError(
+                kind="cancelled",
+                provider_name="endpoint",
+                model_name="model",
+                message="budget limit exceeded",
+            ),
+            BtwErrorCode.CANCELLED,
+        ),
+        (
+            ProviderExecutionError(
+                kind="provider_error",
+                provider_name="endpoint",
+                model_name="model",
+                message="budget limit exceeded",
+            ),
+            BtwErrorCode.PROVIDER,
+        ),
+        (RuntimeError("budget limit exceeded"), BtwErrorCode.UNKNOWN),
+        (ValueError("no model configured"), BtwErrorCode.UNKNOWN),
+    ],
+)
+def test_failures_classify_by_type_not_message(tmp_path: Path, error: Exception, code: BtwErrorCode) -> None:
+    services = FakeServices(failure=error)
+    result = _invoke(services, tmp_path, {"question": "anything?"})
+    assert result.status == "error"
+    assert result.data == {"error": code.value}
     assert result.output is None
 
 

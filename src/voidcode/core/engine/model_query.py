@@ -27,7 +27,12 @@ from ...sdk.provider import (
     ProviderTurnResult,
 )
 from ...sdk.services import (
+    ContextContributionFailed,
+    ModelQueryBudgetExhausted,
     ModelQueryCancelled,
+    ModelQueryContextFailed,
+    ModelQueryModelUnavailable,
+    ModelQueryPromptTooLong,
     ModelQueryToolCalls,
     PluginBudget,
     SessionUsageReport,
@@ -206,7 +211,7 @@ class ModelQueryRuntime:
     ) -> tuple[ProviderTurnResult, str, str, int]:
         """The shared governed side-turn: resolution, budget, dispatch, and measurement."""
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > 64 * 1024:
-            raise ValueError("model query prompt must be nonempty UTF-8 text within 64 KiB")
+            raise ModelQueryPromptTooLong("model query prompt must be nonempty UTF-8 text within 64 KiB")
         self._host.ensure_open()
         self._host.session(session_id)
         effective_abort = self._abort_signal(abort_signal)
@@ -214,11 +219,11 @@ class ModelQueryRuntime:
             raise ModelQueryCancelled("model query cancelled")
         selected = model or self._host.default_model
         if selected is None:
-            raise ValueError(MODEL_CONFIGURATION_GUIDANCE)
+            raise ModelQueryModelUnavailable(MODEL_CONFIGURATION_GUIDANCE)
         provider_name, separator, model_name = selected.partition("/")
         with self._host.dispatch("model-query") as snapshot:
             if not separator or not model_name or provider_name not in snapshot.plugin_runtime.providers:
-                raise ValueError("model must name a configured provider/model")
+                raise ModelQueryModelUnavailable("model must name a configured provider/model")
             metadata: dict[str, object] = {"session_id": session_id, "purpose": "plugin_query"}
             if max_output_tokens is not None:
                 if type(max_output_tokens) is not int or max_output_tokens < 1:
@@ -229,7 +234,10 @@ class ModelQueryRuntime:
             if include_context:
                 session = self._host.store.session(session_id)
                 execution = _Execution(session, _Cursor(), list(self._host.store.events(session_id)), session.run_id or uuid4().hex)
-                context = self._host.messages(execution, completed_only=True, model=selected)
+                try:
+                    context = self._host.messages(execution, completed_only=True, model=selected)
+                except ContextContributionFailed as exc:
+                    raise ModelQueryContextFailed(str(exc)) from exc
             request = ProviderTurnRequest(
                 messages=(*context, ProviderMessage("user", prompt)),
                 available_tools=(),
@@ -260,7 +268,7 @@ class ModelQueryRuntime:
             report = self._host.usage(session_id, since_sequence=budget.since_sequence)
             block = budget_block(report, budget)
             if block is not None:
-                raise RuntimeError(block.message)
+                raise ModelQueryBudgetExhausted(block.message)
 
     def _commit_usage(
         self,

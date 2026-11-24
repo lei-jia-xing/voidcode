@@ -53,7 +53,10 @@ re-reading the session report. An exhausted budget refuses the query before disp
 missing usage stays unknown. Cancellation uses the invoking lease's abort signal (the
 command or run that asked), so a cancelled side turn stops before returning an answer
 and raises `ModelQueryCancelled`; a native tool-call reply raises
-`ModelQueryToolCalls`. A side query does not reserve a root-action unit, so
+`ModelQueryToolCalls`. Other failures are typed at their source
+(`ModelQueryBudgetExhausted`, `ModelQueryContextFailed`, `ModelQueryUnavailable`,
+`ModelQueryModelUnavailable`, `ModelQueryPromptTooLong`), so consumers never classify
+by exception message text. A side query does not reserve a root-action unit, so
 `root_action_budget` and `max_steps` do not limit it; active session/plugin budgets and
 the session usage report still apply. The bundled `/btw` command requests this
 contextual mode.

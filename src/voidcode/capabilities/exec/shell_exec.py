@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from voidcode.capabilities.tool_errors import expected_failures, raise_tool_diagnostic
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices, ProcessStream
+from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices, ProcessFailure, ProcessStream
 from voidcode.sdk.tools import (
     EmptyOutput,
     OutputBounds,
@@ -193,9 +193,9 @@ class ShellExecTool:
                 max_output_bytes=SHELL_CAPTURE_BYTES,
                 on_output=_progress_sink(context),
             )
-        except ValueError as exc:
+        except ProcessFailure as exc:
             failure = str(exc)
-            if "while reading process output" in failure or "while reading helper output" in failure:
+            if exc.kind == "capture_failed":
                 raise_tool_diagnostic(
                     message=f"shell_exec failed while capturing process output: {exc}",
                     error_kind="tool_execution_error",
@@ -203,7 +203,7 @@ class ShellExecTool:
                     retry_guidance="The command may have run; inspect the workspace before retrying with a narrower command.",
                     details={"error": failure},
                 )
-            if "sandbox helper failed" in failure:
+            if exc.kind == "sandbox_failed":
                 raise_tool_diagnostic(
                     message=f"shell_exec sandbox helper failed after the command ran: {exc}",
                     error_kind="tool_execution_error",
@@ -217,6 +217,14 @@ class ShellExecTool:
                 reason="process_start_failed",
                 retry_guidance="Check the command and workspace permissions, then retry.",
                 details={"error": failure},
+            )
+        except ValueError as exc:
+            raise_tool_diagnostic(
+                message=f"shell_exec could not start the command: {exc}",
+                error_kind="tool_execution_error",
+                reason="process_start_failed",
+                retry_guidance="Check the command and workspace permissions, then retry.",
+                details={"error": str(exc)},
             )
         stdout = _spill_stream(services, result.stdout)
         stderr = _spill_stream(services, result.stderr)

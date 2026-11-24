@@ -21,7 +21,7 @@ from voidcode.plugins.user_shell.user_shell import (
 from voidcode.plugins.user_shell.user_shell_plugin import ShellCommand
 from voidcode.sdk.commands import CommandInvocation
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessResult
+from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessFailure, ProcessResult
 from voidcode.sdk.tools import ToolEffect
 
 
@@ -319,9 +319,12 @@ def test_abort_signal_after_process_completion_is_cancelled(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("error", "code"),
     [
-        (ValueError("failed to start process: boom"), ShellErrorCode.START_FAILED),
-        (ValueError("failed while reading process output: boom"), ShellErrorCode.CAPTURE_FAILED),
-        (ValueError("sandbox helper failed (exit 1): boom"), ShellErrorCode.SANDBOX_FAILED),
+        # Deliberately misleading text proves classification uses only the typed kind.
+        (ProcessFailure("start_failed", "sandbox helper failed and while reading output"), ShellErrorCode.START_FAILED),
+        (ProcessFailure("capture_failed", "failed to start process"), ShellErrorCode.CAPTURE_FAILED),
+        (ProcessFailure("sandbox_failed", "failed while reading process output"), ShellErrorCode.SANDBOX_FAILED),
+        (ProcessFailure("process_failed", "sandbox helper failed"), ShellErrorCode.PROCESS_FAILED),
+        (ValueError("failed to start process: boom"), ShellErrorCode.PROCESS_FAILED),
         (RuntimeError("unexpected"), ShellErrorCode.PROCESS_FAILED),
     ],
 )

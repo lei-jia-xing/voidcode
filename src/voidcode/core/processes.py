@@ -16,7 +16,7 @@ from typing import Any, Final
 from uuid import uuid4
 
 from voidcode.sdk.observed_effects import ObservedEffects
-from voidcode.sdk.services import ProcessHandle, ProcessResult, ProcessStream
+from voidcode.sdk.services import ProcessFailure, ProcessHandle, ProcessResult, ProcessStream
 
 from .artifacts import MAX_PAGE_BYTES
 from .sandbox import SandboxBackend, build_plan, native_backend, read_effects_file, scratch_dir
@@ -707,7 +707,7 @@ class ProcessRegistry:
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
         except OSError as exc:
-            raise ValueError(f"failed to start process: {exc}") from exc
+            raise ProcessFailure("start_failed", f"failed to start process: {exc}") from exc
 
         with self._lock:
             self._groups[process.pid] = process
@@ -781,7 +781,7 @@ class ProcessRegistry:
 
         if reader_errors:
             first = reader_errors[0]
-            raise ValueError(f"failed while reading process output: {type(first).__name__}: {first}")
+            raise ProcessFailure("capture_failed", f"failed while reading process output: {type(first).__name__}: {first}")
         return ProcessResult(
             # A process the runtime stopped has no exit status of its own: None here is honest,
             # and `timed_out`/`cancelled` say which stop it was.
@@ -840,7 +840,7 @@ class ProcessRegistry:
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
         except OSError as exc:
-            raise ValueError(f"sandbox run failed to start the helper: {exc}") from exc
+            raise ProcessFailure("start_failed", f"sandbox run failed to start the helper: {exc}") from exc
         with self._lock:
             self._groups[process.pid] = process
         helper_pid = process.pid
@@ -899,7 +899,7 @@ class ProcessRegistry:
             self._groups.pop(process.pid, None)
         if reader_errors:
             first = reader_errors[0]
-            raise ValueError(f"sandbox run failed while reading helper output: {type(first).__name__}: {first}")
+            raise ProcessFailure("capture_failed", f"sandbox run failed while reading helper output: {type(first).__name__}: {first}")
         effects, helper_exit = self._read_exec_report(helper_pid, helper_env, scratch_dir(anchor), backend_name)
         # The HELPER's exit is transport; the CHILD's exit rides the report. A helper crash
         # (nonzero with no report) is a visible failure — never a host fallback.
@@ -909,7 +909,7 @@ class ProcessRegistry:
         elif helper_exit is not None:
             exit_code = helper_exit
         elif process.returncode != 0:
-            raise ValueError(f"sandbox helper failed (exit {process.returncode}): {stderr_capture.text()[:2000]}")
+            raise ProcessFailure("sandbox_failed", f"sandbox helper failed (exit {process.returncode}): {stderr_capture.text()[:2000]}")
         else:
             exit_code = process.returncode
         return ProcessResult(

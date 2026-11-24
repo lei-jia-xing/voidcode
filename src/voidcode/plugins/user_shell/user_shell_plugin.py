@@ -8,7 +8,7 @@ from typing import ClassVar
 from voidcode.capabilities.exec.shell_exec import SHELL_CAPTURE_BYTES, shell_argv
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandResult
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessResult
+from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessFailure, ProcessResult
 from voidcode.sdk.tools import ToolEffect
 
 from .user_shell import (
@@ -109,14 +109,13 @@ def _bounded_detail(exc: BaseException) -> str:
 
 
 def _process_error_code(exc: BaseException) -> ShellErrorCode:
-    message = str(exc)
-    if "sandbox helper failed" in message:
-        return ShellErrorCode.SANDBOX_FAILED
-    if "while reading process output" in message or "while reading helper output" in message:
-        return ShellErrorCode.CAPTURE_FAILED
-    if "failed to start" in message or "sandbox run failed to start" in message:
-        return ShellErrorCode.START_FAILED
-    return ShellErrorCode.PROCESS_FAILED
+    if not isinstance(exc, ProcessFailure):
+        return ShellErrorCode.PROCESS_FAILED
+    return {
+        "start_failed": ShellErrorCode.START_FAILED,
+        "capture_failed": ShellErrorCode.CAPTURE_FAILED,
+        "sandbox_failed": ShellErrorCode.SANDBOX_FAILED,
+    }.get(exc.kind, ShellErrorCode.PROCESS_FAILED)
 
 
 def _spill_streams(

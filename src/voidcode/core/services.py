@@ -31,6 +31,7 @@ from voidcode.sdk.services import (
     ChildSessionSnapshot,
     DescendantNode,
     EventView,
+    ModelQueryUnavailable,
     PluginBudget,
     ProcessHandle,
     ProcessOutput,
@@ -1398,7 +1399,7 @@ class RuntimeServices:
         self._check_hook("model_query")
         callback = self._runtime.model_query_callback
         if callback is None:
-            raise RuntimeError("governed model queries are unavailable")
+            raise ModelQueryUnavailable("governed model queries are unavailable")
         if model is not None and not isinstance(model, str):
             raise ValueError("model must be a string or null")
         if max_output_tokens is not None and type(max_output_tokens) is not int:
@@ -1428,7 +1429,7 @@ class RuntimeServices:
         self._check_hook("model_query_structured")
         callback = self._runtime.model_query_structured_callback
         if callback is None:
-            raise RuntimeError("governed model queries are unavailable")
+            raise ModelQueryUnavailable("governed model queries are unavailable")
         if not isinstance(result_schema, Mapping):
             raise ValueError("result_schema must be an object")
         if model is not None and not isinstance(model, str):

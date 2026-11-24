@@ -15,7 +15,7 @@ from voidcode.core.engine import Core
 from voidcode.core.storage.store import SessionStatus, StagedBudgetUpdate, StoreConflict
 from voidcode.sdk.hooks import UsageFact
 from voidcode.sdk.provider import ProviderExecutionError
-from voidcode.sdk.services import PluginBudget
+from voidcode.sdk.services import ModelQueryBudgetExhausted, ModelQueryPromptTooLong, ModelQueryToolCalls, PluginBudget
 
 _SCHEMA = {
     "type": "object",
@@ -206,11 +206,19 @@ def test_query_missing_usage_stays_unknown(tmp_path: Path) -> None:
     assert events[0].payload["cost_usd"] is None
 
 
+def test_query_refuses_an_oversize_prompt_before_dispatch(tmp_path: Path) -> None:
+    with loopback_server([]) as server:
+        core = _open(tmp_path, server)
+        with pytest.raises(ModelQueryPromptTooLong, match="64 KiB"):
+            core.governed_model_query("sess-structured", "x" * (64 * 1024 + 1))
+    assert server.requests == []
+
+
 def test_query_refuses_an_exhausted_budget_before_dispatch(tmp_path: Path) -> None:
     with loopback_server([]) as server:
         core = _open(tmp_path, server)
         _stage_budget(core, "sess-structured", max_total_tokens=0)
-        with pytest.raises(RuntimeError, match="budget limit exceeded: total tokens 0 >= 0 for owner find"):
+        with pytest.raises(ModelQueryBudgetExhausted, match="budget limit exceeded: total tokens 0 >= 0 for owner find"):
             core.governed_model_query("sess-structured", "bare", owner="find")
         report = core.usage("sess-structured")
         events = [event for event in core.events_after("sess-structured") if event.event_type == "core.model_query"]
@@ -225,7 +233,7 @@ def test_query_spend_counts_against_the_active_budget(tmp_path: Path) -> None:
         core = _open(tmp_path, server)
         _stage_budget(core, "sess-structured", max_total_tokens=150)
         assert core.governed_model_query("sess-structured", "first", owner="find") == "first answer"
-        with pytest.raises(RuntimeError, match="budget limit exceeded: total tokens 165 >= 150 for owner find"):
+        with pytest.raises(ModelQueryBudgetExhausted, match="budget limit exceeded: total tokens 165 >= 150 for owner find"):
             core.governed_model_query("sess-structured", "second", owner="find")
     assert len(server.requests) == 1
 
@@ -372,7 +380,7 @@ def test_query_with_an_unexpected_tool_call_still_charges_its_usage(tmp_path: Pa
     )
     with loopback_server([reply]) as server:
         core = _open(tmp_path, server)
-        with pytest.raises(RuntimeError, match="returned tool calls"):
+        with pytest.raises(ModelQueryToolCalls, match="returned tool calls"):
             core.governed_model_query("sess-structured", "bare", owner="find")
         report = core.usage("sess-structured")
     assert (report.input_tokens, report.output_tokens) == (7, 2)
