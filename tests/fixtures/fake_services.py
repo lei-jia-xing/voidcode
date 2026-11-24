@@ -688,7 +688,9 @@ class FakeServices(PluginServices):
         offset: int = 0,
         limit: int = 65536,
     ) -> ArtifactPage:
-        data = self.artifacts[sha256]
+        data = self.artifacts.get(sha256)
+        if data is None:
+            raise FileNotFoundError(f"artifact is not stored: {sha256}")
         page = data[offset : offset + limit]
         return ArtifactPage(
             artifact=ArtifactReference(sha256, len(data), "text/plain; charset=utf-8"),

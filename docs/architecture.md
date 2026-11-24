@@ -226,8 +226,8 @@ owned child session; both return the `HistoryPage` cursor (`text`, `next_after_s
 `next_offset`, `truncated`) from `sdk/history.py`.
 
 Workflow profiles also depend on visible tool capabilities rather than a fixed plugin set.
-Delegation and review select the available subset of their declared tools. An unavailable
-optional tool never causes a retry with the broader parent scope. See
+The review command requests only the available subset of `read`, `grep`, and `glob`; an
+unavailable tool never causes a retry with the broader parent scope. See
 [optional query contracts](contracts/optional-queries.md) for provider authoring and failure semantics.
 
 Plugin observers and historical projections share [public SDK facts](./contracts/facts.md). Tool names identify dispatch; governance effects declare authority and result observations record what happened. Skills consume that contract without inspecting private event payloads or depending on file/subagents/compression plugin names.

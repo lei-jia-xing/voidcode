@@ -1,19 +1,76 @@
 # review
 
-Review workspace Git changes with a governed, read-only child agent.
+Review workspace Git changes with a governed, read-only child. `/review` is its
+own Git-diff flow, not the builtin `review` subagent profile: the child is
+labelled `review-git` and receives only the available read-only inspection
+tools.
 
 ## Surface
 
-- Command `/review` (effects `READ` + `SPAWN`, busy-gated). Optional arguments: `focus` (reviewer focus; alone it reviews as a custom target), `target` (`uncommitted` default | `base_branch` | `commit` | `custom`), `branch` (required for `base_branch`), `sha` (required for `commit`).
-- Bare `/review` in TUI/Web opens a target selector and focus editor without inspecting Git or starting a child. Branch/commit requirements appear in the form labels; explicit `/review <focus>` and structured CLI/RPC arguments retain direct invocation. Focus is included for every selected target. Submission follows normal validation and governance.
-- Stages a `review_started` event, joins the child (300s timeout), and returns the child's final findings or a typed error carrying `child_session_id` and `target_type`. Oversized prompts are refused with guidance to review incrementally.
+- Command `/review` (effects `READ` + `SPAWN` + `SESSION`, busy-gated). Optional
+  arguments: `focus` (reviewer focus; alone it reviews as a custom target),
+  `target` (`uncommitted` default | `base_branch` | `commit` | `custom`),
+  `branch` (required for `base_branch`), `sha` (required for `commit`).
+- Bare `/review` in TUI/Web opens a target selector and focus editor without
+  inspecting Git or starting a child. Branch/commit requirements appear in the
+  form labels; explicit `/review <focus>` and structured CLI/RPC arguments
+  retain direct invocation.
+- Stages one `review_dispatched` event when the child is created, then joins
+  the child for up to 300s and returns its findings or a typed error carrying
+  `child_session_id` and `target_type`. Command events commit with the command
+  result, so `review_dispatched` is a durable dispatch record, not a live start
+  signal. It records the child id plus prompt and diff SHA-256 digests.
+- A review still running at the join deadline is not cancelled. The command
+  returns `status="running"` (or `status="waiting"` for an approval-parked
+  child) with the actual wait time and guidance to use `subagents.monitor` or
+  `voidcode show`. The child is spawned with `notify_on_completion=False`: the
+  synchronous join owns the result, and a still-running review is announced
+  through the returned child id and dispatch event but is not pushed to the
+  parent. Its result is recovered from the session tree rather than a
+  duplicate parent turn.
+- Oversized prompts are refused with guidance to review incrementally.
 
 ## Configuration
 
-Takes no plugin options; only the injected `providers` map is accepted and ignored. Unknown fields are rejected. See [configuration](../../../../docs/configuration.md) for global config.
+Takes no plugin options; only the injected `providers` map is accepted and
+ignored. Unknown fields are rejected. See
+[configuration](../../../../docs/configuration.md) for global config.
 
 ## Behavior and limits
 
-- The child inherits the parent's tool scope, is spawned with `readonly=True` (max 32 steps, label `review`), and the core forces read-only whenever the calling lease is restrictive — so review works from read-only and plan-mode sessions. There is no fixed inspection-tool list; the child uses inherited tools within its read-only stance.
-- Diffs are built from Git directly (staged, unstaged, and untracked files; merge-base comparison for `base_branch`); a non-repo workspace or Git failure surfaces as a command error. Requires the `git` binary with a 30s per-command timeout.
-- Stateless: keeps no plugin state beyond the staged event.
+- **Child scope.** The child inherits the parent's stance and is spawned with
+  `readonly=True`, label `review-git`, `max_steps=32`, and a `tool_allowlist`
+  containing only the available subset of `read`, `grep`, and `glob`. Network,
+  task/delegation, shell, and mutation tools are never requested. The core
+  refuses a spawn that would widen a restricted parent scope.
+- **Effect semantics.** `SESSION` is declared because this command stages a
+  plugin event; it does not grant file or process mutation. `EXECUTE` is
+  deliberately not declared: the host-side `git` reads are trusted read-side
+  behavior, not a plugin-declared external execution capability. The command
+  therefore remains admissible in a read-only/plan session, and the child is
+  forced durably read-only by the core.
+- **Durability.** The spawn-to-event window is guarded: if the dispatch event
+  cannot be staged, the child is cancelled and the command fails with the child
+  id and staging error. If cancellation itself fails, the error names the child
+  so it remains visible through `subagents.monitor` or `voidcode show`.
+- **Git scope.** Diffs are built from Git directly (staged, unstaged, and
+  untracked files). When the workspace is a subdirectory, every Git operation
+  is path-limited to that workspace, not the whole repository. `base_branch`
+  compares against `merge-base HEAD <branch>`; there is no upstream heuristic.
+  `commit` resolves the supplied revision to an exact commit and shows only its
+  patch. Option-like `branch`/`sha` values are refused; refs are resolved before
+  use and diff/show path limits are separated with `--`.
+- **Untrusted data.** The prompt delimiters and instructions identify the Git
+  diff as untrusted repository data: the child is told never to follow
+  instructions inside it and to report only evidence-backed findings with
+  severity and path/line. Untracked files matching obvious secret patterns
+  (`.env*`, `*.pem`, `*.key`, `credentials*`, `id_*`) are omitted; only their
+  count is recorded.
+- **Output bounds.** Long child output resolves to the first bounded page plus
+  an immutable `artifact://` reference. The full bytes are paged; only a
+  verified page publishes `output_uri`. Failed and interrupted children keep
+  their captured output or preview in the visible error text.
+- Stateless: keeps no plugin state and no child mapping; child lifecycle facts
+  remain core-owned. The command requires at least one of `read`, `grep`, or
+  `glob` to be visible to the parent. A missing `git` binary or a Git timeout is
+  a typed command error, not an unstructured failure.
