@@ -67,6 +67,7 @@ class UsageFact:
     #: with. ``None`` means the allocation is absent or the limit is unknown; observers
     #: must not substitute a live catalog probe or a guessed window.
     input_limit_tokens: int | None = None
+    context_window: int | None = None
     #: What produced this provider dispatch. A governed side query
     #: (``core.model_query``) has no separate dispatch intent event: its own
     #: committed event is the dispatch record, so ``dispatch_sequence`` equals

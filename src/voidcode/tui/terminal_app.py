@@ -54,6 +54,7 @@ from voidcode.sdk.views import (
 from voidcode.tui.gates import (
     ActivationCommitted,
     ApprovalRequested,
+    AskRequested,
     ConfirmationRequested,
     GateChange,
     GateDecided,
@@ -103,6 +104,7 @@ from .styles import Styles
 from .term import Terminal, TerminalCapabilityError, copy_to_clipboard
 from .views import (
     InteractiveApproval,
+    InteractiveAsk,
     InteractiveChoices,
     InteractiveConfirmation,
     InteractiveForm,
@@ -208,7 +210,7 @@ class CoreTuiApp:
         #: second thread. Cleared on response, decided fact, or error.
         self._in_flight: set[str] = set()
         self.active_overlay: (
-            InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveMarkdown | InteractiveArtifactViewer | None
+            InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveMarkdown | InteractiveArtifactViewer | InteractiveAsk | None
         ) = None
         #: Chord -> descriptor for this catalog revision, rebuilt on every catalog load.
         self._shortcut_bindings: dict[str, CommandDescriptor] = {}
@@ -231,6 +233,7 @@ class CoreTuiApp:
         #: Confirmation requests that arrived while another overlay owned the live
         #: region, keyed by request_id in request order: none is ever dropped.
         self.queued_confirmations: dict[str, InteractiveConfirmation] = {}
+        self.queued_asks: dict[str, InteractiveAsk] = {}
         #: Typed pending gates (the reducer truth) plus decided-id tombstones.
         self._gates = GateState()
         #: Live token buffer keyed by dispatch id: text fragments arrive as
@@ -525,18 +528,28 @@ class CoreTuiApp:
         )
 
     def _live_stream_rows(self, width: int) -> list[str]:
-        """Partial markdown of the in-flight dispatch for the live region, or nothing."""
+        """Partial markdown and reasoning of the in-flight dispatch for the live region."""
         dispatch = self._stream_dispatch
         if dispatch is None:
             return []
+        reasoning_chunks = self._stream_reasoning.get(dispatch, [])
+        reasoning_text = "".join(reasoning_chunks)
         text = "".join(self._stream_buffers.get(dispatch, []))
-        if not text:
+        if not text and not reasoning_text:
             return []
-        return render_assistant_markdown(text, width, self.styles)
+        rows: list[str] = []
+        if reasoning_text:
+            rows.append(self.styles.fg("dim", f"Thinking… ({len(reasoning_text)} chars)"))
+        if text:
+            rows.extend(render_assistant_markdown(text, width, self.styles))
+        return rows
 
     def _drain_events(self, timeout: float | None = None) -> int:
         """Drain typed frames through the one pump/router in ``event_pump``."""
         return drain_events(self, timeout)
+
+    def _record_user_prompt_history(self, prompt: str) -> None:
+        self.composer._push_history(prompt)
 
     def _record_model_turn(self, payload: Mapping[str, object], entry_content: object = None) -> None:
         usage = None
@@ -738,14 +751,21 @@ class CoreTuiApp:
                 return
             self._show_or_queue_confirmation(InteractiveConfirmation(gate.view, revision_id=gate.revision_id))
             return
+        if isinstance(change, AskRequested):
+            gate = change.gate
+            if gate.request_id in after.decided or not any(entry.request_id == gate.request_id for entry in after.asks):
+                return
+            self._show_or_queue_ask(InteractiveAsk(gate.request, revision_id=gate.revision_id))
+            return
         if isinstance(change, GateDecided):
             decided = change.request_id
             self.queued_confirmations.pop(decided, None)
+            self.queued_asks.pop(decided, None)
             current = self.pending_approval
             if current is not None and current.request_id == decided:
                 self.pending_approval = None
             overlay = self.active_overlay
-            if isinstance(overlay, InteractiveConfirmation) and overlay.request_id == decided:
+            if isinstance(overlay, (InteractiveConfirmation, InteractiveAsk)) and getattr(overlay, "request_id", "") == decided:
                 self.active_overlay = None
                 self._present_queued_confirmation()
             return
@@ -753,11 +773,13 @@ class CoreTuiApp:
             self.pending_approval = None
             for queued_id in [i for i, q in self.queued_confirmations.items() if q.revision_id != change.to_revision_id]:
                 del self.queued_confirmations[queued_id]
+            for queued_id in [i for i, q in self.queued_asks.items() if q.revision_id != change.to_revision_id]:
+                del self.queued_asks[queued_id]
             if self._suspended_live is not None and getattr(self._suspended_live[0], "revision_id", "") != change.to_revision_id:
                 self._suspended_live = None
                 self._live_input = None
                 self._live_refresh_at = 0.0
-            if before.approval is not None or len(before.confirmations) != len(after.confirmations):
+            if before.approval is not None or len(before.confirmations) != len(after.confirmations) or len(before.asks) != len(after.asks):
                 self._present_queued_confirmation()
             return
         if isinstance(change, RunTerminated):
@@ -853,8 +875,22 @@ class CoreTuiApp:
             return
         self.queued_confirmations.setdefault(request_id, overlay)
 
+    def _show_or_queue_ask(self, overlay: InteractiveAsk) -> None:
+        """Show one pending ask, or retain it until the live region frees."""
+        request_id = overlay.request_id
+        if not request_id or request_id in self._gates.decided:
+            return
+        current = self.active_overlay
+        if isinstance(current, InteractiveAsk) and current.request_id == request_id:
+            return
+        if current is None and self.pending_approval is None:
+            self.active_overlay = overlay
+            self.status_line = "Interactive ask required"
+            return
+        self.queued_asks.setdefault(request_id, overlay)
+
     def _present_queued_confirmation(self) -> None:
-        """Present the oldest still-pending confirmation once the live region is free."""
+        """Present the oldest still-pending confirmation or ask once the live region is free."""
         if self.active_overlay is not None or self.pending_approval is not None:
             return
         while self.queued_confirmations:
@@ -864,6 +900,14 @@ class CoreTuiApp:
                 continue
             self.active_overlay = overlay
             self.status_line = "Confirmation required"
+            return
+        while self.queued_asks:
+            request_id, ask_overlay = next(iter(self.queued_asks.items()))
+            del self.queued_asks[request_id]
+            if request_id in self._gates.decided:
+                continue
+            self.active_overlay = ask_overlay
+            self.status_line = "Interactive ask required"
             return
         if self._suspended_live is not None:
             self._restore_suspended_live()
@@ -966,9 +1010,21 @@ class CoreTuiApp:
         if decision_raw not in ("allow", "deny"):
             self.status_line = f"Unknown approval decision: {_safe(decision_raw)}"
             return
-        self._resolve_approval(decision_raw)
+        reason = outcome.get("reason")
+        grant_session_policy = bool(outcome.get("grant_session_policy", False))
+        self._resolve_approval(
+            decision_raw,
+            reason=reason if isinstance(reason, str) else None,
+            grant_session_policy=grant_session_policy,
+        )
 
-    def _resolve_approval(self, decision: Literal["allow", "deny"]) -> None:
+    def _resolve_approval(
+        self,
+        decision: Literal["allow", "deny"],
+        *,
+        reason: str | None = None,
+        grant_session_policy: bool = False,
+    ) -> None:
         approval = self.pending_approval
         if approval is None:
             return
@@ -987,7 +1043,15 @@ class CoreTuiApp:
 
         def worker() -> None:
             try:
-                self.client.resume(session_id, ResumeSpec(approval_request_id=request_id, decision=decision))
+                self.client.resume(
+                    session_id,
+                    ResumeSpec(
+                        approval_request_id=request_id,
+                        decision=decision,
+                        reason=reason,
+                        grant_session_policy=grant_session_policy,
+                    ),
+                )
             except CoreClientError as exc:
                 if exc.code == "upgrade_pending":
                     # Still armed with the same request id: no auto-resend, the
@@ -1032,6 +1096,14 @@ class CoreTuiApp:
                 self.status_line = f"Unknown confirmation decision: {_safe(decision_raw)}"
                 return
             self._resolve_confirmation(decision_raw)
+        elif isinstance(self.active_overlay, InteractiveAsk):
+            action = str(outcome.get("action", ""))
+            if action == "answer":
+                values = outcome.get("values", {})
+                self._resolve_ask(values if isinstance(values, Mapping) else {})
+            elif action == "cancel":
+                self._cancel_ask()
+            return
         elif isinstance(self.active_overlay, (InteractiveChoices, InteractiveForm, InteractiveMarkdown)):
             action = str(outcome.get("action", ""))
             arguments = outcome.get("arguments", {})
@@ -1108,6 +1180,83 @@ class CoreTuiApp:
             self.event_queue.put(events.GateAcceptedEvent(request_id=request_id, session_id=session_id, generation=generation))
 
         self._work.submit("CoreConfirm", worker)
+
+    def _resolve_ask(self, values: Mapping[str, object]) -> None:
+        """Submit the stored request id's answers for an interactive ask."""
+        ask = self.active_overlay
+        if not isinstance(ask, InteractiveAsk):
+            return
+        request_id = ask.request_id
+        revision = ask.revision_id
+        if not request_id:
+            self.status_line = "No pending ask to resolve"
+            return
+        if request_id in self._in_flight:
+            return
+        self._in_flight.add(request_id)
+        session_id, generation = self.session_id, self._generation
+        self.status_line = "Submitting answers..."
+
+        def worker() -> None:
+            try:
+                self.client.answer_ask(
+                    session_id,
+                    request_id,
+                    values,
+                    expected_revision=revision,
+                )
+            except CoreClientError as exc:
+                if exc.code == "upgrade_pending":
+                    self._upgrade_pending_notice("ask answer", session_id=session_id, generation=generation)
+                else:
+                    self._queue_notice(f"Ask answer failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                self.event_queue.put(events.DecisionDoneEvent(request_id=request_id, session_id=session_id, generation=generation))
+                return
+            except Exception as exc:
+                self._queue_notice(f"Ask answer failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                self.event_queue.put(events.DecisionDoneEvent(request_id=request_id, session_id=session_id, generation=generation))
+                return
+            self.event_queue.put(events.GateAcceptedEvent(request_id=request_id, session_id=session_id, generation=generation))
+
+        self._work.submit("CoreAskAnswer", worker)
+
+    def _cancel_ask(self) -> None:
+        """Submit cancellation for an interactive ask."""
+        ask = self.active_overlay
+        if not isinstance(ask, InteractiveAsk):
+            return
+        request_id = ask.request_id
+        revision = ask.revision_id
+        if not request_id:
+            self.status_line = "No pending ask to cancel"
+            return
+        if request_id in self._in_flight:
+            return
+        self._in_flight.add(request_id)
+        session_id, generation = self.session_id, self._generation
+        self.status_line = "Cancelling ask..."
+
+        def worker() -> None:
+            try:
+                self.client.cancel_ask(
+                    session_id,
+                    request_id,
+                    expected_revision=revision,
+                )
+            except CoreClientError as exc:
+                if exc.code == "upgrade_pending":
+                    self._upgrade_pending_notice("ask cancel", session_id=session_id, generation=generation)
+                else:
+                    self._queue_notice(f"Ask cancel failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                self.event_queue.put(events.DecisionDoneEvent(request_id=request_id, session_id=session_id, generation=generation))
+                return
+            except Exception as exc:
+                self._queue_notice(f"Ask cancel failed: {exc}", tone="error", session_id=session_id, generation=generation)
+                self.event_queue.put(events.DecisionDoneEvent(request_id=request_id, session_id=session_id, generation=generation))
+                return
+            self.event_queue.put(events.GateAcceptedEvent(request_id=request_id, session_id=session_id, generation=generation))
+
+        self._work.submit("CoreAskCancel", worker)
 
     def _invoke_async(
         self,
@@ -1768,6 +1917,8 @@ class CoreTuiApp:
         self._close_live_input()
         self.active_overlay = None
         self.queued_confirmations.clear()
+        self.queued_asks.clear()
+        self.composer.load_history(())
         self._gates = GateState()
         self._active_tools.clear()
         self._queued_followups = ()
@@ -1939,7 +2090,10 @@ class CoreTuiApp:
         options = tuple(
             ChoiceOption(
                 id=row.session_id,
-                label=f"{row.session_id[:8]} (turn {row.turn}, {row.status})" + (" [current]" if row.session_id == self.session_id else ""),
+                label=(
+                    f"{row.session_id[:8]} · turn {row.turn} · {row.summary or row.status}"
+                    + (" [current]" if row.session_id == self.session_id else "")
+                ),
             )
             for row in sessions
         )

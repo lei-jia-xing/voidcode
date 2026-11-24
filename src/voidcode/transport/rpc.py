@@ -13,7 +13,17 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from voidcode.core.engine import Core
-from voidcode.sdk.client import ArtifactPageWire, CancelReceipt, FollowupListReceipt, FollowupWithdrawReceipt, RunResult, SessionRow
+from voidcode.core.storage.records import SessionRecord
+from voidcode.sdk.client import (
+    ApprovalPolicyListReceipt,
+    ApprovalPolicyRevokeReceipt,
+    ArtifactPageWire,
+    CancelReceipt,
+    FollowupListReceipt,
+    FollowupWithdrawReceipt,
+    RunResult,
+    SessionRow,
+)
 from voidcode.sdk.commands import CommandCatalog, CommandInputSnapshot, CommandResult
 from voidcode.sdk.provider import ImageAttachment
 from voidcode.sdk.services import SessionUsageReport
@@ -47,6 +57,11 @@ class RpcMethod:
     invoke: Callable[[Core, Any], object]
 
 
+def _project_session(core: Core, record: SessionRecord) -> dict[str, object]:
+    summary, created_at, updated_at = core.store.session_meta(record.session_id)
+    return session_payload(record, summary=summary, created_at=created_at, updated_at=updated_at)
+
+
 METHODS: dict[str, RpcMethod] = {
     "artifact.read": RpcMethod(
         m.ArtifactReadParams,
@@ -55,10 +70,10 @@ METHODS: dict[str, RpcMethod] = {
     ),
     "command.catalog": RpcMethod(m.EmptyParams, CommandCatalog, lambda c, _p: c.command_catalog().as_payload()),
     "session.list": RpcMethod(
-        m.ListSessionsParams, m.SessionsBody, lambda c, p: {"sessions": [session_payload(s) for s in c.sessions(limit=p.limit)]}
+        m.ListSessionsParams, m.SessionsBody, lambda c, p: {"sessions": [_project_session(c, s) for s in c.sessions(limit=p.limit)]}
     ),
-    "session.create": RpcMethod(m.CreateSessionRequest, SessionRow, lambda c, p: session_payload(c.create_session(p.session_id))),
-    "session.get": RpcMethod(m.SessionParams, SessionRow, lambda c, p: session_payload(c.session(p.session_id))),
+    "session.create": RpcMethod(m.CreateSessionRequest, SessionRow, lambda c, p: _project_session(c, c.create_session(p.session_id))),
+    "session.get": RpcMethod(m.SessionParams, SessionRow, lambda c, p: _project_session(c, c.session(p.session_id))),
     "session.show": RpcMethod(m.ShowParams, m.ShowBody, lambda c, p: c.show(p.session_id, events=p.events)),
     "session.run": RpcMethod(
         m.RunRequest,
@@ -83,7 +98,19 @@ METHODS: dict[str, RpcMethod] = {
             extend_root_actions=p.extend_root_actions,
             root_action_grant_id=p.root_action_grant_id,
             interaction=p.interaction,
+            reason=p.reason,
+            grant_session_policy=p.grant_session_policy,
         ).as_payload(),
+    ),
+    "approval_policy.list": RpcMethod(
+        m.SessionParams,
+        ApprovalPolicyListReceipt,
+        lambda c, p: {"policies": [r.as_payload() for r in c.list_approval_policies(p.session_id)]},
+    ),
+    "approval_policy.revoke": RpcMethod(
+        m.ApprovalPolicyRevokeRequest,
+        ApprovalPolicyRevokeReceipt,
+        lambda c, p: {"revoked": c.revoke_approval_policy(p.session_id, p.rule_id)},
     ),
     "command.input": RpcMethod(
         m.CommandInputRequest,
@@ -353,7 +380,7 @@ class RpcConnection:
             self.subscription_starts.pop(params.subscription_id, None)
         ready = asyncio.Event()
         self.windows[params.subscription_id] = SubscriptionWindow(params.after_sequence, params.after_sequence)
-        task = asyncio.create_task(self._events(params, session_payload(record), ready))
+        task = asyncio.create_task(self._events(params, _project_session(self.core, record), ready))
         self.subscriptions[params.subscription_id] = (task, ready)
         return {"subscription_id": params.subscription_id}
 

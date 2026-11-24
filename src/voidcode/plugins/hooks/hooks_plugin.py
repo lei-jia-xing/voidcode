@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from math import isfinite
@@ -21,6 +22,8 @@ from .hook_executor import (
     run_lifecycle_hooks,
     run_tool_hooks,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Legacy argv-hook recursion guard; set on every hook command's environment.
 RECURSION_ENV_VAR = "VOIDCODE_RUNNING_TOOL_HOOK"
@@ -211,6 +214,8 @@ class ToolHooks:
             tool_text=outcome.text,
             abort_signal=context.abort_signal,
         )
+        if execution.failed_error is not None:
+            logger.warning("Post-tool hook failed for %s: %s", outcome.tool_name, execution.failed_error)
         # Fail open: a broken note must not fail a write that already succeeded, but
         # it is still a visible bounded note rather than silence.
         return _note(execution)
@@ -223,6 +228,7 @@ class ToolHooks:
             return None
         outcome = self._run_lifecycle(context, lifecycle)
         if outcome.failed_error is not None:
+            logger.warning("Lifecycle hook failed for %s: %s", lifecycle.phase, outcome.failed_error)
             # Lifecycle surfaces are fail-open and the note is the only record: report the failure.
             return _bounded(outcome.failed_error)
         return _lifecycle_note(outcome)

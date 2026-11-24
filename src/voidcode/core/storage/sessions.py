@@ -14,6 +14,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Literal
+from uuid import uuid4
 
 from ...sdk.json_values import own_json_object
 from ...sdk.services import SessionInfo
@@ -283,6 +284,103 @@ class _SessionsMixin(_ConnectionStore):
                 (session_id,),
             )
             return {str(row[0]): (int(row[1]), int(row[2])) for row in cursor.fetchall()}
+
+    def approval_policies(self, session_id: str) -> list[dict[str, object]]:
+        """Active approval policies granted in this session, folded from the event stream."""
+        with self._lock:
+            self._check_open()
+            self.session(session_id)
+            cursor = self._connection.execute(
+                """
+                SELECT event_type, payload_json, sequence
+                FROM session_events
+                WHERE session_id = ? AND event_type IN (?, ?)
+                ORDER BY sequence ASC
+                """,
+                (session_id, EventType.APPROVAL_POLICY_GRANTED, EventType.APPROVAL_POLICY_REVOKED),
+            )
+            active: dict[str, dict[str, object]] = {}
+            for event_type, payload_json, sequence in cursor.fetchall():
+                try:
+                    payload = json.loads(payload_json) if isinstance(payload_json, str) else {}
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if event_type == EventType.APPROVAL_POLICY_GRANTED:
+                    rule_id = payload.get("rule_id")
+                    tool_name = payload.get("tool_name")
+                    if isinstance(rule_id, str) and rule_id and isinstance(tool_name, str) and tool_name:
+                        pattern = payload.get("pattern")
+                        active[rule_id] = {
+                            "rule_id": rule_id,
+                            "tool_name": tool_name,
+                            "pattern": str(pattern) if pattern is not None else None,
+                            "created_at": int(payload.get("created_at", sequence)),
+                        }
+                elif event_type == EventType.APPROVAL_POLICY_REVOKED:
+                    rule_id = payload.get("rule_id")
+                    if isinstance(rule_id, str):
+                        active.pop(rule_id, None)
+            return list(active.values())
+
+    def revoke_approval_policy(self, session_id: str, rule_id: str, *, revision_id: str) -> bool:
+        """Revoke an active approval policy by committing an APPROVAL_POLICY_REVOKED event."""
+        with self._lock:
+            self._check_open()
+            policies = self.approval_policies(session_id)
+            if not any(p.get("rule_id") == rule_id for p in policies):
+                return False
+            session = self.session(session_id)
+            self.commit_staged(
+                session_id,
+                expected_sequence=session.last_event_sequence,
+                expected_run_id=session.run_id,
+                run_id=session.run_id or uuid4().hex,
+                revision_id=revision_id,
+                events=(
+                    EventDraft(
+                        EventType.APPROVAL_POLICY_REVOKED,
+                        "client",
+                        "user",
+                        {"rule_id": rule_id},
+                    ),
+                ),
+                status=session.status,
+            )
+            return True
+
+    def session_meta(self, session_id: str) -> tuple[str | None, int | None, int | None]:
+        """Project summary (first user message), created_at, and updated_at for one session."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                "SELECT created_at, updated_at FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None, None, None
+            created_at, updated_at = int(row[0]), int(row[1])
+            ev_row = self._connection.execute(
+                """
+                SELECT payload_json FROM session_events
+                WHERE session_id = ? AND event_type = ?
+                ORDER BY sequence ASC LIMIT 1
+                """,
+                (session_id, EventType.USER_MESSAGE),
+            ).fetchone()
+            summary: str | None = None
+            if ev_row and isinstance(ev_row[0], str):
+                try:
+                    payload = json.loads(ev_row[0])
+                    if isinstance(payload, dict):
+                        content = payload.get("content")
+                        if isinstance(content, str) and content.strip():
+                            first_line = content.strip().splitlines()[0].strip()
+                            summary = (first_line[:77] + "...") if len(first_line) > 80 else first_line
+                except Exception:
+                    pass
+            return summary, created_at, updated_at
 
     def latest_stop_payload(self, session_id: str, run_id: str | None) -> Mapping[str, object] | None:
         """Return the exact latest committed interruption payload for one run."""

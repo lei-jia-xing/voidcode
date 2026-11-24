@@ -554,6 +554,7 @@ def test_deep_hierarchy_reserves_a_touched_path_slot(tmp_path: Path) -> None:
 
 
 def test_symlinked_rule_escaping_the_trusted_root_is_diagnosed(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir(exist_ok=True)
     outside = tmp_path.parent / f"{tmp_path.name}-outside-rule.md"
     outside.write_text("outside secret", encoding="utf-8")
     (tmp_path / RULE_FILE_NAME).symlink_to(outside)

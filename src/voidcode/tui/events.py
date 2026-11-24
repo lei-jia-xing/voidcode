@@ -23,7 +23,7 @@ from .artifact_viewer import InteractiveArtifactViewer
 from .formatting import NoticeTone
 from .gates import ApprovalGate
 from .term import TerminalKittyReply
-from .views import InteractiveChoices, InteractiveConfirmation, InteractiveForm, InteractiveMarkdown
+from .views import InteractiveAsk, InteractiveChoices, InteractiveConfirmation, InteractiveForm, InteractiveMarkdown
 
 
 class AbortToken:
@@ -159,7 +159,7 @@ class InvokeAcceptedEvent(TuiEvent):
     request_id: str
     action: str
     revision_id: str
-    overlay: InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveMarkdown | InteractiveArtifactViewer | None
+    overlay: InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveAsk | InteractiveMarkdown | InteractiveArtifactViewer | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

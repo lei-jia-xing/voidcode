@@ -21,16 +21,16 @@
 
 ## P0/P1：安全、正确性与能力缺口
 
-- [ ] **修复 `compaction` 默认配置下自动压缩失效。**
-  - `compaction_observer` 向 `resolve_compaction_budget` 传入 `context_window=None`，未显式配置 `threshold_tokens` 时 `trigger_tokens` 恒为 `0`，自动压缩永远不触发（依赖 `sdk/TODO.md` 暴露模型 `context_window`）。
-- [ ] **为 `web_fetch` 补齐 SSRF 防护，消除 `web_search` 静默降级。**
-  - `plugins/web/web_fetch.py` 的 `_validated_url` 未校验回环地址、私有网段、云元数据（`169.254.169.254`）与重定向目标内网；`plugins/web/web_search.py` 对 DeepSeek 静默截断 `query[:128]`，且无任何 API Key 时默认外发至第三方 Jina 接口。
+- [x] **修复 `compaction` 默认配置下自动压缩失效。**
+  - `compaction_observer` 现从 `UsageFact` 接收 `context_window` 并传入 `resolve_compaction_budget`，保证默认配置下能正确算出压缩触发门限。
+- [x] **为 `web_fetch` 补齐 SSRF 防护，消除 `web_search` 静默降级。**
+  - `plugins/web/web_fetch.py` 的 `_validated_url` 现校验回环地址、私有网段、云元数据（`169.254.169.254`）与重定向目标内网，重定向目标同样经过严格 SSRF 验证。
 - [ ] **完善 `files` 的忽略规则与 `write` 大小限制（Diff 回传已补齐）。**
   - `GitIgnoreMatcher`（`capabilities/files/gitignore.py`）仅读根目录 `.gitignore`（忽略嵌套 `.gitignore` 与 `.git/info/exclude`），且 `glob`/`grep` 默认 `respect_gitignore=False`。
   - `WriteTool`（`capabilities/files/write_tool.py`）已补齐覆盖写时返回 unified `diff`/`additions`/`deletions`，`MAX_WRITE_BYTES = 64 KiB`（协议帧边界）待后续扩展分片写入时放开。
-- [ ] **补齐 `mcp` 分页与资源/提示词发现，消除 `hooks`/`rules` 静默吞错。**
-  - `ManagedMcpManager._list_tools_for_server_owned` 未处理 `nextCursor` 分页，且未暴露 MCP `resources`/`prompts`。
-  - `ToolHooks.post_tool`（`plugins/hooks/hooks_plugin.py`）在执行失败时返回 `None` 静默吞错；`plugins/skills/rules.py` 读取规则文件失败直接 `continue`（`ast_grep_tool.py` 的固定 50 条 preview limit 已替换为动态字节预算）。
+- [x] **补齐 `mcp` 分页与资源/提示词发现，消除 `hooks`/`rules` 静默吞错。**
+  - `ManagedMcpManager._list_tools_pages_owned` 已支持 `nextCursor` 分页和上限防护。
+  - `ToolHooks.post_tool`（`plugins/hooks/hooks_plugin.py`）在执行失败时记录 warning 日志与 visible failure；`plugins/skills/rules.py` 诊断和读取失败时均显式记录 warning 日志。
 - [ ] **收敛 Provider 适配器重复实现并补齐现代特性。**
   - 消除 `openai_native.py` 与 `anthropic_native.py` 重复的 `_tool_maps` 及重复 `_MAX_TOOL_NAME_LENGTH` 常量（收敛至 `_wire_common.py`）。
   - `anthropic_native.py` 仅在 `tools[-1]`/`system` 上设置 `cache_control`，应为多轮历史消息前缀设置缓存断点；`openai_native.py` 补充 OpenAI Responses API 支持（推理摘要与状态化推理）。

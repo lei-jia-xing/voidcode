@@ -36,8 +36,14 @@ LAUNCH_PROTOCOL_VERSION = 1
 FOLLOW_TAIL_LIMIT = 100
 
 
-def session_payload(record: SessionRecord) -> dict[str, object]:
-    return {
+def session_payload(
+    record: SessionRecord,
+    *,
+    summary: str | None = None,
+    created_at: int | None = None,
+    updated_at: int | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
         "session_id": record.session_id,
         "workspace": record.workspace,
         "status": record.status.value,
@@ -46,6 +52,13 @@ def session_payload(record: SessionRecord) -> dict[str, object]:
         "turn": record.turn,
         "last_event_sequence": record.last_event_sequence,
     }
+    if summary is not None:
+        payload["summary"] = summary
+    if created_at is not None:
+        payload["created_at"] = created_at
+    if updated_at is not None:
+        payload["updated_at"] = updated_at
+    return payload
 
 
 def event_payload(session_id: str, event: StoredEvent) -> dict[str, object]:

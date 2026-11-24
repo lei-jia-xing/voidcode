@@ -484,7 +484,8 @@ def test_real_core_selected_file_page_preserves_coverage_and_allows_edit(tmp_pat
             assert len(server.requests) == 3 and target.read_text() == original.replace(old, new, 1)
 
 
-def test_real_core_projects_application_json_web_fetch_content(tmp_path: Path) -> None:
+def test_real_core_projects_application_json_web_fetch_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH", "1")
     content = b'{"answer": "actual JSON fetch content", "count": 7}'
 
     class JsonHandler(BaseHTTPRequestHandler):

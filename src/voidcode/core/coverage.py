@@ -364,6 +364,7 @@ class ProjectionAllocation:
     rate_tokens_per_char: float | None
     per_tool_max_bytes: int | None
     tool_count: int
+    context_window: int | None = None
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -374,6 +375,7 @@ class ProjectionAllocation:
             "rate_tokens_per_char": self.rate_tokens_per_char,
             "per_tool_max_bytes": self.per_tool_max_bytes,
             "tool_count": self.tool_count,
+            "context_window": self.context_window,
         }
 
 
@@ -483,6 +485,7 @@ def allocate_tool_text_budget(
         if type(value) is not int or value < 0:
             raise ValueError(f"projection allocation field {name} must be a non-negative integer")
     limit_tokens, limit_source = effective_input_limit_tokens(limits)
+    context_window = limits.context_window if limits is not None else None
 
     def fixed(reason: str) -> ProjectionAllocation:
         return ProjectionAllocation(
@@ -493,6 +496,7 @@ def allocate_tool_text_budget(
             rate_tokens_per_char=rate_tokens_per_char,
             per_tool_max_bytes=None,
             tool_count=tool_count,
+            context_window=context_window,
         )
 
     if tool_count <= 0:
@@ -523,6 +527,7 @@ def allocate_tool_text_budget(
         rate_tokens_per_char=rate_tokens_per_char,
         per_tool_max_bytes=share,
         tool_count=tool_count,
+        context_window=context_window,
     )
 
 

@@ -1377,8 +1377,9 @@ def test_approval_gate_shows_full_args_with_diff_and_scrolls() -> None:
 def test_approval_keys_decide_without_truncation_path() -> None:
     gate = ApprovalGate(call=ToolCall(tool_name="exec", arguments={"cmd": "ls"}), request_id="r1", run_id="run-1", revision_id="rev-1")
     approval = InteractiveApproval(gate)
-    assert approval.handle_key(Key("a")) == {"request_id": "r1", "decision": "allow"}
-    assert approval.handle_key(Key("enter")) == {"request_id": "r1", "decision": "allow"}
+    assert approval.handle_key(Key("a")) == {"request_id": "r1", "decision": "allow", "grant_session_policy": False}
+    assert approval.handle_key(Key("enter")) == {"request_id": "r1", "decision": "allow", "grant_session_policy": False}
+    assert approval.handle_key(Key("s")) == {"request_id": "r1", "decision": "allow", "grant_session_policy": True}
     assert approval.handle_key(Key("d")) == {"request_id": "r1", "decision": "deny"}
     assert approval.handle_key(Key("esc")) == {"request_id": "r1", "decision": "deny"}
     assert approval.handle_key(Key("down")) is None

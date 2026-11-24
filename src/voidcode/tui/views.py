@@ -13,6 +13,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from voidcode.sdk.ask import AskMultiSelect, AskRequest
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.json_values import json_wire_value
 from voidcode.sdk.tools import (
@@ -98,10 +99,16 @@ def render_user_message(text: str, width: int, styles: Styles | None = None) -> 
     )
 
 
-def render_thinking(text: str, width: int, styles: Styles | None = None) -> list[str]:
-    """Reasoning trace as muted italic text; no label, no toggle."""
+def render_thinking(text: str, width: int, styles: Styles | None = None, *, collapsed: bool = True) -> list[str]:
+    """Reasoning trace as compact summary by default, or full muted italic text."""
     resolved = _styles_arg(styles)
     clean = escape_terminal_controls(text, preserve_newlines=True, preserve_tabs=True)
+    if collapsed:
+        first_line = clean.strip().splitlines()[0] if clean.strip() else ""
+        if len(first_line) > 60:
+            first_line = first_line[:57] + "…"
+        summary = f"💭 Thought ({len(clean)} chars) · {first_line}" if first_line else f"💭 Thought ({len(clean)} chars)"
+        return [resolved.fg("dim", summary)]
     return render_lines(
         Text(clean, style=resolved.style("muted", italic=True)),
         width,
@@ -751,8 +758,7 @@ class InteractiveConfirmation:
 class InteractiveApproval:
     """Native tool-approval gate: full arguments plus a diff preview, scrollable.
 
-    The decision is the only outcome: ``{"request_id", "decision"}`` on allow,
-    deny, or esc (deny). Scroll keys move the preview; they never decide.
+    The decision outcome: ``{"request_id", "decision", "grant_session_policy", "reason"}``.
     """
 
     def __init__(self, gate: ApprovalGate, *, icon: Icon | None = None) -> None:
@@ -762,16 +768,40 @@ class InteractiveApproval:
         self.tool_name = gate.tool_name
         self.arguments: Mapping[str, Any] = gate.call.arguments
         self.scroll = 0
+        self.reason_mode: bool = False
+        self.reason_input: str = ""
 
     def handle_key(self, key: Key) -> dict[str, Any] | None:
+        if self.reason_mode:
+            if key.name == "escape":
+                self.reason_mode = False
+                self.reason_input = ""
+                return None
+            if key.name in ("enter", "return"):
+                reason = self.reason_input.strip() or "denied by user"
+                return {"request_id": self.request_id, "decision": "deny", "reason": reason}
+            if key.name == "backspace":
+                self.reason_input = self.reason_input[:-1]
+                return None
+            if key.text:
+                self.reason_input += key.text
+                return None
+            return None
+
         if key.name in ("up", "k", "pageUp"):
             self.scroll = max(0, self.scroll - 1)
             return None
         if key.name in ("down", "j", "pageDown", "space"):
             self.scroll += 1
             return None
+        if key.name == "s":
+            return {"request_id": self.request_id, "decision": "allow", "grant_session_policy": True}
+        if key.name == "r":
+            self.reason_mode = True
+            self.reason_input = ""
+            return None
         if key.name in ("a", "enter"):
-            return {"request_id": self.request_id, "decision": "allow"}
+            return {"request_id": self.request_id, "decision": "allow", "grant_session_policy": False}
         if key.name in ("d", "esc"):
             return {"request_id": self.request_id, "decision": "deny"}
         return None
@@ -832,7 +862,11 @@ class InteractiveApproval:
                 )
             )
         visible = rows[self.scroll :] if self.scroll < len(rows) else []
-        visible.append(resolved.fg("text", "  [a] allow once    [d] deny    [up/down] scroll"))
+        if self.reason_mode:
+            visible.append(resolved.fg("warning", f"  Denial reason: {escape_terminal_controls(self.reason_input)}█"))
+            visible.append(resolved.fg("dim", "  [Enter] submit denial with reason    [Esc] cancel"))
+        else:
+            visible.append(resolved.fg("text", "  [a] allow once    [s] allow for session    [d] deny    [r] deny with reason    [up/down] scroll"))
         return visible
 
 
@@ -1024,6 +1058,180 @@ class InteractiveForm:
             text,
             title=escape_terminal_controls(self.title),
             border_style=resolved.style(tone_slot or "accent", color=fg, background=bg),
+            expand=True,
+        )
+        return render_lines(panel, width, theme=markdown_theme(), color_system=resolved.color_system)
+
+
+class InteractiveAsk:
+    """Interactive Ask dialog collecting answers for one model-initiated AskRequest."""
+
+    def __init__(self, request: AskRequest, *, revision_id: str = "") -> None:
+        self.request = request
+        self.revision_id = revision_id
+        self.request_id = request.request_id
+        self.title = request.title
+        self.questions = request.questions
+        self.active_index = 0
+        self.values: dict[str, Any] = {}
+        self.multiselect_focused_opt: dict[str, int] = {}
+        self.validation_error: str | None = None
+
+        for q in self.questions:
+            if isinstance(q, AskMultiSelect):
+                self.values[q.name] = []
+                self.multiselect_focused_opt[q.name] = 0
+
+    def handle_key(self, key: Key) -> dict[str, Any] | None:
+        self.validation_error = None
+        if key.name in ("tab", "down"):
+            if self.questions:
+                self.active_index = (self.active_index + 1) % len(self.questions)
+            return None
+        if key.name in ("shift+tab", "up"):
+            if self.questions:
+                self.active_index = (self.active_index - 1) % len(self.questions)
+            return None
+        if key.name == "esc":
+            return {"request_id": self.request_id, "action": "cancel"}
+        if key.name in ("ctrl+s", "ctrl+enter"):
+            return self._submit()
+
+        if not self.questions:
+            return None
+
+        current = self.questions[self.active_index]
+        name = current.name
+
+        if isinstance(current, AskMultiSelect):
+            opt_idx = self.multiselect_focused_opt.get(name, 0)
+            if key.name in ("left", "h"):
+                self.multiselect_focused_opt[name] = (opt_idx - 1) % len(current.options)
+                return None
+            if key.name in ("right", "l"):
+                self.multiselect_focused_opt[name] = (opt_idx + 1) % len(current.options)
+                return None
+            if key.name == "space":
+                chosen = list(self.values.get(name, []))
+                opt_id = current.options[opt_idx].id
+                if opt_id in chosen:
+                    chosen.remove(opt_id)
+                else:
+                    chosen.append(opt_id)
+                self.values[name] = chosen
+                return None
+            if key.name == "enter":
+                if self.active_index == len(self.questions) - 1:
+                    return self._submit()
+                self.active_index += 1
+                return None
+            return None
+
+        ftype = current.field_type
+        val = self.values.get(name, "")
+        if current.options is not None:
+            options = [option.id for option in current.options]
+            if options and key.name in ("left", "right", "space"):
+                index = options.index(val) if val in options else (-1 if key.name != "left" else 0)
+                self.values[name] = options[(index + (-1 if key.name == "left" else 1)) % len(options)]
+                return None
+            if key.name != "enter":
+                return None
+
+        if ftype == "boolean":
+            if key.name in ("space", "enter"):
+                self.values[name] = not bool(self.values.get(name, False))
+            return None
+
+        if key.name == "enter":
+            if ftype == "multiline":
+                self.values[name] = str(val) + "\n"
+                return None
+            if self.active_index == len(self.questions) - 1:
+                return self._submit()
+            self.active_index += 1
+            return None
+
+        if key.name == "backspace":
+            sval = "" if val is None else str(val)
+            if sval:
+                self.values[name] = sval[:-1]
+            return None
+
+        if key.text and not key.name.startswith("ctrl+") and not key.name.startswith("alt+"):
+            self.values[name] = ("" if val is None else str(val)) + key.text
+            return None
+
+        return None
+
+    def _submit(self) -> dict[str, Any] | None:
+        for q in self.questions:
+            if isinstance(q, AskMultiSelect):
+                chosen = self.values.get(q.name, [])
+                if q.required and not chosen:
+                    self.validation_error = f"'{q.label}' requires at least 1 selection"
+                    return None
+                if len(chosen) < q.min_selections:
+                    self.validation_error = f"'{q.label}' requires at least {q.min_selections} selections"
+                    return None
+                if q.max_selections is not None and len(chosen) > q.max_selections:
+                    self.validation_error = f"'{q.label}' allows at most {q.max_selections} selections"
+                    return None
+            else:
+                val = self.values.get(q.name)
+                if q.required and (val is None or val == ""):
+                    self.validation_error = f"'{q.label}' is required"
+                    return None
+        return {"request_id": self.request_id, "action": "answer", "values": dict(self.values)}
+
+    def render_rows(self, width: int, styles: Styles | None = None) -> list[str]:
+        resolved = _styles_arg(styles)
+        text = Text()
+        text.append(f"{escape_terminal_controls(self.title)}\n", style=resolved.style("accent", bold=True))
+        text.append(f"Request: {escape_terminal_controls(self.request_id[:12])}\n\n", style=resolved.style("dim"))
+
+        for i, q in enumerate(self.questions):
+            is_active = i == self.active_index
+            prefix = "❯ " if is_active else "  "
+            cursor_style = resolved.style("accent", bold=True) if is_active else resolved.style("dim")
+            label_style = resolved.style("text", bold=is_active)
+            text.append(prefix, style=cursor_style)
+            text.append(f"{escape_terminal_controls(q.label)}", style=label_style)
+            if getattr(q, "required", False):
+                text.append(" *", style=resolved.style("error"))
+            text.append(": ")
+
+            if isinstance(q, AskMultiSelect):
+                chosen = set(self.values.get(q.name, []))
+                f_idx = self.multiselect_focused_opt.get(q.name, 0)
+                text.append("\n")
+                for o_idx, opt in enumerate(q.options):
+                    is_opt_focused = is_active and (o_idx == f_idx)
+                    box = "[x]" if opt.id in chosen else "[ ]"
+                    opt_style = resolved.style("warning" if is_opt_focused else ("accent" if opt.id in chosen else "dim"))
+                    text.append(f"    {box} {escape_terminal_controls(opt.label)}", style=opt_style)
+                    if o_idx < len(q.options) - 1:
+                        text.append("  ")
+                text.append("\n")
+            elif getattr(q, "options", None) is not None:
+                val = self.values.get(q.name, "")
+                text.append(f"<{escape_terminal_controls(str(val))}>\n", style=resolved.style("warning" if is_active else "dim"))
+            elif getattr(q, "field_type", None) == "boolean":
+                val = self.values.get(q.name)
+                b_str = "true" if val is True else "false" if val is False else "unset"
+                text.append(f"[{b_str}]\n", style=resolved.style("warning" if is_active else "dim"))
+            else:
+                val = self.values.get(q.name, "")
+                text.append(f"'{escape_terminal_controls(str(val))}'\n", style=resolved.style("warning" if is_active else "dim"))
+
+        if self.validation_error:
+            text.append(f"\n  Error: {escape_terminal_controls(self.validation_error)}\n", style=resolved.style("error", bold=True))
+
+        text.append("\n[Enter] next/submit    [Space] toggle/select    [Esc] cancel\n", style=resolved.style("dim"))
+        panel = Panel(
+            text,
+            title="Interactive Ask",
+            border_style=resolved.style("accent"),
             expand=True,
         )
         return render_lines(panel, width, theme=markdown_theme(), color_system=resolved.color_system)

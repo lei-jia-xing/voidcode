@@ -480,3 +480,34 @@ def test_web_reader_returns_none_for_unknown_digest(tool_context: ToolContext, m
 
     monkeypatch.setattr(services, "read_artifact", _missing)
     assert read_web_snapshot(ResourceReadRequest(uri=f"web://{'0' * 64}"), caller, cast(Any, services)) is None
+
+
+@pytest.mark.parametrize(
+    "restricted_url",
+    [
+        "http://127.0.0.1/admin",
+        "http://127.1.2.3:8080/",
+        "http://[::1]/",
+        "http://localhost:3000/",
+        "http://10.0.0.5/",
+        "http://192.168.1.1/router",
+        "http://172.16.0.1/",
+        "http://169.254.169.254/latest/meta-data/",
+    ],
+)
+def test_webfetch_rejects_ssrf_restricted_targets(tool_context: ToolContext, restricted_url: str) -> None:
+    services = FakeServices()
+    with pytest.raises(Exception) as excinfo:
+        _run(tool_context, services, {"url": restricted_url})
+    assert "restricted/private network address" in str(excinfo.value)
+
+
+def test_webfetch_rejects_ssrf_redirect_target(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data/"}, request=request)
+
+    _mock_transport(monkeypatch, handle)
+    services = FakeServices()
+    result = _run(tool_context, services, {"url": "http://example.com/redirect"})
+    assert isinstance(result, ToolFailure)
+    assert "redirect target must be an http(s) URL without credentials" in result.error

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import codecs
+import ipaddress
 import logging
+import os
+import socket
 import time
 from dataclasses import dataclass
 from typing import ClassVar, final
@@ -52,6 +55,54 @@ _FETCH_HEADERS = {
 }
 
 
+_RESTRICTED_IPV4_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("0.0.0.0/8"),
+)
+
+_RESTRICTED_IPV6_NETWORKS = (
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("::/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+)
+
+
+def _is_restricted_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv4Address):
+        return any(ip in net for net in _RESTRICTED_IPV4_NETWORKS)
+    return any(ip in net for net in _RESTRICTED_IPV6_NETWORKS)
+
+
+def _validate_host_not_restricted(host: str) -> None:
+    if os.environ.get("VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH") == "1":
+        return
+    stripped_host = host.strip("[]").lower()
+    if stripped_host in {"localhost", "localhost.localdomain"}:
+        raise ValueError("url points to a restricted/private network address")
+    try:
+        ip = ipaddress.ip_address(stripped_host)
+        if _is_restricted_ip(ip):
+            raise ValueError("url points to a restricted/private network address")
+        return
+    except ValueError as exc:
+        if str(exc) == "url points to a restricted/private network address":
+            raise
+    try:
+        addr_info = socket.getaddrinfo(stripped_host, None)
+        for _, _, _, _, sockaddr in addr_info:
+            ip_str = sockaddr[0]
+            resolved_ip = ipaddress.ip_address(ip_str)
+            if _is_restricted_ip(resolved_ip):
+                raise ValueError("url resolves to a restricted/private network address")
+    except socket.gaierror:
+        pass
+
+
 def _validated_url(value: str) -> str:
     """Cleaned URL or a safe ValueError that never echoes credentials.
 
@@ -74,6 +125,7 @@ def _validated_url(value: str) -> str:
         raise ValueError("url must not include credentials")
     if not url.host:
         raise ValueError("url must include a host")
+    _validate_host_not_restricted(url.host)
     return str(url)
 
 

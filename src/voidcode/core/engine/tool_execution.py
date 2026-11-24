@@ -10,6 +10,7 @@ Houses:
 
 from __future__ import annotations
 
+import concurrent.futures
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -345,6 +346,149 @@ class ToolExecutionManager:
             claim_owner = self._host.store.continuation_owner(claim_id) if claim_id is not None else None
             if any(cancels_claimed(cancellation, claim_id, claim_owner) for cancellation in staged_cancels):
                 return self._host.stop(execution, "tool cancelled its own durable work", stop_cause="owner_cancel")
+            return None
+
+    def invoke_readonly_batch(
+        self,
+        execution: _Execution,
+        calls: tuple[ToolCall, ...],
+        definitions: tuple[ToolDefinition, ...],
+    ) -> CoreResult | None:
+        """Invoke a batch of read-only tools concurrently, reporting in strictly ordered commits."""
+        session_abort = self._host.active_abort(execution.session.session_id)
+        effective_abort = session_abort or self._host.default_abort
+        if effective_abort.cancelled:
+            reason = effective_abort.reason or "cancelled"
+            return self._host.stop(execution, reason, stop_cause=effective_abort.stop_cause or "user_stop")
+
+        cursor = execution.cursor
+        current_readonly = self._host.session_read_only(execution.session.session_id)
+        origin_readonly = current_readonly or cursor.deferred_origin_readonly is True
+
+        with self._host.dispatch("tools:readonly_batch") as snapshot:
+            origin_visible_tools = tuple(tool.name for tool in self._host.visible_tools(execution, snapshot))
+
+            prepared: list[tuple[ToolCall, ToolDefinition, str, ToolContext]] = []
+            for call, definition in zip(calls, definitions, strict=True):
+                invocation_id = uuid4().hex
+                context = ToolContext(
+                    workspace=self._host.workspace,
+                    session_id=execution.session.session_id,
+                    run_id=execution.run_id,
+                    invocation_id=invocation_id,
+                    revision_id=snapshot.revision_id,
+                    actor="plugin" if cursor.deferred_sequence is not None else "model",
+                    logical_turn=execution.cursor.logical_turn,
+                    abort_signal=effective_abort,
+                    invocation_depth=cursor.deferred_depth,
+                    root_action_id=cursor.root_id or None,
+                    initial_root_budget=cursor.initial_root_budget,
+                    origin_visible_tools=origin_visible_tools,
+                    origin_readonly=origin_readonly,
+                    background_action_id=cursor.deferred_action_id,
+                )
+                prepared.append((call, definition, invocation_id, context))
+
+            def _run_worker(
+                c: ToolCall,
+                ctx: ToolContext,
+            ) -> ToolInvocationOutcome | Exception:
+                try:
+                    res = snapshot.plugin_runtime.invoke(
+                        c,
+                        context=ctx,
+                        return_outcome=True,
+                        readonly=True,
+                    )
+                    assert isinstance(res, ToolInvocationOutcome)
+                    return res
+                except Exception as exc:
+                    return exc
+
+            max_workers = min(len(prepared), 8)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_run_worker, c, ctx) for c, _, _, ctx in prepared]
+                outcomes = [f.result() for f in futures]
+
+            for (call, definition, invocation_id, _context), outcome in zip(prepared, outcomes, strict=True):
+                if effective_abort.cancelled:
+                    return self._host.stop(execution, "tool invocation was cancelled", stop_cause=effective_abort.stop_cause or "user_stop")
+
+                if isinstance(outcome, ToolInvocationOutcome):
+                    result = outcome.result
+                    staged_state = outcome.staged_state
+                    staged_events = outcome.staged_events
+                    staged_conts = outcome.staged_continuations
+                    staged_cancels = outcome.staged_cancellations
+                    staged_receipts = outcome.staged_observer_receipts
+                    staged_budget = outcome.staged_budget
+                    staged_observations = outcome.staged_observations
+                elif isinstance(outcome, Exception):
+                    result = ToolFailure(call.tool_name, f"tool failed: {type(outcome).__name__}: {outcome}")
+                    staged_state = ()
+                    staged_events = ()
+                    staged_conts = ()
+                    staged_cancels = ()
+                    staged_budget = None
+                    staged_receipts = ()
+                    staged_observations = ()
+                else:
+                    result = ToolFailure(call.tool_name, "plugin runtime returned invalid outcome")
+                    staged_state = ()
+                    staged_events = ()
+                    staged_conts = ()
+                    staged_cancels = ()
+                    staged_budget = None
+                    staged_receipts = ()
+                    staged_observations = ()
+
+                if result.tool_name != call.tool_name:
+                    return self._host.stop(execution, "tool result identity differs from the dispatched native call", stop_cause="error")
+
+                self._host.commit(
+                    execution,
+                    SessionStatus.RUNNING,
+                    CheckpointKind.READY,
+                    EventDraft(
+                        EventType.TOOL_INTENT,
+                        "core",
+                        "plugin" if cursor.deferred_sequence is not None else "model",
+                        {
+                            "invocation_id": invocation_id,
+                            "batch_sequence": cursor.deferred_sequence or cursor.batch_sequence,
+                            "call": encode_tool_call(call),
+                            "owner": snapshot.owner_of(call.tool_name),
+                            "effects": sorted(effect.value for effect in definition.effects),
+                            "semantics": [],
+                            "replay_policy": definition.effective_replay_policy,
+                            "icon": {"glyph": definition.icon.glyph} if definition.icon is not None else None,
+                            "logical_turn": execution.cursor.logical_turn,
+                            "depth": cursor.deferred_depth,
+                        },
+                    ),
+                    checkpoint_bindings=(("intent_sequence", EventType.TOOL_INTENT),),
+                )
+
+                result = self._host.post_tool_hooks(execution, snapshot, call, result)
+
+                self.report(
+                    execution,
+                    call,
+                    result,
+                    staged_state=staged_state,
+                    staged_events=staged_events,
+                    staged_conts=staged_conts,
+                    staged_cancels=staged_cancels,
+                    staged_budget=staged_budget,
+                    staged_receipts=staged_receipts,
+                    staged_observations=staged_observations,
+                )
+
+                claim_id = execution.cursor.continuation_id
+                claim_owner = self._host.store.continuation_owner(claim_id) if claim_id is not None else None
+                if any(cancels_claimed(cancellation, claim_id, claim_owner) for cancellation in staged_cancels):
+                    return self._host.stop(execution, "tool cancelled its own durable work", stop_cause="owner_cancel")
+
             return None
 
     def park_suspended_tool(

@@ -342,18 +342,22 @@ def test_staged_wakeup_service_commits_and_rolls_back_with_the_command(tmp_path:
         core = open_core_for_test(tmp_path)
         _pin_ticker(core)
         session_id = core.create_session("sess").session_id
-        core.store.schedule_wakeup("old", STAGE_PLUGIN_ID, str(core.workspace), session_id, {"text": "old"}, 0)
+        future_due = int(time.time() * 1000) + 3_600_000
+        core.store.schedule_wakeup("old", STAGE_PLUGIN_ID, str(core.workspace), session_id, {"text": "old"}, future_due)
         revision = core.revision_id
 
-        result = core.invoke_command(session_id, "probe.stage", {"due": 0, "key": "first", "cancel": "old"}, expected_revision=revision)
+        result = core.invoke_command(session_id, "probe.stage", {"due": future_due, "key": "first", "cancel": "old"}, expected_revision=revision)
         assert result.status == "ok", result.error
-        assert _wakeup(core, "old").status == "cancelled"
+        old_record = _wakeup(core, "old")
+        assert old_record.status == "cancelled", f"unexpected record: {old_record}"
         staged_id = str(result.data["wakeup_id"])
         assert _wakeup(core, staged_id).status == "pending"
         assert _events(core, session_id, f"plugin.{STAGE_PLUGIN_ID}.staged")
 
         staged_events_before = len(_events(core, session_id, f"plugin.{STAGE_PLUGIN_ID}.staged"))
-        failed = core.invoke_command(session_id, "probe.stage", {"due": 0, "key": "rollback", "raise_after": True}, expected_revision=revision)
+        failed = core.invoke_command(
+            session_id, "probe.stage", {"due": future_due, "key": "rollback", "raise_after": True}, expected_revision=revision
+        )
         assert failed.status == "error"
         with core.store._lock:
             row = core.store._connection.execute(
@@ -363,7 +367,7 @@ def test_staged_wakeup_service_commits_and_rolls_back_with_the_command(tmp_path:
         assert [item[0] for item in row] == [staged_id]
         assert len(_events(core, session_id, f"plugin.{STAGE_PLUGIN_ID}.staged")) == staged_events_before
 
-        retry = core.invoke_command(session_id, "probe.stage", {"due": 0, "key": "first"}, expected_revision=revision)
+        retry = core.invoke_command(session_id, "probe.stage", {"due": future_due, "key": "first"}, expected_revision=revision)
         assert retry.status == "ok" and retry.data["wakeup_id"] == staged_id
         with core.store._lock:
             count = core.store._connection.execute("SELECT COUNT(*) FROM wakeups WHERE wakeup_id = ?", (staged_id,)).fetchone()

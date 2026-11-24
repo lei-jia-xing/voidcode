@@ -93,7 +93,7 @@ def test_parallel_first_use_keeps_one_owned_resource(monkeypatch, layer):
             return provider._provider_for("openai")
     elif layer == "routing":
         route = "openai-chat-completions"
-        provider = RoutedTurnProvider("gateway", WireRouting("gateway", {"chat": route}, "chat"), build)
+        provider = RoutedTurnProvider("gateway", WireRouting("gateway", {"openai-completions": route}, "openai-completions"), build)
         request = ProviderTurnRequest(model_name="model", messages=(), available_tools=())
 
         def action():

@@ -29,6 +29,46 @@ export interface components {
             /** Through Sequence */
             through_sequence: number;
         };
+        /** ApprovalPolicyListReceipt */
+        ApprovalPolicyListReceipt: {
+            /**
+             * Policies
+             * @default []
+             */
+            policies?: components["schemas"]["ApprovalPolicyRule"][];
+        };
+        /** ApprovalPolicyRevokeReceipt */
+        ApprovalPolicyRevokeReceipt: {
+            /** Revoked */
+            revoked: boolean;
+        };
+        /** ApprovalPolicyRevokeRequest */
+        ApprovalPolicyRevokeRequest: {
+            /** Rule Id */
+            rule_id: string;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
+         * ApprovalPolicyRule
+         * @description One session-scoped tool approval policy rule.
+         */
+        ApprovalPolicyRule: {
+            /**
+             * Created At
+             * @default 0
+             */
+            created_at?: number;
+            /**
+             * Pattern
+             * @default null
+             */
+            pattern?: string | null;
+            /** Rule Id */
+            rule_id: string;
+            /** Tool Name */
+            tool_name: string;
+        };
         /**
          * ArtifactPageWire
          * @description JSON-RPC artifact page; ``data`` is base64 on the wire and bytes in Python.
@@ -1231,6 +1271,11 @@ export interface components {
              */
             extend_root_actions?: number | null;
             /**
+             * Grant Session Policy
+             * @default false
+             */
+            grant_session_policy?: boolean;
+            /**
              * Interaction
              * @default null
              */
@@ -1240,6 +1285,11 @@ export interface components {
              * @default null
              */
             max_steps?: number | null;
+            /**
+             * Reason
+             * @default null
+             */
+            reason?: string | null;
             /**
              * Root Action Grant Id
              * @default null
@@ -1340,6 +1390,11 @@ export interface components {
         SessionRow: {
             /** Active Revision Id */
             active_revision_id: string;
+            /**
+             * Created At
+             * @default null
+             */
+            created_at?: number | null;
             /** Last Event Sequence */
             last_event_sequence: number;
             /** Run Id */
@@ -1348,8 +1403,18 @@ export interface components {
             session_id: string;
             /** Status */
             status: string;
+            /**
+             * Summary
+             * @default null
+             */
+            summary?: string | null;
             /** Turn */
             turn: number;
+            /**
+             * Updated At
+             * @default null
+             */
+            updated_at?: number | null;
             /** Workspace */
             workspace: string;
         };
@@ -1947,6 +2012,8 @@ export type operations = Record<string, never>;
 /** Typed JSON-RPC methods from the same backend registry. */
 export interface RpcMethods {
   "action.confirm": { params: components["schemas"]["ConfirmRequest"]; result: components["schemas"]["CommandResult"] };
+  "approval_policy.list": { params: components["schemas"]["SessionParams"]; result: components["schemas"]["ApprovalPolicyListReceipt"] };
+  "approval_policy.revoke": { params: components["schemas"]["ApprovalPolicyRevokeRequest"]; result: components["schemas"]["ApprovalPolicyRevokeReceipt"] };
   "artifact.read": { params: components["schemas"]["ArtifactReadParams"]; result: components["schemas"]["ArtifactPageWire"] };
   "ask.answer": { params: components["schemas"]["AskAnswerRequest"]; result: components["schemas"]["RunResult"] };
   "ask.cancel": { params: components["schemas"]["AskCancelRequest"]; result: components["schemas"]["RunResult"] };

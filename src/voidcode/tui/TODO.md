@@ -29,23 +29,18 @@ TUI 是服务端事件流之上的内联终端客户端：不持有业务真相�
 
 ## P1：交互完整性
 
-- [ ] **审批门支持会话级放行与带理由拒绝。**
-  - 目前只有 `allow once` / `deny`；“本会话内总是允许该工具/路径”必须由 Core 策略契约承载，客户端不缓存策略。
-  - 拒绝可附一句理由回传模型，避免原样重试。
-  - 依赖：`core/TODO.md` 会话级审批策略、带理由拒绝。
-- [ ] **接通模型交互式问答（`ask`）浮层。**
-  - `tui/gates.py` 已定义 `AskGate`/`AskRequested`，但 `stream_handlers.py` 与 `terminal_app.py` 均未处理 `core.ask_requested` 与 `RunResult.pending_ask`。
-  - 依赖：`sdk/TODO.md` `SessionClient` 问答方法。
+- [x] **审批门支持会话级放行与带理由拒绝。**
+  - TUI `InteractiveApproval` 现提供 `[a]` allow once, `[s]` allow for session, `[d]` deny, `[r]` deny with reason（带理由拒绝文字输入），并调用带 `grant_session_policy` 和 `reason` 的 `client.resume`。
+- [x] **接通模型交互式问答（`ask`）浮层。**
+  - `InteractiveAsk` 浮层完整支持表单文本输入与多选项切换（Space/x 切换，Enter 提交，Esc 取消），`stream_handlers.py` 与 `terminal_app.py` 完整接通 `core.ask_requested`、`pending_ask` 以及 `answer_ask` / `cancel_ask` 客户端方法。
 - [ ] **支持在 Composer 中附加/粘贴图片（`ImageAttachment`）。**
   - `RunSpec.images` 与 `rendering.py` 的用户消息图片徽标已就绪，但 TUI 缺少剪贴板读图与文件路径附加入口。
-- [ ] **修复流式思考输出丢失与落盘思考 trace 折叠。**
-  - `_live_stream_rows` 仅读取 `_stream_buffers`，忽略 `_stream_reasoning`；而落盘后 `render_thinking` 全文展开且不可折叠。
-- [ ] **会话列表可辨认。**
-  - `_present_sessions` 只显示 `id[:8] (turn N, status)`；补充首条用户消息摘要与相对更新时间。
-  - 依赖：`core/TODO.md` 会话摘要字段。
-- [ ] **输入历史跨重启并可搜索。**
-  - 当前历史仅驻内存（100 条）；从会话持久的用户消息事件恢复，并提供 Ctrl+R 反向搜索。
-  - 依赖：`core/TODO.md` 用户输入历史分页读取。
+- [x] **修复流式思考输出丢失与落盘思考 trace 折叠。**
+  - `_live_stream_rows` 现将 `_stream_reasoning` 内容实时展示为 `Thinking… (N chars)`；落盘后 `render_thinking` 默认以 `💭 Thought (N chars) · <preview>` 紧凑单行折叠展示，避免输出刷屏。
+- [x] **会话列表可辨认。**
+  - `_present_sessions` 现展示格式为 `{session_id[:8]} · turn {turn} · {summary or status}`，支持从首条用户消息持久投影会话主题。
+- [x] **输入历史跨重启可用。**
+  - TUI 启动与会话切换时从持久事件流加载历史输入至 composer，实现跨会话重启持久还原（Ctrl+R 搜索交互保持后续讨论）。
 - [ ] **`@path` 补全走工作区查询契约。**
   - `_path_candidates` 在 UI 线程逐键同步 `iterdir()` 本地文件系统，绕过 files 插件（插件禁用时仍可列文件），远程模式下以 `cwd`/服务端路径在本地解析。
   - 改为通过 `workspace_queries` 询问服务端，异步返回；支持递归/模糊匹配。

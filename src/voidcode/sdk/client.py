@@ -99,10 +99,31 @@ class SessionRow:
     run_id: str | None
     turn: int
     last_event_sequence: int
+    summary: str | None = None
+    created_at: int | None = None
+    updated_at: int | None = None
 
     @staticmethod
     def from_payload(payload: Mapping[str, object]) -> SessionRow:
         return _decode(_SESSION_ROW_ADAPTER, payload, "session")
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "session_id": self.session_id,
+            "workspace": self.workspace,
+            "status": self.status,
+            "active_revision_id": self.active_revision_id,
+            "run_id": self.run_id,
+            "turn": self.turn,
+            "last_event_sequence": self.last_event_sequence,
+        }
+        if self.summary is not None:
+            payload["summary"] = self.summary
+        if self.created_at is not None:
+            payload["created_at"] = self.created_at
+        if self.updated_at is not None:
+            payload["updated_at"] = self.updated_at
+        return payload
 
 
 _SESSION_ROW_ADAPTER: TypeAdapter[SessionRow] = TypeAdapter(SessionRow)
@@ -280,6 +301,8 @@ class ResumeSpec:
     #: resumed run (override, per-run); None means interactive. Enforcement is
     #: Core's; this field only declares the mode.
     interaction: Literal["interactive", "unattended"] | None = None
+    reason: str | None = None
+    grant_session_policy: bool = False
 
     def __post_init__(self) -> None:
         if (self.approval_request_id is None) != (self.decision is None):
@@ -290,6 +313,80 @@ class ResumeSpec:
         _validated_grant(self.extend_root_actions, self.root_action_grant_id)
         if self.interaction is not None and self.interaction not in ("interactive", "unattended"):
             raise ValueError('interaction must be "interactive", "unattended", or null')
+        if self.reason is not None and (not isinstance(self.reason, str) or not self.reason.strip()):
+            raise ValueError("reason must be a non-empty string or null")
+        if self.reason is not None and self.decision != "deny":
+            raise ValueError("reason can only be provided when decision is 'deny'")
+        if self.grant_session_policy and self.decision != "allow":
+            raise ValueError("grant_session_policy can only be provided when decision is 'allow'")
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalPolicyRule:
+    """One session-scoped tool approval policy rule."""
+
+    rule_id: str
+    tool_name: str
+    pattern: str | None = None
+    created_at: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.rule_id, str) or not self.rule_id:
+            raise ValueError("approval policy rule requires a non-empty rule_id")
+        if not isinstance(self.tool_name, str) or not self.tool_name:
+            raise ValueError("approval policy rule requires a non-empty tool_name")
+        if self.pattern is not None and (not isinstance(self.pattern, str) or not self.pattern):
+            raise ValueError("approval policy rule pattern must be a non-empty string or null")
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> ApprovalPolicyRule:
+        return _decode(_APPROVAL_POLICY_RULE_ADAPTER, payload, "approval policy rule")
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "rule_id": self.rule_id,
+            "tool_name": self.tool_name,
+            "created_at": self.created_at,
+        }
+        if self.pattern is not None:
+            payload["pattern"] = self.pattern
+        return payload
+
+
+_APPROVAL_POLICY_RULE_ADAPTER: TypeAdapter[ApprovalPolicyRule] = TypeAdapter(ApprovalPolicyRule)
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalPolicyListReceipt:
+    policies: tuple[ApprovalPolicyRule, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "policies", tuple(self.policies))
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> ApprovalPolicyListReceipt:
+        return _decode(_APPROVAL_POLICY_LIST_RECEIPT_ADAPTER, payload, "approval policy list receipt")
+
+    def as_payload(self) -> dict[str, object]:
+        return {"policies": [p.as_payload() for p in self.policies]}
+
+
+_APPROVAL_POLICY_LIST_RECEIPT_ADAPTER: TypeAdapter[ApprovalPolicyListReceipt] = TypeAdapter(ApprovalPolicyListReceipt)
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalPolicyRevokeReceipt:
+    revoked: bool
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, object]) -> ApprovalPolicyRevokeReceipt:
+        return _decode(_APPROVAL_POLICY_REVOKE_RECEIPT_ADAPTER, payload, "approval policy revoke receipt")
+
+    def as_payload(self) -> dict[str, object]:
+        return {"revoked": self.revoked}
+
+
+_APPROVAL_POLICY_REVOKE_RECEIPT_ADAPTER: TypeAdapter[ApprovalPolicyRevokeReceipt] = TypeAdapter(ApprovalPolicyRevokeReceipt)
 
 
 @dataclass(frozen=True, slots=True)
@@ -701,6 +798,27 @@ class SessionClient(Protocol):
 
     def resume(self, session_id: str, spec: ResumeSpec | None = None) -> RunResult: ...
 
+    def answer_ask(
+        self,
+        session_id: str,
+        request_id: str,
+        values: Mapping[str, object],
+        *,
+        expected_revision: str,
+    ) -> RunResult: ...
+
+    def cancel_ask(
+        self,
+        session_id: str,
+        request_id: str,
+        *,
+        expected_revision: str,
+    ) -> RunResult: ...
+
+    def list_approval_policies(self, session_id: str) -> list[ApprovalPolicyRule]: ...
+
+    def revoke_approval_policy(self, session_id: str, rule_id: str) -> bool: ...
+
     def command_input(
         self, session_id: str, name: str, expected_revision: str, *, arguments: Mapping[str, object] | None = None
     ) -> CommandInputSnapshot: ...
@@ -748,6 +866,9 @@ class SessionClient(Protocol):
 
 
 __all__ = [
+    "ApprovalPolicyListReceipt",
+    "ApprovalPolicyRevokeReceipt",
+    "ApprovalPolicyRule",
     "BudgetExhaustion",
     "CancelReceipt",
     "ClientWireModel",

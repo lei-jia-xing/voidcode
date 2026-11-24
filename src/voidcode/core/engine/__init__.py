@@ -20,6 +20,7 @@ from uuid import uuid4
 import jsonschema
 
 from ...sdk.client import (
+    ApprovalPolicyRule,
     BudgetExhaustion,
     FollowupListReceipt,
     FollowupWithdrawReceipt,
@@ -880,6 +881,8 @@ class Core:
         extend_root_actions: int | None = None,
         root_action_grant_id: str | None = None,
         interaction: Literal["interactive", "unattended"] | None = None,
+        reason: str | None = None,
+        grant_session_policy: bool = False,
     ) -> CoreResult:
         return self._run_coordinator.resume(
             session_id,
@@ -889,6 +892,8 @@ class Core:
             extend_root_actions=extend_root_actions,
             root_action_grant_id=root_action_grant_id,
             interaction=interaction,
+            reason=reason,
+            grant_session_policy=grant_session_policy,
         )
 
     def answer_ask(
@@ -2272,6 +2277,52 @@ class Core:
     def needs_approval(self, definition: ToolDefinition) -> bool:
         return self._governance.needs_approval(definition)
 
+    def has_approval_policy(self, session_id: str, tool_name: str, arguments: Mapping[str, object]) -> bool:
+        policies = self.store.approval_policies(session_id)
+        for policy in policies:
+            target_tool = policy.get("tool_name")
+            if target_tool not in ("*", tool_name):
+                continue
+            pattern = policy.get("pattern")
+            if pattern is None:
+                return True
+            pattern_str = str(pattern)
+            path = arguments.get("path")
+            if isinstance(path, str) and (path.startswith(pattern_str) or path == pattern_str):
+                return True
+            command = arguments.get("command")
+            if isinstance(command, str) and (command.startswith(pattern_str) or command == pattern_str):
+                return True
+            for val in arguments.values():
+                if isinstance(val, str) and (val.startswith(pattern_str) or val == pattern_str):
+                    return True
+        return False
+
+    def list_approval_policies(self, session_id: str) -> list[ApprovalPolicyRule]:
+        self.ensure_open()
+        raw_list = self.store.approval_policies(session_id)
+        res: list[ApprovalPolicyRule] = []
+        for item in raw_list:
+            raw_created = item.get("created_at")
+            created_at = int(raw_created) if isinstance(raw_created, (int, float, str)) else 0
+            res.append(
+                ApprovalPolicyRule(
+                    rule_id=str(item["rule_id"]),
+                    tool_name=str(item["tool_name"]),
+                    pattern=str(item["pattern"]) if item.get("pattern") is not None else None,
+                    created_at=created_at,
+                )
+            )
+        return res
+
+    def revoke_approval_policy(self, session_id: str, rule_id: str) -> bool:
+        self.ensure_open()
+        with self._session_lock(session_id):
+            revoked = self.store.revoke_approval_policy(session_id, rule_id, revision_id=self.revision_id)
+            if revoked:
+                self.notify_commit()
+            return revoked
+
     def prepare_activation_target(self) -> tuple[str, Admission]:
         return self._activation.prepare_target()
 
@@ -2335,6 +2386,14 @@ class Core:
 
     def invoke(self, execution: _Execution, call: ToolCall, definition: ToolDefinition) -> CoreResult | None:
         return self._tool_execution.invoke(execution, call, definition)
+
+    def invoke_readonly_batch(
+        self,
+        execution: _Execution,
+        calls: tuple[ToolCall, ...],
+        definitions: tuple[ToolDefinition, ...],
+    ) -> CoreResult | None:
+        return self._tool_execution.invoke_readonly_batch(execution, calls, definitions)
 
     def get_session_usage(
         self,

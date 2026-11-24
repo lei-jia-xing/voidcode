@@ -17,6 +17,9 @@ from websockets.sync.client import ClientConnection, connect
 from websockets.typing import Origin, Subprotocol
 
 from voidcode.sdk.client import (
+    ApprovalPolicyListReceipt,
+    ApprovalPolicyRevokeReceipt,
+    ApprovalPolicyRule,
     ArtifactPageWire,
     CancelReceipt,
     CommandCatalog,
@@ -259,7 +262,51 @@ class CoreRpcClient(SessionClient):
         if active.extend_root_actions is not None:
             params["extend_root_actions"] = active.extend_root_actions
             params["root_action_grant_id"] = active.root_action_grant_id
+        if active.interaction is not None:
+            params["interaction"] = active.interaction
+        if active.reason is not None:
+            params["reason"] = active.reason
+        if active.grant_session_policy:
+            params["grant_session_policy"] = active.grant_session_policy
         return RunResult.from_payload(self._call("session.resume", params))
+
+    def answer_ask(
+        self,
+        session_id: str,
+        request_id: str,
+        values: Mapping[str, object],
+        *,
+        expected_revision: str,
+    ) -> RunResult:
+        payload = {
+            "session_id": session_id,
+            "request_id": request_id,
+            "values": dict(values),
+            "expected_revision": expected_revision,
+        }
+        return RunResult.from_payload(self._call("ask.answer", payload))
+
+    def cancel_ask(
+        self,
+        session_id: str,
+        request_id: str,
+        *,
+        expected_revision: str,
+    ) -> RunResult:
+        payload = {
+            "session_id": session_id,
+            "request_id": request_id,
+            "expected_revision": expected_revision,
+        }
+        return RunResult.from_payload(self._call("ask.cancel", payload))
+
+    def list_approval_policies(self, session_id: str) -> list[ApprovalPolicyRule]:
+        body = self._call("approval_policy.list", {"session_id": session_id})
+        return list(ApprovalPolicyListReceipt.from_payload(body).policies)
+
+    def revoke_approval_policy(self, session_id: str, rule_id: str) -> bool:
+        body = self._call("approval_policy.revoke", {"session_id": session_id, "rule_id": rule_id})
+        return bool(ApprovalPolicyRevokeReceipt.from_payload(body).revoked)
 
     def command_input(
         self, session_id: str, name: str, expected_revision: str, *, arguments: Mapping[str, object] | None = None

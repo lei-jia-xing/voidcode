@@ -29,12 +29,13 @@ from ...sdk.provider import (
     ProviderTurnResult,
 )
 from ...sdk.services import PluginBudget, SessionUsageReport
-from ...sdk.tools import ToolCall, ToolDefinition, ToolFailure, ToolResult
+from ...sdk.tools import ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult
 from ..activation import Admission, ExecutionConfig
 from ..cancellation import Cancellation
 from ..events import EventType
 from ..execution import _Execution, committed_event, wire_object
 from ..plugins import PluginRuntime
+from ..retry import MAX_ATTEMPTS, _backoff_or_raise, _retry_delay_seconds, should_retry
 from ..storage.store import (
     CheckpointKind,
     ContinuationStatus,
@@ -208,6 +209,7 @@ class TurnExecutionHost(Protocol):
     def denial(self, call: ToolCall, definition: ToolDefinition, *, read_only: bool) -> str | None: ...
     def gate_denial(self, execution: _Execution, snapshot: TurnExecutionSnapshot, call: ToolCall, *, readonly: bool) -> str | None: ...
     def needs_approval(self, definition: ToolDefinition) -> bool: ...
+    def has_approval_policy(self, session_id: str, tool_name: str, arguments: Mapping[str, object]) -> bool: ...
     def prepare_activation_target(self) -> tuple[str, Admission]: ...
     def pending_activation_request(self, execution: _Execution) -> Mapping[str, object] | None: ...
     def activate(self, *, session_id: str, source: str, request_id: str, target_revision_id: str) -> Mapping[str, object]: ...
@@ -250,6 +252,12 @@ class TurnExecutionHost(Protocol):
         text_delta: str | None,
     ) -> None: ...
     def invoke(self, execution: _Execution, call: ToolCall, definition: ToolDefinition) -> CoreResult | None: ...
+    def invoke_readonly_batch(
+        self,
+        execution: _Execution,
+        calls: tuple[ToolCall, ...],
+        definitions: tuple[ToolDefinition, ...],
+    ) -> CoreResult | None: ...
     def report(
         self,
         execution: _Execution,
@@ -326,105 +334,123 @@ class TurnDriver:
     ) -> ProviderTurnResult:
         """Aggregate one provider stream into propose_turn's turn shape, with progress.
 
-        Single-attempt by contract: once bytes flowed there is no safe resend,
-        so this path never retries — the attempt is attempt 1 of the turn.
+        Pre-first-byte retries are supported when the adapter/network failure is retryable.
+        Once any bytes or tokens flow, retries are forbidden to prevent duplicate outputs.
         """
-        numbered = replace(request, attempt=1)
-        text_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        calls: dict[int, dict[str, object]] = {}
-        contents: list[str] = []
-        metadata: dict[str, object] = {}
-        usage = None
-        done_reason: ProviderDoneReason = "unknown"
-        finish_reason_reported = False
-        saw_done = False
         session_id = execution.session.session_id
-        for event in snapshot.plugin_runtime.stream_turn(numbered, provider=provider_name):
-            if event.kind == "delta" and event.text:
-                if event.channel == "reasoning":
-                    reasoning_parts.append(event.text)
-                    self._host.report_provider_progress(
-                        session_id,
-                        run_id=execution.run_id,
-                        dispatch_id=dispatch_id,
-                        dispatch_sequence=dispatch_sequence,
-                        channel="reasoning",
-                        text_delta=event.text,
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            numbered = replace(request, attempt=attempt)
+            text_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            calls: dict[int, dict[str, object]] = {}
+            contents: list[str] = []
+            metadata: dict[str, object] = {}
+            usage = None
+            done_reason: ProviderDoneReason = "unknown"
+            finish_reason_reported = False
+            saw_done = False
+            bytes_flowed = False
+            try:
+                for event in snapshot.plugin_runtime.stream_turn(numbered, provider=provider_name):
+                    if event.kind == "delta" and event.text:
+                        bytes_flowed = True
+                        if event.channel == "reasoning":
+                            reasoning_parts.append(event.text)
+                            self._host.report_provider_progress(
+                                session_id,
+                                run_id=execution.run_id,
+                                dispatch_id=dispatch_id,
+                                dispatch_sequence=dispatch_sequence,
+                                channel="reasoning",
+                                text_delta=event.text,
+                            )
+                        else:
+                            text_parts.append(event.text)
+                            self._host.report_provider_progress(
+                                session_id,
+                                run_id=execution.run_id,
+                                dispatch_id=dispatch_id,
+                                dispatch_sequence=dispatch_sequence,
+                                channel="text",
+                                text_delta=event.text,
+                            )
+                    elif event.kind == "tool_call_start":
+                        bytes_flowed = True
+                        ordinal = event.tool_call_ordinal if event.tool_call_ordinal is not None else len(calls)
+                        calls[ordinal] = {
+                            "tool_call_id": event.tool_call_id,
+                            "tool_name": event.tool_name,
+                            "arguments": {},
+                        }
+                    elif event.kind == "tool_call_end":
+                        bytes_flowed = True
+                        ordinal = event.tool_call_ordinal if event.tool_call_ordinal is not None else len(calls)
+                        entry = calls.setdefault(ordinal, {})
+                        if event.tool_call_id is not None:
+                            entry["tool_call_id"] = event.tool_call_id
+                        if event.tool_name is not None:
+                            entry["tool_name"] = event.tool_name
+                        entry["arguments"] = dict(event.parsed_arguments or {})
+                    elif event.kind == "content" and event.channel == "tool" and event.text:
+                        bytes_flowed = True
+                        contents.append(event.text)
+                    elif event.kind == "error":
+                        raise ProviderExecutionError(
+                            kind=event.error_kind or "provider_error",
+                            provider_name=provider_name,
+                            model_name=request.model_name or "unknown",
+                            message=event.error or "provider stream failed",
+                            retryable=event.retryable,
+                            retry_after=event.retry_after,
+                        )
+                    elif event.kind == "done":
+                        saw_done = True
+                        if event.done_reason is not None:
+                            done_reason = event.done_reason
+                        if event.usage is not None:
+                            usage = event.usage
+                        if event.metadata:
+                            metadata.update(event.metadata)
+                            finish_reason_reported = bool(event.metadata.get("finish_reason_reported", finish_reason_reported))
+                if not saw_done:
+                    raise ProviderExecutionError(
+                        kind="provider_error",
+                        provider_name=provider_name,
+                        model_name=request.model_name or "unknown",
+                        message="provider stream ended without a terminal event",
+                        retryable=not bytes_flowed,
                     )
-                else:
-                    text_parts.append(event.text)
-                    self._host.report_provider_progress(
-                        session_id,
-                        run_id=execution.run_id,
-                        dispatch_id=dispatch_id,
-                        dispatch_sequence=dispatch_sequence,
-                        channel="text",
-                        text_delta=event.text,
-                    )
-            elif event.kind == "tool_call_start":
-                ordinal = event.tool_call_ordinal if event.tool_call_ordinal is not None else len(calls)
-                calls[ordinal] = {
-                    "tool_call_id": event.tool_call_id,
-                    "tool_name": event.tool_name,
-                    "arguments": {},
-                }
-            elif event.kind == "tool_call_end":
-                ordinal = event.tool_call_ordinal if event.tool_call_ordinal is not None else len(calls)
-                entry = calls.setdefault(ordinal, {})
-                if event.tool_call_id is not None:
-                    entry["tool_call_id"] = event.tool_call_id
-                if event.tool_name is not None:
-                    entry["tool_name"] = event.tool_name
-                entry["arguments"] = dict(event.parsed_arguments or {})
-            elif event.kind == "content" and event.channel == "tool" and event.text:
-                contents.append(event.text)
-            elif event.kind == "error":
-                raise ProviderExecutionError(
-                    kind=event.error_kind or "provider_error",
-                    provider_name=provider_name,
-                    model_name=request.model_name or "unknown",
-                    message=event.error or "provider stream failed",
-                    retryable=False,
+                try:
+                    tool_calls = tuple(_tool_call_from_entry(entry) for _, entry in sorted(calls.items()))
+                except ProviderExecutionError as exc:
+                    raise ProviderExecutionError(
+                        kind=exc.kind,
+                        provider_name=provider_name,
+                        model_name=request.model_name or "unknown",
+                        message=exc.message,
+                        retryable=False,
+                    ) from exc
+                for content in contents:
+                    tool_calls += _tool_calls_from_content(content, provider_name=provider_name, model_name=request.model_name or "unknown")
+                return ProviderTurnResult(
+                    tool_calls=tool_calls,
+                    output="".join(text_parts),
+                    reasoning="".join(reasoning_parts) or None,
+                    usage=usage,
+                    done_reason=done_reason,
+                    finish_reason_reported=finish_reason_reported,
+                    metadata=metadata or None,
                 )
-            elif event.kind == "done":
-                saw_done = True
-                if event.done_reason is not None:
-                    done_reason = event.done_reason
-                if event.usage is not None:
-                    usage = event.usage
-                if event.metadata:
-                    metadata.update(event.metadata)
-                    finish_reason_reported = bool(event.metadata.get("finish_reason_reported", finish_reason_reported))
-        if not saw_done:
-            raise ProviderExecutionError(
-                kind="provider_error",
-                provider_name=provider_name,
-                model_name=request.model_name or "unknown",
-                message="provider stream ended without a terminal event",
-                retryable=False,
-            )
-        try:
-            tool_calls = tuple(_tool_call_from_entry(entry) for _, entry in sorted(calls.items()))
-        except ProviderExecutionError as exc:
-            raise ProviderExecutionError(
-                kind=exc.kind,
-                provider_name=provider_name,
-                model_name=request.model_name or "unknown",
-                message=exc.message,
-                retryable=False,
-            ) from exc
-        for content in contents:
-            tool_calls += _tool_calls_from_content(content, provider_name=provider_name, model_name=request.model_name or "unknown")
-        return ProviderTurnResult(
-            tool_calls=tool_calls,
-            output="".join(text_parts),
-            reasoning="".join(reasoning_parts) or None,
-            usage=usage,
-            done_reason=done_reason,
-            finish_reason_reported=finish_reason_reported,
-            metadata=metadata or None,
-        )
+            except ProviderExecutionError as exc:
+                if bytes_flowed or not should_retry(exc) or attempt >= MAX_ATTEMPTS:
+                    raise
+                _backoff_or_raise(
+                    request.abort_signal,
+                    _retry_delay_seconds(exc, attempt),
+                    provider=provider_name,
+                    model=request.model_name or "unknown",
+                )
+        raise AssertionError("unreachable: retry loop always returns or raises")
 
     def budget_admission(self, execution: _Execution) -> CoreResult | None:
         """Refuse dispatch when an active owner budget is already satisfied.
@@ -496,6 +522,36 @@ class TurnDriver:
             ),
             None,
         )
+
+    def _can_run_concurrent_readonly(
+        self,
+        execution: _Execution,
+        snapshot: TurnExecutionSnapshot,
+        calls: Sequence[ToolCall],
+    ) -> bool:
+        scope = execution.session.tool_allowlist
+        effective_read_only = self._host.session_read_only(execution.session.session_id) or execution.cursor.deferred_origin_readonly is True
+        for call in calls:
+            if scope is not None and call.tool_name not in scope:
+                return False
+            if execution.cursor.deferred_origin_tools is not None and call.tool_name not in execution.cursor.deferred_origin_tools:
+                return False
+            definition = snapshot.definition_of(call.tool_name)
+            if definition is None:
+                return False
+            if not frozenset(definition.effects).issubset({ToolEffect.READ}):
+                return False
+            if call.tool_name in snapshot.native_tools:
+                return False
+            if self._host.denial(call, definition, read_only=effective_read_only) is not None:
+                return False
+            if self._host.gate_denial(execution, snapshot, call, readonly=effective_read_only) is not None:
+                return False
+            if self._host.needs_approval(definition) and not self._host.has_approval_policy(
+                execution.session.session_id, call.tool_name, call.arguments
+            ):
+                return False
+        return True
 
     def drive(self, execution: _Execution) -> CoreResult:
         while True:
@@ -848,6 +904,17 @@ class TurnDriver:
                         return self.stop(execution, reason, stop_cause=cause)
 
             batch, call = self.pending(execution)
+            if cursor.deferred_sequence is None and cursor.intent_sequence is None and cursor.batch_sequence is not None:
+                batch_turn = decode_provider_result(wire_object(batch.payload["result"], "model turn"))
+                remaining_calls = batch_turn.tool_calls[cursor.next_call :]
+                if len(remaining_calls) > 1 and self._can_run_concurrent_readonly(execution, snapshot, remaining_calls):
+                    definitions = tuple(snapshot.definition_of(c.tool_name) for c in remaining_calls)
+                    assert all(d is not None for d in definitions)
+                    stopped = self._host.invoke_readonly_batch(execution, remaining_calls, tuple(d for d in definitions if d is not None))
+                    if stopped is not None:
+                        return stopped
+                    continue
+
             if cursor.deferred_sequence is not None and batch.payload["expected_revision"] != snapshot.revision_id:
                 self._host.report(execution, call, ToolFailure(call.tool_name, "requested tool belongs to a different capability revision"))
                 continue
@@ -869,7 +936,11 @@ class TurnDriver:
             if denial:
                 self._host.report(execution, call, ToolFailure(call.tool_name, denial))
                 continue
-            if cursor.intent_sequence is None and self._host.needs_approval(definition):
+            if (
+                cursor.intent_sequence is None
+                and self._host.needs_approval(definition)
+                and not self._host.has_approval_policy(execution.session.session_id, call.tool_name, call.arguments)
+            ):
                 if execution.interaction == "unattended":
                     # D3: an unattended run refuses the approval park at the
                     # park-commit site with a typed failure and continues; the

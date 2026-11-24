@@ -134,6 +134,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     resume.add_argument("session_id", metavar="SESSION", help="Session to resume")
     resume.add_argument("--approval-request-id", metavar="ID", default=None, help="Parked approval to decide")
     resume.add_argument("--decision", choices=("allow", "deny"), default=None, help="Decision for the parked approval")
+    resume.add_argument("--reason", default=None, help="Optional explanation for a denial decision")
+    resume.add_argument("--grant-policy", action="store_true", default=False, help="Grant session-scoped auto-approval policy for this tool")
+    resume.add_argument("--interaction", choices=("interactive", "unattended"), default=None, help="Interaction mode override for this run")
     resume.add_argument("--max-steps", type=int, default=None, metavar="N", help="Optional provider-turn cap for resumed work")
     resume.add_argument(
         "--extend-root-actions",
@@ -211,6 +214,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     drain.add_argument("session_id", metavar="SESSION", help="Session to drain")
     drain.add_argument("--limit", type=int, default=10, metavar="N", help="Maximum continuations (default: 10)")
+    answer_ask = commands.add_parser(
+        "answer-ask",
+        help="Answer a parked ask in a session",
+        description="Answer a parked interactive ask request and continue the run.",
+    )
+    answer_ask.add_argument("session_id", metavar="SESSION", help="Session with the parked ask")
+    answer_ask.add_argument("request_id", metavar="REQUEST", help="Parked ask request id")
+    answer_ask.add_argument("--values", metavar="JSON", default="{}", help="Answers JSON dictionary (default: {})")
+    answer_ask.add_argument("--expected-revision", metavar="REVISION", required=True, help="Expected capability revision")
+    cancel_ask = commands.add_parser(
+        "cancel-ask",
+        help="Cancel a parked ask in a session",
+        description="Cancel a parked interactive ask request and continue the run.",
+    )
+    cancel_ask.add_argument("session_id", metavar="SESSION", help="Session with the parked ask")
+    cancel_ask.add_argument("request_id", metavar="REQUEST", help="Parked ask request id")
+    cancel_ask.add_argument("--expected-revision", metavar="REVISION", required=True, help="Expected capability revision")
+    policies_parser = commands.add_parser(
+        "approval-policies",
+        help="List or revoke session tool approval policies",
+        description="List active session tool approval policies or revoke one by rule id.",
+    )
+    policies_parser.add_argument("session_id", metavar="SESSION", help="Session id")
+    policies_parser.add_argument("--revoke", metavar="RULE_ID", default=None, help="Revoke a policy rule id")
     serve = commands.add_parser(
         "serve",
         help="Run HTTP API plus the web client",
@@ -432,9 +459,43 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
             max_steps=args.max_steps,
             extend_root_actions=args.extend_root_actions,
             root_action_grant_id=uuid4().hex if args.extend_root_actions is not None else None,
+            reason=args.reason,
+            grant_session_policy=args.grant_policy,
+            interaction=args.interaction,
         )
         print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
         return 130 if result.status == "interrupted" else 1 if result.status == "failed" else 0
+    if args.command == "answer-ask":
+        try:
+            values = json.loads(args.values)
+        except Exception as exc:
+            raise ValueError(f"malformed values JSON: {exc}") from exc
+        if not isinstance(values, Mapping):
+            raise ValueError("values must be a JSON object")
+        result = core.answer_ask(
+            args.session_id,
+            args.request_id,
+            values,
+            expected_revision=args.expected_revision,
+        )
+        print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
+        return 130 if result.status == "interrupted" else 1 if result.status == "failed" else 0
+    if args.command == "cancel-ask":
+        result = core.cancel_ask(
+            args.session_id,
+            args.request_id,
+            expected_revision=args.expected_revision,
+        )
+        print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
+        return 130 if result.status == "interrupted" else 1 if result.status == "failed" else 0
+    if args.command == "approval-policies":
+        if args.revoke:
+            revoked = core.revoke_approval_policy(args.session_id, args.revoke)
+            print(json.dumps({"revoked": revoked}))
+            return 0 if revoked else 1
+        policies = core.list_approval_policies(args.session_id)
+        print(json.dumps([p.as_payload() for p in policies], ensure_ascii=False))
+        return 0
     if args.command == "create-session":
         record = core.create_session(args.session_id)
         print(json.dumps(_session_payload(record), ensure_ascii=False, allow_nan=False))

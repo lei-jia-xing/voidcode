@@ -220,6 +220,8 @@ class ProviderStreamEvent:
     tool_call_ordinal: int | None = None
     fragment_ordinal: int | None = None
     parsed_arguments: dict[str, object] | None = None
+    retryable: bool | None = None
+    retry_after: float | None = None
 
 
 @dataclass(slots=True, eq=False)

@@ -337,9 +337,9 @@ def compaction_observer(
     _ = context
     if not isinstance(fact, (UsageFact, RunFinishedFact)) or not config.enabled:
         return
-    input_limit_tokens = fact.input_limit_tokens if isinstance(fact, UsageFact) else None
+    context_window = (fact.context_window or fact.input_limit_tokens) if isinstance(fact, UsageFact) else None
     budget = resolve_compaction_budget(
-        input_limit_tokens,
+        context_window,
         threshold_tokens=config.threshold_tokens,
         reserve_tokens=config.reserve_tokens,
     )

@@ -17,8 +17,8 @@
   - `CoreApp.tsx` 渲染 `turn` 时丢弃 `reasoning` 思考内容，且未接入 `provider_progress` / `tool_progress` 流式输出。
   - `CoreApp.tsx` 在 `isRunning` 时禁用输入框与发送按钮，无法发送排队追问。
   - 补齐 `core.ask_requested` / `pending_ask` 问答交互与图片附件粘贴/上传。
-- [ ] **补齐 `cli.py` 子命令参数与交互能力。**
-  - `resume` 子命令补充 `--interaction`、`--root-action-grant-id` 与（待 Core 落地后的）拒绝理由；补充 `answer-ask` / `cancel-ask` 子命令与已有的 RPC 能力对齐。
+- [x] **补齐 `cli.py` 子命令参数与交互能力。**
+  - `resume` 子命令现支持 `--reason`、`--grant-policy` 与 `--interaction`；新增 `approval-policies` 查询子命令；新增 `answer-ask` / `cancel-ask` 子命令与底层 RPC 契约对齐。
 
 ## P2：配置收敛、文档一致性与工程卫生
 

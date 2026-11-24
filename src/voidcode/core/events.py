@@ -22,6 +22,8 @@ class EventType(StrEnum):
     RUN_INTERRUPTED = "core.run_interrupted"
     APPROVAL_REQUESTED = "core.approval_requested"
     APPROVAL_DECIDED = "core.approval_decided"
+    APPROVAL_POLICY_GRANTED = "core.approval_policy_granted"
+    APPROVAL_POLICY_REVOKED = "core.approval_policy_revoked"
     ASK_REQUESTED = "core.ask_requested"
     ASK_ANSWERED = "core.ask_answered"
     CONFIRMATION_REQUESTED = "core.confirmation_requested"

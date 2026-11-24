@@ -191,6 +191,12 @@ class RunCoordinatorHost(Protocol):
         ask_answer_guard: str | None = None,
     ) -> None: ...
     def invoke(self, execution: _Execution, call: ToolCall, definition: ToolDefinition) -> CoreResult | None: ...
+    def invoke_readonly_batch(
+        self,
+        execution: _Execution,
+        calls: tuple[ToolCall, ...],
+        definitions: tuple[ToolDefinition, ...],
+    ) -> CoreResult | None: ...
     def interrupt_batch(
         self,
         execution: _Execution,
@@ -412,10 +418,18 @@ class RunCoordinator:
         extend_root_actions: int | None = None,
         root_action_grant_id: str | None = None,
         interaction: Literal["interactive", "unattended"] | None = None,
+        reason: str | None = None,
+        grant_session_policy: bool = False,
     ) -> CoreResult:
         validate_steps(max_steps)
         validate_interaction(interaction)
         validate_root_action_extension(extend_root_actions, root_action_grant_id)
+        if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+            raise ValueError("reason must be non-empty text")
+        if reason is not None and decision != "deny":
+            raise ValueError("reason can only be provided when decision is 'deny'")
+        if grant_session_policy and decision != "allow":
+            raise ValueError("grant_session_policy can only be provided when decision is 'allow'")
         with self._host.session_lock(session_id):
             self._host.ensure_open()
             self._host.default_abort.set_cancelled(False)
@@ -517,15 +531,42 @@ class RunCoordinator:
                 )
                 if approval is not None:
                     cursor.approval_sequence = None
+                    _, call = self._host.pending(execution)
+                    policy_rule_id: str | None = None
+                    if decision == "allow" and grant_session_policy:
+                        policy_rule_id = uuid4().hex
+                        self._host.commit(
+                            execution,
+                            SessionStatus.RUNNING,
+                            CheckpointKind.READY,
+                            EventDraft(
+                                EventType.APPROVAL_POLICY_GRANTED,
+                                "client",
+                                "user",
+                                {
+                                    "rule_id": policy_rule_id,
+                                    "tool_name": call.tool_name,
+                                    "pattern": None,
+                                },
+                            ),
+                        )
+                    decided_payload: dict[str, object] = {
+                        "request_id": approval_request_id,
+                        "decision": decision,
+                    }
+                    if reason:
+                        decided_payload["reason"] = reason
+                    if policy_rule_id is not None:
+                        decided_payload["policy_rule_id"] = policy_rule_id
                     self._host.commit(
                         execution,
                         SessionStatus.RUNNING,
                         CheckpointKind.READY,
-                        EventDraft(EventType.APPROVAL_DECIDED, "client", "user", {"request_id": approval_request_id, "decision": decision}),
+                        EventDraft(EventType.APPROVAL_DECIDED, "client", "user", decided_payload),
                     )
-                    _, call = self._host.pending(execution)
                     if decision == "deny":
-                        self._host.report(execution, call, ToolFailure(call.tool_name, "user denied this invocation"))
+                        failure_msg = f"user denied this invocation: {reason}" if reason else "user denied this invocation"
+                        self._host.report(execution, call, ToolFailure(call.tool_name, failure_msg))
                     else:
                         definition = self._host.definition_of(call.tool_name)
                         if definition is None:

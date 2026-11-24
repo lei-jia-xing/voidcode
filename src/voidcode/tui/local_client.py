@@ -18,6 +18,7 @@ from voidcode import __version__
 from voidcode.core.storage.records import SessionStatus
 from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.client import (
+    ApprovalPolicyRule,
     ArtifactPage,
     CancelReceipt,
     CommandCatalog,
@@ -97,16 +98,20 @@ class CoreLocalClient(SessionClient):
         except ValueError as exc:
             raise CoreClientError(str(exc), status_code=400, code="invalid_params") from None
 
-    @staticmethod
-    def _session_row(record: SessionRecord) -> SessionRow:
+    def _session_row(self, record: SessionRecord) -> SessionRow:
+        summary, created_at, updated_at = self._core.store.session_meta(record.session_id)
+        raw_status = record.status.value if isinstance(record.status, SessionStatus) else str(record.status)
         return SessionRow(
             session_id=record.session_id,
             workspace=record.workspace,
-            status=record.status,
+            status=raw_status,
             active_revision_id=record.active_revision_id,
             run_id=record.run_id,
             turn=record.turn,
             last_event_sequence=record.last_event_sequence,
+            summary=summary,
+            created_at=created_at,
+            updated_at=updated_at,
         )
 
     @staticmethod
@@ -226,10 +231,65 @@ class CoreLocalClient(SessionClient):
                 max_steps=active.max_steps,
                 extend_root_actions=active.extend_root_actions,
                 root_action_grant_id=active.root_action_grant_id,
+                interaction=active.interaction,
+                reason=active.reason,
+                grant_session_policy=active.grant_session_policy,
             )
         except Exception as exc:
             raise self._refusal(exc) from None
         return self._run_result(result)
+
+    def answer_ask(
+        self,
+        session_id: str,
+        request_id: str,
+        values: Mapping[str, object],
+        *,
+        expected_revision: str,
+    ) -> RunResult:
+        self._validated(session_id)
+        try:
+            result = self._core.answer_ask(
+                session_id,
+                request_id,
+                values,
+                expected_revision=expected_revision,
+            )
+        except Exception as exc:
+            raise self._refusal(exc) from None
+        return self._run_result(result)
+
+    def cancel_ask(
+        self,
+        session_id: str,
+        request_id: str,
+        *,
+        expected_revision: str,
+    ) -> RunResult:
+        self._validated(session_id)
+        try:
+            result = self._core.cancel_ask(
+                session_id,
+                request_id,
+                expected_revision=expected_revision,
+            )
+        except Exception as exc:
+            raise self._refusal(exc) from None
+        return self._run_result(result)
+
+    def list_approval_policies(self, session_id: str) -> list[ApprovalPolicyRule]:
+        self._validated(session_id)
+        try:
+            return self._core.list_approval_policies(session_id)
+        except Exception as exc:
+            raise self._refusal(exc) from None
+
+    def revoke_approval_policy(self, session_id: str, rule_id: str) -> bool:
+        self._validated(session_id)
+        try:
+            return self._core.revoke_approval_policy(session_id, rule_id)
+        except Exception as exc:
+            raise self._refusal(exc) from None
 
     def _validate_command_request(self, session_id: str, name: str, expected_revision: str) -> None:
         self._validated(session_id)

@@ -65,6 +65,7 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[Obse
             "model_name": model_name,
             "usage": raw_usage,
             "input_limit_tokens": None,
+            "context_window": None,
             "elapsed_seconds": elapsed_sec,
             "cost_usd": cost_usd,
             "source": "model_query",
@@ -91,6 +92,8 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[Obse
         # The allocation is the sizing decision the request was actually assembled with.
         # Absent, null, or malformed is unknown -- never zero or a guessed window.
         input_limit_tokens = raw_limit if isinstance(raw_limit, int) and not isinstance(raw_limit, bool) and raw_limit > 0 else None
+        raw_window = allocation.get("context_window") if isinstance(allocation, Mapping) else None
+        context_window = raw_window if isinstance(raw_window, int) and not isinstance(raw_window, bool) and raw_window > 0 else None
         ms = ev.payload.get("elapsed_ms")
         elapsed_sec = (ms / 1000.0) if ms is not None and isinstance(ms, (int, float)) else None
         usage_payload: Mapping[str, object] | None = None
@@ -110,6 +113,7 @@ def fact_for_event(ev: StoredEvent, events: Iterable[StoredEvent]) -> tuple[Obse
             "model_name": model_name,
             "usage": usage_payload,
             "input_limit_tokens": input_limit_tokens,
+            "context_window": context_window,
             "elapsed_seconds": elapsed_sec,
             "cost_usd": cost_usd,
         }

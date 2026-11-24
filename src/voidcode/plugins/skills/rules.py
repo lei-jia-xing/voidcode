@@ -8,6 +8,7 @@ result bodies.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from typing import Final, Literal
 RULE_FILE_NAME = "AGENTS.md"
 LOCAL_RULE_FILE_NAME = "AGENTS.override.md"
 RULEBOOK_DIRECTORY = ".voidcode/rules"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,12 +54,14 @@ def _bounded_rule_message(message: object) -> str:
 
 
 def _add_diagnostic(diagnostics: list[str], message: object) -> None:
+    msg_str = _bounded_rule_message(message)
+    logger.warning("Rules: %s", msg_str)
     if len(diagnostics) > MAX_RULE_DIAGNOSTICS:
         return
     if len(diagnostics) == MAX_RULE_DIAGNOSTICS:
         diagnostics.append("further rule diagnostics omitted")
         return
-    diagnostics.append(_bounded_rule_message(message))
+    diagnostics.append(msg_str)
 
 
 class RuleDocumentError(ValueError):

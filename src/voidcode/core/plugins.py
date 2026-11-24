@@ -1829,6 +1829,7 @@ class PluginRuntime:
                 model_name=_required_text(fact, "model_name"),
                 usage=usage_obj,
                 input_limit_tokens=_optional_positive_int(fact, "input_limit_tokens"),
+                context_window=_optional_positive_int(fact, "context_window"),
                 elapsed_seconds=_optional_number(fact, "elapsed_seconds"),
                 cost_usd=_optional_number(fact, "cost_usd"),
                 source=source,

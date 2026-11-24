@@ -352,6 +352,13 @@ class Composer:
         """The bounded submitted-prompt history, oldest first."""
         return tuple(self._history)
 
+    def load_history(self, items: Sequence[str]) -> None:
+        """Seed or restore submitted-prompt history from durable session events."""
+        self._history.clear()
+        self._history_index = None
+        for text in items:
+            self._push_history(text)
+
     @property
     def paste_blocks(self) -> tuple[tuple[int, int, bool], ...]:
         """Folded paste spans as ``(start, end, collapsed)`` in true-text offsets."""

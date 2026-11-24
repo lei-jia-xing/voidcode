@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from voidcode.core.events import EventType
+from voidcode.sdk.ask import AskRequest
 from voidcode.sdk.client import CommandResult, QueuedFollowup, StreamEvent
 from voidcode.sdk.codec import decode_tool_call, decode_tool_result
 from voidcode.sdk.commands import ConfirmationRequest
@@ -26,6 +27,8 @@ from .formatting import prefixed_rows, safe
 from .gates import (
     ActivationCommitted,
     ApprovalRequested,
+    AskGate,
+    AskRequested,
     ConfirmationGate,
     ConfirmationRequested,
     GateChange,
@@ -68,6 +71,9 @@ def handle_stream_event(app: CoreTuiApp, event: StreamEvent, rows: list[str]) ->
                 claimed_id = payload.get("continuation_id")
                 if isinstance(claimed_id, str) and claimed_id:
                     app._queued_followups = tuple(item for item in app._queued_followups if item.continuation_id != claimed_id)
+                content = payload.get("content")
+                if isinstance(content, str) and content.strip():
+                    app._record_user_prompt_history(content.strip())
             _run_started(app)
         case EventType.FOLLOWUP_QUEUED:
             _followup_queued(app, event, payload)
@@ -87,7 +93,14 @@ def handle_stream_event(app: CoreTuiApp, event: StreamEvent, rows: list[str]) ->
             _command_completed(app, payload, rows)
         case EventType.ACTIVATION_COMMITTED:
             _activation_committed(app, payload, rows)
-        case EventType.CONFIRMATION_REQUESTED | EventType.CONFIRMATION_DECIDED | EventType.APPROVAL_REQUESTED | EventType.APPROVAL_DECIDED:
+        case (
+            EventType.CONFIRMATION_REQUESTED
+            | EventType.CONFIRMATION_DECIDED
+            | EventType.APPROVAL_REQUESTED
+            | EventType.APPROVAL_DECIDED
+            | EventType.ASK_REQUESTED
+            | EventType.ASK_ANSWERED
+        ):
             _gate_change(app, event, event_type)
         case EventType.RUN_INTERRUPTED | EventType.RUN_FAILED:
             _run_notice(app, event, event_type, payload, rows)
@@ -318,6 +331,15 @@ def _gate_changes(event: StreamEvent, event_type: EventType) -> tuple[list[GateC
             gate = approval_gate_from_payload(payload, run_id=event.run_id, revision_id=event.revision_id)
             return [ApprovalRequested(gate)], False
         case EventType.APPROVAL_DECIDED:
+            request_id = str(payload.get("request_id") or "")
+            return ([GateDecided(request_id)] if request_id else []), False
+        case EventType.ASK_REQUESTED:
+            req_data = payload.get("request")
+            if not isinstance(req_data, Mapping):
+                return [], False
+            ask_req = AskRequest.from_payload(req_data)
+            return [AskRequested(AskGate.from_request(ask_req, revision_id=event.revision_id))], False
+        case EventType.ASK_ANSWERED:
             request_id = str(payload.get("request_id") or "")
             return ([GateDecided(request_id)] if request_id else []), False
         case EventType.ACTIVATION_COMMITTED:

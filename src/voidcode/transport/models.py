@@ -112,6 +112,8 @@ class ResumeRequest(SessionParams):
     extend_root_actions: int | None = Field(default=None, gt=0, le=9_223_372_036_854_775_807)
     root_action_grant_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[^\x00]+$")
     interaction: Literal["interactive", "unattended"] | None = None
+    reason: str | None = Field(default=None, min_length=1, max_length=1000)
+    grant_session_policy: bool = False
 
     @model_validator(mode="after")
     def paired_decision_and_grant(self) -> ResumeRequest:
@@ -119,7 +121,15 @@ class ResumeRequest(SessionParams):
             raise ValueError("approval_request_id and decision travel together")
         if (self.extend_root_actions is None) != (self.root_action_grant_id is None):
             raise ValueError("extend_root_actions and root_action_grant_id travel together")
+        if self.reason is not None and self.decision != "deny":
+            raise ValueError("reason can only be provided when decision is 'deny'")
+        if self.grant_session_policy and self.decision != "allow":
+            raise ValueError("grant_session_policy can only be provided when decision is 'allow'")
         return self
+
+
+class ApprovalPolicyRevokeRequest(SessionParams):
+    rule_id: str = Field(min_length=1, max_length=128)
 
 
 class CommandInputRequest(SessionParams):
