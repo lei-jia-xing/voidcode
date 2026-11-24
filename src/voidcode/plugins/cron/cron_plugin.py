@@ -53,7 +53,9 @@ _ONE_SHOT_KINDS: frozenset[str] = frozenset({"at", "once"})
 _RECURRING_KINDS: frozenset[str] = frozenset({"every", "cron"})
 _KINDS: frozenset[str] = _ONE_SHOT_KINDS | _RECURRING_KINDS
 
-_STATE_KEYS: frozenset[str] = frozenset({"schema_version", "schedules", "last_finished_sequence"})
+_STATE_KEYS: frozenset[str] = frozenset({"schema_version", "schedules", "last_finished_sequence", "facts_cursor"})
+#: Source events per facts page; catch-up keeps paging until the stream is exhausted.
+_FACT_PAGE_SIZE: Final[int] = 200
 _SCHEDULE_KEYS: frozenset[str] = frozenset({"schedule_text", "kind", "prompt", "enabled", "expires_at", "wakeup_id", "next_fire_at", "pending"})
 _PENDING_KEYS: frozenset[str] = frozenset({"wakeup_id", "fired_sequence", "role", "payload"})
 _PENDING_PAYLOAD_KEYS: frozenset[str] = frozenset({"kind", "text", "schedule_id"})
@@ -231,16 +233,22 @@ class ScheduleEntry:
 
 @dataclass(frozen=True, slots=True)
 class CronState:
-    """This plugin's session-scope state: schedules and the last terminal run observed."""
+    """This plugin's session-scope state: schedules, the last terminal run, and the facts cursor."""
 
     schedules: Mapping[str, ScheduleEntry] = field(default_factory=dict)
     last_finished_sequence: int = 0
+    #: Last source-event sequence covered by a complete catch-up scan. Optional in stored v2 state.
+    facts_cursor: int = 0
 
     @classmethod
     def from_payload(cls, raw: Mapping[str, object]) -> CronState:
+        absent = [key for key in ("schema_version", "schedules", "last_finished_sequence") if key not in raw]
+        if absent:
+            raise ValueError("cron state is missing field(s): " + ", ".join(absent))
         if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"cron state schema_version must be {SCHEMA_VERSION}, got {raw['schema_version']!r}")
         last_finished_sequence = _required_non_negative_int(raw["last_finished_sequence"], field="cron state last_finished_sequence")
+        facts_cursor = 0 if "facts_cursor" not in raw else _required_non_negative_int(raw["facts_cursor"], field="cron state facts_cursor")
         raw_schedules = raw["schedules"]
         if not isinstance(raw_schedules, Mapping):
             raise ValueError("cron state schedules must be an object")
@@ -261,13 +269,14 @@ class CronState:
                 if parsed.pending.fired_sequence <= last_finished_sequence:
                     raise ValueError(f"cron schedule '{schedule_id}' pending settlement is older than the last finished run")
             schedules[schedule_id] = parsed
-        return cls(schedules=schedules, last_finished_sequence=last_finished_sequence)
+        return cls(schedules=schedules, last_finished_sequence=last_finished_sequence, facts_cursor=facts_cursor)
 
     def to_payload(self) -> dict[str, object]:
         return {
             "schema_version": SCHEMA_VERSION,
             "schedules": {schedule_id: entry.to_payload() for schedule_id, entry in self.schedules.items()},
             "last_finished_sequence": self.last_finished_sequence,
+            "facts_cursor": self.facts_cursor,
         }
 
 
@@ -328,7 +337,8 @@ def _store(services: StateServices) -> PluginStateStore[CronState]:
         serialize=CronState.to_payload,
         empty=CronState,
         unknown=lambda extra: f"cron state field '{extra[0]}' is not supported",
-        missing=lambda absent: "cron state is missing field(s): " + ", ".join(absent),
+        # facts_cursor is optional for stored v2 state; the parser enforces the required fields.
+        missing=None,
     )
 
 
@@ -797,44 +807,37 @@ def _stage_state_error(services: PluginServices, error: BaseException | str) -> 
     services.stage_event("schedule_error", {"error": message[:500]})
 
 
-def _observe_fired(fact: WakeupFiredFact, services: PluginServices) -> None:
-    """Record the durable settlement awaiting this wakeup's terminal run."""
+def _apply_fired(
+    state: CronState,
+    fact: WakeupFiredFact,
+    services: PluginServices,
+) -> tuple[CronState, dict[str, object] | None]:
+    """Record one owned firing as the schedule's pending settlement."""
     if fact.owner != services.owner:
-        return
+        return state, None
     if fact.payload.get("kind") != WAKEUP_KIND:
-        return
+        return state, None
     schedule_id = fact.payload.get("schedule_id")
     if not isinstance(schedule_id, str) or not schedule_id:
-        return
-    try:
-        state, version = _store(services).load()
-    except ValueError as exc:
-        _stage_state_error(services, exc)
-        return
+        return state, None
     entry = state.schedules.get(schedule_id)
     if entry is None or not entry.enabled:
-        return
+        return state, None
     if entry.wakeup_id != fact.wakeup_id:
-        return
+        return state, None
     if entry.pending is not None:
         if entry.pending.wakeup_id == fact.wakeup_id and entry.pending.fired_sequence == fact.event_sequence:
-            return
-        _stage_state_error(services, "cron received a second firing while a settlement was already pending")
-        return
-    try:
-        pending = _pending_from_fact(fact, schedule_id=schedule_id, prompt=entry.prompt)
-    except ValueError as exc:
-        _stage_state_error(services, exc)
-        return
+            return state, None
+        raise ValueError("cron received a second firing while a settlement was already pending")
+    pending = _pending_from_fact(fact, schedule_id=schedule_id, prompt=entry.prompt)
     if fact.event_sequence <= state.last_finished_sequence:
-        # A late replay after its run already finished cannot be joined safely. Pause visibly
-        # rather than leave an enabled schedule with no armed successor.
+        # A late replay after its run already finished cannot be joined to that run. Pause
+        # visibly rather than leave an enabled schedule with no armed successor.
         disabled = replace(entry, enabled=False, wakeup_id=None, next_fire_at=None, pending=None)
         schedules = dict(state.schedules)
         schedules[schedule_id] = disabled
-        _store(services).save(replace(state, schedules=schedules), version)
-        services.stage_event(
-            "schedule_fired",
+        return (
+            replace(state, schedules=schedules),
             {
                 "id": schedule_id,
                 "wakeup_id": fact.wakeup_id,
@@ -844,11 +847,10 @@ def _observe_fired(fact: WakeupFiredFact, services: PluginServices) -> None:
                 "run_status": None,
             },
         )
-        return
     running = replace(entry, next_fire_at=None, pending=pending)
     schedules = dict(state.schedules)
     schedules[schedule_id] = running
-    _store(services).save(replace(state, schedules=schedules), version)
+    return replace(state, schedules=schedules), None
 
 
 def _pending_from_fact(fact: WakeupFiredFact, *, schedule_id: str, prompt: str) -> PendingFire:
@@ -919,25 +921,21 @@ def _settle(
     )
 
 
-def _settle_finished(fact: RunFinishedFact, services: PluginServices) -> None:
-    """Settle every pending firing on the terminal run that just finished."""
-    try:
-        state, version = _store(services).load()
-    except ValueError as exc:
-        _stage_state_error(services, exc)
-        return
-    if not state.schedules:
-        return
-    now_ms = _clock_ms()
+def _apply_finished(
+    state: CronState,
+    fact: RunFinishedFact,
+    services: PluginServices,
+    now_ms: int,
+) -> tuple[CronState, dict[str, object] | None]:
+    """Settle one pending firing on the terminal run that just finished."""
     schedules = dict(state.schedules)
-    events: list[dict[str, object]] = []
-    changed = False
+    event: dict[str, object] | None = None
     for schedule_id, entry in state.schedules.items():
         pending = entry.pending
         if pending is None or pending.fired_sequence >= fact.event_sequence:
             continue
         try:
-            outcome, _next_fire_ms, settled, event = _settle(
+            outcome, _next_fire_ms, settled, payload = _settle(
                 services,
                 schedule_id=schedule_id,
                 entry=entry,
@@ -946,30 +944,69 @@ def _settle_finished(fact: RunFinishedFact, services: PluginServices) -> None:
             )
         except ValueError as exc:
             _stage_state_error(services, exc)
-            return
+            return state, None
         if settled is None:
             del schedules[schedule_id]
         else:
             schedules[schedule_id] = settled
-        events.append({"outcome": outcome, **event})
-        changed = True
+        event = {"outcome": outcome, **payload}
+        break
     new_last = max(state.last_finished_sequence, fact.event_sequence)
-    if new_last != state.last_finished_sequence:
-        changed = True
-    if not changed:
+    if new_last == state.last_finished_sequence and not event and schedules == dict(state.schedules):
+        return state, None
+    return replace(state, schedules=schedules, last_finished_sequence=new_last), event
+
+
+def _catch_up(services: PluginServices) -> None:
+    """Page facts since the cursor to exhaustion and commit cursor + state atomically.
+
+    The cursor advances only after every page has been consumed. Any raised observer
+    failure or state CAS leaves it untouched, so the next writable fact callback retries
+    the same range. The observer is only the trigger; it never processes facts directly.
+    """
+    try:
+        state, version = _store(services).load()
+    except ValueError as exc:
+        _stage_state_error(services, exc)
         return
-    _store(services).save(CronState(schedules=schedules, last_finished_sequence=new_last), version)
+    if not state.schedules:
+        return
+    cursor = state.facts_cursor
+    updated = state
+    events: list[dict[str, object]] = []
+    now_ms = _clock_ms()
+    while True:
+        page = services.read_facts(after_sequence=cursor, limit=_FACT_PAGE_SIZE)
+        for fact in page.facts:
+            try:
+                if isinstance(fact, WakeupFiredFact):
+                    updated, event = _apply_fired(updated, fact, services)
+                elif isinstance(fact, RunFinishedFact):
+                    updated, event = _apply_finished(updated, fact, services, now_ms)
+                else:
+                    continue
+            except ValueError as exc:
+                _stage_state_error(services, exc)
+                continue
+            if event is not None:
+                events.append(event)
+        if page.next_sequence <= cursor and page.has_more:
+            raise RuntimeError("cron facts page made no progress; cursor left unadvanced")
+        cursor = page.next_sequence
+        if not page.has_more:
+            break
+    updated = replace(updated, facts_cursor=cursor)
+    if updated == state:
+        return
+    _store(services).save(updated, version)
     for event in events:
         services.stage_event("schedule_fired", event)
 
 
 def cron_observer(fact: PluginFact, context: ToolContext, services: PluginServices) -> None:
-    """Maintain pending wakeup settlements and settle them on terminal run facts."""
-    _ = context
-    if isinstance(fact, WakeupFiredFact):
-        _observe_fired(fact, services)
-    elif isinstance(fact, RunFinishedFact):
-        _settle_finished(fact, services)
+    """Trigger a full facts catch-up for every delivered run start, wakeup, or terminal fact."""
+    _ = (fact, context)
+    _catch_up(services)
 
 
 def prepare_cron_deactivation(

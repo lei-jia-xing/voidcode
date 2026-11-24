@@ -25,7 +25,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
         tools=(CronCreateTool(), CronDeleteTool(), CronListTool()),
         commands=(CronLoopCommand(), CronListCommand(), CronDeleteCommand()),
         observer=cron_observer,
-        observed_facts=("wakeup_fired", "run_finished"),
+        observed_facts=("run_requested", "wakeup_fired", "run_finished"),
         state=StateSchema(
             version=SCHEMA_VERSION,
             schema={
@@ -35,6 +35,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                 "properties": {
                     "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
                     "last_finished_sequence": {"type": "integer", "minimum": 0},
+                    "facts_cursor": {"type": "integer", "minimum": 0},
                     "schedules": {
                         "type": "object",
                         "additionalProperties": {

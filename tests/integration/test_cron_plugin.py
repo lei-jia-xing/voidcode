@@ -272,6 +272,10 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path, m
                 "next_fire_at": rearmed[0].due_at,
             }
         ]
+        state_payload, _version = core.store.plugin_state("cron", "session", session_id)
+        assert isinstance(state_payload, Mapping)
+        finished_sequence = max(event.sequence for event in core.events_after(session_id) if event.event_type == "core.run_completed")
+        assert int(state_payload["facts_cursor"]) >= finished_sequence
 
         # A later tick fires the successor exactly once and arms exactly one successor of its own.
         second = rearmed[0]
@@ -410,6 +414,10 @@ def test_parked_approval_keeps_the_claim_and_resume_settles_pending(tmp_path: Pa
                 "next_fire_at": settled["next_fire_at"],
             }
         ]
+        state_payload, _version = core.store.plugin_state("cron", "session", session_id)
+        assert isinstance(state_payload, Mapping)
+        finished_sequence = max(event.sequence for event in core.events_after(session_id) if event.event_type == "core.run_completed")
+        assert int(state_payload["facts_cursor"]) >= finished_sequence
 
 
 def test_loop_command_returns_usage_without_side_effects(tmp_path: Path) -> None:

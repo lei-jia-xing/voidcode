@@ -101,5 +101,9 @@ Cron additionally requires the tracked current wakeup id, schedule id and its ow
 payload kind before recording a pending settlement. It records that pending
 settlement from the `wakeup_fired` fact and settles it on the session's next
 terminal `run_finished`, so a resume under a new run identity is still joined to
-the original firing. Stale and foreign firings are ignored without touching a
-schedule.
+the original firing. The observer is only a trigger: on run-start, wakeup, and
+terminal notifications it pages facts from a durable cursor to exhaustion and
+commits the cursor with the resulting settlements. A failed callback leaves the
+cursor untouched, and the next writable trigger replays the same range; terminal
+facts found in that range settle even when the run is no longer live. Stale and
+foreign firings are ignored without touching a schedule.

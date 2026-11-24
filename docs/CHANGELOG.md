@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Cron recovers fact processing from a durable cursor
+- Cron now keeps a durable `facts_cursor` in its v2 state (optional for stored v2 rows, defaulting to 0). On every writable run-start (`run_requested`), `wakeup_fired`, and `run_finished` notification it pages `read_facts` from the cursor to exhaustion with no page cap, processes wakeup/terminal facts in order through the same pending/settlement logic, and commits the advanced cursor atomically with state, events, and successor wakeups. A receipted observer error or stage-time state CAS leaves the cursor unadvanced; the next trigger replays the range. A firing whose terminal fact is in the same page settles without a live run, including resumed runs.
+- Observer subscriptions now include `run_requested`; the plugin API exposes no writable process-startup/lifecycle hook (`session_start`/`session_end` leases are read-only), so process startup begins catch-up on the next writable trigger (new run start or claimed wakeup). Existing v1 cron state still requires a reset; v2 state without the new cursor loads and starts from zero.
+- Verification: cron unit tests for >200-fact paging, post-CAS recovery, terminal-only and same-page settlement, no duplicate observer/catch-up settlement; integration cron suite; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Cron settles from wakeup facts, not history scans
 - The cron observer now subscribes to `wakeup_fired` and `run_finished`. A fired wakeup records a durable pending settlement (schedule/wakeup, fired sequence, role, payload); the next terminal run settles it independently of the run id, so an approval/ask park and its resume still re-arm or retire the schedule. The bounded 3-page history scan and `cursor_sequence` are gone; a late replayed firing whose run already finished pauses visibly with `settlement_missed`.
 - Schedule creation, deletion, and re-arm stage wakeups/cancellations through `stage_wakeup`/`stage_cancel_wakeup`, so a cancelled or CAS-rejected tool/command/observer result leaves no orphan wakeup. Delete/claim remains deliberately non-interrupting and now carries a bounded note.
