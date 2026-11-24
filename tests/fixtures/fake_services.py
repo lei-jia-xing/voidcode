@@ -78,6 +78,7 @@ class FakeServices(PluginServices):
 
     budget: PluginBudget | None = None
     overlay: str | None = None
+    read_only: bool = False
 
     model_answer: str | None = None
     answer: str | None = None
@@ -454,6 +455,12 @@ class FakeServices(PluginServices):
         had = self.overlay is not None
         self.overlay = None
         return had
+
+    def overlay_active(self) -> bool:
+        return self.overlay is not None
+
+    def session_read_only(self) -> bool:
+        return self.read_only or self.overlay is not None
 
     # --- Wakeups ---
 

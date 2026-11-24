@@ -988,6 +988,18 @@ class StateServices(Protocol):
         """Revoke this owner's own overlay; returns whether one was active."""
         ...
 
+    def overlay_active(self) -> bool:
+        """Whether this owner's read-only overlay is active on the bound session.
+
+        Reads the same session-overlay truth the core's effective read-only stance uses;
+        another owner's overlay and the frozen core policy are not reported here.
+        """
+        ...
+
+    def session_read_only(self) -> bool:
+        """Effective read-only for the bound session: the frozen core policy or any owner overlay."""
+        ...
+
 
 @runtime_checkable
 class ChildServices(Protocol):

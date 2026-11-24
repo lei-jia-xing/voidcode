@@ -87,10 +87,13 @@ before the runtime loads it.
 - `Plugin.prepare_deactivate(payload, scope, scope_key, tip_sequence) -> Mapping`, arity 4, run in
   the *current* runtime for owners the candidate drops (disabled or removed from config). This
   is what turns "an owner was disabled" into an explicit lifecycle state instead of leaving opaque
-  durable state claiming to be active. An enabled owner whose source is missing refuses instead —
-  it never runs a deactivation transform. Session-scope rows receive that row's own session event
-  tip; workspace-scope rows receive `None`; any other combination is refused. To remove a plugin,
-  disable it via `core.reload` on the old running core first so its real transform runs.
+  durable state claiming to be active. A dropped owner that declares no transform has no state
+  contract: its historic rows are preserved verbatim and ignored (a state-free owner's overlay
+  cleanup still happens in the same switch). An enabled owner whose source is missing refuses
+  instead — it never runs a deactivation transform. Session-scope rows receive that row's own
+  session event tip; workspace-scope rows receive `None`; any other combination is refused. To
+  remove a state-owning plugin, disable it via `core.reload` on the old running core first so its
+  real transform runs.
 - Every `(scope, scope_key, owner)` row is transformed at most once per activation, with its own
   optimistic-concurrency version; an owner admitted unchanged with the same schema version is only
   validated, never rewritten.
@@ -99,11 +102,13 @@ before the runtime loads it.
   transaction — all narrowed to the switching workspace, so a shared database never loses another
   workspace's rows. Claimed wakeups already own their run and settle through that run's terminal
   path, never through the switch. Its durable state is kept, parked by its own
-  `prepare_deactivate`: cron schedules park disabled with no armed wakeup, plan mode parks off,
-  todo keeps its list with reminder counters zeroed, and compaction/skills/delegation/exec keep
-  their history untouched (delegation child mappings and exec process identities resume control
-  on re-enable). Re-enabling restores state and constraints but never resumes cancelled work, so
-  re-arming is an explicit owner action. A cancelled continuation or wakeup is terminal.
+  `prepare_deactivate`: cron schedules park disabled with no armed wakeup, todo keeps its list
+  with reminder counters zeroed, and compaction/skills/delegation/exec keep their history
+  untouched (delegation child mappings and exec process identities resume control on
+  re-enable). Plan owns no state: its mode truth is the session-keyed overlay, which the same
+  switch deletes for the dropped owner. Re-enabling restores state and constraints but never
+  resumes cancelled work, so re-arming is an explicit owner action. A cancelled continuation or
+  wakeup is terminal.
   Delegated children are core-owned sessions, not owner resources: the switch never cancels them,
   and a `running`/`waiting` child refuses the switch through the ordinary session blockers,
   naming its session, before any transform runs.

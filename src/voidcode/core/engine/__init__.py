@@ -1423,6 +1423,7 @@ class Core:
             model_query_structured_callback=self.governed_model_query_structured,
             progress_callback=self._report_progress,
             tool_definition_callback=self._governance.visible_tool_definition,
+            session_read_only_callback=self.session_read_only,
             artifacts_dir=self._state_dir / "artifacts",
             sandbox_backend=sandbox_backend,
             process_host=self._process_host,
@@ -2649,6 +2650,11 @@ class Core:
     def session_read_only(self, session_id: str) -> bool:
         """Effective read-only for one session: the frozen core policy OR owner overlays."""
         return self._governance.session_read_only(session_id)
+
+    def overlay_active(self, session_id: str, owner: str) -> bool:
+        """Whether one owner's read-only overlay is active on this session."""
+        self.ensure_open()
+        return self.store.session_overlay(session_id, owner) is not None
 
     def visible_tool_names_for_session(self, session_id: str, snapshot: Any) -> tuple[str, ...]:
         return self._governance.visible_tool_names_for_session(session_id, snapshot)

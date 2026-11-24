@@ -4,6 +4,13 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Plan overlay is the single mode truth
+- The plan plugin no longer declares session state or a deactivation transform. `/plan`, `/plan off`, `/plan status`, and the plan context all read the core-owned `session_overlays` row through the new owner-scoped `services.overlay_active()`; `services.session_read_only()` exposes the effective stance for the status note. Enter/off are last-writer overlay operations, so a concurrent pair can never disagree with enforcement.
+- Legacy plan state rows are ignored (and can no longer block `/plan off`). Disabling the plugin deletes its overlay in the activation transaction; no state is parked or restored. `/plan status` reports `Plan mode: active`/`inactive` and names another read-only reason when the overlay is absent but the session is still restricted.
+- The plan instruction now denies only external mutation (`WRITE`/`EXECUTE`); `SESSION`, `NETWORK`, and read-only `SPAWN` remain available. Documentation covers hooks, pre-existing background work, LSP denial, web egress, and the `/core reload` configuration exception.
+- Fixed the stale changelog claim that overlay mutation needs a `direct_user` authority marker: plugins are trusted and overlay setters are owner-scoped `PluginServices`.
+- Verification: plan unit/integration and focused overlay/activation tests; `ruff check`, `ruff format --check`, and `ty check` on the changed source files.
+
 ### Unstarted child driver recovery
 - Spawn birth records now carry the accepted driver input (`prompt`, `max_steps`). Startup recovery continues only a pristine reservation whose queued driver future was lost at close, repairs a missing parent spawn fact first, and never replays a child that already ran or was explicitly cancelled.
 - An idle reservation that cannot be safely started (missing/malformed birth, revision/root mismatch, committed work without a run identity) is claimed once as a bounded failed run and published as a parent fact/notice instead of staying idle forever.
@@ -791,13 +798,13 @@ Notable changes to the VoidCode runtime, grouped by milestone.
   kernel-side). Declaring the hook without the callback (or vice versa) is refused at load.
 - Deactivating an owner now revokes its restrictive overlays in the same CAS switch, so a disabled
   plugin can never leave a session permanently read-only; unrelated owners keep theirs.
-- Restrictive overlays (plan mode): owner-owned `session_overlays` rows (single`read-only` tier)
+- Restrictive overlays (plan mode): owner-owned `session_overlays` rows (single `read-only` tier)
   tighten a session durably; the effective restriction is the frozen kernel policy OR any overlay,
   and it drives admission (before intent/effects), the provider's advertised tool list, and command
-  policy. An owner clears only its own row, the frozen policy is untouchable, overlays survive
-  capability reloads, and `set_overlay`/`clear_overlay` require authentic user authority
-  (`direct_user` commands) — model/agent/plugin paths are refused kernel-side. Host leases now carry
-  the authentic actor for this check.
+  policy. An owner clears only its own row, the frozen policy is untouchable, and overlays survive
+  capability reloads. Overlay mutation is the owner-scoped `PluginServices` contract; the plan
+  commands are user-invoked client commands, and plugins are trusted code running with application
+  authority, so there is no separate `direct_user` marker or actor check.
 - Schema version 3: additive `sessions` lineage/tool-scope columns, `continuations.role`, the
   `wakeups` table and `session_overlays`; a version-2 database is refused read-only before any write.
 

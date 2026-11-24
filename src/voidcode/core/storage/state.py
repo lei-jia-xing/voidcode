@@ -133,6 +133,16 @@ class _StateMixin(_ConnectionStore):
             ).fetchall()
             return tuple(tier for (tier,) in rows)
 
+    def session_overlay(self, session_id: str, owner: str) -> str | None:
+        """One owner's overlay tier on this session, or None when it has no row."""
+        with self._lock:
+            self._check_open()
+            row = self._connection.execute(
+                "SELECT tier FROM session_overlays WHERE session_id = ? AND owner = ?",
+                (session_id, owner),
+            ).fetchone()
+            return None if row is None else str(row[0])
+
     def set_window_projection(
         self,
         session_id: str,

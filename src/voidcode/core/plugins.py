@@ -303,6 +303,7 @@ class PluginRuntime:
         ) = None,
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
         tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,
+        session_read_only_callback: Callable[[str], bool] | None = None,
         artifacts_dir: Path | None = None,
         sandbox_backend: SandboxBackend | None = None,
         process_host: ProcessHost | None = None,
@@ -332,6 +333,7 @@ class PluginRuntime:
         self.model_query_structured_callback = model_query_structured_callback
         self.progress_callback = progress_callback
         self.tool_definition_callback = tool_definition_callback
+        self.session_read_only_callback = session_read_only_callback
         #: Core-owned background wiring: the claim loop's wakeup and the claim liveness check.
         self.background_action_notify_callback: Callable[[], None] | None = None
         self.background_claim_live_callback: Callable[[Any], bool] | None = None
@@ -1819,6 +1821,10 @@ class PluginRuntime:
                 budget_exhaustion=BudgetExhaustion.from_payload(fact.get("budget_exhaustion")),
             )
         raise ValueError(f"Unknown fact_type: {fact_type}")
+
+    def has_state_deactivator(self, owner: str) -> bool:
+        """Whether one loaded owner declares a pure deactivation transform."""
+        return owner in self._state_deactivators
 
     def prepare_deactivate_owner_state(
         self,

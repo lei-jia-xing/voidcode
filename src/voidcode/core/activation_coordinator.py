@@ -277,7 +277,10 @@ class ActivationCoordinator:
         scope: StateScope,
         scope_key: str,
         tip_sequence: int | None,
-    ) -> Mapping[str, object]:
+    ) -> Mapping[str, object] | None:
+        if not runtime.has_state_deactivator(owner):
+            # A dropped owner with no transform has no state contract; its rows are historic.
+            return None
         try:
             return runtime.prepare_deactivate_owner_state(
                 owner,

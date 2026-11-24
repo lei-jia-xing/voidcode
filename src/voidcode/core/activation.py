@@ -177,13 +177,15 @@ def plan_state_copies(
     session_ids: Sequence[str],
     old_states: Mapping[str, StateSchema],
     candidate_states: Mapping[str, StateSchema],
-    deactivate: Callable[[str, Mapping[str, object], StateScope, str, int | None], Mapping[str, object]],
+    deactivate: Callable[[str, Mapping[str, object], StateScope, str, int | None], Mapping[str, object] | None],
 ) -> StateCopyPlan:
     """Validate or deactivate owner state for the candidate generation.
 
     An owner admitted by the candidate must match the candidate's declared state schema version
     and payload schema (version mismatch is explicitly rejected). An owner the candidate does not
-    admit is deactivated by the runtime that still holds its schema.
+    admit is deactivated by the runtime that still holds its schema. A dropped owner that declares
+    no deactivation transform has no state contract: its historic rows are preserved verbatim and
+    ignored rather than blocking the switch.
     """
     updates: list[StagedStateUpdate] = []
     deactivated: list[str] = []
@@ -201,7 +203,11 @@ def plan_state_copies(
                 validate_state_payload(row.payload, candidate)
                 continue
             elif row.owner in deactivate_owners:
-                payload = validate_state_payload(deactivate(row.owner, row.payload, scope, scope_key, tip), old_states[row.owner])
+                prepared = deactivate(row.owner, row.payload, scope, scope_key, tip)
+                if prepared is None:
+                    deactivated.append(row.owner)
+                    continue
+                payload = validate_state_payload(prepared, old_states[row.owner])
                 updates.append(
                     StagedStateUpdate(
                         owner=row.owner,

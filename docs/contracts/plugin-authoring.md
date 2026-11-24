@@ -148,8 +148,10 @@ Conventions that keep state debuggable:
   declared version is a downgrade and refuses.
 - Deactivation is pure: `prepare_deactivate(payload, scope, scope_key, tip)`
   (arity 4) runs in the current runtime for owners the candidate drops. A
-  missing transform fails the deactivation visibly. See
-  `docs/contracts/hot-activation.md` for the full transaction.
+  dropped owner that declares no transform has no state contract: its
+  historic rows are preserved unchanged and ignored, never read by the
+  dropped plugin. A declared transform that fails refuses the switch
+  visibly. See `docs/contracts/hot-activation.md` for the full transaction.
 - Observers declare `observed_facts` (`usage`, `invocation_finished`,
   `run_finished`); the registration must provide an observer callback
   exactly when that tuple is non-empty.
@@ -185,7 +187,8 @@ Conventions that keep state debuggable:
 Loaded plugin Python runs with the application's full authority — not a sandbox.
 `PluginServices` is the scoped API surface the core passes into each callback:
 state, events, continuations, wakeups, delegation (`spawn_child`/`join_child`),
-window projection, scoped restrictive overlays, reads,
+window projection, scoped restrictive overlays (an owner-scoped active read plus
+tighten/revoke), reads,
 budgets, usage, `model_query` (one tool-free turn), processes, and
 artifacts. Callbacks receive lease-scoped services only — never arbitrary
 core access, never a sibling plugin's state, never an unrestricted store

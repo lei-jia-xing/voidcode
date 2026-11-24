@@ -119,7 +119,7 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `mcp` | `mcp` tool and `/mcp` inventory |
 | `providers` | turn providers for OpenAI-compatible, Anthropic, and Google families, plus `/model` and `/providers` panels |
 | `todo` | `todo` tool, `/todo`, `/todo clear` |
-| `plan` | `/plan`, `/plan off`, `/plan status` collaboration mode |
+| `plan` | `/plan`, `/plan off`, `/plan status`; overlay-backed read-only collaboration mode |
 | `skills` | `skill://` reader (loaded through the `read` tool), `/skills`, `/skills.show`, and workspace rule context (`AGENTS.md` hierarchy + `.voidcode/rules`) |
 | `review` | `/review` |
 | `subagents` | `task`, `task_batch` (agent-facing delegation) plus `alt+a` subagent monitor |

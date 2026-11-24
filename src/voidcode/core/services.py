@@ -97,6 +97,8 @@ class RuntimeServices:
             "get_budget",
             "read_artifact",
             "tool_definition",
+            "overlay_active",
+            "session_read_only",
         }
     )
     # ---- processes (core-owned registry, stance-gated here) ----
@@ -991,6 +993,19 @@ class RuntimeServices:
         lease = self._active_lease()
         self._check_hook("clear_overlay")
         return self._runtime.require_store().clear_session_overlay(lease.identity.session_id, lease.identity.owner)
+
+    def overlay_active(self) -> bool:
+        lease = self._active_lease()
+        self._check_hook("overlay_active")
+        return self._runtime.require_store().session_overlay(lease.identity.session_id, lease.identity.owner) is not None
+
+    def session_read_only(self) -> bool:
+        lease = self._active_lease()
+        self._check_hook("session_read_only")
+        callback = self._runtime.session_read_only_callback
+        if callback is None:
+            return bool(self._runtime.require_store().session_overlays(lease.identity.session_id))
+        return callback(lease.identity.session_id)
 
     def schedule_wakeup(
         self,

@@ -2,76 +2,48 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import ClassVar
 
 from voidcode.sdk.commands import CommandDefinition, CommandInvocation, CommandPresentation, CommandResult
 from voidcode.sdk.hooks import ContextContribution
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import PluginServices, StateServices
+from voidcode.sdk.services import PluginServices
 from voidcode.sdk.tools import ToolEffect
-
-SCHEMA_VERSION = 1
-_STATE_KEYS: frozenset[str] = frozenset({"schema_version", "active"})
 
 PLAN_MODE_INSTRUCTION = (
     "Plan mode is active. You are in a persistent conversational planning state. "
-    "Explore, analyze, and formulate a clear, actionable plan. "
-    "File modification and command execution that alters state are forbidden; read-only exploration and inspection are allowed. "
+    "External mutation is forbidden: tools declaring WRITE or EXECUTE effects are unavailable and calls are denied. "
+    "Read-only exploration, session-scoped bookkeeping, network reads, and read-only subagent delegation remain available. "
     "Deliver a structured, actionable implementation plan in your response. "
     "The user can exit plan mode at any time using /plan off."
 )
 
 ENABLED_OUTPUT = (
-    "Plan mode enabled. File modification and command execution that alters state are forbidden; "
-    "read-only exploration and inspection are allowed. Use /plan off to exit."
+    "Plan mode enabled. External mutation (WRITE/EXECUTE) is forbidden; reads, session bookkeeping, "
+    "network access, and read-only delegation remain available. Use /plan off to exit."
 )
 DISABLED_OUTPUT = "Plan mode disabled."
-
-
-@dataclass(frozen=True, slots=True)
-class PlanState:
-    """This plugin's session-scope state: whether plan mode is currently active."""
-
-    active: bool = False
-
-    @classmethod
-    def from_payload(cls, raw: Mapping[str, object] | None) -> PlanState:
-        if raw is None:
-            return cls()
-        unknown = sorted(str(key) for key in raw if key not in _STATE_KEYS)
-        if unknown:
-            raise ValueError(f"plan state field '{unknown[0]}' is not supported")
-        missing = sorted(_STATE_KEYS - raw.keys())
-        if missing:
-            raise ValueError("plan state is missing field(s): " + ", ".join(missing))
-        if type(raw["schema_version"]) is not int or raw["schema_version"] != SCHEMA_VERSION:
-            raise ValueError(f"plan state schema_version must be {SCHEMA_VERSION}, got {raw['schema_version']!r}")
-        active = raw["active"]
-        if not isinstance(active, bool):
-            raise ValueError("plan state field 'active' must be a boolean")
-        return cls(active=active)
-
-    def to_payload(self) -> dict[str, object]:
-        return {"schema_version": SCHEMA_VERSION, "active": self.active}
-
-
-def _load(services: StateServices) -> tuple[PlanState, int]:
-    state_data, version = services.get_state("session")
-    return PlanState.from_payload(state_data), version
+READ_ONLY_AFTER_PLAN = "The session is still read-only for another reason (frozen policy or another owner's overlay)."
 
 
 def _mode_action(active: bool) -> CommandPresentation:
     return CommandPresentation(
-        title="Plan mode active · Submit to leave plan mode" if active else "Default mode · Submit to enter plan mode",
+        title="Plan mode active · Submit to leave plan mode" if active else "Plan mode inactive · Submit to enter plan mode",
         view_type="form",
         data={"fields": [], "action": "plan.off" if active else "plan"},
     )
 
 
+def _status_output(active: bool, session_read_only: bool) -> str:
+    if active:
+        return "Plan mode: active"
+    if session_read_only:
+        return f"Plan mode: inactive\n{READ_ONLY_AFTER_PLAN}"
+    return "Plan mode: inactive"
+
+
 class PlanCommand:
-    """Enter plan mode: tighten the session and contribute the plan instruction."""
+    """Enter plan mode: tighten the session with this owner's read-only overlay."""
 
     definition: ClassVar[CommandDefinition] = CommandDefinition(
         name="plan",
@@ -83,12 +55,9 @@ class PlanCommand:
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         _ = invocation
-        state, version = _load(services)
-        services.set_overlay(tier="read-only")
-        if state.active:
+        if services.overlay_active():
             return CommandResult(status="ok", output=ENABLED_OUTPUT, data={"active": True, "changed": False}, presentation=_mode_action(True))
-        updated = PlanState(active=True)
-        services.replace_state(updated.to_payload(), expected_version=version)
+        services.set_overlay(tier="read-only")
         services.stage_event("plan_mode_enabled", {})
         return CommandResult(status="ok", output=ENABLED_OUTPUT, data={"active": True, "changed": True}, presentation=_mode_action(True))
 
@@ -106,13 +75,11 @@ class PlanOffCommand:
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         _ = invocation
-        state, version = _load(services)
         cleared = services.clear_overlay()
-        if not state.active:
-            return CommandResult(status="ok", output=DISABLED_OUTPUT, data={"active": False, "changed": cleared}, presentation=_mode_action(False))
-        services.replace_state(PlanState(active=False).to_payload(), expected_version=version)
-        services.stage_event("plan_mode_disabled", {})
-        return CommandResult(status="ok", output=DISABLED_OUTPUT, data={"active": False, "changed": True}, presentation=_mode_action(False))
+        if cleared:
+            services.stage_event("plan_mode_disabled", {})
+        output = DISABLED_OUTPUT if not services.session_read_only() else f"{DISABLED_OUTPUT}\n{READ_ONLY_AFTER_PLAN}"
+        return CommandResult(status="ok", output=output, data={"active": False, "changed": cleared}, presentation=_mode_action(False))
 
 
 class PlanStatusCommand:
@@ -126,34 +93,17 @@ class PlanStatusCommand:
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         _ = invocation
-        state, _version = _load(services)
+        active = services.overlay_active()
+        session_read_only = services.session_read_only()
         return CommandResult(
             status="ok",
-            output="Mode: plan" if state.active else "Mode: default",
-            data={"active": state.active},
-            presentation=_mode_action(state.active),
+            output=_status_output(active, session_read_only),
+            data={"active": active, "read_only": session_read_only},
+            presentation=_mode_action(active),
         )
 
 
 def plan_context(context: ToolContext, services: PluginServices) -> ContextContribution | None:
-    """Contribute the plan instruction while plan mode is active."""
+    """Contribute the plan instruction while this owner's overlay is active."""
     _ = context
-    state, _version = _load(services)
-    return ContextContribution(content=PLAN_MODE_INSTRUCTION) if state.active else None
-
-
-def prepare_plan_deactivation(
-    state: Mapping[str, object],
-    scope: str,
-    scope_key: str,
-    tip_sequence: int | None,
-) -> Mapping[str, object]:
-    """Pure deactivation transform: an active mode parks off; the overlay row is core-owned.
-
-    The activation transaction deletes this owner's overlay, so a kept active flag would
-    promise a restriction that no longer exists. After re-enable the user enters plan mode
-    again explicitly.
-    """
-    _ = (scope, scope_key, tip_sequence)
-    PlanState.from_payload(state)
-    return PlanState(active=False).to_payload()
+    return ContextContribution(content=PLAN_MODE_INSTRUCTION) if services.overlay_active() else None
