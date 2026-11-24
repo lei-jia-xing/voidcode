@@ -311,9 +311,13 @@ class PluginRuntime:
         read_child_snapshot_callback: Callable[[str, str], ChildSessionSnapshot | None] | None = None,
         cancel_subtree_callback: Callable[[str, str, str | None, str], CancelSubtreeReceipt] | None = None,
         cancel_background_action_callback: Callable[[str, str, str, str], bool] | None = None,
-        model_query_callback: Callable[[str, str, str | None, int | None, bool, str | None], str] | None = None,
+        model_query_callback: Callable[[str, str, str | None, int | None, bool, str | None, ProviderAbortSignal | None], str] | None = None,
         model_query_structured_callback: (
-            Callable[[str, str, Mapping[str, object], str | None, int | None, bool, str | None], StructuredModelResult] | None
+            Callable[
+                [str, str, Mapping[str, object], str | None, int | None, bool, str | None, ProviderAbortSignal | None],
+                StructuredModelResult,
+            ]
+            | None
         ) = None,
         progress_callback: Callable[[LeaseContext, Mapping[str, object]], None] | None = None,
         tool_definition_callback: Callable[[str, str, str], tuple[Mapping[str, object] | None, str]] | None = None,
@@ -1441,7 +1445,13 @@ class PluginRuntime:
         cancelled = cancel_event.is_set() or bool(context.abort_signal and context.abort_signal.cancelled)
         if cancelled:
             self._cancel_claimed_services(lease)
-            result = CommandResult(status="error", error="command invocation was cancelled; external effects may be incomplete", output=result.output)
+            # A cancelled invocation's partial result is not a settled output: keep
+            # only the cancellation fact, never a paid/partial body in the receipt.
+            result = CommandResult(
+                status="error",
+                error="command invocation was cancelled; external effects may be incomplete",
+                data={"cancelled": True},
+            )
             staged: _Staged = ((), (), (), (), (), None, (), ())
         elif cmd_threw:
             staged = ((), (), (), (), (), None, (), ())

@@ -1405,7 +1405,15 @@ class RuntimeServices:
             raise ValueError("max_output_tokens must be an integer or null")
         if type(include_context) is not bool:
             raise ValueError("include_context must be a boolean")
-        return callback(lease.identity.session_id, str(prompt), model, max_output_tokens, include_context, lease.identity.owner)
+        return callback(
+            lease.identity.session_id,
+            str(prompt),
+            model,
+            max_output_tokens,
+            include_context,
+            lease.identity.owner,
+            lease.abort_signal,
+        )
 
     def model_query_structured(
         self,
@@ -1437,6 +1445,7 @@ class RuntimeServices:
             max_output_tokens,
             include_context,
             lease.identity.owner,
+            lease.abort_signal,
         )
 
     def get_usage(self, *, since_sequence: int = 0, until_sequence: int | None = None) -> SessionUsageReport:

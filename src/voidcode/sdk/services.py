@@ -141,6 +141,14 @@ class QueryContractError(ValueError):
     """Raised when a query answer violates its expected contract schema."""
 
 
+class ModelQueryCancelled(RuntimeError):
+    """A governed model query was cancelled before it produced a usable answer."""
+
+
+class ModelQueryToolCalls(RuntimeError):
+    """A governed model query returned native tool calls although none were offered."""
+
+
 type BudgetExhaustionDimension = Literal[
     "provider_turns",
     "root_actions",
@@ -1329,7 +1337,9 @@ class ToolServices(Protocol):
         The provider's actual usage is charged once to this session's usage report
         and any active owner budget. An exhausted budget refuses the call before
         dispatch, missing usage stays unknown, and a usage fact that cannot be
-        recorded fails the call.
+        recorded fails the call. The invoking lease's abort signal cancels the
+        provider request; a cancelled turn raises ``ModelQueryCancelled`` and never
+        returns an answer. A tool-call reply raises ``ModelQueryToolCalls``.
         """
         ...
 

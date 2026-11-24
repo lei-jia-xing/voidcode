@@ -4,6 +4,14 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### `/btw` cancellation, bounds, and conflict-safe accounting
+- `/btw` now hands the command/run abort signal to the governed model query, so cancelling the invoking work stops the provider turn and returns a stable `cancelled` command error. A cancelled command receipt no longer retains a partial or paid answer.
+- Model-query usage accounting and public command/observer commits retry a lost event-sequence CAS against the fresh session tip, matching the turn commit path. A side query that finishes beside a RUNNING turn no longer fails after billing.
+- The command bounds input to the 64 KiB prompt ceiling (schema `maxLength` plus a UTF-8 byte check) and answers to 16 KiB (plus a requested 2048-token output cap), stores the answer once as command output, and maps empty answers, native tool-call replies, provider failures, and cancellation to stable error codes without raw exception text.
+- README/contract docs state the actual behavior: included plugin context, core usage/receipt events, observer accounting, read-only/NETWORK admission, no command approval gate, no root-action reservation, and no idempotency key.
+- Tests cover busy-RUNNING concurrency, forced CAS conflicts, resume after `/btw`, read-only admission, cancellation, provider tool-call replies, oversize input/output, usage-fact observers, and root-budget exemption.
+- Verification: `/btw` unit/integration suites, affected core commit/model-query/command/cancellation tests, `ruff check`, `ruff format --check`, and `ty check src`.
+
 ### File tools: typed boundaries and bounded mutations
 - `write` now raises the shared typed boundary for every failure (`stale_edit`/`tool_input_mismatch`/`tool_execution_error` with a reason and retry guidance; missing/stale hashes point at `read(hash_only=true)`), creates through `replace_file`'s exclusive `os.link` instead of check-then-`os.replace`, re-checks an overwrite by streamed hash, and renders a diff only when the previous file is at most 64 KiB. Its hand-written schema (character-based `maxLength`) became one pydantic model, so argument errors are typed and the byte cap is the only size bound.
 - One 64 KiB mutation-content cap now covers `write.content`, the sum of text-edit `newString`, and the sum of range `newText`, measured in UTF-8 bytes with one `input_too_large` failure. Both edit modes refuse a literal leaf symlink, text edit's diff header is workspace-relative, and every successful mutation reports its committed hash as `Change.content_hash`.

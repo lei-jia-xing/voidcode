@@ -18,8 +18,22 @@ from uuid import uuid4
 import jsonschema
 
 from ...sdk.json_values import json_wire_object, own_json_object
-from ...sdk.provider import ProviderMessage, ProviderReasoningEffort, ProviderTurnRequest, ProviderTurnResult
-from ...sdk.services import PluginBudget, SessionUsageReport, StructuredModelResult, StructuredQueryParseError
+from ...sdk.provider import (
+    ProviderAbortSignal,
+    ProviderExecutionError,
+    ProviderMessage,
+    ProviderReasoningEffort,
+    ProviderTurnRequest,
+    ProviderTurnResult,
+)
+from ...sdk.services import (
+    ModelQueryCancelled,
+    ModelQueryToolCalls,
+    PluginBudget,
+    SessionUsageReport,
+    StructuredModelResult,
+    StructuredQueryParseError,
+)
 from ..cancellation import Cancellation
 from ..events import EventType
 from ..execution import _Cursor, _Execution
@@ -81,14 +95,21 @@ class ModelQueryRuntime:
         max_output_tokens: int | None = None,
         include_context: bool = False,
         owner: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> str:
         """A tool-free side turn, optionally reading the current conversation window.
 
         Actual provider usage is charged once to ``owner`` and the session; the
-        question and answer never extend the conversation.
+        question and answer never extend the conversation. The invoking lease's
+        abort signal is authoritative over the core-wide default, so a cancelled
+        command or run stops the side turn instead of waiting for its full reply.
         """
-        turn, provider_name, model_name, elapsed_ms = self._turn(session_id, prompt, model, max_output_tokens, include_context)
+        turn, provider_name, model_name, elapsed_ms = self._turn(
+            session_id, prompt, model, max_output_tokens, include_context, abort_signal=abort_signal
+        )
         self._commit_usage(session_id, turn, provider_name, model_name, owner=owner, elapsed_ms=elapsed_ms)
+        if self._abort_signal(abort_signal).cancelled:
+            raise ModelQueryCancelled("model query cancelled")
         _reject_tool_calls(turn)
         return turn.output or ""
 
@@ -101,6 +122,7 @@ class ModelQueryRuntime:
         max_output_tokens: int | None = None,
         include_context: bool = False,
         owner: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> StructuredModelResult:
         """A tool-free side turn parsed and validated against ``result_schema``.
 
@@ -126,8 +148,11 @@ class ModelQueryRuntime:
             model,
             max_output_tokens,
             include_context,
+            abort_signal=abort_signal,
         )
         self._commit_usage(session_id, turn, provider_name, model_name, owner=owner, elapsed_ms=elapsed_ms)
+        if self._abort_signal(abort_signal).cancelled:
+            raise ModelQueryCancelled("model query cancelled")
         _reject_tool_calls(turn)
         raw_text = turn.output or ""
         stripped = raw_text.strip()
@@ -176,12 +201,17 @@ class ModelQueryRuntime:
         model: str | None,
         max_output_tokens: int | None,
         include_context: bool,
+        *,
+        abort_signal: ProviderAbortSignal | None,
     ) -> tuple[ProviderTurnResult, str, str, int]:
         """The shared governed side-turn: resolution, budget, dispatch, and measurement."""
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > 64 * 1024:
             raise ValueError("model query prompt must be nonempty UTF-8 text within 64 KiB")
         self._host.ensure_open()
         self._host.session(session_id)
+        effective_abort = self._abort_signal(abort_signal)
+        if effective_abort.cancelled:
+            raise ModelQueryCancelled("model query cancelled")
         selected = model or self._host.default_model
         if selected is None:
             raise ValueError(MODEL_CONFIGURATION_GUIDANCE)
@@ -208,12 +238,21 @@ class ModelQueryRuntime:
                 model_name=model_name,
                 reasoning_effort=self._host.reasoning_effort,
                 metadata=metadata,
-                abort_signal=self._host.abort_signal,
+                abort_signal=effective_abort,
             )
             started = time.monotonic()
-            turn = snapshot.plugin_runtime.propose_turn(request, provider=provider_name)
+            try:
+                turn = snapshot.plugin_runtime.propose_turn(request, provider=provider_name)
+            except ProviderExecutionError as exc:
+                if exc.kind == "cancelled":
+                    raise ModelQueryCancelled("model query cancelled") from exc
+                raise
             elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
         return turn, provider_name, model_name, elapsed_ms
+
+    def _abort_signal(self, abort_signal: ProviderAbortSignal | None) -> ProviderAbortSignal:
+        """Use the invoking lease's signal, falling back to the core-wide default."""
+        return self._host.abort_signal if abort_signal is None else abort_signal
 
     def _admit_budget(self, session_id: str) -> None:
         """Refuse a side query when an active session/plugin budget already blocks dispatch."""
@@ -249,4 +288,4 @@ class ModelQueryRuntime:
 def _reject_tool_calls(turn: ProviderTurnResult) -> None:
     """A side query offers no tools, so any native call is a provider contract failure."""
     if turn.tool_calls:
-        raise RuntimeError("governed model query returned tool calls; none were offered")
+        raise ModelQueryToolCalls("governed model query returned tool calls; none were offered")

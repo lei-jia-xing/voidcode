@@ -50,4 +50,10 @@ the session usage report and active budgets. The same committed event is one pub
 `UsageFact` (`source="model_query"`, `owner=<invoking plugin>`) delivered to `usage`
 observers once, so observer-maintained accounting includes side-query spend without
 re-reading the session report. An exhausted budget refuses the query before dispatch;
-missing usage stays unknown. The bundled `/btw` command requests this contextual mode.
+missing usage stays unknown. Cancellation uses the invoking lease's abort signal (the
+command or run that asked), so a cancelled side turn stops before returning an answer
+and raises `ModelQueryCancelled`; a native tool-call reply raises
+`ModelQueryToolCalls`. A side query does not reserve a root-action unit, so
+`root_action_budget` and `max_steps` do not limit it; active session/plugin budgets and
+the session usage report still apply. The bundled `/btw` command requests this
+contextual mode.

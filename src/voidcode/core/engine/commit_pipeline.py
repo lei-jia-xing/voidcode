@@ -428,33 +428,49 @@ class CommitPipeline:
         return new_events
 
     def commit_public_batch(self, batch: PublicStagedBatch) -> SessionRecord:
-        """Commit a public event batch with frozen fact owners and live delivery."""
-        session = self._host.store.session(batch.session_id)
-        before = session.last_event_sequence
-        resolved_run_id = batch.run_id if batch.run_id is not None else (session.run_id or uuid4().hex)
-        resolved_status = batch.status if batch.status is not None else session.status
-        revision_id = batch.revision_id if batch.revision_id is not None else self._host.revision_id
-        committed = self._host.store.commit_staged(
-            batch.session_id,
-            expected_sequence=before,
-            expected_run_id=session.run_id,
-            run_id=resolved_run_id,
-            revision_id=revision_id,
-            events=self.stamp_fact_owners(batch.events),
-            status=resolved_status,
-            checkpoint_kind=batch.checkpoint_kind,
-            checkpoint_payload=batch.checkpoint_payload,
-            staged_state=batch.staged_state,
-            staged_continuations=batch.staged_continuations,
-            staged_cancellations=batch.staged_cancellations,
-            staged_wakeups=batch.staged_wakeups,
-            staged_wakeup_cancels=batch.staged_wakeup_cancels,
-            staged_budgets=batch.staged_budgets,
-            staged_confirmations=batch.staged_confirmations,
-            observer_receipts=batch.observer_receipts,
-            root_action_id=batch.root_action_id,
-            root_action_budget=batch.initial_root_budget,
-        )
+        """Commit a public event batch with frozen fact owners and live delivery.
+
+        Public writers (commands, observers, usage accounting) may commit beside a
+        running turn without its session lock, so a lost CAS is expected and
+        retried against the fresh tip exactly like a turn commit. Only the store
+        transaction is retried; fact delivery happens once after it succeeds.
+        """
+        events = self.stamp_fact_owners(batch.events)
+        for attempt in range(16):
+            session = self._host.store.session(batch.session_id)
+            before = session.last_event_sequence
+            resolved_run_id = batch.run_id if batch.run_id is not None else (session.run_id or uuid4().hex)
+            resolved_status = batch.status if batch.status is not None else session.status
+            revision_id = batch.revision_id if batch.revision_id is not None else self._host.revision_id
+            try:
+                committed = self._host.store.commit_staged(
+                    batch.session_id,
+                    expected_sequence=before,
+                    expected_run_id=session.run_id,
+                    run_id=resolved_run_id,
+                    revision_id=revision_id,
+                    events=events,
+                    status=resolved_status,
+                    checkpoint_kind=batch.checkpoint_kind,
+                    checkpoint_payload=batch.checkpoint_payload,
+                    staged_state=batch.staged_state,
+                    staged_continuations=batch.staged_continuations,
+                    staged_cancellations=batch.staged_cancellations,
+                    staged_wakeups=batch.staged_wakeups,
+                    staged_wakeup_cancels=batch.staged_wakeup_cancels,
+                    staged_budgets=batch.staged_budgets,
+                    staged_confirmations=batch.staged_confirmations,
+                    observer_receipts=batch.observer_receipts,
+                    root_action_id=batch.root_action_id,
+                    root_action_budget=batch.initial_root_budget,
+                )
+            except SequenceConflict:
+                if attempt < 15:
+                    continue
+                raise
+            break
+        else:
+            raise AssertionError("unreachable public commit retry loop")
         self._host.notify_commit()
         self.deliver_committed_facts(
             batch.session_id,

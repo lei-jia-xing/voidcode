@@ -43,7 +43,7 @@ from ...sdk.invocation import ToolContext
 from ...sdk.json_values import json_wire_object
 from ...sdk.observed_effects import MAX_OBSERVED_CHANGES
 from ...sdk.plugin import StateScope
-from ...sdk.provider import ImageAttachment, ProviderMessage, ProviderReasoningEffort
+from ...sdk.provider import ImageAttachment, ProviderAbortSignal, ProviderMessage, ProviderReasoningEffort
 from ...sdk.services import (
     ArtifactPage,
     CancelSubtreeReceipt,
@@ -78,7 +78,6 @@ from ..delegation import (
 from ..events import EventType
 from ..execution import _Cursor, _Execution, committed_event, wire_object
 from ..fact_delivery import BirthAuthorization, FactDelivery
-from ..facts import FACT_EVENT_TYPES
 from ..output_projection import ResultProjector
 from ..plugins import LeaseContext, PluginRuntime, PluginSource
 from ..processes import ProcessHost
@@ -2676,27 +2675,10 @@ class Core:
         spend silently unrecorded. An accounted event that is also a public fact
         (a governed model query) is delivered to its frozen owners exactly once.
         """
-        session = self.store.session(session_id)
-        before = session.last_event_sequence
-        committed = self.store.commit_staged(
-            session_id,
-            expected_sequence=before,
-            expected_run_id=session.run_id,
-            run_id=session.run_id or uuid4().hex,
-            revision_id=self.revision_id,
-            events=self._commit_pipeline.stamp_fact_owners((event,)),
-            status=session.status,
-            checkpoint_kind=None,
-            checkpoint_payload=None,
-        )
-        self.notify_commit()
-        if event.event_type in FACT_EVENT_TYPES and committed.last_event_sequence > before:
-            self._commit_pipeline.deliver_committed_facts(
-                session_id,
-                after_sequence=before,
-                upto_sequence=committed.last_event_sequence,
-                run_id=committed.run_id or uuid4().hex,
-            )
+        # A side query can finish beside an active turn. Reuse the public commit
+        # path so a lost sequence CAS retries against the fresh tip instead of
+        # failing after the provider was already billed.
+        self._commit_pipeline.commit_public_fact(session_id, event)
 
     def commit_control_event(self, session_id: str, event: EventDraft) -> None:
         """Append one best-effort diagnostic control fact; losing it never blocks owner work."""
@@ -2732,6 +2714,7 @@ class Core:
         max_output_tokens: int | None = None,
         include_context: bool = False,
         owner: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> str:
         """A tool-free side turn, optionally reading the current conversation window.
 
@@ -2745,6 +2728,7 @@ class Core:
             max_output_tokens=max_output_tokens,
             include_context=include_context,
             owner=owner,
+            abort_signal=abort_signal,
         )
 
     def governed_model_query_structured(
@@ -2756,6 +2740,7 @@ class Core:
         max_output_tokens: int | None = None,
         include_context: bool = False,
         owner: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> StructuredModelResult:
         """A tool-free side turn parsed and validated against ``result_schema``.
 
@@ -2770,6 +2755,7 @@ class Core:
             max_output_tokens=max_output_tokens,
             include_context=include_context,
             owner=owner,
+            abort_signal=abort_signal,
         )
 
     def commit_staged_rebased(
