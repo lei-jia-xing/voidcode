@@ -1,4 +1,4 @@
-"""Unit tests for the cron plugin: state, tools, /loop command, and terminal rescheduling."""
+"""Unit tests for the cron plugin: state, tools, /loop, and fact-driven settlement."""
 
 from __future__ import annotations
 
@@ -14,21 +14,25 @@ from tests.fixtures.fake_services import FakeServices
 from voidcode.plugins.cron import create_plugin, cron_plugin
 from voidcode.plugins.cron.cron_plugin import (
     DEFAULT_RECURRING_EXPIRY_SECONDS,
-    MAX_SCHEDULES_PER_WORKSPACE,
+    DELETE_IN_FLIGHT_NOTE,
+    MAX_SCHEDULES_PER_SESSION,
+    MIN_EVERY_INTERVAL_SECONDS,
     SCHEMA_VERSION,
     CronCreateTool,
     CronDeleteTool,
     CronListTool,
     CronLoopCommand,
     CronState,
+    PendingFire,
     ScheduleEntry,
     cron_observer,
 )
-from voidcode.plugins.cron.loop_command import USAGE_MESSAGE, loop_confirmation_message
+from voidcode.plugins.cron.loop_command import DEFAULT_INTERVAL, USAGE_MESSAGE, loop_confirmation_message
 from voidcode.plugins.cron.schedule_expr import next_fire_after, parse_schedule
 from voidcode.sdk.commands import CommandInvocation
-from voidcode.sdk.hooks import FactPage, InvocationFinishedFact, RunFinishedFact, WakeupFiredFact
+from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact, WakeupFiredFact
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.services import BudgetExhaustion
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
 
 OWNER = "cron"
@@ -36,6 +40,7 @@ SESSION_ID = "session-1"
 #: Pinned wall clock: the whole suite computes fire instants against this instant.
 NOW_MS = 1_700_000_000_000
 NOW_SECONDS = NOW_MS // 1000
+DEFAULT_EXPIRY = NOW_MS + DEFAULT_RECURRING_EXPIRY_SECONDS * 1000
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +72,7 @@ def _invoke_tool(tool: CronCreateTool | CronDeleteTool | CronListTool, services:
 
 def _create(services: FakeServices, tmp_path: Path, schedule: str, prompt: str = "keep building") -> str:
     result = _invoke_tool(CronCreateTool(), services, tmp_path, {"schedule": schedule, "prompt": prompt})
-    assert isinstance(result, ToolSuccess)
+    assert isinstance(result, ToolSuccess), result
     return str(json.loads(result.output.text)["id"])
 
 
@@ -75,9 +80,9 @@ def _stored(services: FakeServices) -> CronState:
     return cron_plugin._store(services).load()[0]
 
 
-def _seeded(payload: Mapping[str, object]) -> FakeServices:
+def _seed(payload: Mapping[str, object], *, version: int = 1) -> FakeServices:
     services = FakeServices(owner=OWNER)
-    services.seed_state(payload)
+    services.seed_state(payload, version=version)
     return services
 
 
@@ -85,53 +90,107 @@ def _entry(services: FakeServices, schedule_id: str) -> ScheduleEntry:
     return _stored(services).schedules[schedule_id]
 
 
-def _fired_event(*, sequence: int, run_id: str, schedule_id: str, prompt: str = "keep building", wakeup_id: str = "wakeup-fired") -> WakeupFiredFact:
-    return WakeupFiredFact(
-        session_id=SESSION_ID,
-        event_sequence=sequence,
-        run_id=run_id,
-        revision_id="rev-1",
-        logical_turn="turn-1",
-        owner=OWNER,
+def _pending(
+    schedule_id: str,
+    *,
+    wakeup_id: str = "wakeup-fired",
+    sequence: int = 7,
+    prompt: str = "keep building",
+    role: Literal["system", "user"] = "user",
+) -> PendingFire:
+    return PendingFire(
         wakeup_id=wakeup_id,
-        role="user",
+        fired_sequence=sequence,
+        role=role,
         payload={"kind": "cron", "text": prompt, "schedule_id": schedule_id},
-    )
-
-
-def _run_finished(status: Literal["completed", "failed", "interrupted"], *, run_id: str) -> RunFinishedFact:
-    return RunFinishedFact(
-        session_id=SESSION_ID,
-        run_id=run_id,
-        revision_id="rev-1",
-        logical_turn="turn-1",
-        event_sequence=9,
-        status=status,
-        stop_cause="completed" if status == "completed" else "error",
     )
 
 
 def _schedule_payload(
     *,
     schedule_id: str,
-    schedule_text: str,
-    kind: str,
-    expires_at: int | None,
+    schedule_text: str = "every 10m",
+    kind: str = "every",
+    prompt: str = "keep building",
+    expires_at: int | None = DEFAULT_EXPIRY,
     enabled: bool = True,
     wakeup_id: str | None = "wakeup-fired",
+    next_fire_at: int | None = NOW_MS + 600_000,
+    pending: PendingFire | None = None,
+    last_finished_sequence: int = 0,
 ) -> dict[str, object]:
-    return CronState(
-        schedules={
-            schedule_id: ScheduleEntry(
-                schedule_text=schedule_text,
-                kind=kind,  # type: ignore[arg-type]
-                prompt="keep building",
-                enabled=enabled,
-                expires_at=expires_at,
-                wakeup_id=wakeup_id,
-            )
-        }
-    ).to_payload()
+    if pending is not None:
+        next_fire_at = None
+        wakeup_id = pending.wakeup_id
+    if not enabled:
+        wakeup_id = None
+        next_fire_at = None
+        pending = None
+    entry = ScheduleEntry(
+        schedule_text=schedule_text,
+        kind=kind,  # type: ignore[arg-type]
+        prompt=prompt,
+        enabled=enabled,
+        expires_at=expires_at,
+        wakeup_id=wakeup_id,
+        next_fire_at=next_fire_at,
+        pending=pending,
+    )
+    return CronState(schedules={schedule_id: entry}, last_finished_sequence=last_finished_sequence).to_payload()
+
+
+def _fired_event(
+    *,
+    sequence: int,
+    run_id: str = "run-claim",
+    schedule_id: str,
+    prompt: str = "keep building",
+    wakeup_id: str = "wakeup-fired",
+    owner: str = OWNER,
+    payload: Mapping[str, object] | None = None,
+) -> WakeupFiredFact:
+    return WakeupFiredFact(
+        session_id=SESSION_ID,
+        event_sequence=sequence,
+        run_id=run_id,
+        revision_id="rev-1",
+        logical_turn="turn-1",
+        owner=owner,
+        wakeup_id=wakeup_id,
+        role="user",
+        payload=payload or {"kind": "cron", "text": prompt, "schedule_id": schedule_id},
+    )
+
+
+def _run_finished(
+    status: Literal["completed", "failed", "interrupted"] = "completed",
+    *,
+    sequence: int = 9,
+    run_id: str = "run-resumed",
+    stop_cause: Literal["completed", "error", "user_stop", "owner_cancel", "limit_reached", "shutdown"] | None = None,
+    budget_exhaustion: BudgetExhaustion | None = None,
+) -> RunFinishedFact:
+    return RunFinishedFact(
+        session_id=SESSION_ID,
+        run_id=run_id,
+        revision_id="rev-1",
+        logical_turn="turn-1",
+        event_sequence=sequence,
+        status=status,
+        stop_cause=stop_cause or ("completed" if status == "completed" else "error"),
+        budget_exhaustion=budget_exhaustion,
+    )
+
+
+def _root_budget_exhausted() -> BudgetExhaustion:
+    return BudgetExhaustion(
+        dimension="root_actions",
+        source="root_action_budget",
+        limit=3,
+        consumed=3,
+        remaining=0,
+        continue_with="extend_root_actions",
+    )
 
 
 # --- create ---
@@ -141,14 +200,19 @@ def _schedule_payload(
     ("schedule", "prompt"),
     [
         ("every 10m", "check the deploy"),
-        ("every 1s", "tick"),
+        ("every 60s", "tick"),
+        ("every 6d", "slow"),
         ("once", "run now"),
         ("at 2026-12-01T09:00:00", "wake up"),
         ("cron */5 * * * *", "poll"),
     ],
 )
-def test_create_arms_the_first_fire_computed_by_the_expression(services: FakeServices, tmp_path: Path, schedule: str, prompt: str) -> None:
-    schedule_id = _create(services, tmp_path, schedule, prompt)
+def test_create_stages_the_first_fire_computed_by_the_expression(services: FakeServices, tmp_path: Path, schedule: str, prompt: str) -> None:
+    result = _invoke_tool(CronCreateTool(), services, tmp_path, {"schedule": schedule, "prompt": prompt})
+
+    assert isinstance(result, ToolSuccess)
+    payload = json.loads(result.output.text)
+    schedule_id = str(payload["id"])
     expr = parse_schedule(schedule)
     expected_fire_ms = next_fire_after(expr, NOW_SECONDS) * 1000
 
@@ -157,34 +221,58 @@ def test_create_arms_the_first_fire_computed_by_the_expression(services: FakeSer
     assert entry.kind == expr.kind
     assert entry.prompt == prompt
     assert entry.enabled is True
+    assert entry.next_fire_at == expected_fire_ms
+    assert entry.pending is None
+    assert payload["next_fire_at"] == expected_fire_ms
+    assert payload["expires_at"] == entry.expires_at
 
-    assert services.pending() == {
-        entry.wakeup_id: {
-            "payload": {"kind": "cron", "text": prompt, "schedule_id": schedule_id},
-            "due_at_ms": expected_fire_ms,
-            "role": "user",
-            "idempotency_key": f"cron:{schedule_id}:{expected_fire_ms}",
-            "status": "pending",
-        }
-    }
+    # The wakeup is staged with the state; no durable row exists before the result commit.
+    assert len(services.staged_wakeups) == 1
+    staged = services.staged_wakeups[0]
+    assert staged["payload"] == {"kind": "cron", "text": prompt, "schedule_id": schedule_id}
+    assert staged["due_at_ms"] == expected_fire_ms
+    assert staged["role"] == "user"
+    assert staged["idempotency_key"] == f"cron:{schedule_id}:{expected_fire_ms}"
+    assert services.wakeups == {}
     assert [name for name, _payload in services.staged_events] == ["schedule_created"]
     event = services.staged_events[0][1]
     assert event["id"] == schedule_id
     assert event["kind"] == expr.kind
     assert event["next_fire_at"] == expected_fire_ms
     assert event["wakeup_id"] == entry.wakeup_id
-    assert _stored(services).cursor_sequence == 0
+    assert _stored(services).last_finished_sequence == 0
 
 
 def test_default_expiry_applies_to_recurring_schedules_only(services: FakeServices, tmp_path: Path) -> None:
     for schedule, expected in (
-        ("every 10m", NOW_MS + DEFAULT_RECURRING_EXPIRY_SECONDS * 1000),
-        ("cron 0 9 * * *", NOW_MS + DEFAULT_RECURRING_EXPIRY_SECONDS * 1000),
+        ("every 10m", DEFAULT_EXPIRY),
+        ("cron 0 9 * * *", DEFAULT_EXPIRY),
         ("once", None),
         ("at 2026-12-01T09:00:00", None),
     ):
         schedule_id = _create(services, tmp_path, schedule)
         assert _entry(services, schedule_id).expires_at == expected, schedule
+
+
+@pytest.mark.parametrize(
+    ("schedule", "fragment"),
+    [
+        ("every 1s", "at least 1 minute"),
+        ("every 59s", "at least 1 minute"),
+        ("every 7d", "shorter than the 7-day recurring expiry"),
+        ("every 8d", "shorter than the 7-day recurring expiry"),
+        ("cron 0 0 1 1 *", "at or after the 7-day recurring expiry"),
+    ],
+)
+def test_create_rejects_schedules_outside_the_recurring_policy(services: FakeServices, tmp_path: Path, schedule: str, fragment: str) -> None:
+    services.seed_state(CronState().to_payload(), version=3)
+    result = _invoke_tool(CronCreateTool(), services, tmp_path, {"schedule": schedule, "prompt": "x"})
+
+    assert isinstance(result, ToolFailure)
+    assert fragment in result.error
+    assert services.staged_wakeups == []
+    assert services.staged_events == []
+    assert services.read_state("session") == (CronState().to_payload(), 3)
 
 
 @pytest.mark.parametrize("schedule", ["banana", "every 0s", "every 10 fortnights", "cron * * *", "at not-a-date", "cron 0 9 * * L"])
@@ -195,6 +283,7 @@ def test_invalid_schedule_is_rejected_without_side_effects(services: FakeService
     assert isinstance(result, ToolFailure)
     assert result.error
     assert services.wakeups == {}
+    assert services.staged_wakeups == []
     assert services.staged_events == []
     assert services.read_state("session") == (CronState().to_payload(), 3)
 
@@ -212,6 +301,7 @@ def test_missing_or_blank_arguments_are_rejected(services: FakeServices, tmp_pat
     result = _invoke_tool(CronCreateTool(), services, tmp_path, arguments)
     assert isinstance(result, ToolFailure)
     assert services.wakeups == {}
+    assert services.staged_wakeups == []
     assert services.staged_events == []
 
 
@@ -222,35 +312,43 @@ def test_schedule_cap_is_enforced_per_session(services: FakeServices, tmp_path: 
             kind="every",
             prompt="x",
             enabled=True,
-            expires_at=NOW_MS + DEFAULT_RECURRING_EXPIRY_SECONDS * 1000,
+            expires_at=DEFAULT_EXPIRY,
             wakeup_id=f"wakeup-{index}",
+            next_fire_at=NOW_MS + 10 * 60_000,
+            pending=None,
         )
-        for index in range(MAX_SCHEDULES_PER_WORKSPACE)
+        for index in range(MAX_SCHEDULES_PER_SESSION)
     }
     services.seed_state(CronState(schedules=schedules).to_payload())
 
     result = _invoke_tool(CronCreateTool(), services, tmp_path, {"schedule": "every 10m", "prompt": "x"})
     assert isinstance(result, ToolFailure)
-    assert f"maximum {MAX_SCHEDULES_PER_WORKSPACE} jobs" in result.error
-    assert services.wakeups == {}
-    assert len(_stored(services).schedules) == MAX_SCHEDULES_PER_WORKSPACE
+    assert f"maximum {MAX_SCHEDULES_PER_SESSION} jobs" in result.error
+    assert services.staged_wakeups == []
+    assert len(_stored(services).schedules) == MAX_SCHEDULES_PER_SESSION
 
 
 # --- delete and list ---
 
 
-def test_delete_cancels_the_armed_wakeup_and_removes_the_schedule(services: FakeServices, tmp_path: Path) -> None:
+def test_delete_stages_cancel_with_the_state_removal(services: FakeServices, tmp_path: Path) -> None:
     kept = _create(services, tmp_path, "every 10m", "keep me")
     removed = _create(services, tmp_path, "every 1h", "drop me")
     armed = _entry(services, removed).wakeup_id
-    assert armed is not None and armed in services.pending()
+    assert armed is not None
 
     result = _invoke_tool(CronDeleteTool(), services, tmp_path, {"id": removed})
 
     assert isinstance(result, ToolSuccess)
-    assert json.loads(result.output.text) == {"id": removed}
-    assert services.wakeups[armed]["status"] == "cancelled"
+    assert json.loads(result.output.text) == {"id": removed, "note": DELETE_IN_FLIGHT_NOTE}
+    assert services.staged_wakeup_cancels == [armed]
     assert set(_stored(services).schedules) == {kept}
+    assert services.wakeups == {}
+    deleted = services.staged_events[-1]
+    assert deleted[0] == "schedule_deleted"
+    assert deleted[1]["id"] == removed
+    assert deleted[1]["wakeup_id"] == armed
+    assert deleted[1]["note"] == DELETE_IN_FLIGHT_NOTE
 
 
 def test_delete_rejects_unknown_and_missing_ids(services: FakeServices, tmp_path: Path) -> None:
@@ -260,7 +358,7 @@ def test_delete_rejects_unknown_and_missing_ids(services: FakeServices, tmp_path
     assert unknown.error == "Schedule 'sched-nope' not found."
 
 
-def test_list_reports_every_schedule(services: FakeServices, tmp_path: Path) -> None:
+def test_list_reports_the_stored_armed_next_fire_and_pending_state(services: FakeServices, tmp_path: Path) -> None:
     every = _create(services, tmp_path, "every 10m", "poll")
     once = _create(services, tmp_path, "once", "now please")
     disabled = _create(services, tmp_path, "every 30m", "later")
@@ -270,146 +368,328 @@ def test_list_reports_every_schedule(services: FakeServices, tmp_path: Path) -> 
             state,
             schedules={
                 **state.schedules,
-                disabled: replace(state.schedules[disabled], enabled=False, wakeup_id=None),
+                disabled: replace(state.schedules[disabled], enabled=False, wakeup_id=None, next_fire_at=None, pending=None),
             },
         ).to_payload()
     )
 
     result = _invoke_tool(CronListTool(), services, tmp_path, {})
     assert isinstance(result, ToolSuccess)
-    jobs = json.loads(result.output.text)["jobs"]
-    assert jobs == [
-        {
-            "id": every,
-            "schedule_text": "every 10m",
-            "human_schedule": "every 10m",
-            "next_fire_at": next_fire_after(parse_schedule("every 10m"), NOW_SECONDS),
-            "enabled": True,
-            "expires_at": NOW_MS + DEFAULT_RECURRING_EXPIRY_SECONDS * 1000,
-        },
-        {
-            "id": once,
-            "schedule_text": "once",
-            "human_schedule": "once",
-            "next_fire_at": NOW_SECONDS,
-            "enabled": True,
-            "expires_at": None,
-        },
-        {
-            "id": disabled,
-            "schedule_text": "every 30m",
-            "human_schedule": "every 30m",
-            "next_fire_at": None,
-            "enabled": False,
-            "expires_at": NOW_MS + DEFAULT_RECURRING_EXPIRY_SECONDS * 1000,
-        },
-    ]
+    jobs = {job["id"]: job for job in json.loads(result.output.text)["jobs"]}
+    assert jobs[every]["next_fire_at"] == NOW_MS + 600_000
+    assert jobs[every]["status"] == "enabled"
+    assert jobs[every]["pending_wakeup_id"] is None
+    assert jobs[once]["next_fire_at"] == NOW_MS
+    assert jobs[disabled]["next_fire_at"] is None
+    assert jobs[disabled]["status"] == "disabled"
+
+    schedule_id = every
+    entry = _entry(services, schedule_id)
+    cron_observer(
+        _fired_event(sequence=5, schedule_id=schedule_id, wakeup_id=str(entry.wakeup_id), prompt="poll"),
+        _context(tmp_path),
+        services,
+    )
+    listed = _invoke_tool(CronListTool(), services, tmp_path, {})
+    assert isinstance(listed, ToolSuccess)
+    pending_jobs = {job["id"]: job for job in json.loads(listed.output.text)["jobs"]}
+    assert pending_jobs[schedule_id]["status"] == "running"
+    assert pending_jobs[schedule_id]["next_fire_at"] is None
+    assert pending_jobs[schedule_id]["pending_wakeup_id"] == entry.wakeup_id
 
 
-# --- observation ---
+# --- wakeup facts and settlement ---
 
 
-def test_observer_rearms_a_recurring_schedule_after_a_fired_completed_run(services: FakeServices, tmp_path: Path) -> None:
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
-    services.events.append(_fired_event(sequence=7, run_id="run-9", schedule_id="sched-1"))
+def test_wakeup_fired_records_pending_even_for_a_long_session(services: FakeServices, tmp_path: Path) -> None:
+    schedule_id = _create(services, tmp_path, "every 10m")
+    entry = _entry(services, schedule_id)
 
-    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
+    def _no_history_read(**_kwargs: object) -> None:
+        raise AssertionError("cron must not scan history for wakeup facts")
+
+    services.read_facts = _no_history_read  # type: ignore[method-assign]
+    cron_observer(
+        _fired_event(sequence=10_000, schedule_id=schedule_id, wakeup_id=str(entry.wakeup_id)),
+        _context(tmp_path),
+        services,
+    )
+
+    updated = _entry(services, schedule_id)
+    assert updated.pending is not None
+    assert updated.pending.wakeup_id == entry.wakeup_id
+    assert updated.pending.fired_sequence == 10_000
+    assert updated.pending.role == "user"
+    assert updated.next_fire_at is None
+    assert len(services.staged_wakeups) == 1  # only the creation arm
+    assert services.staged_events == [("schedule_created", services.staged_events[0][1])]
+
+
+def test_duplicate_wakeup_delivery_is_idempotent(services: FakeServices, tmp_path: Path) -> None:
+    schedule_id = _create(services, tmp_path, "every 10m")
+    entry = _entry(services, schedule_id)
+    fact = _fired_event(sequence=7, schedule_id=schedule_id, wakeup_id=str(entry.wakeup_id))
+
+    cron_observer(fact, _context(tmp_path), services)
+    version = services.read_state("session")[1]
+    pending = _entry(services, schedule_id).pending
+    cron_observer(fact, _context(tmp_path), services)
+
+    assert _entry(services, schedule_id).pending == pending
+    assert services.read_state("session")[1] == version
+
+
+def test_foreign_or_stale_firings_are_ignored(services: FakeServices, tmp_path: Path) -> None:
+    schedule_id = _create(services, tmp_path, "every 10m")
+    entry = _entry(services, schedule_id)
+    version = services.read_state("session")[1]
+    for fact in (
+        _fired_event(sequence=5, schedule_id="sched-unknown", wakeup_id="w"),
+        _fired_event(sequence=6, schedule_id=schedule_id, wakeup_id=str(entry.wakeup_id), payload={"kind": "goal"}),
+        _fired_event(sequence=7, schedule_id=schedule_id, wakeup_id="stale"),
+        _fired_event(sequence=8, schedule_id=schedule_id, wakeup_id=str(entry.wakeup_id), owner="other"),
+    ):
+        cron_observer(fact, _context(tmp_path), services)
+
+    assert _entry(services, schedule_id).pending is None
+    assert services.read_state("session")[1] == version
+    assert services.staged_events[-1][0] == "schedule_created"
+
+
+def test_terminal_run_rearms_a_recurring_schedule_even_with_a_new_run_id(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(
+        _schedule_payload(
+            schedule_id="sched-1",
+            schedule_text="every 10m",
+            pending=_pending("sched-1", sequence=7),
+        )
+    )
+
+    cron_observer(_run_finished("completed", sequence=20, run_id="run-resumed"), _context(tmp_path), services)
 
     expected_fire_ms = next_fire_after(parse_schedule("every 10m"), NOW_SECONDS) * 1000
     entry = _entry(services, "sched-1")
     assert entry.enabled is True
+    assert entry.pending is None
+    assert entry.next_fire_at == expected_fire_ms
     assert entry.wakeup_id is not None
-    assert services.pending()[entry.wakeup_id]["due_at_ms"] == expected_fire_ms
-    assert services.pending()[entry.wakeup_id]["payload"] == {"kind": "cron", "text": "keep building", "schedule_id": "sched-1"}
-    assert services.pending()[entry.wakeup_id]["role"] == "user"
-    assert services.pending()[entry.wakeup_id]["idempotency_key"] == f"cron:sched-1:{expected_fire_ms}"
+    assert services.staged_wakeups[-1]["due_at_ms"] == expected_fire_ms
+    assert services.staged_wakeups[-1]["payload"] == {"kind": "cron", "text": "keep building", "schedule_id": "sched-1"}
+    assert services.staged_wakeups[-1]["idempotency_key"] == f"cron:sched-1:{expected_fire_ms}"
     assert services.staged_events == [
-        ("schedule_fired", {"id": "sched-1", "outcome": "rearmed", "run_status": "completed", "next_fire_at": expected_fire_ms})
+        (
+            "schedule_fired",
+            {
+                "outcome": "rearmed",
+                "id": "sched-1",
+                "wakeup_id": "wakeup-fired",
+                "fired_sequence": 7,
+                "run_status": "completed",
+                "next_fire_at": expected_fire_ms,
+            },
+        )
     ]
-    assert _stored(services).cursor_sequence == 7
+    stored = _stored(services)
+    assert stored.last_finished_sequence == 20
 
 
-def test_observer_rearms_recurring_schedule_after_a_failed_run_too(services: FakeServices, tmp_path: Path) -> None:
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="cron 0 9 * * *", kind="cron", expires_at=NOW_MS + 86_400_000))
-    services.events.append(_fired_event(sequence=3, run_id="run-9", schedule_id="sched-1"))
+def test_failed_recurring_run_still_rearms(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(
+        _schedule_payload(
+            schedule_id="sched-1",
+            schedule_text="cron 0 9 * * *",
+            kind="cron",
+            pending=_pending("sched-1", sequence=3),
+        )
+    )
 
-    cron_observer(_run_finished("failed", run_id="run-9"), _context(tmp_path), services)
+    cron_observer(_run_finished("failed", sequence=8), _context(tmp_path), services)
 
     entry = _entry(services, "sched-1")
     assert entry.enabled is True
-    assert entry.wakeup_id is not None
-    assert services.pending()[entry.wakeup_id]["due_at_ms"] == next_fire_after(parse_schedule("cron 0 9 * * *"), NOW_SECONDS) * 1000
+    assert entry.pending is None
+    assert services.staged_wakeups[-1]["due_at_ms"] == next_fire_after(parse_schedule("cron 0 9 * * *"), NOW_SECONDS) * 1000
     assert services.staged_events[0][1]["outcome"] == "rearmed"
     assert services.staged_events[0][1]["run_status"] == "failed"
 
 
 def test_once_schedule_deletes_on_success_and_disables_on_failure(services: FakeServices, tmp_path: Path) -> None:
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="once", kind="once", expires_at=None))
-    services.events.append(_fired_event(sequence=4, run_id="run-9", schedule_id="sched-1"))
+    services.seed_state(
+        _schedule_payload(
+            schedule_id="sched-1",
+            schedule_text="once",
+            kind="once",
+            expires_at=None,
+            pending=_pending("sched-1", sequence=4),
+        )
+    )
 
-    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
+    cron_observer(_run_finished("completed", sequence=9), _context(tmp_path), services)
 
     assert _stored(services).schedules == {}
-    assert services.pending() == {}
-    assert services.staged_events == [("schedule_fired", {"id": "sched-1", "outcome": "deleted", "run_status": "completed"})]
+    assert services.staged_wakeups == []
+    assert services.staged_events == [
+        (
+            "schedule_fired",
+            {
+                "outcome": "deleted",
+                "id": "sched-1",
+                "wakeup_id": "wakeup-fired",
+                "fired_sequence": 4,
+                "run_status": "completed",
+            },
+        )
+    ]
 
 
 @pytest.mark.parametrize("status", ["failed", "interrupted"])
 def test_once_schedule_is_disabled_when_its_run_fails(services: FakeServices, tmp_path: Path, status: Literal["failed", "interrupted"]) -> None:
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="at 2026-12-01T09:00:00", kind="at", expires_at=None))
-    services.events.append(_fired_event(sequence=4, run_id="run-9", schedule_id="sched-1"))
+    services.seed_state(
+        _schedule_payload(
+            schedule_id="sched-1",
+            schedule_text="at 2026-12-01T09:00:00",
+            kind="at",
+            expires_at=None,
+            pending=_pending("sched-1", sequence=4),
+        )
+    )
 
-    cron_observer(_run_finished(status, run_id="run-9"), _context(tmp_path), services)
+    cron_observer(_run_finished(status, sequence=9), _context(tmp_path), services)
 
     entry = _entry(services, "sched-1")
     assert entry.enabled is False
     assert entry.wakeup_id is None
-    assert services.pending() == {}
-    assert services.staged_events == [("schedule_fired", {"id": "sched-1", "outcome": "disabled", "run_status": status})]
+    assert entry.next_fire_at is None
+    assert entry.pending is None
+    assert services.staged_wakeups == []
+    assert services.staged_events[0][1]["outcome"] == "disabled"
+    assert services.staged_events[0][1]["reason"] == "run_failed"
+    assert services.staged_events[0][1]["run_status"] == status
 
 
 def test_expired_recurring_schedule_is_deleted_instead_of_rearmed(services: FakeServices, tmp_path: Path) -> None:
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS))
-    services.events.append(_fired_event(sequence=4, run_id="run-9", schedule_id="sched-1"))
+    services.seed_state(
+        _schedule_payload(
+            schedule_id="sched-1",
+            expires_at=NOW_MS,
+            pending=_pending("sched-1", sequence=4),
+        )
+    )
 
-    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
+    cron_observer(_run_finished("completed", sequence=9), _context(tmp_path), services)
 
     assert _stored(services).schedules == {}
-    assert services.wakeups == {}
-    assert services.staged_events == [("schedule_fired", {"id": "sched-1", "outcome": "expired", "run_status": "completed"})]
+    assert services.staged_wakeups == []
+    assert services.staged_events[0][1]["outcome"] == "expired"
+    assert services.staged_events[0][1]["reason"] == "expiry"
 
 
-def test_untracked_or_foreign_firings_are_ignored(services: FakeServices, tmp_path: Path) -> None:
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
-    # A wakeup this plugin does not track, a foreign wakeup kind, and a wakeup of another run.
-    services.events.append(_fired_event(sequence=5, run_id="run-9", schedule_id="sched-unknown"))
-    services.events.append(replace(_fired_event(sequence=6, run_id="run-9", schedule_id="sched-1"), payload={"kind": "goal", "goal_id": "g-1"}))
-    services.events.append(_fired_event(sequence=7, run_id="run-other", schedule_id="sched-1"))
+def test_next_fire_beyond_expiry_retires_instead_of_arming(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(
+        _schedule_payload(
+            schedule_id="sched-1",
+            schedule_text="every 10m",
+            expires_at=NOW_MS + 5 * 60_000,
+            pending=_pending("sched-1", sequence=4),
+        )
+    )
 
-    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
+    cron_observer(_run_finished("completed", sequence=9), _context(tmp_path), services)
 
-    assert services.wakeups == {}
-    assert services.staged_events == []
+    assert _stored(services).schedules == {}
+    assert services.staged_wakeups == []
+    assert services.staged_events[0][1]["outcome"] == "expired"
+
+
+def test_limit_stop_disables_a_recurring_schedule_without_rearming(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(
+        _schedule_payload(
+            schedule_id="sched-1",
+            schedule_text="every 10m",
+            pending=_pending("sched-1", sequence=4),
+        )
+    )
+
+    cron_observer(
+        _run_finished("failed", sequence=9, stop_cause="limit_reached", budget_exhaustion=_root_budget_exhausted()),
+        _context(tmp_path),
+        services,
+    )
+
     entry = _entry(services, "sched-1")
-    assert entry.wakeup_id == "wakeup-fired"
-    # The cursor still advances past what was read, so nothing is re-examined forever.
-    assert _stored(services).cursor_sequence == 7
+    assert entry.enabled is False
+    assert entry.wakeup_id is None
+    assert entry.next_fire_at is None
+    assert entry.pending is None
+    assert services.staged_wakeups == []
+    event = services.staged_events[0][1]
+    assert event["outcome"] == "disabled"
+    assert event["reason"] == "limit"
+    assert event["budget_exhaustion"]["source"] == "root_action_budget"
 
 
-def test_disabled_schedule_is_never_rearmed(services: FakeServices, tmp_path: Path) -> None:
-    payload = _schedule_payload(schedule_id="sched-1", schedule_text="once", kind="once", expires_at=None, enabled=False, wakeup_id=None)
-    services.seed_state(payload)
-    services.events.append(_fired_event(sequence=4, run_id="run-9", schedule_id="sched-1"))
+def test_untyped_limit_stop_disables_a_recurring_schedule(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(_schedule_payload(schedule_id="sched-1", pending=_pending("sched-1", sequence=4)))
 
-    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
+    cron_observer(_run_finished("interrupted", sequence=9, stop_cause="limit_reached"), _context(tmp_path), services)
 
-    assert services.wakeups == {}
+    assert _entry(services, "sched-1").enabled is False
+    assert services.staged_wakeups == []
+    assert services.staged_events[0][1]["reason"] == "limit"
+
+
+def test_duplicate_terminal_delivery_does_not_duplicate_settlement(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(_schedule_payload(schedule_id="sched-1", pending=_pending("sched-1", sequence=7)))
+    fact = _run_finished("completed", sequence=20)
+
+    cron_observer(fact, _context(tmp_path), services)
+    first_version = services.read_state("session")[1]
+    first_wakeups = len(services.staged_wakeups)
+    first_events = len(services.staged_events)
+    cron_observer(fact, _context(tmp_path), services)
+
+    assert len(services.staged_wakeups) == first_wakeups
+    assert len(services.staged_events) == first_events
+    assert services.read_state("session")[1] == first_version
+
+
+def test_run_finished_without_pending_only_advances_the_finish_sequence(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(_schedule_payload(schedule_id="sched-1"))
+    cron_observer(_run_finished("completed", sequence=20), _context(tmp_path), services)
+
+    stored = _stored(services)
+    assert stored.last_finished_sequence == 20
+    assert stored.schedules["sched-1"].pending is None
+    assert stored.schedules["sched-1"].next_fire_at == NOW_MS + 600_000
     assert services.staged_events == []
-    assert _stored(services).schedules["sched-1"].enabled is False
+    assert services.staged_wakeups == []
+
+
+def test_late_wakeup_replay_pauses_visibly_instead_of_sticking_enabled(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(
+        _schedule_payload(
+            schedule_id="sched-1",
+            last_finished_sequence=50,
+            wakeup_id="wakeup-fired",
+            next_fire_at=NOW_MS + 600_000,
+        )
+    )
+
+    cron_observer(_fired_event(sequence=40, schedule_id="sched-1"), _context(tmp_path), services)
+
+    entry = _entry(services, "sched-1")
+    assert entry.enabled is False
+    assert entry.wakeup_id is None
+    assert entry.next_fire_at is None
+    assert entry.pending is None
+    event = services.staged_events[0][1]
+    assert event["outcome"] == "disabled"
+    assert event["reason"] == "settlement_missed"
+    assert event["fired_sequence"] == 40
 
 
 def test_observer_ignores_facts_it_does_not_settle(services: FakeServices, tmp_path: Path) -> None:
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
+    services.seed_state(_schedule_payload(schedule_id="sched-1"))
 
     cron_observer(
         InvocationFinishedFact(
@@ -428,20 +708,20 @@ def test_observer_ignores_facts_it_does_not_settle(services: FakeServices, tmp_p
         services,
     )
 
-    assert services.wakeups == {}
+    assert services.staged_wakeups == []
     assert services.staged_events == []
+    assert _stored(services).schedules
 
 
-def test_observer_is_idempotent_for_the_same_firing(services: FakeServices, tmp_path: Path) -> None:
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
-    services.events.append(_fired_event(sequence=4, run_id="run-9", schedule_id="sched-1"))
-
-    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
-    first_wakeup_id = _entry(services, "sched-1").wakeup_id
-    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
-
-    assert set(services.wakeups) == {first_wakeup_id}
-    assert len(services.staged_events) == 1
+def test_cron_identity_follows_its_admitted_owner(services: FakeServices, tmp_path: Path) -> None:
+    services.owner = "renamed-scheduler"
+    services.seed_state(_schedule_payload(schedule_id="sched-1"))
+    cron_observer(
+        replace(_fired_event(sequence=5, schedule_id="sched-1"), owner=services.owner),
+        _context(tmp_path),
+        services,
+    )
+    assert _entry(services, "sched-1").pending is not None
 
 
 # --- /loop ---
@@ -463,7 +743,9 @@ def _invoke_loop(services: FakeServices, tmp_path: Path, arguments: Mapping[str,
         ("2 hours run the audit", "10m", "2 hours run the audit"),
     ],
 )
-def test_loop_parses_the_argument_and_arms_an_immediate_wakeup(services: FakeServices, tmp_path: Path, raw: str, interval: str, prompt: str) -> None:
+def test_loop_parses_the_argument_and_stages_an_immediate_wakeup(
+    services: FakeServices, tmp_path: Path, raw: str, interval: str, prompt: str
+) -> None:
     result = _invoke_loop(services, tmp_path, {"input": raw})
 
     assert result.status == "ok"
@@ -472,20 +754,39 @@ def test_loop_parses_the_argument_and_arms_an_immediate_wakeup(services: FakeSer
     assert entry.schedule_text == f"every {interval}"
     assert entry.kind == "every"
     assert entry.prompt == prompt
-    assert entry.expires_at == NOW_MS + DEFAULT_RECURRING_EXPIRY_SECONDS * 1000
+    assert entry.expires_at == DEFAULT_EXPIRY
     # Fired immediately: the wakeup is due now instead of one interval later.
     assert entry.wakeup_id is not None
-    assert services.pending()[entry.wakeup_id]["due_at_ms"] == NOW_MS
+    assert entry.next_fire_at == NOW_MS
+    assert services.staged_wakeups[-1]["due_at_ms"] == NOW_MS
+    assert result.data["expires_at"] == DEFAULT_EXPIRY  # type: ignore[index]
     assert result.output == (
         f"Scheduled '{prompt}' on cadence 'every {interval}' "
         f"(job ID: {schedule_id}). "
         "Recurring tasks auto-expire after 7 days. "
-        "To cancel sooner, use `cron_delete`."
+        f"To cancel sooner, use /loop delete {schedule_id}. "
+        "A run already in flight is not interrupted."
     )
     assert result.output == loop_confirmation_message(
         type("Summary", (), {"id": schedule_id, "prompt": prompt, "human_schedule": f"every {interval}"})()
     )
     assert [name for name, _payload in services.staged_events] == ["schedule_created"]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "fragment"),
+    [
+        ({"input": "30s too fast"}, "at least 1 minute"),
+        ({"input": "8d too slow"}, "shorter than the 7-day recurring expiry"),
+    ],
+)
+def test_loop_enforces_the_recurring_policy(services: FakeServices, tmp_path: Path, arguments: Mapping[str, object], fragment: str) -> None:
+    result = _invoke_loop(services, tmp_path, arguments)
+
+    assert result.status == "error"
+    assert fragment in str(result.error)
+    assert services.staged_wakeups == []
+    assert services.staged_events == []
 
 
 @pytest.mark.parametrize("arguments", [{}, {"input": "   "}, {"input": "5m"}])
@@ -494,100 +795,18 @@ def test_loop_returns_the_usage_message_when_it_cannot_parse(services: FakeServi
 
     assert result.status == "ok"
     assert result.output == USAGE_MESSAGE
-    assert services.wakeups == {}
+    assert services.staged_wakeups == []
     assert services.staged_events == []
 
 
-# --- state document, registration ---
-
-
-def test_state_document_is_strict() -> None:
-    payload = CronState(schedules={"sched-1": ScheduleEntry("every 10m", "every", "x", True, None, "w-1")}).to_payload()
-    assert payload["schema_version"] == SCHEMA_VERSION
-    assert CronState.from_payload(payload) == CronState(schedules={"sched-1": ScheduleEntry("every 10m", "every", "x", True, None, "w-1")})
-
-    with pytest.raises(ValueError, match="field 'bogus' is not supported"):
-        cron_plugin._store(_seeded({"bogus": 1})).load()
-    with pytest.raises(ValueError, match="missing field"):
-        cron_plugin._store(_seeded({"schema_version": SCHEMA_VERSION})).load()
-    with pytest.raises(ValueError, match="schema_version must be 1"):
-        CronState.from_payload({"schema_version": 2, "schedules": {}, "cursor_sequence": 0})
-    with pytest.raises(ValueError, match="cursor_sequence must be a non-negative integer"):
-        CronState.from_payload({"schema_version": 1, "schedules": {}, "cursor_sequence": -1})
-    with pytest.raises(ValueError, match="schedules must be an object"):
-        CronState.from_payload({"schema_version": 1, "schedules": [], "cursor_sequence": 0})
-    with pytest.raises(ValueError, match="field 'bogus' is not supported"):
-        CronState.from_payload(
-            {
-                "schema_version": 1,
-                "schedules": {"sched-1": {**payload["schedules"]["sched-1"], "bogus": 1}},  # type: ignore[index]
-                "cursor_sequence": 0,
-            }
-        )
-    with pytest.raises(ValueError, match="kind must be one of"):
-        CronState.from_payload(
-            {
-                "schema_version": 1,
-                "schedules": {"sched-1": {**payload["schedules"]["sched-1"], "kind": "hourly"}},  # type: ignore[index]
-                "cursor_sequence": 0,
-            }
-        )
-
-
-def test_plugin_registers_tools_loop_command_and_observer() -> None:
-    plugin = create_plugin(None)
-
-    assert [tool.definition.name for tool in plugin.tools] == ["cron_create", "cron_delete", "cron_list"]
-    assert [command.definition.name for command in plugin.commands] == ["loop", "loop.list", "loop.delete"]
-    assert plugin.observer is cron_observer
-    assert plugin.context is None
-    assert plugin.providers == ()
-    assert plugin.views == ()
-
-
-@pytest.mark.parametrize("foreign", ["owner", "identity"])
-def test_matching_payload_cannot_settle_a_foreign_or_stale_wakeup(services: FakeServices, tmp_path: Path, foreign):
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
-    fact = _fired_event(sequence=5, run_id="run-9", schedule_id="sched-1")
-    services.events.append(replace(fact, **({"owner": "other"} if foreign == "owner" else {"wakeup_id": "stale"})))
-    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
-    assert services.wakeups == {} and services.staged_events == []
-    assert _stored(services).cursor_sequence == 5
-    assert _entry(services, "sched-1").wakeup_id == "wakeup-fired"
-
-
-def test_cron_scan_advances_past_empty_fact_pages(services: FakeServices, tmp_path: Path):
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
-    pages = iter((FactPage((), 200, True), FactPage((_fired_event(sequence=201, run_id="run-9", schedule_id="sched-1"),), 201, False)))
-    cursors = []
-
-    def read_facts(*, after_sequence, limit):
-        cursors.append(after_sequence)
-        return next(pages)
-
-    services.read_facts = read_facts
-    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
-    assert cursors == [0, 200]
-    assert _stored(services).cursor_sequence == 201
-    assert len(services.wakeups) == 1
-
-
-def test_cron_identity_follows_its_admitted_owner(services: FakeServices, tmp_path: Path):
-    services.owner = "renamed-scheduler"
-    services.seed_state(_schedule_payload(schedule_id="sched-1", schedule_text="every 10m", kind="every", expires_at=NOW_MS + 86_400_000))
-    services.events.append(replace(_fired_event(sequence=5, run_id="run-9", schedule_id="sched-1"), owner=services.owner))
-    cron_observer(_run_finished("completed", run_id="run-9"), _context(tmp_path), services)
-    assert len(services.wakeups) == 1
-
-
 def test_loop_preparation_does_not_schedule_and_shows_default_interval(services: FakeServices, tmp_path: Path) -> None:
-    from voidcode.plugins.cron.loop_command import DEFAULT_INTERVAL
     from voidcode.sdk.views import FormViewData, validate_form_submission
 
     before = services.get_state()
     prepared = CronLoopCommand().prepare_input(CommandInvocation(_context(tmp_path), "loop"), services)
     form = FormViewData.from_payload(prepared.data)
     assert DEFAULT_INTERVAL in form.fields[0].label
+    assert "minimum 1m" in form.fields[0].label
     assert services.get_state() == before
     assert validate_form_submission(form, {"input": "5m check the deploy"}) == {"input": "5m check the deploy"}
 
@@ -599,11 +818,12 @@ def test_loop_receipt_can_cancel_its_schedule_and_return_empty_browser(services:
     created = _invoke_loop(services, tmp_path, {"input": "5m check deployment"})
     detail = MarkdownViewData.from_payload(created.presentation.data)
     cancel = next(action for action in detail.actions if action.action == "loop.delete")
-    assert len(services.wakeups) == 1
+    wakeup_id = _entry(services, str(created.data["schedule_id"])).wakeup_id  # type: ignore[index]
     result = CronDeleteCommand().invoke(CommandInvocation(_context(tmp_path), cancel.action, cancel.arguments), services)
     assert result.status == "ok"
-    assert services.pending() == {}
-    assert all(record["status"] == "cancelled" for record in services.wakeups.values())
+    assert DELETE_IN_FLIGHT_NOTE in result.output
+    assert services.staged_wakeup_cancels == [wakeup_id]
+    assert _stored(services).schedules == {}
     empty = MarkdownViewData.from_payload(result.presentation.data)
     assert "No scheduled prompts" in empty.content
     assert empty.actions[0].prepare_input
@@ -624,21 +844,206 @@ def test_loop_browser_pages_without_mutation(services: FakeServices, tmp_path: P
     page = CronListCommand().invoke(CommandInvocation(_context(tmp_path), next_page.action, next_page.arguments), services)
     assert len([action for action in MarkdownViewData.from_payload(page.presentation.data).actions if action.action == "loop.delete"]) == 2
     assert services.get_state("session") == before
-    assert len(services.wakeups) == 12
+    assert len(services.staged_wakeups) == 12
 
 
 def test_loop_and_tool_share_schedule_capacity_guard(services: FakeServices, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cron_plugin, "MAX_SCHEDULES_PER_WORKSPACE", 1)
+    monkeypatch.setattr(cron_plugin, "MAX_SCHEDULES_PER_SESSION", 1)
     assert _invoke_loop(services, tmp_path, {"input": "5m first"}).status == "ok"
     before = services.get_state("session")
-    pending = services.pending().copy()
+    staged = len(services.staged_wakeups)
     refused = _invoke_loop(services, tmp_path, {"input": "5m second"})
     assert refused.status == "error" and "schedule limit reached" in refused.error
     refused_tool = _invoke_tool(CronCreateTool(), services, tmp_path, {"schedule": "every 5m", "prompt": "third"})
     assert isinstance(refused_tool, ToolFailure)
     assert refused_tool.error == refused.error
     assert services.get_state("session") == before
-    assert services.pending() == pending
+    assert len(services.staged_wakeups) == staged
+
+
+# --- staged write behavior and state errors ---
+
+
+class _CASFakeServices(FakeServices):
+    """A store whose state commit always loses its optimistic-concurrency check."""
+
+    def replace_state(self, state, expected_version, scope="session", owner=None):  # type: ignore[override]
+        raise RuntimeError("state CAS mismatch")
+
+
+def test_state_cas_loss_after_create_stages_no_wakeup_row(tmp_path: Path) -> None:
+    services = _CASFakeServices(owner=OWNER)
+    with pytest.raises(RuntimeError, match="CAS mismatch"):
+        _invoke_tool(CronCreateTool(), services, tmp_path, {"schedule": "every 10m", "prompt": "x"})
+
+    assert services.wakeups == {}
+    assert services.staged_events == []
+
+
+def test_state_cas_loss_after_delete_keeps_the_existing_wakeup(tmp_path: Path) -> None:
+    services = _CASFakeServices(owner=OWNER)
+    schedule_id = "sched-1"
+    services.seed_state(_schedule_payload(schedule_id=schedule_id, wakeup_id="wakeup-fired"))
+    services.wakeups["wakeup-fired"] = {"status": "pending", "payload": {}}
+    with pytest.raises(RuntimeError, match="CAS mismatch"):
+        _invoke_tool(CronDeleteTool(), services, tmp_path, {"id": schedule_id})
+
+    assert services.wakeups["wakeup-fired"]["status"] == "pending"
+    assert services.staged_wakeup_cancels == []
+
+
+def test_observer_rearm_is_staged_not_written_durably(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(_schedule_payload(schedule_id="sched-1", pending=_pending("sched-1", sequence=7)))
+    cron_observer(_run_finished("completed", sequence=9), _context(tmp_path), services)
+
+    assert len(services.staged_wakeups) == 1
+    assert services.wakeups == {}
+    assert _entry(services, "sched-1").wakeup_id == "staged-wakeup-0"
+
+
+def test_malformed_state_observer_stages_visible_error_without_raising(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "schedules": {
+                "sched-1": {
+                    "schedule_text": "every 10m",
+                    "kind": "cron",
+                    "prompt": "x",
+                    "enabled": True,
+                    "expires_at": DEFAULT_EXPIRY,
+                    "wakeup_id": "w",
+                    "next_fire_at": NOW_MS + 600_000,
+                    "pending": None,
+                }
+            },
+            "last_finished_sequence": 0,
+        }
+    )
+
+    cron_observer(_fired_event(sequence=5, schedule_id="sched-1", wakeup_id="w"), _context(tmp_path), services)
+
+    assert [name for name, _payload in services.staged_events] == ["schedule_error"]
+    error = services.staged_events[0][1]["error"]
+    assert "kind" in str(error)
+    assert len(str(error)) <= 500
+
+
+def test_malformed_state_tools_fail_visibly(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state({"schema_version": SCHEMA_VERSION, "schedules": {}, "last_finished_sequence": 0} | {"schedules": {"sched-1": {"bad": True}}})
+
+    listed = _invoke_tool(CronListTool(), services, tmp_path, {})
+    assert isinstance(listed, ToolFailure)
+    assert "Cron state is invalid" in listed.error
+    created = _invoke_tool(CronCreateTool(), services, tmp_path, {"schedule": "every 10m", "prompt": "x"})
+    assert isinstance(created, ToolFailure)
+    assert "Cron state is invalid" in created.error
+
+
+# --- state document, registration ---
+
+
+def test_state_document_is_strict() -> None:
+    pending = _pending("sched-1")
+    payload = CronState(
+        schedules={"sched-1": ScheduleEntry("every 10m", "every", "keep building", True, DEFAULT_EXPIRY, pending.wakeup_id, None, pending)},
+        last_finished_sequence=0,
+    ).to_payload()
+    assert payload["schema_version"] == SCHEMA_VERSION
+    parsed = CronState.from_payload(payload)
+    assert parsed.schedules["sched-1"].pending == pending
+
+    with pytest.raises(ValueError, match="field 'bogus' is not supported"):
+        cron_plugin._store(_seed({"bogus": 1})).load()
+    with pytest.raises(ValueError, match="missing field"):
+        cron_plugin._store(_seed({"schema_version": SCHEMA_VERSION})).load()
+    with pytest.raises(ValueError, match=f"schema_version must be {SCHEMA_VERSION}"):
+        CronState.from_payload({"schema_version": 1, "schedules": {}, "last_finished_sequence": 0})
+    with pytest.raises(ValueError, match="last_finished_sequence must be a non-negative integer"):
+        CronState.from_payload({"schema_version": SCHEMA_VERSION, "schedules": {}, "last_finished_sequence": -1})
+    with pytest.raises(ValueError, match="schedules must be an object"):
+        CronState.from_payload({"schema_version": SCHEMA_VERSION, "schedules": [], "last_finished_sequence": 0})
+    with pytest.raises(ValueError, match="field 'bogus' is not supported"):
+        CronState.from_payload(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "schedules": {"sched-1": {**payload["schedules"]["sched-1"], "bogus": 1}},  # type: ignore[index]
+                "last_finished_sequence": 0,
+            }
+        )
+    with pytest.raises(ValueError, match="kind must be one of"):
+        CronState.from_payload(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "schedules": {"sched-1": {**payload["schedules"]["sched-1"], "kind": "hourly"}},  # type: ignore[index]
+                "last_finished_sequence": 0,
+            }
+        )
+
+
+def test_state_rejects_inconsistent_schedule_and_pending_fields() -> None:
+    pending = _pending("sched-1")
+    valid = _schedule_payload(schedule_id="sched-1", pending=pending)
+
+    def _entry(payload: Mapping[str, object]) -> Mapping[str, object]:
+        schedules = payload["schedules"]
+        assert isinstance(schedules, Mapping)
+        entry = schedules["sched-1"]
+        assert isinstance(entry, Mapping)
+        return entry
+
+    base_entry = _entry(valid)
+    with pytest.raises(ValueError, match="does not match schedule_text"):
+        CronState.from_payload(
+            {
+                **valid,
+                "schedules": {"sched-1": {**base_entry, "kind": "cron"}},
+            }
+        )
+    with pytest.raises(ValueError, match="pending settlement must clear next_fire_at"):
+        CronState.from_payload(
+            {
+                **valid,
+                "schedules": {"sched-1": {**base_entry, "next_fire_at": NOW_MS + 600_000}},
+            }
+        )
+    with pytest.raises(ValueError, match="pending wakeup does not match its armed wakeup"):
+        CronState.from_payload(
+            {
+                **valid,
+                "schedules": {"sched-1": {**base_entry, "wakeup_id": "other"}},
+            }
+        )
+    with pytest.raises(ValueError, match="older than the last finished run"):
+        CronState.from_payload({**valid, "last_finished_sequence": pending.fired_sequence})
+    with pytest.raises(ValueError, match="one-shot schedules cannot expire"):
+        CronState.from_payload(_schedule_payload(schedule_id="sched-1", schedule_text="once", kind="once", expires_at=DEFAULT_EXPIRY))
+    with pytest.raises(ValueError, match="recurring schedules require expires_at"):
+        CronState.from_payload(_schedule_payload(schedule_id="sched-1", expires_at=None))
+    with pytest.raises(ValueError, match="at least 1 minute"):
+        CronState.from_payload(_schedule_payload(schedule_id="sched-1", schedule_text="every 1s"))
+    with pytest.raises(ValueError, match="at or after the 7-day recurring expiry"):
+        CronState.from_payload(_schedule_payload(schedule_id="sched-1", expires_at=NOW_MS + 5 * 60_000, next_fire_at=NOW_MS + 10 * 60_000))
+    disabled_with_wakeup = _schedule_payload(schedule_id="sched-1")
+    disabled_with_wakeup["schedules"]["sched-1"]["enabled"] = False  # type: ignore[index]
+    with pytest.raises(ValueError, match="disabled schedules cannot keep a wakeup"):
+        CronState.from_payload(disabled_with_wakeup)
+    disabled_pending = _schedule_payload(schedule_id="sched-1", pending=pending)
+    disabled_pending["schedules"]["sched-1"]["enabled"] = False  # type: ignore[index]
+    with pytest.raises(ValueError, match="cannot be disabled with a pending settlement"):
+        CronState.from_payload(disabled_pending)
+
+
+def test_plugin_registers_tools_commands_and_both_fact_subscriptions() -> None:
+    plugin = create_plugin(None)
+
+    assert [tool.definition.name for tool in plugin.tools] == ["cron_create", "cron_delete", "cron_list"]
+    assert [command.definition.name for command in plugin.commands] == ["loop", "loop.list", "loop.delete"]
+    assert plugin.observer is cron_observer
+    assert plugin.observed_facts == ("wakeup_fired", "run_finished")
+    assert plugin.context is None
+    assert plugin.providers == ()
+    assert plugin.views == ()
 
 
 def test_cron_factory_and_state_reject_coercion() -> None:
@@ -647,8 +1052,12 @@ def test_cron_factory_and_state_reject_coercion() -> None:
         create_plugin({"enabled": True})
     for version in (True, 1.0, "1"):
         with pytest.raises(ValueError, match="schema_version"):
-            CronState.from_payload({"schema_version": version, "schedules": {}, "cursor_sequence": 0})
-    payload = _schedule_payload(schedule_id="bad", schedule_text="every 5m", kind="every", expires_at=None)
-    payload["schedules"]["bad"]["kind"] = []
+            CronState.from_payload({"schema_version": version, "schedules": {}, "last_finished_sequence": 0})
+    payload = _schedule_payload(schedule_id="bad")
+    payload["schedules"]["bad"]["kind"] = []  # type: ignore[index]
     with pytest.raises(ValueError, match="kind must be one of"):
         CronState.from_payload(payload)
+
+
+def test_loop_default_interval_is_documented_minimum_compatible() -> None:
+    assert int(DEFAULT_INTERVAL.rstrip("m")) >= MIN_EVERY_INTERVAL_SECONDS // 60

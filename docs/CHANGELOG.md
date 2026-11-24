@@ -4,6 +4,13 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Cron settles from wakeup facts, not history scans
+- The cron observer now subscribes to `wakeup_fired` and `run_finished`. A fired wakeup records a durable pending settlement (schedule/wakeup, fired sequence, role, payload); the next terminal run settles it independently of the run id, so an approval/ask park and its resume still re-arm or retire the schedule. The bounded 3-page history scan and `cursor_sequence` are gone; a late replayed firing whose run already finished pauses visibly with `settlement_missed`.
+- Schedule creation, deletion, and re-arm stage wakeups/cancellations through `stage_wakeup`/`stage_cancel_wakeup`, so a cancelled or CAS-rejected tool/command/observer result leaves no orphan wakeup. Delete/claim remains deliberately non-interrupting and now carries a bounded note.
+- Recurring policy is enforced at creation and settlement: `every` is 1 minute to under 7 days, a first/next fire at or after the 7-day expiry is refused or retired, and a typed budget/`limit_reached` stop disables a recurring schedule instead of re-arming. One-shot failure inspection is preserved. State schema v2 stores the actual armed `next_fire_at`, pending settlement, and last terminal sequence; malformed state yields a bounded `schedule_error` event or a clear tool/command failure.
+- `cron_list` reports the stored armed/pending instant and status, and `/loop` documentation now states that fired prompts are ordinary user text, the 1-minute minimum, the cancellation path, and the in-flight-run caveat.
+- Verification: cron unit/integration (long-sequence wakeup facts, parked approval→resume, duplicate settlement, staged create/delete/CAS, expiry/limit policy); `ruff check`, `ruff format --check`, and `ty check` on the changed files.
+
 ### Plan overlay is the single mode truth
 - The plan plugin no longer declares session state or a deactivation transform. `/plan`, `/plan off`, `/plan status`, and the plan context all read the core-owned `session_overlays` row through the new owner-scoped `services.overlay_active()`; `services.session_read_only()` exposes the effective stance for the status note. Enter/off are last-writer overlay operations, so a concurrent pair can never disagree with enforcement.
 - Legacy plan state rows are ignored (and can no longer block `/plan off`). Disabling the plugin deletes its overlay in the activation transaction; no state is parked or restored. `/plan status` reports `Plan mode: active`/`inactive` and names another read-only reason when the overlay is absent but the session is still restricted.

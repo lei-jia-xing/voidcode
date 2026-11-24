@@ -272,7 +272,8 @@ def test_loop_default_interval_and_usage_message() -> None:
     assert parse_loop_command("") == (None, None)
     assert USAGE_MESSAGE.startswith("Usage: /loop [interval] <prompt>")
     assert "If no interval is specified, defaults to 10m." in USAGE_MESSAGE
-    assert "Intervals: Ns, Nm, Nh, Nd (e.g. 5m, 30m, 2h, 1d). Minimum granularity is 1 minute." in USAGE_MESSAGE
+    assert "Intervals: Ns, Nm, Nh, Nd (e.g. 5m, 30m, 2h, 1d). Minimum 1 minute;" in USAGE_MESSAGE
+    assert "it is not dispatched as a slash command." in USAGE_MESSAGE
     assert "/loop check the deploy          (defaults to 10m)" in USAGE_MESSAGE
 
 
@@ -288,7 +289,8 @@ def test_loop_confirmation_message_text() -> None:
     assert "check the deploy" in message
     assert "every 10m" in message
     assert "abc123" in message
-    assert "cron_delete" in message
+    assert "/loop delete abc123" in message
+    assert "not interrupted" in message
 
 
 def test_loop_confirmation_message_uses_parsed_schedule() -> None:
@@ -297,7 +299,7 @@ def test_loop_confirmation_message_uses_parsed_schedule() -> None:
     expr = parse_schedule(f"every {interval}")
     message = loop_confirmation_message(_Summary(prompt=prompt, human_schedule=human_schedule(expr), id="job-7"))
     assert message.startswith("Scheduled 'check the deploy' on cadence 'every 30m' (job ID: job-7).")
-    assert message.endswith("use `cron_delete`.")
+    assert message.endswith("A run already in flight is not interrupted.")
 
 
 def test_cron_leap_day_crosses_non_leap_years() -> None:

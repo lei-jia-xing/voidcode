@@ -9,15 +9,16 @@ DEFAULT_INTERVAL: Final[str] = "10m"
 
 USAGE_MESSAGE: Final[str] = """Usage: /loop [interval] <prompt>
 
-Run a prompt or slash command on a recurring interval.
+Run a prompt on a recurring interval. Each fire sends the prompt as ordinary user text;
+it is not dispatched as a slash command.
 
-Intervals: Ns, Nm, Nh, Nd (e.g. 5m, 30m, 2h, 1d). Minimum granularity is 1 minute.
-If no interval is specified, defaults to 10m.
+Intervals: Ns, Nm, Nh, Nd (e.g. 5m, 30m, 2h, 1d). Minimum 1 minute; recurring schedules
+expire after 7 days. If no interval is specified, defaults to 10m.
 
 Examples:
-  /loop 5m /babysit-prs
+  /loop 5m check the deploy
   /loop 30m check the deploy
-  /loop 1h /standup 1
+  /loop 1h run the standup
   /loop check the deploy          (defaults to 10m)
   /loop check the deploy every 20m"""
 
@@ -99,5 +100,6 @@ def loop_confirmation_message(summary: ScheduleSummaryLike) -> str:
         f"Scheduled '{summary.prompt}' on cadence '{summary.human_schedule}' "
         f"(job ID: {summary.id}). "
         f"Recurring tasks auto-expire after 7 days. "
-        "To cancel sooner, use `cron_delete`."
+        f"To cancel sooner, use /loop delete {summary.id}. "
+        "A run already in flight is not interrupted."
     )

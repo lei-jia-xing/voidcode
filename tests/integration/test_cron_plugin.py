@@ -6,13 +6,12 @@ Drives the real core, plugin runtime, loopback provider and durable storage:
   provider with the scheduled prompt as a verbatim USER message
 - The terminal reschedule arms exactly one successor instant — no duplicates, no replay
 - The `/loop` command creates a recurring schedule and fires it immediately
+- A parked approval keeps its claim and the resumed run settles the pending firing
 
-Timing: the plugin recomputes the next fire from the wall clock (legacy parity), so a tick is
-only issued once its instant has genuinely passed — fabricating a future instant would settle a
-fire against a clock that is still behind it. The core's own ticker is pinned for the same
-reason: with a 1s cadence it would otherwise fire whenever the real clock crossed a due instant
-and race every assertion below. Only *when* a tick happens is controlled; what a tick does
-(claim one due wakeup, create its authentic run, drive it) is the real core path.
+Timing: recurrence starts at one minute (the documented minimum), so tests drive the core with
+an explicit claim instant instead of sleeping. The core's own ticker is pinned so it cannot race
+the explicit ticks. Only *when* a claim happens is controlled; what a tick does (claim due
+wakeups, create their authentic run, drive it) is the real core path.
 
 The plugin under test is the real bundled source, referenced by path so the host
 imports the current code.
@@ -28,6 +27,8 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.core_factory import loopback_server, register_core
+from tests.fixtures.s5_plugin import PLUGIN_ID as S5_PLUGIN_ID
+from tests.fixtures.s5_plugin import WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
@@ -43,11 +44,30 @@ def _cron_source(tmp_path: Path) -> Path:
     return _CRON_PLUGIN_ROOT
 
 
-def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
+def _plugin_clock(core: Core, monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Pin the admitted cron callback's wall clock so recurrence needs no sleeping."""
+    observer = next(
+        (candidate for candidate, _facts, owner in core.plugin_runtime._observers if owner == "cron"),
+        None,
+    )
+    if observer is None:
+        raise AssertionError("the admitted cron observer is not registered")
+    clock = {"now": int(time.time() * 1000)}
+    monkeypatch.setitem(observer.__globals__, "_clock_ms", lambda: clock["now"])
+    return clock
+
+
+def _core(tmp_path: Path, server: OpenAILoopbackServer, *, extra_plugins: Mapping[str, object] | None = None) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
+    plugins: dict[str, object] = {
+        # The bundled files plugin is not under test here and is rewritten by another P4 lane.
+        "files": {"enabled": False},
+        "cron": {"path": str(_cron_source(tmp_path)), "enabled": True},
+    }
+    plugins.update(extra_plugins or {})
     config = {
         "schema_version": 1,
         "model": {"model": "endpoint/test-model"},
@@ -58,11 +78,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
                 "base_url": f"http://127.0.0.1:{server.server_port}/v1",
             }
         },
-        "plugins": {
-            # The bundled files plugin is not under test here and is rewritten by another P4 lane.
-            "files": {"enabled": False},
-            "cron": {"path": str(_cron_source(tmp_path)), "enabled": True},
-        },
+        "plugins": plugins,
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
@@ -82,21 +98,23 @@ def _explicit_ticker(core: Core) -> Callable[[int | None], dict[str, object]]:
     return real_tick
 
 
-def _await_instant(due_ms: int, *, timeout_seconds: float = 10.0) -> None:
-    """Wait until an instant has genuinely arrived, then let the core claim it."""
-    deadline = time.monotonic() + timeout_seconds
-    while int(time.time() * 1000) < due_ms:
-        if time.monotonic() > deadline:
-            pytest.fail(f"scheduled instant {due_ms} never arrived")
-        time.sleep(0.01)
-
-
-def _cron_call(call_id: str, arguments: dict[str, object]) -> dict[str, object]:
+def _tool_call(call_id: str, name: str, arguments: dict[str, object]) -> dict[str, object]:
     return {
         "id": call_id,
         "type": "function",
-        "function": {"name": "cron_create", "arguments": json.dumps(arguments)},
+        "function": {"name": name, "arguments": json.dumps(arguments)},
     }
+
+
+def _cron_call(call_id: str, arguments: dict[str, object]) -> dict[str, object]:
+    return _tool_call(call_id, "cron_create", arguments)
+
+
+def _wakeup_status(core: Core, wakeup_id: str) -> str:
+    with core.store._lock:
+        row = core.store._connection.execute("SELECT status FROM wakeups WHERE wakeup_id = ?", (wakeup_id,)).fetchone()
+    assert row is not None
+    return str(row[0])
 
 
 def _tool_names(request: dict[str, object]) -> list[str]:
@@ -164,13 +182,13 @@ def _pending(core: Core) -> list[WakeupRecord]:
         ]
 
 
-def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -> None:
+def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     replies = [
         openai_response(
             message={
                 "role": "assistant",
                 "content": None,
-                "tool_calls": [_cron_call("call-cron-1", {"schedule": "every 1s", "prompt": "tick tock"})],
+                "tool_calls": [_cron_call("call-cron-1", {"schedule": "every 1m", "prompt": "tick tock"})],
             },
             finish="tool_calls",
         ),
@@ -180,6 +198,7 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
     ]
     with loopback_server(replies) as server:
         core = _core(tmp_path, server)
+        clock = _plugin_clock(core, monkeypatch)
         tick = _explicit_ticker(core)
         session_id = core.create_session().session_id
 
@@ -207,15 +226,17 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
         assert first.owner == "cron"
         assert first.role == "user"
         assert first.payload == {"kind": "cron", "text": "tick tock", "schedule_id": schedule_id}
-        # A 1s cadence fires on the first second boundary after creation.
-        assert first.due_at == (int(entry["expires_at"] - 7 * 86400 * 1000) // 1000 + 1) * 1000
+        # A 1m cadence fires on the first minute boundary after creation.
+        assert first.due_at == (int(entry["next_fire_at"]) // 1000) * 1000
+        assert first.due_at >= int(entry["expires_at"]) - 7 * 86400 * 1000
+        assert first.due_at < int(entry["expires_at"])
         assert _fires(core, session_id) == []
 
         # Nothing fires before its instant.
         assert tick(now_ms=int(first.due_at) - 1) == {"fired": None}
         assert _fires(core, session_id) == []
 
-        _await_instant(int(first.due_at))
+        clock["now"] = int(first.due_at)
         assert tick(now_ms=int(first.due_at))["fired"] == first.wakeup_id
 
         # Exactly one firing, committed on the owning session under this plugin's attribution.
@@ -237,17 +258,24 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
         assert rearmed[0].wakeup_id != first.wakeup_id
         assert rearmed[0].payload == {"kind": "cron", "text": "tick tock", "schedule_id": schedule_id}
         assert rearmed[0].due_at > first.due_at
-        # Recomputed from completion time: a long run delays the next fire, missed slots never replay.
-        assert rearmed[0].due_at <= int(time.time() * 1000) + 1000
+        assert rearmed[0].due_at == first.due_at + 60_000
         assert _schedules(core, session_id)[schedule_id]["wakeup_id"] == rearmed[0].wakeup_id
+        assert _schedules(core, session_id)[schedule_id]["pending"] is None
         settled = _plugin_events(core, session_id, "schedule_fired")
         assert [event.payload for event in settled] == [
-            {"id": schedule_id, "outcome": "rearmed", "run_status": "completed", "next_fire_at": rearmed[0].due_at}
+            {
+                "id": schedule_id,
+                "wakeup_id": first.wakeup_id,
+                "fired_sequence": fires[0].sequence,
+                "outcome": "rearmed",
+                "run_status": "completed",
+                "next_fire_at": rearmed[0].due_at,
+            }
         ]
 
         # A later tick fires the successor exactly once and arms exactly one successor of its own.
         second = rearmed[0]
-        _await_instant(int(second.due_at))
+        clock["now"] = int(second.due_at)
         assert tick(now_ms=int(second.due_at))["fired"] == second.wakeup_id
         assert len(_fires(core, session_id)) == 2
         assert len(server.requests) == 4
@@ -255,34 +283,35 @@ def test_a_fired_schedule_reaches_the_provider_and_rearms_once(tmp_path: Path) -
 
         successors = _pending(core)
         assert len(successors) == 1
-        assert successors[0].due_at > second.due_at
         assert successors[0].wakeup_id not in {first.wakeup_id, second.wakeup_id}
         assert len({event.payload["wakeup_id"] for event in _fires(core, session_id)}) == 2
 
 
-def test_loop_command_creates_a_schedule_and_fires_it_immediately(tmp_path: Path) -> None:
+def test_loop_command_creates_a_schedule_and_fires_it_immediately(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     replies = [
         openai_response(message={"role": "assistant", "content": "loop ran"}, finish="stop"),
         openai_response(message={"role": "assistant", "content": "loop ran again"}, finish="stop"),
     ]
     with loopback_server(replies) as server:
         core = _core(tmp_path, server)
+        clock = _plugin_clock(core, monkeypatch)
         tick = _explicit_ticker(core)
         session_id = core.create_session().session_id
 
         result = core.invoke_command(
             session_id,
             "loop",
-            {"input": "1s check the deploy"},
+            {"input": "1m check the deploy"},
             expected_revision=core.command_catalog().revision_id,
         )
 
         assert result.status == "ok"
         schedule_id = str(result.data["schedule_id"])  # type: ignore[index]
         assert result.output == (
-            f"Scheduled 'check the deploy' on cadence 'every 1s' (job ID: {schedule_id}). "
+            f"Scheduled 'check the deploy' on cadence 'every 1m' (job ID: {schedule_id}). "
             "Recurring tasks auto-expire after 7 days. "
-            "To cancel sooner, use `cron_delete`."
+            f"To cancel sooner, use /loop delete {schedule_id}. "
+            "A run already in flight is not interrupted."
         )
 
         # Immediate arm: the wakeup is already due when the command returns.
@@ -294,20 +323,93 @@ def test_loop_command_creates_a_schedule_and_fires_it_immediately(tmp_path: Path
         entry = _schedules(core, session_id)[schedule_id]
         assert isinstance(entry, Mapping)
         assert entry["kind"] == "every"
-        assert entry["schedule_text"] == "every 1s"
+        assert entry["schedule_text"] == "every 1m"
         now_ms = int(time.time() * 1000)
         assert abs(int(entry["expires_at"]) - (now_ms + 7 * 86400 * 1000)) < 60_000
 
+        clock["now"] = int(armed[0].due_at)
         assert tick(now_ms=int(armed[0].due_at))["fired"] == armed[0].wakeup_id
         assert len(_fires(core, session_id)) == 1
         assert _user_texts(server.requests[0])[-1] == "check the deploy"
 
-        # The successor continues the `every 1s` cadence from the completion instant: strictly
-        # after the fire that just settled, so the immediate iteration can never repeat itself.
+        # The successor is a fresh wakeup; the immediate iteration is never replayed.
         successors = _pending(core)
         assert len(successors) == 1
         assert successors[0].wakeup_id != armed[0].wakeup_id
         assert successors[0].due_at > armed[0].due_at
+
+
+def test_parked_approval_keeps_the_claim_and_resume_settles_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = write_s5_plugin(tmp_path / "s5")
+    replies = [
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    _tool_call(
+                        "call-write-1",
+                        WRITE_TOOL,
+                        {"action": "write", "path": "target.txt", "text": "governed"},
+                    )
+                ],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "approved write"}, finish="stop"),
+    ]
+    with loopback_server(replies) as server:
+        core = _core(tmp_path, server, extra_plugins={S5_PLUGIN_ID: {"path": str(source)}})
+        clock = _plugin_clock(core, monkeypatch)
+        tick = _explicit_ticker(core)
+        session_id = core.create_session().session_id
+        result = core.invoke_command(
+            session_id,
+            "loop",
+            {"input": "1m write the governed file"},
+            expected_revision=core.command_catalog().revision_id,
+        )
+        assert result.status == "ok", result.error
+        schedule_id = str(result.data["schedule_id"])  # type: ignore[index]
+        armed = _pending(core)
+        assert len(armed) == 1
+
+        clock["now"] = int(armed[0].due_at)
+        fired = tick(now_ms=int(armed[0].due_at))
+        assert fired["fired"] == armed[0].wakeup_id
+        assert str(fired["status"]) == "waiting"
+        assert fired["wakeup_status"] == "claimed"
+        assert _wakeup_status(core, armed[0].wakeup_id) == "claimed"
+
+        pending_entry = _schedules(core, session_id)[schedule_id]
+        assert isinstance(pending_entry, Mapping)
+        assert pending_entry["pending"] is not None
+        assert pending_entry["next_fire_at"] is None
+        assert pending_entry["wakeup_id"] == armed[0].wakeup_id
+
+        approval = next(event for event in reversed(core.events_after(session_id)) if event.event_type == "core.approval_requested")
+        resumed = core.resume(session_id, approval_request_id=str(approval.payload["request_id"]), decision="allow")
+        assert resumed.status == "completed", resumed.error
+        assert _wakeup_status(core, armed[0].wakeup_id) == "completed"
+
+        settled = _schedules(core, session_id)[schedule_id]
+        assert isinstance(settled, Mapping)
+        assert settled["pending"] is None
+        assert settled["wakeup_id"] != armed[0].wakeup_id
+        assert int(settled["next_fire_at"]) > int(armed[0].due_at)
+        successors = _pending(core)
+        assert [wakeup.wakeup_id for wakeup in successors] == [settled["wakeup_id"]]
+        events = [event.payload for event in _plugin_events(core, session_id, "schedule_fired")]
+        assert events == [
+            {
+                "outcome": "rearmed",
+                "id": schedule_id,
+                "wakeup_id": armed[0].wakeup_id,
+                "fired_sequence": _fires(core, session_id)[0].sequence,
+                "run_status": "completed",
+                "next_fire_at": settled["next_fire_at"],
+            }
+        ]
 
 
 def test_loop_command_returns_usage_without_side_effects(tmp_path: Path) -> None:

@@ -249,7 +249,12 @@ The bundled Cron tools accept `every <N><s|m|h|d>`, `at <ISO-8601>`, `once`, or
 `cron <minute> <hour> <day> <month> <weekday>`. Cron expressions use croniter's
 five-field syntax, including names such as `JAN`/`MON` and supported modifiers.
 Six/seven-field expressions are refused. Calendar expressions follow the host's
-local timezone. `/loop` accepts intervals; use `cron_delete` to cancel a schedule.
+local timezone. Recurring schedules expire 7 days after creation; an `every`
+interval must be at least 1 minute and shorter than that horizon, and a
+recurring schedule whose next fire is at/after its expiry is refused or retired.
+`/loop` accepts intervals and sends each prompt as ordinary user text (it does
+not dispatch slash commands). Cancel a schedule with `/loop delete <id>` (or the
+`cron_delete` tool); a run already in flight is not interrupted.
 
 ## API Environment Variables
 

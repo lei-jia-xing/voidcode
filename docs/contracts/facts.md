@@ -98,5 +98,8 @@ other owners' wakeups in its session, so owner-specific policy checks `fact.owne
 against `services.owner`, the identity bound to its live lease. This supports
 admitting the same source under a different plugin id without a hardcoded owner.
 Cron additionally requires the tracked current wakeup id, schedule id and its own
-payload kind before settling or rearming a schedule. Stale and foreign firings
-still advance its source cursor but cannot affect its schedules.
+payload kind before recording a pending settlement. It records that pending
+settlement from the `wakeup_fired` fact and settles it on the session's next
+terminal `run_finished`, so a resume under a new run identity is still joined to
+the original firing. Stale and foreign firings are ignored without touching a
+schedule.
