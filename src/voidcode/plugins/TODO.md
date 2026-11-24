@@ -5,7 +5,7 @@
 - [ ] **为官方插件建立真实任务的生产化门槛，先覆盖 files、exec、mcp、lsp、subagents、workflows。**
 - [ ] **让正常截图/图片读取真正可用，贯通工具结果和客户端显示。**
 - [x] **删除没有边界依据的 PREVIEW/MAX，以及同一数据链路的重复截断。**
-  - `ast_grep_tool.py` 删除固定 `_MATCH_PREVIEW_LIMIT = 50`，改为按 `TOOL_OUTPUT_BYTES` 留出字节余量动态打包并保留完整 `native_jsonl` artifact URI；`user_shell_plugin` 事件载荷移除第三份冗余 `"output"` 拷贝（保留 `stdout`/`stderr` 与 `record`）。
+  - `ast_grep_tool.py` 删除固定 `_MATCH_PREVIEW_LIMIT = 50`，改为按 `TOOL_OUTPUT_BYTES` 留出字节余量动态打包；成功结果保留过滤后 `native_jsonl` artifact URI，零匹配不再产生空 artifact，进程输出超限/超时/取消时返回带 partial artifact 的 typed failure 而不是丢弃结果或伪称完整。`user_shell_plugin` 事件载荷移除第三份冗余 `"output"` 拷贝（保留 `stdout`/`stderr` 与 `record`）。
 - [ ] **提供面向模型的持久 Python `eval`，而不只是 shell 的另一层包装。**
 - [ ] **让 URI 成为跨工具的资源身份，而不只是一条 `read` 特例。**
 - [ ] **把现有子 Agent 生命周期做成持续交互、可寻址结果的闭环。**

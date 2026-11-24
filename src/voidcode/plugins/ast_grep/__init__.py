@@ -2,8 +2,10 @@
 
 It is the package entry point: a package spec keeps the plugin-local modules importable.
 
-The tool shells out to the ``ast-grep`` CLI, so it declares no import-time
-dependency of its own; a missing binary is reported as a tool error.
+The tools shell out to the ``ast-grep`` CLI, so the plugin declares no
+import-time dependency. The executable is discovered on ``PATH``; a missing
+binary is a typed ``tool_environment_error`` with install guidance at the
+first invocation, not an activation-time failure.
 """
 
 from collections.abc import Mapping
