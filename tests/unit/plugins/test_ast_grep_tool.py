@@ -244,15 +244,21 @@ def test_uninferable_language_is_a_typed_error(tmp_path: Path) -> None:
     assert "pass lang" in result.error
 
 
-def test_malformed_pattern_is_not_reported_as_zero_matches(tmp_path: Path) -> None:
-    stderr = "Warning: Pattern contains an ERROR node and may cause unexpected results.\n"
+def test_malformed_pattern_warning_is_visible_with_zero_matches(tmp_path: Path) -> None:
+    stderr = (
+        "Warning: Pattern contains an ERROR node and may cause unexpected results.\n"
+        "Help: ast-grep parsed the pattern but it matched nothing in this run.\n"
+    )
     services = _services(tmp_path, ProcessResult(0, "", stderr, 1))
     for mode in ("search", "preview"):
-        result = _failure(_invoke_search(tmp_path, services, mode=mode, rewrite="bar()"))
-        assert result.diagnostics is not None
-        assert result.diagnostics.kind == "tool_input_mismatch"
-        assert _detail(result, "reason") == "invalid_arguments"
-        assert "parse the pattern" in result.error
+        result = _success(_invoke_search(tmp_path, services, mode=mode, rewrite="bar()"))
+        assert "Warnings:" in result.output.text
+        assert "Pattern contains an ERROR node" in result.output.text
+        assert _payload(result)["warnings"] == [
+            "Warning: Pattern contains an ERROR node and may cause unexpected results.",
+            "Help: ast-grep parsed the pattern but it matched nothing in this run.",
+        ]
+        assert "0 AST" in result.output.text
     assert services.artifacts == []
 
 
@@ -613,11 +619,13 @@ def test_replace_apply_cancel_reports_confirmed_stop_and_change(tmp_path: Path) 
 def test_replace_apply_without_a_real_change_is_a_noop_failure(tmp_path: Path) -> None:
     services = _services(tmp_path)
     services.apply_writes = "foo()\n"
-    services.apply_result = ProcessResult(0, "Applied 1 changes\n", "", 1)
+    services.apply_result = ProcessResult(0, "Applied 1 changes\n", "Warning: arbitrary exit-0 notice\n", 1)
     result = _failure(_invoke_replace(tmp_path, services))
     assert result.diagnostics is not None
     assert result.diagnostics.kind == "no_op"
     assert "unchanged" in result.error
+    assert "Warning: arbitrary exit-0 notice" in result.error
+    assert result.diagnostics.details["warnings"] == ("Warning: arbitrary exit-0 notice",)
 
 
 def test_replace_large_file_omits_diff_but_reports_stats(tmp_path: Path) -> None:
@@ -691,14 +699,15 @@ def test_real_binary_search_infers_language_and_honors_visibility_flags(tmp_path
 
 
 @real_binary
-def test_real_binary_malformed_pattern_is_a_typed_error(tmp_path: Path) -> None:
+def test_real_binary_malformed_pattern_is_a_visible_warning(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text("foo()\n", encoding="utf-8")
     services = RealAstGrepServices()
-    result = _failure(_invoke_search(tmp_path, services, path="a.py", lang="python", pattern="foo("))
-    assert result.diagnostics is not None
-    assert result.diagnostics.kind == "tool_input_mismatch"
-    assert _detail(result, "reason") == "invalid_arguments"
-    assert "parse the pattern" in result.error
+    result = _success(_invoke_search(tmp_path, services, path="a.py", lang="python", pattern="foo("))
+    assert "Found 0 AST match" in result.output.text
+    assert "Warnings:" in result.output.text
+    warnings = _payload(result)["warnings"]
+    assert isinstance(warnings, list)
+    assert any("Pattern contains an ERROR node" in str(line) for line in warnings)
 
 
 @real_binary

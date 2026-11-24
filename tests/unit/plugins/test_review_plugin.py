@@ -279,6 +279,23 @@ def test_missing_git_repository_is_refused(tmp_path: Path) -> None:
     assert services.spawn_calls == []
 
 
+def test_rev_parse_failure_is_a_repo_error_without_stderr_classification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    detail = "fatal: arbitrary repository refusal " + "x" * 5000
+
+    def fail(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        _ = (args, kwargs)
+        return subprocess.CompletedProcess([], 128, "", detail)
+
+    monkeypatch.setattr("voidcode.plugins.review.workspace_review.subprocess.run", fail)
+    snapshot = git_status_snapshot(tmp_path)
+
+    assert snapshot.state == "not_git_repo"
+    assert snapshot.root is None
+    assert snapshot.error is not None
+    assert snapshot.error.startswith("fatal: arbitrary repository refusal")
+    assert len(snapshot.error) == 2000
+
+
 # --- The review child ---
 
 

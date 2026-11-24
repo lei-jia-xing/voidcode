@@ -59,7 +59,6 @@ _OUTLINE_CAPTURE_BYTES: Final[int] = 1024 * 1024
 _APPLY_CAPTURE_BYTES: Final[int] = 1024 * 1024
 _DIAGNOSTIC_CHARS: Final[int] = 4000
 _SHA256_TEXT = re.compile(r"^[0-9a-f]{64}$")
-_ERROR_NODE_WARNING = "Pattern contains an ERROR node"
 _MATCH_PROJECTION_BUDGET_BYTES = TOOL_OUTPUT_BYTES - 4 * 1024
 
 
@@ -262,23 +261,6 @@ def _file_digest(path: Path) -> tuple[str, int] | None:
 
 def _warning_lines(stderr: str) -> tuple[str, ...]:
     return tuple(line.strip() for line in stderr.splitlines() if line.strip())
-
-
-def _has_invalid_pattern_warning(stderr: str) -> bool:
-    return any(_ERROR_NODE_WARNING in line for line in _warning_lines(stderr))
-
-
-def _raise_invalid_pattern(stderr: str, *, pattern: str | None = None) -> None:
-    details: dict[str, object] = {"stderr": _short(stderr)}
-    if pattern is not None:
-        details["pattern"] = pattern
-    raise_tool_diagnostic(
-        message="ast-grep could not parse the pattern as a valid AST pattern for the target language.",
-        error_kind="tool_input_mismatch",
-        reason="invalid_arguments",
-        retry_guidance="Correct the pattern, or pass an explicit lang matching the target syntax.",
-        details=details,
-    )
 
 
 def _parse_stream_output(stdout: str, *, stage: str) -> list[dict[str, Any]]:
@@ -493,8 +475,6 @@ def _raise_on_process_failure(*, completed: ProcessResult, fallback_message: str
     if completed.exit_code == 0:
         return
     stderr = completed.stderr.strip()
-    if _has_invalid_pattern_warning(stderr):
-        _raise_invalid_pattern(stderr)
     if completed.exit_code == 2:
         raise_tool_diagnostic(
             message=f"ast-grep rejected the {stage} arguments: {_short(stderr) or fallback_message}",
@@ -769,11 +749,8 @@ def _truncated_or_failed(
 def _extract_matches(
     completed: ProcessResult,
     *,
-    pattern: str,
     stage: str,
 ) -> list[dict[str, Any]]:
-    if _has_invalid_pattern_warning(completed.stderr):
-        _raise_invalid_pattern(completed.stderr, pattern=pattern)
     if completed.exit_code == 1 and not completed.stdout.strip() and not completed.stderr.strip():
         return []
     _raise_on_process_failure(completed=completed, fallback_message=f"ast-grep {stage} failed", stage=stage)
@@ -882,7 +859,7 @@ class AstGrepTool:
             if failure is not None:
                 return failure
             matches = _filter_matches(
-                _extract_matches(completed, pattern=args.pattern, stage="search"),
+                _extract_matches(completed, stage="search"),
                 workspace=workspace,
                 search_root=candidate,
                 include=args.include,
@@ -972,7 +949,7 @@ class AstGrepTool:
             if failure is not None:
                 return failure
             matches = _filter_matches(
-                _extract_matches(completed, pattern=args.pattern, stage="preview"),
+                _extract_matches(completed, stage="preview"),
                 workspace=workspace,
                 search_root=candidate,
                 include=args.include,
@@ -1093,7 +1070,7 @@ class AstGrepReplaceTool:
         )
         if failure is not None:
             return failure
-        matches = _extract_matches(completed, pattern=args.pattern, stage="replace preview")
+        matches = _extract_matches(completed, stage="replace preview")
         warnings = _warning_lines(completed.stderr)
         for match in matches:
             raw_path = match.get("file")
@@ -1153,18 +1130,18 @@ class AstGrepReplaceTool:
             max_output_bytes=_APPLY_CAPTURE_BYTES,
         )
         apply_warnings = _warning_lines(applied.stderr)
-        if applied.cancelled or applied.timed_out or applied.truncated or applied.exit_code != 0 or _has_invalid_pattern_warning(applied.stderr):
+        if applied.cancelled or applied.timed_out or applied.truncated or applied.exit_code != 0:
             return self._apply_failure(
                 applied,
                 target=target,
                 display_path=display_path,
                 services=services,
                 timeout_seconds=timeout_seconds,
-                pattern=args.pattern,
             )
         final = _load_replace_target(candidate, display_path)
         if final.source_hash == target.source_hash:
             message = f"ast-grep reported success but {display_path} is unchanged."
+            message += _warnings_block(apply_warnings)
             return ToolFailure(
                 tool_name=self.definition.name,
                 error=message,
@@ -1172,7 +1149,7 @@ class AstGrepReplaceTool:
                 diagnostics=ToolDiagnostics(
                     kind="no_op",
                     summary=message,
-                    details={"path": display_path, "source_hash": target.source_hash},
+                    details={"path": display_path, "source_hash": target.source_hash, "warnings": list(apply_warnings)},
                     guidance="Check that the pattern actually matches and the rewrite can change the target, then retry.",
                 ),
             )
@@ -1232,7 +1209,6 @@ class AstGrepReplaceTool:
         display_path: str,
         services: PluginServices,
         timeout_seconds: int,
-        pattern: str,
     ) -> ToolResult:
         state = _file_digest(target.path)
         changes: tuple[Change, ...] = ()
@@ -1270,26 +1246,6 @@ class AstGrepReplaceTool:
                     guidance="Read the file to verify any partial rewrite, then retry with its current hash.",
                 ),
                 timeout_seconds=timeout_seconds,
-                changes=changes,
-            )
-        if _has_invalid_pattern_warning(applied.stderr):
-            message = f"ast-grep could not parse the pattern during replace.{partial_note}{artifact_line}"
-            return ToolFailure(
-                tool_name=self.definition.name,
-                error=message,
-                output=TextOutput(message, bounds=OutputBounds(partial=bool(changes), reference=artifact, source="ast-grep:replace")),
-                diagnostics=ToolDiagnostics(
-                    kind="tool_input_mismatch",
-                    summary=message,
-                    details={
-                        "reason": "invalid_arguments",
-                        "stage": "replace apply",
-                        "changed": bool(changes),
-                        "pattern": pattern,
-                        "stderr": _short(applied.stderr),
-                    },
-                    guidance="Correct the pattern, or pass an explicit lang matching the target syntax.",
-                ),
                 changes=changes,
             )
         reason = "process_capture_failed" if applied.truncated else "edit_failed"

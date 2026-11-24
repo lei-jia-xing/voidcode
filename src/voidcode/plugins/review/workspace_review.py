@@ -12,6 +12,7 @@ from typing import Literal
 type GitStatusState = Literal["git_ready", "not_git_repo", "git_error"]
 
 _GIT_TIMEOUT_SECONDS = 30
+_MAX_GIT_ERROR_CHARS = 2_000
 _COMMIT_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
@@ -40,8 +41,6 @@ def _run_git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
             errors="replace",
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
-            # The not-a-repository refusal is classified by its stable C-locale text.
-            env={**os.environ, "LC_ALL": "C", "LANG": "C"},
         )
     except FileNotFoundError as exc:
         raise ValueError("git executable was not found") from exc
@@ -51,20 +50,48 @@ def _run_git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
         raise ValueError(f"git could not start: {exc}") from exc
 
 
+def _bounded_git_detail(*candidates: str) -> str | None:
+    """First non-empty Git diagnostic, bounded for the snapshot payload."""
+    for value in candidates:
+        text = value.strip()
+        if text:
+            return text[:_MAX_GIT_ERROR_CHARS]
+    return None
+
+
+def _has_git_metadata(workspace: Path) -> bool:
+    """Whether the workspace or an ancestor carries a ``.git`` entry.
+
+    This is a structural probe, not message parsing: Git returns 128 for both
+    "no repository" and a broken repository, so the marker is what separates
+    them without reading the refusal text.
+    """
+    current = workspace
+    while True:
+        if (current / ".git").exists():
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
+
+
 def git_status_snapshot(workspace: Path) -> GitStatusSnapshot:
-    """Resolve the repository root while preserving Git diagnostics."""
+    """Resolve the repository root while preserving bounded Git diagnostics.
+
+    Git exits 128 for every fatal ``rev-parse`` failure, so the refusal text is
+    its only diagnostic. A failure below a ``.git`` marker is a broken
+    repository; any other failure means this workspace has no repository.
+    """
     resolved = workspace.resolve()
     try:
         result = _run_git(resolved, "rev-parse", "--show-toplevel")
     except ValueError as exc:
         return GitStatusSnapshot(state="git_error", root=None, error=str(exc))
-    stdout = result.stdout
-    stderr = result.stderr
-    if result.returncode == 0:
-        return GitStatusSnapshot(state="git_ready", root=stdout.strip())
-    if "not a git repository" in stderr.lower():
-        return GitStatusSnapshot(state="not_git_repo", root=None, error=stderr or None)
-    return GitStatusSnapshot(state="git_error", root=None, error=stderr or stdout.strip() or None)
+    if result.returncode != 0:
+        state: GitStatusState = "git_error" if _has_git_metadata(resolved) else "not_git_repo"
+        return GitStatusSnapshot(state=state, root=None, error=_bounded_git_detail(result.stderr, result.stdout))
+    return GitStatusSnapshot(state="git_ready", root=result.stdout.strip())
 
 
 def _clean_ref(raw: str, *, where: str) -> str:
