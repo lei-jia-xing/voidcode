@@ -71,6 +71,55 @@ def test_budget_exhaustion_round_trips_and_absent_stays_absent() -> None:
     assert parsed.as_payload() == _budget_payload()
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "dimension": "owner_tokens",
+            "source": "max_input_tokens",
+            "limit": 120,
+            "consumed": 130,
+            "remaining": 0,
+            "continue_with": "raise_owner_budget",
+        },
+        {
+            "dimension": "owner_cost_usd",
+            "source": "max_cost_usd",
+            "limit": 1.25,
+            "consumed": 2.5,
+            "remaining": 0.0,
+            "continue_with": "raise_owner_budget",
+        },
+        {
+            "dimension": "owner_elapsed_seconds",
+            "source": "max_elapsed_seconds",
+            "limit": 60.0,
+            "consumed": 61.5,
+            "remaining": 0.0,
+            "continue_with": "raise_owner_budget",
+        },
+    ],
+)
+def test_budget_exhaustion_owner_forms_round_trip(payload: dict[str, object]) -> None:
+    parsed = BudgetExhaustion.from_payload(payload)
+    assert parsed is not None
+    assert parsed.as_payload() == payload
+
+
+def test_budget_exhaustion_keeps_token_counters_integral() -> None:
+    with pytest.raises(ValueError, match="integers for token and turn caps"):
+        BudgetExhaustion.from_payload(
+            {
+                "dimension": "owner_tokens",
+                "source": "max_total_tokens",
+                "limit": 10.0,
+                "consumed": 10.0,
+                "remaining": 0.0,
+                "continue_with": "raise_owner_budget",
+            }
+        )
+
+
 def test_budget_exhaustion_rejects_anything_but_the_six_typed_fields() -> None:
     base = _budget_payload()
     bad: list[object] = ["nope", 42, []]

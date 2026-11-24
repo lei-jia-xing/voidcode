@@ -8,14 +8,16 @@ import pytest
 
 from voidcode.core.engine.turn_execution import (
     CoreResult,
+    TurnDriver,
     _tool_call_from_entry,
     _tool_calls_from_content,
 )
 from voidcode.core.events import EventType
 from voidcode.core.execution import _Cursor, _Execution
 from voidcode.core.storage.store import SessionRecord, SessionStatus, StoredEvent
+from voidcode.core.usage import budget_block
 from voidcode.sdk.provider import ProviderExecutionError
-from voidcode.sdk.services import BudgetExhaustion
+from voidcode.sdk.services import BudgetExhaustion, PluginBudget, SessionUsageReport
 from voidcode.sdk.tools import ToolCall
 
 
@@ -118,6 +120,118 @@ def test_tool_call_from_entry_malformed() -> None:
 
     with pytest.raises(ProviderExecutionError, match="provider stream tool call id was malformed"):
         _tool_call_from_entry({"tool_name": "cmd", "arguments": {}, "tool_call_id": ""})
+
+
+def _report(
+    *,
+    input_tokens: int | None = 0,
+    output_tokens: int | None = 0,
+    cost_usd: float | None = None,
+    elapsed_seconds: float | None = None,
+) -> SessionUsageReport:
+    return SessionUsageReport(
+        session_id="s1",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=0 if input_tokens is not None else None,
+        uncached_input_tokens=0 if input_tokens is not None else None,
+        total_cost_usd=cost_usd,
+        elapsed_seconds=elapsed_seconds,
+    )
+
+
+@pytest.mark.parametrize(
+    ("budget", "report", "expected"),
+    [
+        (
+            PluginBudget(owner="goal", max_input_tokens=100),
+            _report(input_tokens=120, output_tokens=5),
+            BudgetExhaustion("owner_tokens", "max_input_tokens", 100, 120, 0, "raise_owner_budget"),
+        ),
+        (
+            PluginBudget(owner="goal", max_output_tokens=50),
+            _report(input_tokens=10, output_tokens=50),
+            BudgetExhaustion("owner_tokens", "max_output_tokens", 50, 50, 0, "raise_owner_budget"),
+        ),
+        (
+            PluginBudget(owner="goal", max_total_tokens=100),
+            _report(input_tokens=60, output_tokens=40),
+            BudgetExhaustion("owner_tokens", "max_total_tokens", 100, 100, 0, "raise_owner_budget"),
+        ),
+        (
+            PluginBudget(owner="goal", max_cost_usd=1.25),
+            _report(cost_usd=2.5),
+            BudgetExhaustion("owner_cost_usd", "max_cost_usd", 1.25, 2.5, 0.0, "raise_owner_budget"),
+        ),
+        (
+            PluginBudget(owner="goal", max_elapsed_seconds=60.0),
+            _report(elapsed_seconds=61.5),
+            BudgetExhaustion("owner_elapsed_seconds", "max_elapsed_seconds", 60.0, 61.5, 0.0, "raise_owner_budget"),
+        ),
+    ],
+)
+def test_budget_block_types_a_reached_owner_cap(budget: PluginBudget, report: SessionUsageReport, expected: BudgetExhaustion) -> None:
+    block = budget_block(report, budget)
+    assert block is not None and not block.unknown
+    assert block.exhaustion == expected
+    assert block.message.startswith("budget limit exceeded:")
+
+
+@pytest.mark.parametrize(
+    ("budget", "report"),
+    [
+        (PluginBudget(owner="goal", max_input_tokens=10), _report(input_tokens=None)),
+        (PluginBudget(owner="goal", max_output_tokens=10), _report(output_tokens=None)),
+        (PluginBudget(owner="goal", max_total_tokens=10), _report(input_tokens=None)),
+        (PluginBudget(owner="goal", max_cost_usd=1.0), _report(cost_usd=None)),
+        (PluginBudget(owner="goal", max_elapsed_seconds=30.0), _report(elapsed_seconds=None)),
+    ],
+)
+def test_budget_block_keeps_unknown_metrics_untyped(budget: PluginBudget, report: SessionUsageReport) -> None:
+    block = budget_block(report, budget)
+    assert block is not None and block.unknown
+    assert block.exhaustion is None
+    assert block.message.endswith("unknown for owner goal")
+
+
+def test_budget_admission_attaches_the_typed_owner_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    host = MagicMock()
+    host.session_budgets.return_value = [PluginBudget(owner="goal", max_total_tokens=15)]
+    host.get_session_usage.return_value = _report(input_tokens=10, output_tokens=5)
+    driver = TurnDriver(host)
+    stop = MagicMock(return_value="stopped")
+    monkeypatch.setattr(driver, "stop", stop)
+    execution = MagicMock()
+    execution.session.session_id = "s1"
+
+    assert driver.budget_admission(execution) == "stopped"
+    stop.assert_called_once_with(
+        execution,
+        "budget limit exceeded: total tokens 15 >= 15 for owner goal",
+        stop_cause="limit_reached",
+        budget_exhaustion=BudgetExhaustion("owner_tokens", "max_total_tokens", 15, 15, 0, "raise_owner_budget"),
+    )
+
+
+def test_budget_admission_keeps_an_unknown_metric_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    host = MagicMock()
+    host.session_budgets.return_value = [PluginBudget(owner="goal", max_total_tokens=10)]
+    host.get_session_usage.return_value = _report(input_tokens=None)
+    driver = TurnDriver(host)
+    fail = MagicMock(return_value="failed")
+    stop = MagicMock()
+    monkeypatch.setattr(driver, "fail", fail)
+    monkeypatch.setattr(driver, "stop", stop)
+    execution = MagicMock()
+    execution.session.session_id = "s1"
+
+    assert driver.budget_admission(execution) == "failed"
+    fail.assert_called_once_with(execution, "budget limit reached: total tokens unknown for owner goal")
+    stop.assert_not_called()
 
 
 def test_turn_driver_pending_resolution() -> None:

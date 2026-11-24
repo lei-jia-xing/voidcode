@@ -141,16 +141,55 @@ class QueryContractError(ValueError):
     """Raised when a query answer violates its expected contract schema."""
 
 
+type BudgetExhaustionDimension = Literal[
+    "provider_turns",
+    "root_actions",
+    "owner_tokens",
+    "owner_cost_usd",
+    "owner_elapsed_seconds",
+]
+type BudgetExhaustionSource = Literal[
+    "max_steps",
+    "root_action_budget",
+    "max_input_tokens",
+    "max_output_tokens",
+    "max_total_tokens",
+    "max_cost_usd",
+    "max_elapsed_seconds",
+]
+type BudgetExhaustionContinuation = Literal["resume_with_max_steps", "extend_root_actions", "raise_owner_budget"]
+
+_ALLOWED_BUDGET_EXHAUSTION_FORMS: frozenset[tuple[BudgetExhaustionDimension, BudgetExhaustionSource, BudgetExhaustionContinuation]] = frozenset(
+    {
+        ("provider_turns", "max_steps", "resume_with_max_steps"),
+        ("root_actions", "root_action_budget", "extend_root_actions"),
+        ("owner_tokens", "max_input_tokens", "raise_owner_budget"),
+        ("owner_tokens", "max_output_tokens", "raise_owner_budget"),
+        ("owner_tokens", "max_total_tokens", "raise_owner_budget"),
+        ("owner_cost_usd", "max_cost_usd", "raise_owner_budget"),
+        ("owner_elapsed_seconds", "max_elapsed_seconds", "raise_owner_budget"),
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class BudgetExhaustion:
-    """One finite execution cap that stopped a run without claiming success."""
+    """One finite execution cap that stopped a run without claiming success.
 
-    dimension: Literal["provider_turns", "root_actions"]
-    source: Literal["max_steps", "root_action_budget"]
-    limit: int
-    consumed: int
-    remaining: int
-    continue_with: Literal["resume_with_max_steps", "extend_root_actions"]
+    Provider-turn and root-action caps keep their existing dimensions. An owner
+    budget stop uses ``owner_tokens`` (with the exact ``max_input_tokens``,
+    ``max_output_tokens``, or ``max_total_tokens`` source), ``owner_cost_usd``,
+    or ``owner_elapsed_seconds``. Its counters are the measured value and the
+    configured limit, with ``remaining`` clamped at zero; an unknown metric fails
+    before a stop and never produces a guessed exhaustion.
+    """
+
+    dimension: BudgetExhaustionDimension
+    source: BudgetExhaustionSource
+    limit: int | float
+    consumed: int | float
+    remaining: int | float
+    continue_with: BudgetExhaustionContinuation
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -175,11 +214,12 @@ class BudgetExhaustion:
         except ValidationError as exc:
             raise ValueError(f"budget exhaustion is invalid: {exc}") from exc
         if parsed.limit < 0 or parsed.consumed < 0 or parsed.remaining < 0:
-            raise ValueError("budget exhaustion counters must be non-negative integers")
-        if (parsed.dimension, parsed.source, parsed.continue_with) not in (
-            ("provider_turns", "max_steps", "resume_with_max_steps"),
-            ("root_actions", "root_action_budget", "extend_root_actions"),
+            raise ValueError("budget exhaustion counters must be non-negative numbers")
+        if parsed.dimension in ("provider_turns", "root_actions", "owner_tokens") and any(
+            type(value) is not int for value in (parsed.limit, parsed.consumed, parsed.remaining)
         ):
+            raise ValueError("budget exhaustion counters must be integers for token and turn caps")
+        if (parsed.dimension, parsed.source, parsed.continue_with) not in _ALLOWED_BUDGET_EXHAUSTION_FORMS:
             raise ValueError("budget exhaustion has an unknown dimension, source, or continuation")
         return parsed
 

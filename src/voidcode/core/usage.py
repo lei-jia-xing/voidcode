@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from ..sdk.codec import decode_provider_result
 from ..sdk.provider import ProviderTokenUsage
-from ..sdk.services import PluginBudget, SessionUsageReport
+from ..sdk.services import BudgetExhaustion, PluginBudget, SessionUsageReport
 from .events import EventType
 from .execution import wire_object
 from .storage.store import SessionRecord, SqliteStore, StoredEvent
@@ -26,6 +27,26 @@ class BudgetBlock:
     #: The cap's own metric is unknown, so this is a failure rather than a reached limit.
     unknown: bool
     message: str
+    #: The typed reached cap; never present for an unknown metric.
+    exhaustion: BudgetExhaustion | None = None
+
+
+def _owner_budget_exhaustion(
+    *,
+    dimension: Literal["owner_tokens", "owner_cost_usd", "owner_elapsed_seconds"],
+    source: Literal["max_input_tokens", "max_output_tokens", "max_total_tokens", "max_cost_usd", "max_elapsed_seconds"],
+    limit: int | float,
+    consumed: int | float,
+) -> BudgetExhaustion:
+    """Name the exact owner cap and measured spend that refused dispatch."""
+    return BudgetExhaustion(
+        dimension=dimension,
+        source=source,
+        limit=limit,
+        consumed=consumed,
+        remaining=max(0, limit - consumed),
+        continue_with="raise_owner_budget",
+    )
 
 
 def budget_block(report: SessionUsageReport, budget: PluginBudget) -> BudgetBlock | None:
@@ -42,6 +63,12 @@ def budget_block(report: SessionUsageReport, budget: PluginBudget) -> BudgetBloc
             return BudgetBlock(
                 False,
                 f"budget limit exceeded: input tokens {report.input_tokens} >= {budget.max_input_tokens} for owner {budget.owner}",
+                _owner_budget_exhaustion(
+                    dimension="owner_tokens",
+                    source="max_input_tokens",
+                    limit=budget.max_input_tokens,
+                    consumed=report.input_tokens,
+                ),
             )
     if budget.max_output_tokens is not None:
         if report.output_tokens is None:
@@ -50,6 +77,12 @@ def budget_block(report: SessionUsageReport, budget: PluginBudget) -> BudgetBloc
             return BudgetBlock(
                 False,
                 f"budget limit exceeded: output tokens {report.output_tokens} >= {budget.max_output_tokens} for owner {budget.owner}",
+                _owner_budget_exhaustion(
+                    dimension="owner_tokens",
+                    source="max_output_tokens",
+                    limit=budget.max_output_tokens,
+                    consumed=report.output_tokens,
+                ),
             )
     if budget.max_total_tokens is not None:
         if report.input_tokens is None or report.output_tokens is None:
@@ -59,6 +92,12 @@ def budget_block(report: SessionUsageReport, budget: PluginBudget) -> BudgetBloc
             return BudgetBlock(
                 False,
                 f"budget limit exceeded: total tokens {total} >= {budget.max_total_tokens} for owner {budget.owner}",
+                _owner_budget_exhaustion(
+                    dimension="owner_tokens",
+                    source="max_total_tokens",
+                    limit=budget.max_total_tokens,
+                    consumed=total,
+                ),
             )
     if budget.max_elapsed_seconds is not None:
         if report.elapsed_seconds is None:
@@ -67,6 +106,12 @@ def budget_block(report: SessionUsageReport, budget: PluginBudget) -> BudgetBloc
             return BudgetBlock(
                 False,
                 f"budget limit exceeded: elapsed time {report.elapsed_seconds}s >= {budget.max_elapsed_seconds}s for owner {budget.owner}",
+                _owner_budget_exhaustion(
+                    dimension="owner_elapsed_seconds",
+                    source="max_elapsed_seconds",
+                    limit=budget.max_elapsed_seconds,
+                    consumed=report.elapsed_seconds,
+                ),
             )
     if budget.max_cost_usd is not None:
         if report.total_cost_usd is None:
@@ -75,6 +120,12 @@ def budget_block(report: SessionUsageReport, budget: PluginBudget) -> BudgetBloc
             return BudgetBlock(
                 False,
                 f"budget limit exceeded: cost ${report.total_cost_usd} >= ${budget.max_cost_usd} for owner {budget.owner}",
+                _owner_budget_exhaustion(
+                    dimension="owner_cost_usd",
+                    source="max_cost_usd",
+                    limit=budget.max_cost_usd,
+                    consumed=report.total_cost_usd,
+                ),
             )
     return None
 

@@ -144,30 +144,31 @@ export interface components {
         /**
          * BudgetExhaustion
          * @description One finite execution cap that stopped a run without claiming success.
+         *
+         *     Provider-turn and root-action caps keep their existing dimensions. An owner
+         *     budget stop uses ``owner_tokens`` (with the exact ``max_input_tokens``,
+         *     ``max_output_tokens``, or ``max_total_tokens`` source), ``owner_cost_usd``,
+         *     or ``owner_elapsed_seconds``. Its counters are the measured value and the
+         *     configured limit, with ``remaining`` clamped at zero; an unknown metric fails
+         *     before a stop and never produces a guessed exhaustion.
          */
         BudgetExhaustion: {
             /** Consumed */
             consumed: number;
-            /**
-             * Continue With
-             * @enum {string}
-             */
-            continue_with: "resume_with_max_steps" | "extend_root_actions";
-            /**
-             * Dimension
-             * @enum {string}
-             */
-            dimension: "provider_turns" | "root_actions";
+            continue_with: components["schemas"]["BudgetExhaustionContinuation"];
+            dimension: components["schemas"]["BudgetExhaustionDimension"];
             /** Limit */
             limit: number;
             /** Remaining */
             remaining: number;
-            /**
-             * Source
-             * @enum {string}
-             */
-            source: "max_steps" | "root_action_budget";
+            source: components["schemas"]["BudgetExhaustionSource"];
         };
+        /** @enum {string} */
+        BudgetExhaustionContinuation: "resume_with_max_steps" | "extend_root_actions" | "raise_owner_budget";
+        /** @enum {string} */
+        BudgetExhaustionDimension: "provider_turns" | "root_actions" | "owner_tokens" | "owner_cost_usd" | "owner_elapsed_seconds";
+        /** @enum {string} */
+        BudgetExhaustionSource: "max_steps" | "root_action_budget" | "max_input_tokens" | "max_output_tokens" | "max_total_tokens" | "max_cost_usd" | "max_elapsed_seconds";
         /**
          * CancelReceipt
          * @description One cancellation request outcome.

@@ -436,9 +436,9 @@ class TurnDriver:
             block = budget_block(report, budget)
             if block is None:
                 continue
-            if block.unknown:
+            if block.unknown or block.exhaustion is None:
                 return self.fail(execution, block.message)
-            return self.stop(execution, block.message, stop_cause="limit_reached")
+            return self.stop(execution, block.message, stop_cause="limit_reached", budget_exhaustion=block.exhaustion)
         return None
 
     def abort_stop(self, execution: _Execution, session_abort: Cancellation | None) -> CoreResult | None:

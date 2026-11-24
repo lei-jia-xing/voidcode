@@ -6,9 +6,10 @@ from dataclasses import asdict
 from tests.fixtures.core_factory import loopback_server
 from tests.unit.core.test_nested_tools import _call, _turn
 from voidcode.bootstrap import open_core
-from voidcode.core.storage.store import CheckpointKind, EventDraft, SessionStatus
+from voidcode.core.storage.store import CheckpointKind, EventDraft, SessionStatus, StagedBudgetUpdate
 from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, RequestWindow, RunFinishedFact
 from voidcode.sdk.json_values import json_wire_value
+from voidcode.sdk.services import BudgetExhaustion, PluginBudget
 
 PLUGIN = """
 from dataclasses import asdict
@@ -176,3 +177,49 @@ def test_run_stop_fact_exposes_the_typed_cap_that_stopped_it(tmp_path):
             assert len(run_facts) == 1
             assert run_facts[0].status == "interrupted" and run_facts[0].stop_cause == "limit_reached"
             assert run_facts[0].budget_exhaustion == result.budget_exhaustion
+
+
+def test_owner_budget_stop_fact_names_the_metric_and_measured_spend(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    with loopback_server([_turn(output="first turn")]) as server:
+        (workspace / "voidcode.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "model": {"model": "endpoint/exact-model"},
+                    "policy": {"approval_mode": "yolo"},
+                    "providers": {"endpoint": {"api_key": "test", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
+                    "plugins": {"files": {"enabled": False}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with open_core(workspace, state_dir=state_dir) as core:
+            session = "owner-budget-facts"
+            core.create_session(session)
+            first = core.run("first turn", session_id=session)
+            assert first.status == "completed", first.error
+            report = core.usage(session)
+            assert report.input_tokens is not None and report.output_tokens is not None
+            consumed = report.input_tokens + report.output_tokens
+
+            core.store.commit_staged(
+                session,
+                run_id="owner-budget-stage",
+                revision_id=core.revision_id,
+                events=(),
+                status=SessionStatus.IDLE,
+                staged_budgets=(StagedBudgetUpdate(owner="goal", action="set", budget=PluginBudget(owner="goal", max_total_tokens=consumed)),),
+            )
+
+            blocked = core.run("must not dispatch", session_id=session)
+            assert blocked.status == "interrupted", blocked.error
+            assert blocked.stop_cause == "limit_reached"
+            expected = BudgetExhaustion("owner_tokens", "max_total_tokens", consumed, consumed, 0, "raise_owner_budget")
+            assert blocked.budget_exhaustion == expected
+            facts = [fact for fact in history(core, session) if isinstance(fact, RunFinishedFact) and fact.stop_cause == "limit_reached"]
+            assert len(facts) == 1
+            assert facts[0].budget_exhaustion == expected
+    assert sum(1 for request in server.requests if "messages" in request) == 1, "the blocked run never dispatched"

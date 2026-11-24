@@ -242,6 +242,58 @@ def test_run_finished_fact_carries_typed_budget_exhaustion(runtime):
     assert completed.status == "completed" and completed.budget_exhaustion is None
 
 
+@pytest.mark.parametrize(
+    "exhaustion",
+    [
+        {
+            "dimension": "owner_tokens",
+            "source": "max_input_tokens",
+            "limit": 120,
+            "consumed": 130,
+            "remaining": 0,
+            "continue_with": "raise_owner_budget",
+        },
+        {
+            "dimension": "owner_cost_usd",
+            "source": "max_cost_usd",
+            "limit": 1.25,
+            "consumed": 2.5,
+            "remaining": 0.0,
+            "continue_with": "raise_owner_budget",
+        },
+        {
+            "dimension": "owner_elapsed_seconds",
+            "source": "max_elapsed_seconds",
+            "limit": 60.0,
+            "consumed": 61.5,
+            "remaining": 0.0,
+            "continue_with": "raise_owner_budget",
+        },
+    ],
+)
+def test_run_finished_fact_carries_typed_owner_budget_exhaustion(runtime, exhaustion):
+    append(runtime, event("core.run_interrupted", stop_cause="limit_reached", budget_exhaustion=exhaustion, elapsed_ms=10))
+    fact = runtime.fact_page("session", 0, 10).facts[0]
+    assert isinstance(fact, RunFinishedFact)
+    assert fact.status == "interrupted" and fact.stop_cause == "limit_reached"
+    assert fact.budget_exhaustion is not None
+    assert fact.budget_exhaustion.as_payload() == exhaustion
+
+
+def test_budget_exhaustion_refuses_a_mismatched_owner_metric():
+    with pytest.raises(ValueError, match="unknown dimension, source, or continuation"):
+        BudgetExhaustion.from_payload(
+            {
+                "dimension": "owner_tokens",
+                "source": "max_cost_usd",
+                "limit": 1,
+                "consumed": 1,
+                "remaining": 0,
+                "continue_with": "raise_owner_budget",
+            }
+        )
+
+
 def test_wakeup_fact_retains_owner_identity_role_and_immutable_payload(runtime):
     from voidcode.sdk.hooks import WakeupFiredFact
 
