@@ -25,9 +25,9 @@
   - `compaction_observer` 现从 `UsageFact` 接收 `context_window` 并传入 `resolve_compaction_budget`，保证默认配置下能正确算出压缩触发门限。
 - [x] **为 `web_fetch` 补齐 SSRF 防护，消除 `web_search` 静默降级。**
   - `plugins/web/web_fetch.py` 的 `_validated_url` 现校验回环地址、私有网段、云元数据（`169.254.169.254`）与重定向目标内网，重定向目标同样经过严格 SSRF 验证。
-- [ ] **完善 `files` 的忽略规则与 `write` 大小限制（Diff 回传已补齐）。**
-  - `GitIgnoreMatcher`（`capabilities/files/gitignore.py`）仅读根目录 `.gitignore`（忽略嵌套 `.gitignore` 与 `.git/info/exclude`），且 `glob`/`grep` 默认 `respect_gitignore=False`。
-  - `WriteTool`（`capabilities/files/write_tool.py`）已补齐覆盖写时返回 unified `diff`/`additions`/`deletions`，`MAX_WRITE_BYTES = 64 KiB`（协议帧边界）待后续扩展分片写入时放开。
+- [ ] **完善 `files` 的忽略规则。**
+  - `GitIgnoreMatcher`（`capabilities/files/gitignore.py`）仅读根目录 `.gitignore`（忽略嵌套 `.gitignore` 与 `.git/info/exclude`），`glob`/`grep` 共享同一默认策略（hidden 默认包含、`respect_gitignore` 默认 false）并有测试覆盖。
+  - `write`/`edit` 共用 64 KiB mutation-content 上限（按 UTF-8 字节计：`write.content`、文本模式 `newString` 之和、range 模式 `newText` 之和），覆盖写按流式哈希复核，仅对不超过 64 KiB 的旧文件回传 unified `diff`/`additions`/`deletions`。
 - [x] **补齐 `mcp` 分页与资源/提示词发现，消除 `hooks`/`rules` 静默吞错。**
   - `ManagedMcpManager._list_tools_pages_owned` 已支持 `nextCursor` 分页和上限防护。
   - `ToolHooks.post_tool`（`plugins/hooks/hooks_plugin.py`）在执行失败时记录 warning 日志与 visible failure；`plugins/skills/rules.py` 诊断和读取失败时均显式记录 warning 日志。

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -333,13 +334,23 @@ def test_read_tool_whole_file_page_still_rejects_invalid_utf8(tmp_path: Path) ->
 
 
 def test_read_tool_skips_overlong_line_before_offset_without_artifact(tmp_path: Path) -> None:
+    class CountingServices(_DummyServices):
+        def __init__(self) -> None:
+            self.spills = 0
+
+        def spill_artifact_stream(self, chunks, *, media_type="application/octet-stream"):
+            self.spills += 1
+            return super().spill_artifact_stream(chunks, media_type=media_type)
+
     plugin = create_plugin({})
     read_tool = next(t for t in plugin.tools if t.definition.name == "read")
     (tmp_path / "skipped-huge.txt").write_text("x" * (200_000) + "\nvisible\n", encoding="utf-8")
+    services = CountingServices()
 
     result = read_tool.invoke(
         ToolCall(tool_name="read", arguments={"path": "skipped-huge.txt", "offset": 2, "limit": 1}),
         context=_context(tmp_path),
+        services=cast(Any, services),
     )
     assert isinstance(result, ToolSuccess)
     assert isinstance(result.body, ReadResultBody)
@@ -349,6 +360,9 @@ def test_read_tool_skips_overlong_line_before_offset_without_artifact(tmp_path: 
     assert result.body.line_count == 2
     assert result.coverage == ()
     assert result.output.bounds.reference is None  # type: ignore[union-attr]
+    # The full pass is not a reason to store anything: no page shows a clipped
+    # line, so no artifact may be spilled and left unreferenced.
+    assert services.spills == 0
 
 
 def test_read_tool_detects_file_change_between_page_and_artifact_pass(tmp_path: Path) -> None:
@@ -547,6 +561,50 @@ def test_read_tool_allows_external_paths_with_absolute_display(tmp_path: Path) -
     assert "secret" in through_link.output.text  # type: ignore[union-attr]
 
 
+def test_read_tool_reports_directory_and_unreadable_file_typed(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    (tmp_path / "dir").mkdir()
+
+    directory = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "dir"}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(directory, ToolFailure)
+    assert directory.diagnostics is not None
+    assert directory.diagnostics.details["reason"] == "not_a_regular_file"
+
+    if sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0):
+        pytest.skip("chmod(0o000) unreadability needs a POSIX filesystem enforced for non-root users")
+    target = tmp_path / "secret.txt"
+    target.write_text("secret\n", encoding="utf-8")
+    target.chmod(0o000)
+    try:
+        unreadable = read_tool.invoke(ToolCall(tool_name="read", arguments={"path": "secret.txt"}), context=_context(tmp_path))
+        hashed = read_tool.invoke(ToolCall(tool_name="read", arguments={"path": "secret.txt", "hash_only": True}), context=_context(tmp_path))
+    finally:
+        target.chmod(0o600)
+    for result in (unreadable, hashed):
+        assert isinstance(result, ToolFailure)
+        assert result.diagnostics is not None
+        assert result.diagnostics.kind == "tool_environment_error"
+        assert result.diagnostics.details["reason"] == "resource_read_failed"
+
+
+def test_read_tool_treats_ansi_escapes_as_text(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    # A quarter of the sample is ESC: the byte remains text, unlike NUL and other controls.
+    log = ("\x1b[31mERROR\x1b[0m bad\n" * 400).encode("utf-8")
+    (tmp_path / "app.log").write_bytes(log)
+
+    result = read_tool.invoke(ToolCall(tool_name="read", arguments={"path": "app.log"}), context=_context(tmp_path))
+    assert isinstance(result, ToolSuccess)
+    assert isinstance(result.body, ReadResultBody)
+    assert "ERROR" in result.output.text  # type: ignore[union-attr]
+    assert result.body.content_hash == hashlib.sha256(log).hexdigest()
+
+
 def test_read_tool_uri_read_grants_no_coverage(tmp_path: Path) -> None:
     """A lineage-free artifact read's lines are not workspace file versions."""
     from voidcode.sdk.resources import ResourcePage
@@ -701,6 +759,10 @@ def test_write_tool_requires_and_enforces_expected_hash_for_existing(tmp_path: P
     )
     assert isinstance(res1, ToolFailure)
     assert "requires an expectedHash" in res1.error
+    assert res1.diagnostics is not None
+    assert res1.diagnostics.kind == "tool_input_mismatch"
+    assert res1.diagnostics.details["reason"] == "expected_hash_required"
+    assert "hash_only=true" in (res1.diagnostics.guidance or "")
     assert target.read_text(encoding="utf-8") == original
 
     # Mismatched expectedHash (stale overwrite protection)
@@ -710,6 +772,10 @@ def test_write_tool_requires_and_enforces_expected_hash_for_existing(tmp_path: P
     )
     assert isinstance(res2, ToolFailure)
     assert "Stale write rejected" in res2.error
+    assert res2.diagnostics is not None
+    assert res2.diagnostics.kind == "stale_edit"
+    assert res2.diagnostics.details["reason"] == "content_hash_mismatch"
+    assert "hash_only=true" in (res2.diagnostics.guidance or "")
     assert target.read_text(encoding="utf-8") == original
 
     # Correct expectedHash succeeds and preserves mode
@@ -734,8 +800,30 @@ def test_write_tool_rejects_oversized_content(tmp_path: Path) -> None:
         context=_context(tmp_path),
     )
     assert isinstance(result, ToolFailure)
-    assert "Content exceeds size limit" in result.error
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "tool_input_mismatch"
+    assert result.diagnostics.details["reason"] == "input_too_large"
+    assert result.diagnostics.details["max_bytes"] == 64 * 1024
+    assert "exceeding the 65536-byte limit" in result.error
+    assert "64 KiB" in (result.diagnostics.guidance or "")
     assert not (tmp_path / "toolarge.txt").exists()
+
+
+def test_write_tool_rejects_multibyte_content_over_the_byte_cap(tmp_path: Path) -> None:
+    plugin = create_plugin({})
+    write_tool = next(t for t in plugin.tools if t.definition.name == "write")
+    # 20_000 four-byte characters are 80_000 bytes: under the old character-based
+    # schema limit, over the byte cap.
+    oversized = "😀" * 20_000
+    assert len(oversized) < 65536 < len(oversized.encode("utf-8"))
+
+    result = write_tool.invoke(
+        ToolCall(tool_name="write", arguments={"path": "emoji.txt", "content": oversized}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None and result.diagnostics.details["reason"] == "input_too_large"
+    assert not (tmp_path / "emoji.txt").exists()
 
 
 def test_write_tool_rejects_symlink_and_directory(tmp_path: Path) -> None:
@@ -750,7 +838,8 @@ def test_write_tool_rejects_symlink_and_directory(tmp_path: Path) -> None:
         context=_context(tmp_path),
     )
     assert isinstance(res1, ToolFailure)
-    assert "Cannot write to directory" in res1.error
+    assert res1.diagnostics is not None and res1.diagnostics.details["reason"] == "not_a_regular_file"
+    assert "refuses to overwrite a directory" in res1.error
 
     # Symlink write
     real_file = tmp_path / "real.txt"
@@ -762,7 +851,9 @@ def test_write_tool_rejects_symlink_and_directory(tmp_path: Path) -> None:
         context=_context(tmp_path),
     )
     assert isinstance(res2, ToolFailure)
-    assert "Cannot write to symlink" in res2.error
+    assert res2.diagnostics is not None and res2.diagnostics.details["reason"] == "symlink_target"
+    assert "refuses to modify a symlink" in res2.error
+    assert real_file.read_text(encoding="utf-8") == "real"
 
 
 def test_write_tool_honors_cancellation_before_side_effects(tmp_path: Path) -> None:
@@ -776,7 +867,7 @@ def test_write_tool_honors_cancellation_before_side_effects(tmp_path: Path) -> N
         context=_context(tmp_path, abort_signal=abort),
     )
     assert isinstance(result, ToolFailure)
-    assert "cancelled before committing file" in result.error
+    assert "cancelled before committing the file" in result.error
     assert isinstance(result.execution, ConfirmedStop)
     assert not target.exists()
 
@@ -813,6 +904,198 @@ def test_write_tool_returns_diff_on_overwrite_and_omits_on_create(tmp_path: Path
     assert isinstance(payload["diff"], str)
     assert "-two\n" in payload["diff"]
     assert "+three\n" in payload["diff"]
+
+    # A previous file over the mutation cap is re-checked by streamed hash and
+    # reported by hash only: its diff is not materialized.
+    large = tmp_path / "large.txt"
+    large_content = "x" * (max(65 * 1024, MAX_RESOURCE_PAGE_BYTES)) + "\n"
+    large.write_text(large_content, encoding="utf-8")
+    large_hash = hashlib.sha256(large_content.encode("utf-8")).hexdigest()
+    replaced = write_tool.invoke(
+        ToolCall(tool_name="write", arguments={"path": "large.txt", "content": "short\n", "expectedHash": large_hash}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(replaced, ToolSuccess)
+    assert isinstance(replaced.body, WriteResultBody)
+    assert replaced.body.diff is None
+    assert "diff" not in replaced.body.as_payload()
+    assert large.read_text(encoding="utf-8") == "short\n"
+
+
+def test_write_create_race_is_typed_and_cleans_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = create_plugin({})
+    write_tool = next(t for t in plugin.tools if t.definition.name == "write")
+
+    def fail_link(*args: object, **kwargs: object) -> None:
+        raise FileExistsError("target appeared")
+
+    monkeypatch.setattr(os, "link", fail_link)
+    result = write_tool.invoke(
+        ToolCall(tool_name="write", arguments={"path": "race.txt", "content": "data"}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolFailure)
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "stale_edit"
+    assert result.diagnostics.details["reason"] == "commit_race"
+    assert "created concurrently" in result.error
+    assert not (tmp_path / "race.txt").exists()
+    assert list(tmp_path.glob(".voidcode_edit_*")) == []
+
+
+def test_edit_refuses_leaf_symlink_in_both_modes(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    real = tmp_path / "real.txt"
+    real.write_text("alpha\n", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    os.symlink(real, link)
+    digest = hashlib.sha256(real.read_bytes()).hexdigest()
+    tool = EditTool()
+
+    text = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "link.txt", "oldString": "alpha", "newString": "beta", "expectedHash": digest},
+        ),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    range_edit = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "link.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 6,
+                        "newText": "beta",
+                        "expectedHash": digest,
+                    }
+                ],
+            },
+        ),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    for result in (text, range_edit):
+        assert isinstance(result, ToolFailure)
+        assert result.diagnostics is not None
+        assert result.diagnostics.details["reason"] == "symlink_target"
+    assert real.read_text(encoding="utf-8") == "alpha\n"
+
+
+def test_mutations_report_committed_hash_in_changes(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    write_tool = next(t for t in create_plugin({}).tools if t.definition.name == "write")
+    created = write_tool.invoke(
+        ToolCall(tool_name="write", arguments={"path": "notes.txt", "content": "alpha\n"}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(created, ToolSuccess)
+    assert isinstance(created.body, WriteResultBody)
+    assert created.changes[0].operation == "create"
+    assert created.changes[0].content_hash == created.body.sha256
+
+    updated = write_tool.invoke(
+        ToolCall(tool_name="write", arguments={"path": "notes.txt", "content": "beta\n", "expectedHash": created.body.sha256}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(updated, ToolSuccess)
+    assert isinstance(updated.body, WriteResultBody)
+    assert updated.changes[0].operation == "update"
+    assert updated.changes[0].content_hash == updated.body.sha256
+
+    edited = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "path": "notes.txt",
+                "oldString": "beta",
+                "newString": "gamma",
+                "expectedHash": updated.body.sha256,
+            },
+        ),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    assert isinstance(edited, ToolSuccess)
+    assert edited.changes[0].content_hash == edited.body.content_hash == hashlib.sha256(b"gamma\n").hexdigest()
+
+    ranged = EditTool().invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "notes.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 6,
+                        "newText": "delta",
+                        "expectedHash": edited.body.content_hash,
+                    }
+                ],
+            },
+        ),
+        context=_context(tmp_path),
+        services=cast(Any, _VersionServices(unanswered=True)),
+    )
+    assert isinstance(ranged, ToolSuccess)
+    assert ranged.changes[0].content_hash == hashlib.sha256(b"delta\n").hexdigest()
+
+
+def test_mutation_content_cap_covers_edit_and_range(tmp_path: Path) -> None:
+    from voidcode.capabilities.files.edit_tool import EditTool
+
+    target = tmp_path / "target.txt"
+    target.write_text("alpha\n", encoding="utf-8")
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    oversized = "x" * (65 * 1024)
+    tool = EditTool()
+
+    text = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={"path": "target.txt", "oldString": "alpha", "newString": oversized, "expectedHash": digest},
+        ),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    ranged = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [
+                    {
+                        "path": "target.txt",
+                        "startLine": 1,
+                        "startCharacter": 1,
+                        "endLine": 1,
+                        "endCharacter": 2,
+                        "newText": oversized,
+                        "expectedHash": digest,
+                    }
+                ],
+            },
+        ),
+        context=_context(tmp_path),
+        services=_SERVICES,
+    )
+    for result in (text, ranged):
+        assert isinstance(result, ToolFailure)
+        assert result.diagnostics is not None
+        assert result.diagnostics.details["reason"] == "input_too_large"
+        assert result.diagnostics.details["max_bytes"] == 64 * 1024
+    assert target.read_text(encoding="utf-8") == "alpha\n"
 
 
 class _UriServices:
@@ -957,12 +1240,59 @@ def test_read_transcript_returns_readable_pages_with_a_cursor_and_reports_core_r
     assert "CHILD-PROMPT" in child.output.text  # type: ignore[union-attr]
     assert child_services.child_session_ids == ["child-test"]
 
-    with pytest.raises(PermissionError, match="own descendants"):
-        read_tool.invoke(
-            ToolCall(tool_name="read", arguments={"path": "transcript://sibling"}),
-            context=_context(tmp_path),
-            services=cast(Any, _UriServices(refuse_child=PermissionError("child events are readable only for this session's own descendants"))),
-        )
+    denied = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "transcript://sibling"}),
+        context=_context(tmp_path),
+        services=cast(Any, _UriServices(refuse_child=PermissionError("child events are readable only for this session's own descendants"))),
+    )
+    assert isinstance(denied, ToolFailure)
+    assert denied.diagnostics is not None
+    assert denied.diagnostics.kind == "tool_input_mismatch"
+    assert denied.diagnostics.details["reason"] == "resource_access_denied"
+    assert "own descendants" in denied.error
+
+
+def test_resource_readers_reject_cursors_they_do_not_honor(tmp_path: Path) -> None:
+    from voidcode.sdk.services import EventView
+
+    plugin = create_plugin({})
+    read_tool = next(t for t in plugin.tools if t.definition.name == "read")
+    events = (
+        EventView(
+            sequence=1,
+            event_type="core.user_message",
+            run_id="r",
+            revision_id="v",
+            source="user",
+            actor="user",
+            payload={"content": "hello"},
+        ),
+    )
+    services = _UriServices(events=events)
+
+    for arguments in ({"path": "tool://read", "limit": 5}, {"path": "tool://read", "offset": 2}):
+        result = read_tool.invoke(ToolCall(tool_name="read", arguments=arguments), context=_context(tmp_path), services=cast(Any, services))
+        assert isinstance(result, ToolFailure)
+        assert result.diagnostics is not None
+        assert result.diagnostics.details["reason"] == "invalid_arguments"
+        assert "not supported for tool:// URIs" in result.error
+
+    offset = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "transcript://session-test", "offset": 2}),
+        context=_context(tmp_path),
+        services=cast(Any, services),
+    )
+    assert isinstance(offset, ToolFailure)
+    assert offset.diagnostics is not None and offset.diagnostics.details["reason"] == "invalid_arguments"
+    assert "not supported for transcript:// URIs" in offset.error
+
+    page = read_tool.invoke(
+        ToolCall(tool_name="read", arguments={"path": "transcript://session-test"}),
+        context=_context(tmp_path),
+        services=cast(Any, services),
+    )
+    assert isinstance(page, ToolSuccess)
+    assert page.body.as_payload()["offset_unit"] == "bytes"  # type: ignore[union-attr]
 
 
 class _VersionServices:
@@ -1516,19 +1846,27 @@ def test_range_rejects_invalid_batch_before_writing(tmp_path: Path, invalid_fiel
     assert target.read_text(encoding="utf-8") == "original"
 
 
-def test_range_missing_hash_rejects_frozen_arguments(tmp_path: Path) -> None:
+def test_range_missing_hash_is_a_typed_validation_failure(tmp_path: Path) -> None:
     from voidcode.capabilities.files.edit_tool import EditTool
 
+    target = tmp_path / "target.txt"
+    target.write_text("original", encoding="utf-8")
     result = EditTool().invoke(
-        ToolCall(tool_name="edit", arguments={"mode": "range", "edits": [{"path": "target.txt"}]}),
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "mode": "range",
+                "edits": [{"path": "target.txt", "startLine": 1, "startCharacter": 1, "endLine": 1, "endCharacter": 2, "newText": "X"}],
+            },
+        ),
         context=_context(tmp_path),
         services=_SERVICES,
     )
     assert isinstance(result, ToolFailure)
-    assert result.diagnostics is not None and result.diagnostics.kind == "tool_input_validation"
-    validation_errors = result.diagnostics.details["errors"]
-    assert isinstance(validation_errors, tuple)
-    assert any("expectedHash" in str(item) for item in validation_errors)
+    assert result.diagnostics is not None
+    assert result.diagnostics.kind == "tool_input_validation"
+    assert "expectedHash" in str(result.diagnostics.details["errors"])
+    assert target.read_text(encoding="utf-8") == "original"
 
 
 @pytest.mark.parametrize("failure", ["replace", "concurrent_change"])
@@ -1972,20 +2310,19 @@ def test_edit_rejects_external_target_with_typed_failure(tmp_path: Path) -> None
     assert outside.read_text(encoding="utf-8") == "secret\n"
 
 
-def test_edit_schema_excludes_patch_and_strictly_requires_replacements(tmp_path: Path) -> None:
+def test_edit_schema_requires_replacements_and_rejects_unknown_arguments(tmp_path: Path) -> None:
     from voidcode.capabilities.files.edit_tool import EditTool
 
     tool = EditTool()
     schema = tool.definition.input_schema
-    defs = schema.get("$defs", {})
-    assert "_PatchEdit" not in defs
-    assert "patch" not in schema.get("properties", {})
-    assert set(defs.keys()) == {"_SingleEdit", "_BatchEdit", "_Replacement", "_RangeEditArgs", "_RangeTextEdit"}
+    variants = schema.get("$defs", {})
+    assert variants
+    assert all(variant.get("additionalProperties") is False for variant in variants.values())
 
     result = tool.invoke(
         ToolCall(
             tool_name="edit",
-            arguments={"patch": "*** Begin Patch\n*** End Patch\n"},
+            arguments={"path": "target.txt", "oldString": "a", "newString": "b", "expectedHash": "x", "patch": "*** Begin Patch"},
         ),
         context=_context(tmp_path),
         services=_SERVICES,

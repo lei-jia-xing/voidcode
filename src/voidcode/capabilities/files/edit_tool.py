@@ -31,7 +31,16 @@ from ._common import (
     resolve_workspace_path,
     summarize_diff,
 )
-from .mutation import check_expected_hash, invalid_path_failure, load_text_state, outside_workspace_failure, uniform_line_ending
+from .mutation import (
+    check_expected_hash,
+    enforce_content_bound,
+    invalid_path_failure,
+    literal_target,
+    load_text_state,
+    outside_workspace_failure,
+    raise_symlink_target,
+    uniform_line_ending,
+)
 from .range_edit import RangeEditResultBody, _RangeEditArgs, apply_range_edits
 
 
@@ -125,9 +134,11 @@ class _BatchEdit(BaseModel):
 _EDIT_ARGS = TypeAdapter(_SingleEdit | _BatchEdit | _RangeEditArgs)
 
 _EDIT_DESCRIPTION = (
-    "Edit files. Text mode replaces exact current file text (single replacement or ordered batch). "
-    "Range mode (mode='range') applies 1-based line/character edits across one or more files, each checked "
-    "against expectedHash and, optionally, the active document-state provider's version. "
+    "Edit files. Text mode replaces exact current file text (single replacement or ordered batch) and checks only expectedHash. "
+    "Range mode (mode='range') is the freshness-aware path: it applies 1-based line/character edits across one or more files, "
+    "asks any active document-state provider, and refuses a document whose provider hash or requested version is stale. "
+    "Every edit carries expectedHash; version optionally binds the provider's version answer. "
+    "One call may supply at most 64 KiB of replacement text in total. Symlinks are refused. "
     "When constructing oldString from read output, omit any leading line-number prefix such as '42: ' and pass only the file's actual text. "
     "Line endings are matched EOL-insensitively; mixed-ending files are refused."
 )
@@ -161,6 +172,10 @@ class EditTool:
         path_value = args.path
         batch = isinstance(args, _BatchEdit)
         parsed_edits = args.edits if isinstance(args, _BatchEdit) else (args,)
+        enforce_content_bound(
+            sum(len(item.newString.encode("utf-8")) for item in parsed_edits),
+            tool_name=self.definition.name,
+        )
 
         try:
             candidate, display_path = resolve_workspace_path(workspace, path_value, allow_outside_workspace=False)
@@ -168,6 +183,8 @@ class EditTool:
             return outside_workspace_failure(self.definition.name, path_value)
         except (OSError, ValueError) as exc:
             return invalid_path_failure(self.definition.name, path_value, detail=str(exc))
+        if literal_target(workspace, path_value).is_symlink():
+            raise_symlink_target(self.definition.name, path_value)
         if not candidate.exists():
             raise_tool_diagnostic(
                 message=f"edit target does not exist: {path_value}",
@@ -245,7 +262,7 @@ class EditTool:
         final_bytes = final_text.encode("utf-8")
         final_disk_hash = hashlib.sha256(final_bytes).hexdigest()
         diff, additions, deletions = summarize_diff(
-            path=candidate,
+            path=display_path,
             before=state.text,
             after=final_text,
         )
@@ -269,7 +286,7 @@ class EditTool:
         return ToolSuccess(
             self.definition.name,
             output=TextOutput(content),
-            changes=(make_file_change(display_path),),
+            changes=(make_file_change(display_path, content_hash=final_disk_hash),),
             body=EditResultBody(
                 path=display_path,
                 additions=additions,

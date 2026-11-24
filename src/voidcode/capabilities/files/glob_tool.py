@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import heapq
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -15,6 +17,7 @@ from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
     ToolDefinition,
+    ToolDiagnostics,
     ToolEffect,
     ToolFailure,
     ToolResult,
@@ -22,7 +25,7 @@ from voidcode.sdk.tools import (
 )
 
 from ..tool_errors import expected_failures, raise_tool_diagnostic
-from ._common import MAX_RESULT_LIMIT, is_default_ignored, resolve_workspace_path
+from ._common import MAX_RESULT_LIMIT, full_match_path, has_hidden_component, is_default_ignored, resolve_workspace_path
 from .gitignore import GitIgnoreMatcher
 
 LIMIT = 100
@@ -74,9 +77,10 @@ class GlobTool:
         name="glob",
         icon=Icon(glyph="❋"),
         description=(
-            "Find files matching a glob pattern. Standard dependency, VCS, and build directories "
+            "Find files matching a glob pattern, newest modified first. Standard dependency, VCS, and build directories "
             "(.git, node_modules, __pycache__, dist, build, target, vendor, .venv, ...) are skipped "
-            "at any depth; pass one explicitly as path to search inside it."
+            "at any depth; pass one explicitly as path to search inside it. Hidden entries are included and "
+            ".gitignore is not applied unless you ask for it, matching grep's defaults."
         ),
         input_schema={
             "type": "object",
@@ -85,10 +89,7 @@ class GlobTool:
                 "path": {"type": "string", "description": "Directory to search; relative paths are based at the workspace root."},
                 "include_hidden": {
                     "type": "boolean",
-                    "description": (
-                        "Include hidden files and directories (name starts with '.'); defaults to true to preserve existing behaviour. "
-                        "Set false to skip them."
-                    ),
+                    "description": "Include hidden files and directories (name starts with '.'); defaults to true, matching grep.",
                 },
                 "respect_gitignore": {
                     "type": "boolean",
@@ -97,7 +98,12 @@ class GlobTool:
                         "The matcher only reads the root .gitignore (no nested/global excludes)."
                     ),
                 },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "Maximum number of files to return; defaults to 100."},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5000,
+                    "description": "Maximum number of files to return after sorting newest first; defaults to 100.",
+                },
             },
             "required": ["pattern"],
             "additionalProperties": False,
@@ -117,7 +123,13 @@ class GlobTool:
         gitignore: GitIgnoreMatcher | None = None,
         limit: int = LIMIT,
     ) -> tuple[list[Path], bool, str | None]:
-        matched: list[Path] = []
+        """Collect up to ``limit`` matches, newest first, with a deterministic tie-break.
+
+        The limit is applied after ordering, so truncation never depends on walk
+        order: the returned page is the newest ``limit`` matches (ties by path).
+        """
+        selected: list[tuple[float, str, Path]] = []
+        matched_count = 0
 
         def fail_walk(error: OSError) -> None:
             raise error
@@ -127,31 +139,47 @@ class GlobTool:
             scanned = path.relative_to(search_dir)
             return (
                 is_default_ignored(scanned, is_directory=is_directory)
-                or (not include_hidden and any(part.startswith(".") for part in relative.parts))
+                or (not include_hidden and has_hidden_component(relative))
                 or (gitignore is not None and gitignore.is_ignored(relative.as_posix(), is_directory=is_directory))
             )
 
+        def consider(match: Path) -> None:
+            nonlocal matched_count
+            key_path = match.relative_to(search_dir).as_posix()
+            try:
+                metadata = match.stat()
+            except OSError:
+                return
+            if not stat.S_ISREG(metadata.st_mode):
+                return
+            matched_count += 1
+            entry = (metadata.st_mtime, key_path, match)
+            if len(selected) < limit:
+                heapq.heappush(selected, entry)
+            elif entry > selected[0]:
+                heapq.heapreplace(selected, entry)
+
+        def collected() -> list[Path]:
+            selected.sort(key=lambda item: (-item[0], item[1]))
+            return [item[2] for item in selected]
+
         try:
             if context.abort_signal is not None and context.abort_signal.cancelled:
-                return matched, False, None
+                return [], False, None
             for directory, dirnames, filenames in search_dir.walk(on_error=fail_walk):
                 if context.abort_signal is not None and context.abort_signal.cancelled:
-                    break
+                    return collected(), False, None
                 dirnames[:] = sorted(name for name in dirnames if not excluded(directory / name, is_directory=True))
                 for name in sorted(filenames):
                     if context.abort_signal is not None and context.abort_signal.cancelled:
-                        return matched, False, None
+                        return collected(), False, None
                     match = directory / name
-                    if not match.relative_to(search_dir).full_match(pattern) or excluded(match, is_directory=False):
+                    if not full_match_path(match.relative_to(search_dir).as_posix(), pattern) or excluded(match, is_directory=False):
                         continue
-                    if not match.is_file():
-                        continue
-                    if len(matched) == limit:
-                        return matched, True, None
-                    matched.append(match)
+                    consider(match)
         except OSError as exc:
-            return matched, False, str(exc)
-        return matched, False, None
+            return collected(), matched_count > limit, str(exc)
+        return collected(), matched_count > limit, None
 
     @expected_failures
     def invoke(
@@ -212,11 +240,6 @@ class GlobTool:
                 execution=ConfirmedStop(cancellation_signalled=True),
             )
 
-        try:
-            matched.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError:
-            matched.sort()
-
         if effective_root == workspace_root:
             relative_matches = [m.relative_to(workspace_root).as_posix() for m in matched]
             path_display = search_path.relative_to(workspace_root).as_posix()
@@ -241,6 +264,12 @@ class GlobTool:
                 error=error_message,
                 output=TextOutput(error_message, bounds=OutputBounds(truncated=truncated, partial=True)),
                 body=body,
+                diagnostics=ToolDiagnostics(
+                    kind="tool_execution_error",
+                    summary=error_message,
+                    details={"reason": "search_io_error", "path": path_display},
+                    guidance="Retry the search; if the failure persists, check the directory's permissions.",
+                ),
             )
 
         return ToolSuccess(

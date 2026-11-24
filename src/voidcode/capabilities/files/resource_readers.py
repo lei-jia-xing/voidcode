@@ -4,6 +4,12 @@ Ordinary bundled capability adapters registered by the files plugin: they
 parse their own URI, choose their own defaults, and render bounded pages
 through the narrow ``ResourceReaderServices`` surface. The ``read`` tool
 never imports this module; registration flows through ``Plugin``.
+
+Each reader declares which generic cursors it honors instead of ignoring
+them: ``artifact://`` pages bytes by default and lines with ``offset``
+(``offset_unit`` says which), ``transcript://`` pages with the URI's own
+UTF-8 byte cursor and rejects ``offset``, and ``tool://`` is a single
+document with no paging arguments.
 """
 
 from __future__ import annotations
@@ -37,6 +43,10 @@ def _reject_byte_args(request: ResourceReadRequest, *, scheme_label: str) -> Non
 def read_tool_documentation(request: ResourceReadRequest, caller: ResourceReadCaller, services: ResourceReaderServices) -> ResourcePage | None:
     del caller
     _reject_byte_args(request, scheme_label="tool://")
+    if request.offset != 1:
+        raise ValueError("offset is not supported for tool:// URIs")
+    if request.limit is not None:
+        raise ValueError("limit is not supported for tool:// URIs")
     tool_name = request.uri[len("tool://") :].strip()
     if not tool_name:
         raise ValueError("tool://<name> requires a tool name")
@@ -93,6 +103,8 @@ def read_artifact_resource(request: ResourceReadRequest, caller: ResourceReadCal
 def read_transcript_resource(request: ResourceReadRequest, caller: ResourceReadCaller, services: ResourceReaderServices) -> ResourcePage | None:
     del caller
     _reject_byte_args(request, scheme_label="transcript://")
+    if request.offset != 1:
+        raise ValueError("offset is not supported for transcript:// URIs; use the URI's ?offset= UTF-8 byte cursor")
     raw_target = request.uri[len("transcript://") :].strip()
     session_id, _, query = raw_target.partition("?")
     session_id = session_id.strip()
@@ -136,7 +148,7 @@ def read_transcript_resource(request: ResourceReadRequest, caller: ResourceReadC
     next_uri: str | None = None
     if truncated:
         next_uri = f"transcript://{session_id}?after_sequence={page.next_after_sequence}&offset={page.next_offset}"
-        lines.append(f"More history: read(path={json.dumps(next_uri)}).")
+        lines.append(f"More history: read(path={json.dumps(next_uri)}). The cursor offset counts UTF-8 bytes within one rendered block.")
     return ResourcePage(
         output=format_resource_text(
             "\n".join(lines),
@@ -151,6 +163,7 @@ def read_transcript_resource(request: ResourceReadRequest, caller: ResourceReadC
             "after_sequence": after_sequence,
             "next_after_sequence": page.next_after_sequence,
             "next_offset": page.next_offset,
+            "offset_unit": "bytes",
             "truncated": truncated,
         },
     )

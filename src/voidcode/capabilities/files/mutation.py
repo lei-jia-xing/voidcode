@@ -15,7 +15,7 @@ from pathlib import Path
 from voidcode.sdk.tools import TextOutput, ToolDiagnostics, ToolFailure
 
 from ..tool_errors import raise_tool_diagnostic
-from ._common import line_ending_kinds
+from ._common import MAX_MUTATION_CONTENT_BYTES, line_ending_kinds
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +57,45 @@ def invalid_path_failure(tool_name: str, raw_path: str, *, detail: str) -> ToolF
             details={"reason": "invalid_path", "path": raw_path},
             guidance="Retry with a valid workspace-relative path.",
         ),
+    )
+
+
+def literal_target(workspace: Path, raw_path: str) -> Path:
+    """The unresolved path the caller named, for leaf-symlink checks before resolution."""
+    requested = Path(raw_path)
+    return requested if requested.is_absolute() else workspace / requested
+
+
+def enforce_content_bound(supplied_bytes: int, *, tool_name: str) -> None:
+    """Refuse one call's caller-supplied replacement text beyond the shared cap.
+
+    The bound covers what the caller sends, not the resulting file size, so a
+    large file stays editable while one call cannot inject an unbounded payload.
+    """
+    if supplied_bytes <= MAX_MUTATION_CONTENT_BYTES:
+        return
+    raise_tool_diagnostic(
+        message=(
+            f"{tool_name} rejected the request: the supplied replacement text is {supplied_bytes} bytes, "
+            f"exceeding the {MAX_MUTATION_CONTENT_BYTES}-byte limit."
+        ),
+        error_kind="tool_input_mismatch",
+        reason="input_too_large",
+        retry_guidance=(
+            f"Retry with at most {MAX_MUTATION_CONTENT_BYTES // 1024} KiB of replacement text, or split the change across multiple calls."
+        ),
+        details={"supplied_bytes": supplied_bytes, "max_bytes": MAX_MUTATION_CONTENT_BYTES},
+    )
+
+
+def raise_symlink_target(tool_name: str, raw_path: str) -> None:
+    """Refuse a mutation whose literal target is a symlink, matching ``write``."""
+    raise_tool_diagnostic(
+        message=f"{tool_name} refuses to modify a symlink: {raw_path}",
+        error_kind="tool_input_mismatch",
+        reason="symlink_target",
+        retry_guidance="Retry with the link's real target path inside the workspace; the link itself is not rewritten.",
+        details={"path": raw_path},
     )
 
 
@@ -113,8 +152,11 @@ def uniform_line_ending(text: str, *, display_path: str, tool_name: str) -> str 
 __all__ = [
     "TextFileState",
     "check_expected_hash",
+    "enforce_content_bound",
     "invalid_path_failure",
+    "literal_target",
     "load_text_state",
     "outside_workspace_failure",
+    "raise_symlink_target",
     "uniform_line_ending",
 ]

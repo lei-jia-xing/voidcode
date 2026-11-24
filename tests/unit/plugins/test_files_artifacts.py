@@ -6,8 +6,6 @@ import hashlib
 from pathlib import Path
 from typing import Any, cast
 
-import pytest
-
 from tests.fixtures.png import rgb_png
 from voidcode.plugins.files import create_plugin
 from voidcode.sdk.invocation import ToolContext
@@ -151,10 +149,14 @@ def test_unknown_artifact_id_is_refused(tmp_path: Path) -> None:
 
 def test_invalid_artifact_id_is_refused(tmp_path: Path) -> None:
     store = FakeArtifactStore()
-    with pytest.raises(ValueError, match="invalid artifact id: not-a-sha256"):
-        _read_body(store, tmp_path, path="artifact://not-a-sha256")
-    with pytest.raises(ValueError, match="requires an artifact id"):
-        _read_body(store, tmp_path, path="artifact://")
+    tool = next(tool for tool in create_plugin({}).tools if tool.definition.name == "read")
+    for uri, fragment in (("artifact://not-a-sha256", "invalid artifact id"), ("artifact://", "requires an artifact id")):
+        result = tool.invoke(ToolCall(tool_name="read", arguments={"path": uri}), context=_context(tmp_path), services=cast(Any, store))
+        assert isinstance(result, ToolFailure)
+        assert result.diagnostics is not None
+        assert result.diagnostics.kind == "tool_input_mismatch"
+        assert result.diagnostics.details["reason"] == "invalid_arguments"
+        assert fragment in result.error
 
 
 def test_image_artifact_renders_as_attachment(tmp_path: Path) -> None:

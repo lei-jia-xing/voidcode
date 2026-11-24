@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES, format_resource_text
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.resources import ResourceReadRequest, ResourceUnavailable
+from voidcode.sdk.resources import ResourceContractError, ResourceReadRequest, ResourceUnavailable
 from voidcode.sdk.services import ArtifactReference, ArtifactServices, PluginServices
 from voidcode.sdk.tools import (
     RASTER_IMAGE_MIMES,
@@ -410,57 +410,63 @@ def _raise_recovery_changed(relative_path: str) -> NoReturn:
     )
 
 
-def _scan_clipped_page(
+def _scan_full_page(
     source: BinaryIO,
     *,
     offset: int,
     limit: int,
-    services: ArtifactServices,
-    relative_path: str,
     context: ToolContext,
-    expected_prefix: bytes | None,
-) -> tuple[_PageBuilder, ArtifactReference | None]:
-    """One full-file pass that both renders the clipped page and spills the artifact."""
+) -> tuple[_PageBuilder, str, int]:
+    """One full-file pass that renders the clipped page, counts lines, and hashes bytes.
+
+    Nothing is spilled here: the artifact is materialized only when the caller
+    decides the clipped page is actually returned, so a skipped overlong line
+    cannot leave an unreferenced spill in the store.
+    """
     digest = hashlib.sha256()
     page = _PageBuilder(offset, limit)
     splitter = _RawLineSplitter()
     bytes_read = 0
-    prefix_window = bytearray()
-    prefix_remaining = len(expected_prefix) if expected_prefix is not None and offset == 1 else 0
-
-    def chunks() -> Iterator[bytes]:
-        nonlocal bytes_read, prefix_remaining
-        while True:
-            if context.abort_signal is not None and context.abort_signal.cancelled:
-                raise _ReadCancelled
-            chunk = source.read(_READ_CHUNK_BYTES)
-            if not chunk:
-                for raw in splitter.feed(b"", eof=True):
-                    page.consume(raw)
-                break
-            bytes_read += len(chunk)
-            digest.update(chunk)
-            if prefix_remaining:
-                take = min(len(chunk), prefix_remaining)
-                prefix_window.extend(chunk[:take])
-                prefix_remaining -= take
-            for raw in splitter.feed(chunk):
+    while True:
+        if context.abort_signal is not None and context.abort_signal.cancelled:
+            raise _ReadCancelled
+        chunk = source.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            for raw in splitter.feed(b"", eof=True):
                 page.consume(raw)
-            yield chunk
+            break
+        bytes_read += len(chunk)
+        digest.update(chunk)
+        for raw in splitter.feed(chunk):
+            page.consume(raw)
+    return page, digest.hexdigest(), bytes_read
 
-    artifact = services.spill_artifact_stream(chunks(), media_type="text/plain; charset=utf-8")
-    if artifact.sha256 != digest.hexdigest() or artifact.bytes != bytes_read:
+
+def _spill_verified(
+    candidate: Path,
+    *,
+    expected_digest: str,
+    expected_bytes: int,
+    services: ArtifactServices,
+    relative_path: str,
+    context: ToolContext,
+) -> ArtifactReference:
+    """Spill the file for byte paging, proving it is the same version the page came from."""
+    with candidate.open("rb") as source:
+
+        def chunks() -> Iterator[bytes]:
+            while True:
+                if context.abort_signal is not None and context.abort_signal.cancelled:
+                    raise _ReadCancelled
+                chunk = source.read(_READ_CHUNK_BYTES)
+                if not chunk:
+                    return
+                yield chunk
+
+        artifact = services.spill_artifact_stream(chunks(), media_type="text/plain; charset=utf-8")
+    if artifact.sha256 != expected_digest or artifact.bytes != expected_bytes:
         _raise_recovery_changed(relative_path)
-    prefix_mismatch = prefix_remaining != 0 or (offset == 1 and expected_prefix is not None and bytes(prefix_window) != expected_prefix)
-    if not page.clipped:
-        # The overlong line did not survive into the visible page (for example it
-        # exceeded the page budget); there is nothing to recover for this page.
-        if prefix_mismatch or not page.has_more:
-            _raise_recovery_changed(relative_path)
-        return page, None
-    if prefix_mismatch or (expected_prefix is not None and page.captured_prefix() != expected_prefix):
-        _raise_recovery_changed(relative_path)
-    return page, artifact
+    return artifact
 
 
 def _assemble_page_outcome(
@@ -535,13 +541,15 @@ def _resolve_read_path(workspace: Path, raw_path: str) -> tuple[Path, str]:
         )
 
 
-def _uri_failure(tool_name: str, message: str) -> ToolFailure:
-    """A model-visible failure for a resource URI the registered reader could not resolve.
-
-    URI failures are returned as typed results so the model sees them directly;
-    workspace file read errors keep the files' existing raise-and-redact behavior.
-    """
-    return ToolFailure(tool_name=tool_name, error=message, output=TextOutput(text=message))
+def _read_failure(tool_name: str, path: str, exc: OSError) -> NoReturn:
+    """A typed failure for filesystem or artifact I/O the read could not complete."""
+    raise_tool_diagnostic(
+        message=f"{tool_name} failed while reading {path}: {exc}",
+        error_kind="tool_environment_error",
+        reason="resource_read_failed",
+        retry_guidance="Retry the read; if the failure persists, check the file's permissions and the artifact store.",
+        details={"path": path},
+    )
 
 
 def _is_binary_content(path: Path, sample: bytes) -> bool:
@@ -586,7 +594,8 @@ def _is_binary_content(path: Path, sample: bytes) -> bool:
 
     non_printable = 0
     for byte in sample:
-        if byte < 9 or (byte > 13 and byte < 32):
+        # ESC is excluded: ANSI-coloured logs are text, not binaries.
+        if byte < 9 or (byte > 13 and byte < 32 and byte != 0x1B):
             non_printable += 1
     return non_printable / len(sample) > 0.3
 
@@ -605,15 +614,23 @@ def _read_text_page(
             page, eof, needs_full_pass, content_hash, expected_prefix = _scan_normal_page(source, offset=offset, limit=limit, context=context)
         if needs_full_pass:
             with candidate.open("rb") as source:
-                page, artifact = _scan_clipped_page(
-                    source,
-                    offset=offset,
-                    limit=limit,
+                page, digest, bytes_read = _scan_full_page(source, offset=offset, limit=limit, context=context)
+            if page.clipped and expected_prefix is not None and page.captured_prefix() != expected_prefix:
+                _raise_recovery_changed(relative_path)
+            # The artifact is materialized only for a page that actually shows a clipped
+            # line; a skipped overlong line must not leave an unreferenced spill behind.
+            artifact = (
+                _spill_verified(
+                    candidate,
+                    expected_digest=digest,
+                    expected_bytes=bytes_read,
                     services=services,
                     relative_path=relative_path,
                     context=context,
-                    expected_prefix=expected_prefix,
                 )
+                if page.clipped
+                else None
+            )
             return _assemble_page_outcome(
                 page,
                 line_count=page.total_lines,
@@ -756,7 +773,14 @@ class ReadTool:
                     retry_guidance="Retry with a regular file path.",
                     details={"path": args.path},
                 )
-            outcome = _hash_regular_file(candidate, relative_path=relative_path, context=context)
+            try:
+                outcome = _hash_regular_file(candidate, relative_path=relative_path, context=context)
+            except _ReadCancelled:
+                return ToolFailure(self.definition.name, error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
+            except CancelledError:
+                return ToolFailure(self.definition.name, error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
+            except OSError as exc:
+                _read_failure(self.definition.name, relative_path, exc)
             return outcome if isinstance(outcome, ToolFailure) else _read_success(outcome)
 
         if args.byte_limit is not None and args.byte_offset is None:
@@ -794,10 +818,56 @@ class ReadTool:
                     retry_guidance="Retry with a supported resource URI.",
                     details={"uri": args.path},
                 )
+            except ResourceContractError as exc:
+                raise_tool_diagnostic(
+                    message=f"read could not use the page returned for {args.path}: {exc}",
+                    error_kind="tool_execution_error",
+                    reason="resource_contract_violation",
+                    retry_guidance="The resource provider violated its SDK contract; fix the provider before retrying.",
+                    details={"uri": args.path},
+                )
+            except PermissionError as exc:
+                raise_tool_diagnostic(
+                    message=f"read was denied {args.path}: {exc}",
+                    error_kind="tool_input_mismatch",
+                    reason="resource_access_denied",
+                    retry_guidance="Retry with a resource this session may read (your own session or one of its descendants).",
+                    details={"uri": args.path},
+                )
+            except FileNotFoundError as exc:
+                raise_tool_diagnostic(
+                    message=f"read cannot resolve resource URI {args.path}: {exc}",
+                    error_kind="tool_environment_error",
+                    reason="target_not_found",
+                    retry_guidance="Check the resource id; it may have been removed or never stored.",
+                    details={"uri": args.path},
+                )
             except CancelledError:
                 return ToolFailure(self.definition.name, error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
+            except OSError as exc:
+                raise_tool_diagnostic(
+                    message=f"read failed while reading {args.path}: {exc}",
+                    error_kind="tool_environment_error",
+                    reason="resource_read_failed",
+                    retry_guidance="Retry the read; if the failure persists, check the resource backend.",
+                    details={"uri": args.path},
+                )
+            except ValueError as exc:
+                raise_tool_diagnostic(
+                    message=f"read rejected resource URI {args.path}: {exc}",
+                    error_kind="tool_input_mismatch",
+                    reason="invalid_arguments",
+                    retry_guidance="Retry with the reader's supported arguments: no byte cursors for tool:// or transcript://, and only offset=1 for tool://.",
+                    details={"uri": args.path},
+                )
             if page is None:
-                return _uri_failure(self.definition.name, f"read cannot resolve resource URI {args.path}: no such resource")
+                raise_tool_diagnostic(
+                    message=f"read cannot resolve resource URI {args.path}: no such resource",
+                    error_kind="tool_input_mismatch",
+                    reason="target_not_found",
+                    retry_guidance="Check the resource id or name, then retry.",
+                    details={"uri": args.path},
+                )
             return _read_success(_ReadOutcome(output=page.output, body=OpaqueToolBody(dict(page.body))))
 
         if args.byte_offset is not None or args.byte_limit is not None:
@@ -828,5 +898,12 @@ class ReadTool:
                 retry_guidance="Retry with a regular file path.",
                 details={"path": args.path},
             )
-        outcome = _render_file(candidate, relative_path=relative_path, offset=offset, limit=limit, services=services, context=context)
+        try:
+            outcome = _render_file(candidate, relative_path=relative_path, offset=offset, limit=limit, services=services, context=context)
+        except _ReadCancelled:
+            return ToolFailure(self.definition.name, error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
+        except CancelledError:
+            return ToolFailure(self.definition.name, error="read cancelled", execution=ConfirmedStop(cancellation_signalled=True))
+        except OSError as exc:
+            _read_failure(self.definition.name, relative_path, exc)
         return outcome if isinstance(outcome, ToolFailure) else _read_success(outcome)

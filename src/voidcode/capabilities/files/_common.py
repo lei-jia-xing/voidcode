@@ -16,6 +16,14 @@ from voidcode.sdk.tools import Change
 #: unbounded match list.
 MAX_RESULT_LIMIT = 5000
 
+#: Maximum UTF-8 bytes of caller-supplied replacement text in one mutation call.
+#:
+#: The bound is on what the caller sends (``write.content``, the text edits'
+#: ``newString``, or the range edits' ``newText``), never on the size of the
+#: resulting file: editing a large file stays possible, while one call cannot
+#: inject an unbounded payload.
+MAX_MUTATION_CONTENT_BYTES = 64 * 1024
+
 #: Directory names file-discovery tools never descend into by default.
 #:
 #: Entries are exact directory names matched at any depth, never globs or path
@@ -53,6 +61,26 @@ def is_default_ignored(relative: PurePath, *, is_directory: bool) -> bool:
     """
     parts = relative.parts if is_directory else relative.parts[:-1]
     return any(part in DEFAULT_IGNORE_PATTERNS for part in parts)
+
+
+def has_hidden_component(relative: PurePath) -> bool:
+    """True when any component of ``relative`` starts with ``.``."""
+    return any(part.startswith(".") for part in relative.parts)
+
+
+def full_match_path(relative_path: str, pattern: str, *, basename_any_depth: bool = False) -> bool:
+    """One glob dialect for every file-discovery tool.
+
+    ``pathlib`` ``full_match`` semantics. With ``basename_any_depth`` a pattern
+    without a separator is anchored to the basename at any depth (ripgrep-like
+    filters: ``*.py`` selects every Python file); otherwise the pattern is
+    anchored to the given path, which is what ``glob``'s search-relative
+    patterns mean. Callers choose which path to match (the search-relative path
+    for ``glob``, the workspace-relative path for ``grep``'s filters).
+    """
+    if basename_any_depth and "/" not in pattern and not pattern.startswith("**/"):
+        pattern = f"**/{pattern}"
+    return PurePath(relative_path).full_match(pattern)
 
 
 def validate_non_empty(value: str, info: ValidationInfo) -> str:
@@ -160,9 +188,12 @@ def encode_line_endings(text: str, ending: str | None) -> str:
 
 __all__ = [
     "DEFAULT_IGNORE_PATTERNS",
+    "MAX_MUTATION_CONTENT_BYTES",
     "MAX_RESULT_LIMIT",
     "PathEscapesWorkspaceError",
     "encode_line_endings",
+    "full_match_path",
+    "has_hidden_component",
     "is_default_ignored",
     "line_ending_kinds",
     "make_file_change",

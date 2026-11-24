@@ -41,9 +41,12 @@ from ._common import (
 from .mutation import (
     TextFileState,
     check_expected_hash,
+    enforce_content_bound,
     invalid_path_failure,
+    literal_target,
     load_text_state,
     outside_workspace_failure,
+    raise_symlink_target,
     uniform_line_ending,
 )
 
@@ -171,6 +174,10 @@ def apply_range_edits(
 ) -> ToolResult:
     """Validate every path/range, then commit each changed file atomically."""
     workspace = context.require_workspace()
+    enforce_content_bound(
+        sum(len(edit.newText.encode("utf-8")) for edit in args.edits),
+        tool_name=_TOOL_NAME,
+    )
 
     # Resolve and existence-check every path before reading or writing anything.
     requested: list[tuple[_RangeTextEdit, Path, str]] = []
@@ -183,6 +190,8 @@ def apply_range_edits(
             return outside_workspace_failure(_TOOL_NAME, edit.path)
         except (OSError, ValueError) as exc:
             return invalid_path_failure(_TOOL_NAME, edit.path, detail=str(exc))
+        if literal_target(workspace, edit.path).is_symlink():
+            raise_symlink_target(_TOOL_NAME, edit.path)
         if not path.is_file():
             raise_tool_diagnostic(
                 message=f"edit range target does not exist: {edit.path}",
@@ -379,7 +388,7 @@ def apply_range_edits(
             error=message,
             output=TextOutput(message, bounds=OutputBounds(partial=True)),
             body=RangeEditResultBody(paths=tuple(applied_paths), files=tuple(applied_files)),
-            changes=tuple(make_file_change(path) for path in applied_paths),
+            changes=tuple(make_file_change(item.path, content_hash=item.content_hash) for item in applied_files),
             execution=ConfirmedStop(cancellation_signalled=cancelled),
         )
 
@@ -390,7 +399,7 @@ def apply_range_edits(
     return ToolSuccess(
         tool_name=_TOOL_NAME,
         output=TextOutput("\n".join(content)),
-        changes=tuple(make_file_change(path) for path in ordered_paths),
+        changes=tuple(make_file_change(path, content_hash=applied_files_by_path[path].content_hash) for path in ordered_paths),
         body=RangeEditResultBody(
             paths=ordered_paths,
             files=tuple(applied_files_by_path[path] for path in ordered_paths),

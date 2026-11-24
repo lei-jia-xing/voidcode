@@ -298,8 +298,10 @@ class ResourceReaderServices(Protocol):
     """The narrow read surface a resource handler may use.
 
     Owner-scoped (the registering provider), session-bound (the caller):
-    ``get_state`` reads the provider's own state, while artifact, catalog,
-    child-result, history, and process reads see only the caller-scoped data.
+    ``get_state`` reads the provider's own state, while catalog, child-result,
+    history, and process reads see only the caller-scoped data. Artifact reads
+    are content-addressed workspace state: a digest is readable by any session
+    in the workspace that knows it, and artifact bytes are never caller-scoped.
     There are no staging, spawn, process-control, or network methods to misuse.
     """
 
@@ -313,7 +315,7 @@ class ResourceReaderServices(Protocol):
         ...
 
     def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536) -> ArtifactPage:
-        """Read one byte page by SHA-256 digest; ``FileNotFoundError`` means not stored."""
+        """Read one byte page of content-addressed workspace state; ``FileNotFoundError`` means not stored."""
         ...
 
     def tool_definition(self, name: str) -> ToolDefinition | None:

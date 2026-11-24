@@ -18,6 +18,7 @@ from voidcode.core.plugins import PluginRuntime, PluginSource
 from voidcode.core.services import RuntimeServices
 from voidcode.core.storage.store import SqliteStore
 from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.resources import ResourceReadRequest
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
 
 FILES_ROOT = Path("src/voidcode/plugins/files").resolve()
@@ -273,3 +274,38 @@ def test_disabled_provider_removes_scheme_with_no_fallback(tmp_path: Path) -> No
             result = runtime.invoke(ToolCall(tool_name="read", arguments={"path": "memo://hello"}), context=context)
             assert isinstance(result, ToolFailure)
             assert "unsupported resource URI: memo://hello" in result.error
+
+
+def test_files_plugin_is_the_only_resource_dispatcher(tmp_path: Path) -> None:
+    """Without `files`, schemes still dispatch in Core but no tool can reach them."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    memo_root = tmp_path / "memo_plugin"
+    memo_root.mkdir()
+    (memo_root / "__init__.py").write_text(textwrap.dedent(_MEMO_PLUGIN), encoding="utf-8")
+    with SqliteStore(tmp_path / "store.db") as store:
+        revision = store.put_revision({"resource": "no-files"})
+        store.record_workspace_revision(str(workspace), revision)
+        store.create_session("session-resource", str(workspace), revision)
+        with PluginRuntime(
+            (PluginSource(root=memo_root, plugin_id="memo"),),
+            workspace=workspace,
+            revision_id=revision,
+            store=store,
+            artifacts_dir=tmp_path / "artifacts",
+        ) as runtime:
+            assert "read" not in runtime.tool_definitions
+            context = ToolContext(
+                workspace=workspace,
+                session_id="session-resource",
+                run_id="run-resource",
+                invocation_id="inv-resource",
+                revision_id=revision,
+                actor="model",
+            )
+            with pytest.raises(ValueError, match="Unknown tool"):
+                runtime.invoke(ToolCall(tool_name="read", arguments={"path": "memo://hello"}), context=context)
+            # The scheme itself is still registered: the coupling is the missing tool.
+            page = runtime.read_resource(ResourceReadRequest(uri="memo://hello"), context=context)
+            assert page is not None
+            assert page.body["type"] == "memo"

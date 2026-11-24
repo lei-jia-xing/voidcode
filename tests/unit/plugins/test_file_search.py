@@ -229,3 +229,53 @@ def test_explicit_path_searches_a_default_ignored_directory(tmp_path: Path, dire
     expected = {f"{directory}/sub/kept.txt", f"{directory}/top.txt"}
     assert set(glob_payload["matches"]) == expected
     assert {match["file"] for match in grep_payload["matches"]} == expected
+
+
+def test_glob_limit_keeps_the_newest_matches(tmp_path: Path) -> None:
+    import os
+
+    for name, modified in (("a_old.txt", 1_000_000), ("b_mid.txt", 2_000_000), ("c_new.txt", 3_000_000)):
+        target = tmp_path / name
+        target.write_text("data", encoding="utf-8")
+        os.utime(target, (modified, modified))
+
+    result = invoke(GlobTool(), tmp_path, {"pattern": "*.txt", "limit": 2})
+    assert result.status == "ok"
+    payload = result.body.as_payload()
+    assert payload["matches"] == ["c_new.txt", "b_mid.txt"]
+    assert payload["truncated"] is True
+
+
+def test_glob_and_grep_share_matcher_and_hidden_defaults(tmp_path: Path) -> None:
+    (tmp_path / "visible.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "nested.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / ".hidden.py").write_text("needle\n", encoding="utf-8")
+
+    glob_all = set(invoke(GlobTool(), tmp_path, {"pattern": "**/*.py"}).body.matches)
+    grep_all = {match.file for match in invoke(GrepTool(), tmp_path, {"pattern": "needle", "include": ["*.py"]}).body.matches}
+    assert glob_all == {"visible.py", "sub/nested.py", ".hidden.py"}
+    assert grep_all == glob_all
+
+    glob_visible = set(invoke(GlobTool(), tmp_path, {"pattern": "**/*.py", "include_hidden": False}).body.matches)
+    grep_visible = {
+        match.file for match in invoke(GrepTool(), tmp_path, {"pattern": "needle", "include": ["*.py"], "include_hidden": False}).body.matches
+    }
+    assert glob_visible == {"visible.py", "sub/nested.py"}
+    assert grep_visible == glob_visible
+
+    # One dialect: an anchored pattern matches only the directory's direct children.
+    anchored = invoke(GrepTool(), tmp_path, {"pattern": "needle", "include": ["sub/*.py"]})
+    assert {match.file for match in anchored.body.matches} == {"sub/nested.py"}
+
+
+def test_grep_reports_undecodable_files_instead_of_hiding_them(tmp_path: Path) -> None:
+    (tmp_path / "a_good.txt").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "b_binary.bin").write_bytes(b"needle \xff\xfe\n")
+
+    result = invoke(GrepTool(), tmp_path, {"pattern": "needle"})
+    assert result.status == "ok"
+    payload = result.body.as_payload()
+    assert [match["file"] for match in payload["matches"]] == ["a_good.txt"]
+    assert payload["skipped_undecodable"] == 1
+    assert "Skipped 1 file(s) that are not UTF-8 text." in result.output.text

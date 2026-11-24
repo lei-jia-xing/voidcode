@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fnmatch
 import re
 from collections import deque
 from collections.abc import Iterator
@@ -28,7 +27,15 @@ from voidcode.sdk.tools import (
 )
 
 from ..tool_errors import expected_failures, raise_tool_diagnostic
-from ._common import MAX_RESULT_LIMIT, is_default_ignored, resolve_workspace_path, validate_glob_patterns, validate_non_empty
+from ._common import (
+    MAX_RESULT_LIMIT,
+    full_match_path,
+    has_hidden_component,
+    is_default_ignored,
+    resolve_workspace_path,
+    validate_glob_patterns,
+    validate_non_empty,
+)
 from .gitignore import GitIgnoreMatcher
 
 MAX_MATCHES = 200
@@ -45,6 +52,7 @@ class GrepArgs(BaseModel):
     context: int = Field(default=0, ge=0, le=100)
     include: list[str] | None = None
     exclude: list[str] | None = None
+    include_hidden: bool = True
     respect_gitignore: bool = False
     limit: int = Field(default=MAX_MATCHES, ge=1, le=MAX_RESULT_LIMIT)
 
@@ -82,6 +90,7 @@ class GrepResultBody:
     match_count: int
     truncated: bool
     matches: tuple[GrepResultMatch, ...]
+    skipped_undecodable: int = 0
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -93,6 +102,7 @@ class GrepResultBody:
             "match_count": self.match_count,
             "truncated": self.truncated,
             "partial": self.truncated,
+            "skipped_undecodable": self.skipped_undecodable,
             "matches": [match.as_payload() for match in self.matches],
         }
 
@@ -105,7 +115,9 @@ class GrepTool:
             "Search workspace files. Pattern is literal by default; set regex=true to use regular expressions, "
             "and ignore_case=true for case-insensitive matching. Standard dependency, VCS, and build directories "
             "(.git, node_modules, __pycache__, dist, build, target, vendor, .venv, ...) are skipped at any depth; "
-            "pass one explicitly as path to search inside it."
+            "pass one explicitly as path to search inside it. Hidden entries are included and .gitignore is not "
+            "applied unless you ask for it, matching glob's defaults. Files that are not UTF-8 text are skipped "
+            "and reported."
         ),
         input_schema={
             "type": "object",
@@ -115,8 +127,16 @@ class GrepTool:
                 "regex": {"type": "boolean", "description": "Treat pattern as a regular expression; defaults to false."},
                 "ignore_case": {"type": "boolean", "description": "Match case-insensitively; defaults to false."},
                 "context": {"type": "integer", "minimum": 0, "maximum": 100, "description": "Number of surrounding lines per match (max 100)."},
-                "include": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to include."},
+                "include": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional glob filters for files to include; matches workspace-relative paths (so '*.py' matches at any depth).",
+                },
                 "exclude": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to exclude."},
+                "include_hidden": {
+                    "type": "boolean",
+                    "description": "Include hidden files and directories (name starts with '.'); defaults to true, matching glob.",
+                },
                 "respect_gitignore": {
                     "type": "boolean",
                     "description": (
@@ -134,14 +154,6 @@ class GrepTool:
     )
 
     @staticmethod
-    def _matches_glob(path: str, pattern: str) -> bool:
-        if fnmatch.fnmatch(path, pattern):
-            return True
-        if pattern.startswith("**/"):
-            return fnmatch.fnmatch(path, pattern[3:])
-        return False
-
-    @staticmethod
     def _iter_targets(
         root: Path,
         *,
@@ -149,14 +161,25 @@ class GrepTool:
         context: ToolContext,
         include: list[str] | None,
         exclude: list[str] | None,
+        include_hidden: bool = True,
         gitignore: GitIgnoreMatcher | None = None,
     ) -> Iterator[Path]:
         if context.abort_signal is not None and context.abort_signal.cancelled:
             return
         include_patterns = include or []
         exclude_patterns = exclude or []
+
+        def filtered(relative: str) -> bool:
+            if not include_patterns and not exclude_patterns:
+                return True
+            if include_patterns and not any(full_match_path(relative, pattern, basename_any_depth=True) for pattern in include_patterns):
+                return False
+            return not any(full_match_path(relative, pattern, basename_any_depth=True) for pattern in exclude_patterns)
+
         if root.is_file():
-            yield root
+            relative = root.relative_to(project_root).as_posix() if root.is_relative_to(project_root) else root.as_posix()
+            if filtered(relative):
+                yield root
             return
 
         def fail_walk(error: OSError) -> None:
@@ -172,6 +195,7 @@ class GrepTool:
                 name
                 for name in dirnames
                 if not is_default_ignored((directory / name).relative_to(root), is_directory=True)
+                and (include_hidden or not has_hidden_component(directory_relative / name))
                 and (gitignore is None or not gitignore.is_ignored((directory_relative / name).as_posix(), is_directory=True))
             )
             for name in sorted(filenames):
@@ -180,12 +204,13 @@ class GrepTool:
                 candidate = directory / name
                 if not candidate.is_file():
                     continue
-                rel = candidate.relative_to(project_root).as_posix()
+                rel_path = candidate.relative_to(project_root)
+                rel = rel_path.as_posix()
+                if not include_hidden and has_hidden_component(rel_path):
+                    continue
                 if gitignore is not None and gitignore.is_ignored(rel, is_directory=False):
                     continue
-                if include_patterns and not any(GrepTool._matches_glob(rel, pat) for pat in include_patterns):
-                    continue
-                if any(GrepTool._matches_glob(rel, pat) for pat in exclude_patterns):
+                if not filtered(rel):
                     continue
                 yield candidate
 
@@ -219,30 +244,27 @@ class GrepTool:
                         )
                     yield line_number, raw_line.rstrip("\r\n")
 
-        try:
-            remaining = iter(lines())
-            following = deque(islice(remaining, context + 1))
-            while following:
-                if invocation.abort_signal is not None and invocation.abort_signal.cancelled:
-                    return
-                current = following.popleft()
-                columns = tuple(match.start() + 1 for match in pattern.finditer(current[1]))
-                if columns:
-                    yield GrepResultMatch(
-                        relative_path,
-                        current[0],
-                        current[1],
-                        columns,
-                        tuple(before),
-                        tuple(following),
-                    )
-                before.append(current)
-                try:
-                    following.append(next(remaining))
-                except StopIteration:
-                    pass
-        except UnicodeDecodeError:
-            return
+        remaining = iter(lines())
+        following = deque(islice(remaining, context + 1))
+        while following:
+            if invocation.abort_signal is not None and invocation.abort_signal.cancelled:
+                return
+            current = following.popleft()
+            columns = tuple(match.start() + 1 for match in pattern.finditer(current[1]))
+            if columns:
+                yield GrepResultMatch(
+                    relative_path,
+                    current[0],
+                    current[1],
+                    columns,
+                    tuple(before),
+                    tuple(following),
+                )
+            before.append(current)
+            try:
+                following.append(next(remaining))
+            except StopIteration:
+                pass
 
     @expected_failures
     def invoke(
@@ -303,19 +325,25 @@ class GrepTool:
             context=context,
             include=args.include,
             exclude=args.exclude,
+            include_hidden=args.include_hidden,
             gitignore=gitignore,
         )
 
         matches: list[GrepResultMatch] = []
         truncated = False
+        skipped_undecodable = 0
         try:
             for target in targets:
                 file_display = str(target.resolve()) if is_external else target.relative_to(workspace_root).as_posix()
-                for match in self._iter_matches(target, relative_path=file_display, pattern=pattern, context=args.context, invocation=context):
-                    if len(matches) == args.limit:
-                        truncated = True
-                        break
-                    matches.append(match)
+                try:
+                    for match in self._iter_matches(target, relative_path=file_display, pattern=pattern, context=args.context, invocation=context):
+                        if len(matches) == args.limit:
+                            truncated = True
+                            break
+                        matches.append(match)
+                except UnicodeDecodeError:
+                    skipped_undecodable += 1
+                    continue
                 if truncated:
                     break
         except OSError as exc:
@@ -347,6 +375,8 @@ class GrepTool:
         summary = f"Found {total_occurrences} match(es) for {args.pattern!r} in {path_display}"
         if rendered_lines:
             summary += "\n" + "\n".join(rendered_lines)
+        if skipped_undecodable:
+            summary += f"\nSkipped {skipped_undecodable} file(s) that are not UTF-8 text."
 
         body = GrepResultBody(
             path=path_display,
@@ -357,6 +387,7 @@ class GrepTool:
             match_count=total_occurrences,
             truncated=truncated,
             matches=tuple(matches),
+            skipped_undecodable=skipped_undecodable,
         )
         return ToolSuccess(
             tool_name=self.definition.name,

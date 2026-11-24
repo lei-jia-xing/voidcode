@@ -25,6 +25,7 @@ type ToolDiagnosticReason = Literal[
     "character_mid_surrogate",
     "character_mid_utf8",
     "character_out_of_range",
+    "commit_race",
     "content_hash_mismatch",
     "corrupt_process_state",
     "document_answer_shape_violation",
@@ -35,6 +36,7 @@ type ToolDiagnosticReason = Literal[
     "edit_failed",
     "empty_content",
     "end_line_out_of_range",
+    "expected_hash_required",
     "failed_process_start",
     "file_changed_during_recovery",
     "hash_only_uri",
@@ -61,6 +63,9 @@ type ToolDiagnosticReason = Literal[
     "process_start_failed",
     "range_out_of_bounds",
     "range_reversed",
+    "resource_access_denied",
+    "resource_contract_violation",
+    "resource_read_failed",
     "sandbox_helper_failed",
     "search_io_error",
     "search_path_not_directory",
@@ -69,10 +74,12 @@ type ToolDiagnosticReason = Literal[
     "start_line_out_of_range",
     "stdin_unavailable",
     "stop_unconfirmed",
+    "symlink_target",
     "target_not_found",
     "unknown_process_id",
     "unsupported_encoding",
     "unsupported_resource_uri",
+    "write_failed",
 ]
 
 _TOOL_DIAGNOSTIC_REASONS: Final[frozenset[str]] = frozenset(value for value in get_args(ToolDiagnosticReason.__value__) if isinstance(value, str))
