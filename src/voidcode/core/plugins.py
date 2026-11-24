@@ -101,6 +101,8 @@ from .storage.store import (
     StagedCancellation,
     StagedContinuationDraft,
     StagedStateUpdate,
+    StagedWakeup,
+    StagedWakeupCancel,
     UnknownWorkspace,
 )
 from .transcript import context_records, transcript_entry
@@ -139,6 +141,8 @@ class LeaseStaging:
     events: list[EventDraft] = field(default_factory=list)
     continuations: list[StagedContinuationDraft] = field(default_factory=list)
     cancellations: list[StagedCancellation] = field(default_factory=list)
+    wakeups: list[StagedWakeup] = field(default_factory=list)
+    wakeup_cancels: list[StagedWakeupCancel] = field(default_factory=list)
     observer_receipts: list[ObserverReceiptRecord] = field(default_factory=list)
     budget: PluginBudget | None | Literal["clear"] = None
     observations: list[Change] = field(default_factory=list)
@@ -202,6 +206,8 @@ class ToolInvocationOutcome:
     staged_cancellations: tuple[StagedCancellation, ...] = ()
     staged_observer_receipts: tuple[ObserverReceiptRecord, ...] = ()
     staged_budget: PluginBudget | None | Literal["clear"] = None
+    staged_wakeups: tuple[StagedWakeup, ...] = ()
+    staged_wakeup_cancels: tuple[StagedWakeupCancel, ...] = ()
     staged_observations: tuple[Change, ...] = ()
 
 
@@ -215,6 +221,8 @@ class FrozenStaged:
     staged_cancellations: tuple[StagedCancellation, ...] = ()
     staged_observer_receipts: tuple[ObserverReceiptRecord, ...] = ()
     staged_budget: PluginBudget | None | Literal["clear"] = None
+    staged_wakeups: tuple[StagedWakeup, ...] = ()
+    staged_wakeup_cancels: tuple[StagedWakeupCancel, ...] = ()
     staged_observations: tuple[Change, ...] = ()
 
 
@@ -241,11 +249,13 @@ class CommandInvocationOutcome:
     staged_cancellations: tuple[StagedCancellation, ...] = ()
     staged_observer_receipts: tuple[ObserverReceiptRecord, ...] = ()
     staged_budget: PluginBudget | None | Literal["clear"] = None
+    staged_wakeups: tuple[StagedWakeup, ...] = ()
+    staged_wakeup_cancels: tuple[StagedWakeupCancel, ...] = ()
     staged_observations: tuple[Change, ...] = ()
     cancelled: bool = False
 
 
-#: One invocation's staged side effects: state, events, continuations, cancellations, receipts, budget.
+#: One invocation's staged side effects: state, events, continuations, cancellations, receipts, budget, wakeups.
 type _Staged = tuple[
     tuple[StagedStateUpdate, ...],
     tuple[EventDraft, ...],
@@ -253,6 +263,8 @@ type _Staged = tuple[
     tuple[StagedCancellation, ...],
     tuple[ObserverReceiptRecord, ...],
     PluginBudget | None | Literal["clear"],
+    tuple[StagedWakeup, ...],
+    tuple[StagedWakeupCancel, ...],
 ]
 
 
@@ -262,6 +274,8 @@ class CallbackChanges:
     staged_events: tuple[EventDraft, ...] = ()
     staged_continuations: tuple[StagedContinuationDraft, ...] = ()
     staged_cancellations: tuple[StagedCancellation, ...] = ()
+    staged_wakeups: tuple[StagedWakeup, ...] = ()
+    staged_wakeup_cancels: tuple[StagedWakeupCancel, ...] = ()
     staged_budgets: tuple[tuple[str, PluginBudget | Literal["clear"]], ...] = ()
     errors: tuple[dict[str, str], ...] = ()
 
@@ -819,6 +833,8 @@ class PluginRuntime:
             tuple(lease.staging.cancellations),
             tuple(lease.staging.observer_receipts),
             lease.staging.budget,
+            tuple(lease.staging.wakeups),
+            tuple(lease.staging.wakeup_cancels),
         )
 
     def cancel_event_for(self, lease: LeaseContext) -> threading.Event:
@@ -1207,7 +1223,16 @@ class PluginRuntime:
                 if return_outcome:
                     return ToolInvocationOutcome(result=cancelled_result)
                 return cancelled_result
-            staged_state, staged_events, staged_conts, staged_cancels, staged_receipts, staged_budget = self._staged_changes(lease)
+            (
+                staged_state,
+                staged_events,
+                staged_conts,
+                staged_cancels,
+                staged_receipts,
+                staged_budget,
+                staged_wakeups,
+                staged_wakeup_cancels,
+            ) = self._staged_changes(lease)
             frozen = FrozenStaged(
                 staged_state=staged_state,
                 staged_events=staged_events,
@@ -1215,6 +1240,8 @@ class PluginRuntime:
                 staged_cancellations=staged_cancels,
                 staged_observer_receipts=staged_receipts,
                 staged_budget=staged_budget,
+                staged_wakeups=staged_wakeups,
+                staged_wakeup_cancels=staged_wakeup_cancels,
                 staged_observations=tuple(lease.staging.observations),
             )
             self._revoke_lease(lease)
@@ -1235,7 +1262,16 @@ class PluginRuntime:
             # before terminating, so this invocation's staged work is preserved with it.
             self._cancel_claimed_services(lease)
             if not tool_threw and isinstance(result, ToolFailure) and result.execution is not None:
-                staged_state, staged_events, staged_conts, staged_cancels, staged_receipts, staged_budget = self._staged_changes(lease)
+                (
+                    staged_state,
+                    staged_events,
+                    staged_conts,
+                    staged_cancels,
+                    staged_receipts,
+                    staged_budget,
+                    staged_wakeups,
+                    staged_wakeup_cancels,
+                ) = self._staged_changes(lease)
                 staged = ToolInvocationOutcome(
                     result=result,
                     staged_state=staged_state,
@@ -1244,6 +1280,8 @@ class PluginRuntime:
                     staged_cancellations=staged_cancels,
                     staged_observer_receipts=staged_receipts,
                     staged_budget=staged_budget,
+                    staged_wakeups=staged_wakeups,
+                    staged_wakeup_cancels=staged_wakeup_cancels,
                     staged_observations=tuple(lease.staging.observations),
                 )
             else:
@@ -1253,7 +1291,16 @@ class PluginRuntime:
             # truth about the world, not tool claims, so the prefix survives the throw.
             staged = ToolInvocationOutcome(result=result, staged_observations=tuple(lease.staging.observations))
         else:
-            staged_state, staged_events, staged_conts, staged_cancels, staged_receipts, staged_budget = self._staged_changes(lease)
+            (
+                staged_state,
+                staged_events,
+                staged_conts,
+                staged_cancels,
+                staged_receipts,
+                staged_budget,
+                staged_wakeups,
+                staged_wakeup_cancels,
+            ) = self._staged_changes(lease)
             staged = ToolInvocationOutcome(
                 result=result,
                 staged_state=staged_state,
@@ -1262,6 +1309,8 @@ class PluginRuntime:
                 staged_cancellations=staged_cancels,
                 staged_observer_receipts=staged_receipts,
                 staged_budget=staged_budget,
+                staged_wakeups=staged_wakeups,
+                staged_wakeup_cancels=staged_wakeup_cancels,
                 staged_observations=tuple(lease.staging.observations),
             )
         self._revoke_lease(lease)
@@ -1393,9 +1442,9 @@ class PluginRuntime:
         if cancelled:
             self._cancel_claimed_services(lease)
             result = CommandResult(status="error", error="command invocation was cancelled; external effects may be incomplete", output=result.output)
-            staged: _Staged = ((), (), (), (), (), None)
+            staged: _Staged = ((), (), (), (), (), None, (), ())
         elif cmd_threw:
-            staged = ((), (), (), (), (), None)
+            staged = ((), (), (), (), (), None, (), ())
         else:
             staged = self._staged_changes(lease)
         self._revoke_lease(lease)
@@ -1659,6 +1708,8 @@ class PluginRuntime:
         all_events: list[EventDraft] = []
         all_conts: list[StagedContinuationDraft] = []
         all_cancels: list[StagedCancellation] = []
+        all_wakeups: list[StagedWakeup] = []
+        all_wakeup_cancels: list[StagedWakeupCancel] = []
         all_budgets: list[tuple[str, PluginBudget | Literal["clear"]]] = []
         all_errors: list[dict[str, str]] = []
 
@@ -1716,6 +1767,8 @@ class PluginRuntime:
                     all_events.extend(lease.staging.events)
                     all_conts.extend(lease.staging.continuations)
                     all_cancels.extend(lease.staging.cancellations)
+                    all_wakeups.extend(lease.staging.wakeups)
+                    all_wakeup_cancels.extend(lease.staging.wakeup_cancels)
                     if lease.staging.budget is not None:
                         all_budgets.append((lease.identity.owner, lease.staging.budget))
                     continue
@@ -1727,6 +1780,8 @@ class PluginRuntime:
             staged_events=tuple(all_events),
             staged_continuations=tuple(all_conts),
             staged_cancellations=tuple(all_cancels),
+            staged_wakeups=tuple(all_wakeups),
+            staged_wakeup_cancels=tuple(all_wakeup_cancels),
             staged_budgets=tuple(all_budgets),
             errors=tuple(all_errors),
         )

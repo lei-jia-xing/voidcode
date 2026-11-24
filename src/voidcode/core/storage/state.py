@@ -905,6 +905,186 @@ class _StateMixin(_ConnectionStore):
                 (target_revision_id, sequence, now, str(session_id)),
             )
 
+    def recover_claimed_wakeup_runs(
+        self,
+        workspace: str,
+        *,
+        revision_id: str,
+        fact_observers: Mapping[ObservedFactKind, Sequence[str]],
+    ) -> tuple[tuple[str, str], ...]:
+        """Recover sessions whose claimed wakeup run died with its process.
+
+        Normal startup holds the workspace lease, so no live core owns a ``running``
+        row found here. Each such session gets exactly one durable ``run_interrupted``
+        at its last committed boundary (its checkpoint cursor, including any native
+        batch references, is preserved), then its claimed wakeup settles. A parked
+        ``waiting`` session is a legitimate resumable state and keeps its claim. A
+        session that already reached a run-finished event is never replayed: only
+        the stale claimed wakeup row is settled from the recorded outcome.
+        """
+        settled_status: dict[SessionStatus, str] = {
+            SessionStatus.COMPLETED: "completed",
+            SessionStatus.FAILED: "failed",
+            SessionStatus.INTERRUPTED: "cancelled",
+            SessionStatus.IDLE: "failed",
+        }
+        eligible_owners = list(fact_observers.get("run_finished", ()))
+        recovered: list[tuple[str, str]] = []
+        with self._lock:
+            self._check_open()
+            in_transaction = False
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                in_transaction = True
+                now = int(time.time() * 1000)
+                session_ids = self._connection.execute(
+                    """
+                    SELECT DISTINCT w.session_id
+                    FROM wakeups w
+                    WHERE w.workspace = ? AND w.status = 'claimed'
+                    ORDER BY w.session_id ASC
+                    """,
+                    (workspace,),
+                ).fetchall()
+                for (session_id,) in session_ids:
+                    row = self._connection.execute(
+                        "SELECT status, run_id, last_event_sequence, active_revision_id FROM sessions WHERE session_id = ?",
+                        (str(session_id),),
+                    ).fetchone()
+                    if row is None:
+                        raise StoreConflict(f"claimed wakeup names unknown session {session_id!r}")
+                    status = _decode_closed_enum(SessionStatus, str(row[0]), field="status", record=f"session {session_id!r}")
+                    run_id = str(row[1]) if row[1] is not None else None
+                    last_sequence = int(row[2])
+                    session_revision = str(row[3])
+                    if session_revision != revision_id:
+                        raise StoreConflict(f"claimed wakeup run of session {session_id!r} belongs to another capability revision")
+                    if status is SessionStatus.WAITING:
+                        # An approval/ask park is not dead work: preserve the claim for resume.
+                        continue
+                    if status is SessionStatus.RUNNING:
+                        if not run_id:
+                            raise StoreConflict(f"running session {session_id!r} has no durable run identity")
+                        latest = self._connection.execute(
+                            "SELECT event_type, run_id FROM session_events WHERE session_id = ? AND sequence = ?",
+                            (str(session_id), last_sequence),
+                        ).fetchone()
+                        if (
+                            latest is not None
+                            and latest[0]
+                            in (
+                                EventType.RUN_COMPLETED,
+                                EventType.RUN_FAILED,
+                                EventType.RUN_INTERRUPTED,
+                            )
+                            and latest[1] == run_id
+                        ):
+                            # The run already recorded its own finish; only the session row
+                            # was not advanced (no replay, no second run-finished fact).
+                            recorded = str(latest[0])
+                            if recorded == EventType.RUN_COMPLETED:
+                                terminal_status = "completed"
+                                new_session_status = SessionStatus.COMPLETED
+                            elif recorded == EventType.RUN_FAILED:
+                                terminal_status = "failed"
+                                new_session_status = SessionStatus.FAILED
+                            else:
+                                terminal_status = "failed"
+                                new_session_status = SessionStatus.INTERRUPTED
+                            self._connection.execute(
+                                "UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?",
+                                (new_session_status.value, now, str(session_id)),
+                            )
+                            self._connection.execute(
+                                "UPDATE wakeups SET status = ?, updated_at = ? WHERE session_id = ? AND status = 'claimed'",
+                                (terminal_status, now, str(session_id)),
+                            )
+                            recovered.append((str(session_id), terminal_status))
+                            continue
+                        logical_turn = ""
+                        checkpoint = self._connection.execute(
+                            "SELECT payload_json FROM checkpoints WHERE session_id = ?",
+                            (str(session_id),),
+                        ).fetchone()
+                        if checkpoint is not None:
+                            payload = json.loads(checkpoint[0])
+                            if isinstance(payload, Mapping) and isinstance(payload.get("logical_turn"), str):
+                                logical_turn = payload["logical_turn"]
+                        sequence = last_sequence + 1
+                        orphan_payload_json = canonical_json(
+                            {
+                                "reason": (
+                                    "the process that owned this claimed wakeup run is gone; "
+                                    "startup recovered the session at its last committed boundary"
+                                ),
+                                "stop_cause": "shutdown",
+                                "logical_turn": logical_turn,
+                                "eligible_owners": eligible_owners,
+                            }
+                        )
+                        self._connection.execute(
+                            """
+                            INSERT INTO session_events (
+                                session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                            ) VALUES (?, ?, ?, ?, 'core', 'core', ?, ?, ?)
+                            """,
+                            (
+                                str(session_id),
+                                sequence,
+                                run_id,
+                                EventType.RUN_INTERRUPTED,
+                                session_revision,
+                                orphan_payload_json,
+                                len(orphan_payload_json.encode("utf-8")),
+                            ),
+                        )
+                        self._connection.execute(
+                            "UPDATE sessions SET status = 'interrupted', last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
+                            (sequence, now, str(session_id)),
+                        )
+                        self._connection.execute(
+                            "UPDATE checkpoints SET kind = 'interrupted', revision_id = ?,"
+                            " last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
+                            (session_revision, sequence, now, str(session_id)),
+                        )
+                        self._connection.execute(
+                            "UPDATE wakeups SET status = 'failed', updated_at = ? WHERE session_id = ? AND status = 'claimed'",
+                            (now, str(session_id)),
+                        )
+                        recovered.append((str(session_id), "failed"))
+                        continue
+                    terminal_status = settled_status.get(status, "failed")
+                    if status is SessionStatus.INTERRUPTED:
+                        stopped = self._connection.execute(
+                            """
+                            SELECT payload_json FROM session_events
+                            WHERE session_id = ? AND event_type = ? AND run_id = ?
+                            ORDER BY sequence DESC LIMIT 1
+                            """,
+                            (str(session_id), EventType.RUN_INTERRUPTED, run_id),
+                        ).fetchone()
+                        if stopped is not None:
+                            try:
+                                payload = json.loads(stopped[0])
+                            except TypeError, ValueError:
+                                payload = None
+                            if isinstance(payload, Mapping) and payload.get("stop_cause") in ("user_stop", "owner_cancel"):
+                                terminal_status = "cancelled"
+                            else:
+                                terminal_status = "failed"
+                    self._connection.execute(
+                        "UPDATE wakeups SET status = ?, updated_at = ? WHERE session_id = ? AND status = 'claimed'",
+                        (terminal_status, now, str(session_id)),
+                    )
+                    recovered.append((str(session_id), terminal_status))
+                self._connection.execute("COMMIT")
+                in_transaction = False
+                return tuple(recovered)
+            except Exception:
+                if in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
+
     def workspace_current(self, workspace: str) -> str | None:
         """The capability revision the workspace is currently running, or None before first adoption."""
         with self._lock:

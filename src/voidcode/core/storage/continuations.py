@@ -37,6 +37,7 @@ from .records import (
     UnknownContinuation,
     UnknownSession,
     WakeupRecord,
+    WakeupSkip,
     _BackgroundActionColumns,
     _checkpoint_index_values,
     _CheckpointGuardColumns,
@@ -89,183 +90,276 @@ class _ContinuationsMixin(_ConnectionStore):
         revision_id: str,
         eligible_owners: Sequence[str],
     ) -> tuple[WakeupRecord, SessionRecord] | None:
-        """Claim a due wakeup and start it under the root identity captured when scheduled."""
+        """Claim at most one due wakeup and start it under the root captured when scheduled."""
+        claims, _skipped = self.claim_due_wakeups(
+            workspace,
+            now,
+            revision_id=revision_id,
+            eligible_owners=eligible_owners,
+            limit=1,
+            run_id=run_id,
+            logical_turn=logical_turn,
+        )
+        return claims[0] if claims else None
+
+    def claim_due_wakeups(
+        self,
+        workspace: str,
+        now: int,
+        *,
+        revision_id: str,
+        eligible_owners: Sequence[str],
+        limit: int | None = None,
+        run_id: str | None = None,
+        logical_turn: str | None = None,
+    ) -> tuple[list[tuple[WakeupRecord, SessionRecord]], list[WakeupSkip]]:
+        """Claim every due wakeup whose session admits fresh work, skipping the rest.
+
+        One ``BEGIN IMMEDIATE`` transaction scans due rows in due order and claims
+        at most one run per session. A busy, waiting, or checkpoint-resumable
+        session is skipped with its pending row and checkpoint untouched; the
+        scan continues so one blocked head never starves other due wakeups.
+        Structurally dead rows (wrong generation, lost root authorization) are
+        settled ``failed`` instead of retried forever. At most ``limit`` runs are
+        claimed when a caller asks for one.
+        """
+        if limit is not None and (type(limit) is not int or limit < 1):
+            raise ValueError("limit must be a positive integer or null")
+        if (run_id is not None or logical_turn is not None) and limit != 1:
+            raise ValueError("a caller-supplied run identity requires limit=1")
+        if run_id is not None and (not isinstance(run_id, str) or not run_id):
+            raise ValueError("run_id must be non-empty text")
+        if logical_turn is not None and (not isinstance(logical_turn, str) or not logical_turn):
+            raise ValueError("logical_turn must be non-empty text")
         with self._lock:
             self._check_open()
             in_transaction = False
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 in_transaction = True
-                cursor = self._connection.execute(
+                rows = self._connection.execute(
                     """
                     SELECT wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget, role, due_at, status, claim_run_id
                     FROM wakeups
                     WHERE workspace = ? AND status = 'pending' AND due_at <= ?
                     ORDER BY due_at ASC, created_at ASC
-                    LIMIT 1
                     """,
                     (workspace, now),
-                )
-                row = cursor.fetchone()
-                if row is None:
-                    self._connection.execute("COMMIT")
-                    in_transaction = False
-                    return None
-                wakeup = _decode_wakeup(row)
-                claimed = self._connection.execute(
-                    """
-                    UPDATE wakeups SET status = 'claimed', claim_run_id = ?, updated_at = ?
-                    WHERE wakeup_id = ? AND status = 'pending'
-                    """,
-                    (run_id, now, wakeup.wakeup_id),
-                )
-                if claimed.rowcount == 0:
-                    raise StoreConflict(f"wakeup {wakeup.wakeup_id!r} was claimed concurrently")
-                session_row = self._connection.execute(
-                    """
-                    SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
-                           parent_session_id, root_session_id, depth, tool_allowlist_json
-                    FROM sessions WHERE session_id = ?
-                    """,
-                    (wakeup.session_id,),
-                ).fetchone()
-                if session_row is None:
-                    raise UnknownSession(f"wakeup {wakeup.wakeup_id!r} names an unknown session", wakeup.session_id)
-                session = _decode_session(session_row)
-                if session.active_revision_id != revision_id:
-                    raise StoreConflict("wakeup session belongs to another capability revision")
-                if session.status in (SessionStatus.RUNNING, SessionStatus.WAITING):
-                    raise StoreConflict(f"wakeup session {session.session_id!r} is busy ({session.status.value})")
-                budget_row = self._connection.execute(
-                    "SELECT budget FROM root_budgets WHERE root_id = ?",
-                    (wakeup.root_id,),
-                ).fetchone()
-                stored_budget = _stored_root_budget(budget_row)
-                if wakeup.root_action_budget is None and stored_budget is not None:
-                    raise StoreConflict("wakeup captured an uncapped root with a finite budget row")
-                if wakeup.root_action_budget is not None and (stored_budget is None or stored_budget < wakeup.root_action_budget):
-                    raise StoreConflict("wakeup lost its captured finite root authorization")
-                initial_root_budget = wakeup.root_action_budget
-                new_seq = session.last_event_sequence + 1
-                fired_payload = canonical_json(
-                    {
-                        "eligible_owners": list(eligible_owners),
-                        "wakeup_id": wakeup.wakeup_id,
-                        "owner": wakeup.owner,
-                        "payload": json_wire_object(wakeup.payload),
-                        "role": wakeup.role,
-                        "logical_turn": logical_turn,
+                ).fetchall()
+                claims: list[tuple[WakeupRecord, SessionRecord]] = []
+                skipped: list[WakeupSkip] = []
+                claimed_sessions: set[str] = set()
+                for row in rows:
+                    if limit is not None and len(claims) >= limit:
+                        break
+                    wakeup = _decode_wakeup(row)
+                    session_row = self._connection.execute(
+                        """
+                        SELECT session_id, workspace, status, active_revision_id, run_id, turn, last_event_sequence,
+                               parent_session_id, root_session_id, depth, tool_allowlist_json
+                        FROM sessions WHERE session_id = ?
+                        """,
+                        (wakeup.session_id,),
+                    ).fetchone()
+                    if session_row is None:
+                        self._fail_pending_wakeup_locked(wakeup.wakeup_id, now)
+                        skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, "unknown_session"))
+                        continue
+                    session = _decode_session(session_row)
+                    if wakeup.session_id in claimed_sessions:
+                        skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, "session_already_claimed"))
+                        continue
+                    if session.active_revision_id != revision_id:
+                        self._fail_pending_wakeup_locked(wakeup.wakeup_id, now)
+                        skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, "revision_mismatch"))
+                        continue
+                    if session.status is SessionStatus.RUNNING:
+                        skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, "session_running"))
+                        continue
+                    if session.status is SessionStatus.WAITING:
+                        skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, "session_parked"))
+                        continue
+                    checkpoint_row = self._connection.execute(
+                        "SELECT kind, run_id, payload_json FROM checkpoints WHERE session_id = ?",
+                        (wakeup.session_id,),
+                    ).fetchone()
+                    checkpoint_kind: CheckpointKind | None = None
+                    checkpoint_run_id: str | None = None
+                    if checkpoint_row is not None:
+                        guard = _CheckpointGuardColumns(*checkpoint_row)
+                        checkpoint_run_id = guard.run_id
+                        checkpoint_kind = _decode_closed_enum(
+                            CheckpointKind, guard.kind, field="kind", record=f"checkpoint of session {wakeup.session_id!r}"
+                        )
+                    if checkpoint_kind is not None and checkpoint_kind is not CheckpointKind.TERMINAL:
+                        # A resumable/native-batch cursor is owned by an explicit resume, never
+                        # overwritten by a fresh scheduled turn.
+                        skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, f"checkpoint_{checkpoint_kind.value}"))
+                        continue
+                    if session.status is SessionStatus.INTERRUPTED and (
+                        checkpoint_kind is not CheckpointKind.TERMINAL or checkpoint_run_id != session.run_id
+                    ):
+                        # Mirrors admits_fresh_work: only a terminal interruption of the
+                        # session's own run is closed work; anything else needs resume.
+                        skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, "session_interrupted"))
+                        continue
+                    budget_row = self._connection.execute(
+                        "SELECT budget FROM root_budgets WHERE root_id = ?",
+                        (wakeup.root_id,),
+                    ).fetchone()
+                    stored_budget = _stored_root_budget(budget_row)
+                    if wakeup.root_action_budget is None and stored_budget is not None:
+                        self._fail_pending_wakeup_locked(wakeup.wakeup_id, now)
+                        skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, "root_authorization"))
+                        continue
+                    if wakeup.root_action_budget is not None and (stored_budget is None or stored_budget < wakeup.root_action_budget):
+                        self._fail_pending_wakeup_locked(wakeup.wakeup_id, now)
+                        skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, "root_authorization"))
+                        continue
+                    initial_root_budget = wakeup.root_action_budget
+                    claim_run_id = run_id or uuid4().hex
+                    claimed_logical_turn = logical_turn or uuid4().hex
+                    claimed = self._connection.execute(
+                        """
+                        UPDATE wakeups SET status = 'claimed', claim_run_id = ?, updated_at = ?
+                        WHERE wakeup_id = ? AND status = 'pending'
+                        """,
+                        (claim_run_id, now, wakeup.wakeup_id),
+                    )
+                    if claimed.rowcount == 0:
+                        skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, "claimed_concurrently"))
+                        continue
+                    new_seq = session.last_event_sequence + 1
+                    fired_payload = canonical_json(
+                        {
+                            "eligible_owners": list(eligible_owners),
+                            "wakeup_id": wakeup.wakeup_id,
+                            "owner": wakeup.owner,
+                            "payload": json_wire_object(wakeup.payload),
+                            "role": wakeup.role,
+                            "logical_turn": claimed_logical_turn,
+                        }
+                    )
+                    self._connection.execute(
+                        """
+                        INSERT INTO session_events (
+                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                        ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?, ?)
+                        """,
+                        (
+                            session.session_id,
+                            new_seq,
+                            claim_run_id,
+                            EventType.WAKEUP_FIRED,
+                            f"plugin.{wakeup.owner}",
+                            revision_id,
+                            fired_payload,
+                            len(fired_payload.encode("utf-8")),
+                        ),
+                    )
+                    wakeup_checkpoint = {
+                        "batch_sequence": None,
+                        "next_call": 0,
+                        "intent_sequence": None,
+                        "approval_sequence": None,
+                        "deferred_sequence": None,
+                        "deferred_depth": 0,
+                        "deferred_only": False,
+                        "max_steps": None,
+                        "step": 0,
+                        "abandon_batch": False,
+                        "continuation_id": None,
+                        "logical_turn": claimed_logical_turn,
+                        "stop_cause": None,
+                        "initial_root_budget": initial_root_budget,
+                        "root_id": wakeup.root_id,
+                        "resume_intent": "",
                     }
-                )
-                self._connection.execute(
-                    """
-                    INSERT INTO session_events (
-                        session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
-                    ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?, ?)
-                    """,
-                    (
-                        session.session_id,
-                        new_seq,
-                        run_id,
-                        EventType.WAKEUP_FIRED,
-                        f"plugin.{wakeup.owner}",
-                        revision_id,
-                        fired_payload,
-                        len(fired_payload.encode("utf-8")),
-                    ),
-                )
-                wakeup_checkpoint = {
-                    "batch_sequence": None,
-                    "next_call": 0,
-                    "intent_sequence": None,
-                    "approval_sequence": None,
-                    "deferred_sequence": None,
-                    "deferred_depth": 0,
-                    "deferred_only": False,
-                    "max_steps": None,
-                    "step": 0,
-                    "abandon_batch": False,
-                    "continuation_id": None,
-                    "logical_turn": logical_turn,
-                    "stop_cause": None,
-                    "initial_root_budget": initial_root_budget,
-                    "root_id": wakeup.root_id,
-                    "resume_intent": "",
-                }
-                checkpoint_payload = canonical_json(wakeup_checkpoint)
-                checkpoint_root_id, checkpoint_approval, checkpoint_ask_seq, checkpoint_ask_req = _checkpoint_index_values(wakeup_checkpoint)
-                self._connection.execute(
-                    """
-                    INSERT INTO checkpoints (
-                        session_id, kind, revision_id, run_id, last_event_sequence, payload_json,
-                        root_id, approval_sequence, ask_sequence, ask_request_id, updated_at
-                    ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (session_id) DO UPDATE SET
-                        kind = 'ready',
-                        revision_id = excluded.revision_id,
-                        run_id = excluded.run_id,
-                        last_event_sequence = excluded.last_event_sequence,
-                        payload_json = excluded.payload_json,
-                        root_id = excluded.root_id,
-                        approval_sequence = excluded.approval_sequence,
-                        ask_sequence = excluded.ask_sequence,
-                        ask_request_id = excluded.ask_request_id,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        session.session_id,
-                        revision_id,
-                        run_id,
-                        new_seq,
-                        checkpoint_payload,
-                        checkpoint_root_id,
-                        checkpoint_approval,
-                        checkpoint_ask_seq,
-                        checkpoint_ask_req,
-                        now,
-                    ),
-                )
-                self._connection.execute(
-                    """
-                    UPDATE sessions
-                    SET status = 'running', run_id = ?, updated_at = ?, last_event_sequence = ?
-                    WHERE session_id = ?
-                    """,
-                    (run_id, now, new_seq, session.session_id),
-                )
+                    checkpoint_payload = canonical_json(wakeup_checkpoint)
+                    checkpoint_root_id, checkpoint_approval, checkpoint_ask_seq, checkpoint_ask_req = _checkpoint_index_values(wakeup_checkpoint)
+                    self._connection.execute(
+                        """
+                        INSERT INTO checkpoints (
+                            session_id, kind, revision_id, run_id, last_event_sequence, payload_json,
+                            root_id, approval_sequence, ask_sequence, ask_request_id, updated_at
+                        ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (session_id) DO UPDATE SET
+                            kind = 'ready',
+                            revision_id = excluded.revision_id,
+                            run_id = excluded.run_id,
+                            last_event_sequence = excluded.last_event_sequence,
+                            payload_json = excluded.payload_json,
+                            root_id = excluded.root_id,
+                            approval_sequence = excluded.approval_sequence,
+                            ask_sequence = excluded.ask_sequence,
+                            ask_request_id = excluded.ask_request_id,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            session.session_id,
+                            revision_id,
+                            claim_run_id,
+                            new_seq,
+                            checkpoint_payload,
+                            checkpoint_root_id,
+                            checkpoint_approval,
+                            checkpoint_ask_seq,
+                            checkpoint_ask_req,
+                            now,
+                        ),
+                    )
+                    self._connection.execute(
+                        """
+                        UPDATE sessions
+                        SET status = 'running', run_id = ?, updated_at = ?, last_event_sequence = ?
+                        WHERE session_id = ?
+                        """,
+                        (claim_run_id, now, new_seq, session.session_id),
+                    )
+                    claimed_sessions.add(session.session_id)
+                    claims.append(
+                        (
+                            WakeupRecord(
+                                wakeup_id=wakeup.wakeup_id,
+                                owner=wakeup.owner,
+                                workspace=wakeup.workspace,
+                                session_id=wakeup.session_id,
+                                payload=wakeup.payload,
+                                root_id=wakeup.root_id,
+                                role=wakeup.role,
+                                due_at=wakeup.due_at,
+                                status="claimed",
+                                claim_run_id=claim_run_id,
+                            ),
+                            SessionRecord(
+                                session_id=session.session_id,
+                                workspace=session.workspace,
+                                status=SessionStatus.RUNNING,
+                                active_revision_id=revision_id,
+                                run_id=claim_run_id,
+                                turn=session.turn,
+                                last_event_sequence=new_seq,
+                                root_session_id=session.root_session_id,
+                                parent_session_id=session.parent_session_id,
+                                depth=session.depth,
+                                tool_allowlist=session.tool_allowlist,
+                            ),
+                        )
+                    )
                 self._connection.execute("COMMIT")
                 in_transaction = False
-                return (
-                    WakeupRecord(
-                        wakeup_id=wakeup.wakeup_id,
-                        owner=wakeup.owner,
-                        workspace=wakeup.workspace,
-                        session_id=wakeup.session_id,
-                        payload=wakeup.payload,
-                        root_id=wakeup.root_id,
-                        role=wakeup.role,
-                        due_at=wakeup.due_at,
-                        status="claimed",
-                        claim_run_id=run_id,
-                    ),
-                    SessionRecord(
-                        session_id=session.session_id,
-                        workspace=session.workspace,
-                        status=SessionStatus.RUNNING,
-                        active_revision_id=revision_id,
-                        run_id=run_id,
-                        turn=session.turn,
-                        last_event_sequence=new_seq,
-                        root_session_id=session.root_session_id,
-                        parent_session_id=session.parent_session_id,
-                        depth=session.depth,
-                        tool_allowlist=session.tool_allowlist,
-                    ),
-                )
+                return claims, skipped
             except Exception:
                 if in_transaction:
                     self._connection.execute("ROLLBACK")
                 raise
+
+    def _fail_pending_wakeup_locked(self, wakeup_id: str, now: int) -> None:
+        """Settle a structurally dead pending wakeup inside the caller's transaction."""
+        self._connection.execute(
+            "UPDATE wakeups SET status = 'failed', updated_at = ? WHERE wakeup_id = ? AND status = 'pending'",
+            (now, wakeup_id),
+        )
 
     def schedule_wakeup(
         self,
@@ -388,6 +482,22 @@ class _ContinuationsMixin(_ConnectionStore):
                 "UPDATE wakeups SET status = ?, updated_at = ? WHERE wakeup_id = ? AND status = 'claimed'",
                 (status, int(time.time() * 1000), wakeup_id),
             )
+
+    def wakeup_exists(self, wakeup_id: str) -> bool:
+        """Whether one durable wakeup row already holds this identity (any status)."""
+        with self._lock:
+            self._check_open()
+            return self._connection.execute("SELECT 1 FROM wakeups WHERE wakeup_id = ?", (wakeup_id,)).fetchone() is not None
+
+    def settle_claimed_wakeups(self, session_id: str, status: Literal["completed", "failed", "cancelled"]) -> int:
+        """Settle every claimed wakeup of one session whose run just finished."""
+        with self._lock:
+            self._check_open()
+            cursor = self._connection.execute(
+                "UPDATE wakeups SET status = ?, updated_at = ? WHERE session_id = ? AND status = 'claimed'",
+                (status, int(time.time() * 1000), session_id),
+            )
+            return cursor.rowcount
 
     def has_queued_child_followup(self, session_id: str) -> bool:
         """Whether one session holds a pending core child follow-up (never notices or claims)."""

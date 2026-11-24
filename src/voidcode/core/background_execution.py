@@ -43,6 +43,8 @@ from .storage.store import (
     StagedCancellation,
     StagedContinuationDraft,
     StagedStateUpdate,
+    StagedWakeup,
+    StagedWakeupCancel,
     StoreConflict,
     StoredEvent,
 )
@@ -143,6 +145,8 @@ class BackgroundExecutionHost(Protocol):
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_wakeups: Sequence[StagedWakeup] = (),
+        staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         root_action_id: str | None = None,
@@ -400,7 +404,16 @@ class BackgroundExecution:
             runtime._revoke_lease(lease)  # noqa: SLF001 - the core owns lease lifecycles
             if abort.is_set() or host.closed:
                 raise InterruptedError(f"background action {action_id!r} was cancelled")
-            staged_state, staged_events, staged_conts, staged_cancels, staged_receipts, staged_budget = staged
+            (
+                staged_state,
+                staged_events,
+                staged_conts,
+                staged_cancels,
+                staged_receipts,
+                staged_budget,
+                staged_wakeups,
+                staged_wakeup_cancels,
+            ) = staged
             staged_budget_updates: list[StagedBudgetUpdate] = []
             if staged_budget == "clear":
                 staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
@@ -418,6 +431,8 @@ class BackgroundExecution:
                         staged_state=staged_state,
                         staged_continuations=staged_conts,
                         staged_cancellations=staged_cancels,
+                        staged_wakeups=staged_wakeups,
+                        staged_wakeup_cancels=staged_wakeup_cancels,
                         staged_budgets=tuple(staged_budget_updates),
                         observer_receipts=staged_receipts,
                         root_action_id=context._root_action_id,

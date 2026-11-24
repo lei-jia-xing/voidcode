@@ -109,6 +109,8 @@ class FakeServices(PluginServices):
     child_events: dict[str, tuple[EventView, ...]] = field(default_factory=dict)
 
     wakeups: dict[str, dict[str, object]] = field(default_factory=dict)
+    staged_wakeups: list[dict[str, object]] = field(default_factory=list)
+    staged_wakeup_cancels: list[str] = field(default_factory=list)
     unavailable_tools: set[str] = field(default_factory=set)
     tool_definitions: dict[str, ToolDefinition] = field(default_factory=dict)
     artifacts: dict[str, bytes] = field(default_factory=dict)
@@ -494,6 +496,26 @@ class FakeServices(PluginServices):
             return False
         record["status"] = "cancelled"
         return True
+
+    def stage_wakeup(
+        self,
+        payload: Mapping[str, object],
+        *,
+        due_at_ms: int,
+        idempotency_key: str | None = None,
+        role: Literal["system", "user"] = "system",
+    ) -> str:
+        record = {
+            "payload": dict(payload),
+            "due_at_ms": due_at_ms,
+            "role": role,
+            "idempotency_key": idempotency_key,
+        }
+        self.staged_wakeups.append(record)
+        return f"staged-wakeup-{len(self.staged_wakeups) - 1}"
+
+    def stage_cancel_wakeup(self, wakeup_id: str) -> None:
+        self.staged_wakeup_cancels.append(wakeup_id)
 
     def pending(self) -> dict[str, dict[str, object]]:
         return {key: value for key, value in self.wakeups.items() if value["status"] == "pending"}

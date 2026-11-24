@@ -26,6 +26,8 @@ from ..storage.store import (
     StagedConfirmation,
     StagedContinuationDraft,
     StagedStateUpdate,
+    StagedWakeup,
+    StagedWakeupCancel,
     StoreConflict,
     StoredEvent,
 )
@@ -62,6 +64,8 @@ class StagedTurnBatch:
     staged_state: Sequence[StagedStateUpdate] = ()
     staged_continuations: Sequence[StagedContinuationDraft] = ()
     staged_cancellations: Sequence[StagedCancellation] = ()
+    staged_wakeups: Sequence[StagedWakeup] = ()
+    staged_wakeup_cancels: Sequence[StagedWakeupCancel] = ()
     staged_budgets: Sequence[StagedBudgetUpdate] = ()
     observer_receipts: Sequence[ObserverReceiptRecord] = ()
     completed_continuation_id: str | None = None
@@ -89,6 +93,8 @@ class PublicStagedBatch:
     staged_state: Sequence[StagedStateUpdate] = ()
     staged_continuations: Sequence[StagedContinuationDraft] = ()
     staged_cancellations: Sequence[StagedCancellation] = ()
+    staged_wakeups: Sequence[StagedWakeup] = ()
+    staged_wakeup_cancels: Sequence[StagedWakeupCancel] = ()
     staged_budgets: Sequence[StagedBudgetUpdate] = ()
     staged_confirmations: Sequence[StagedConfirmation] = ()
     observer_receipts: Sequence[ObserverReceiptRecord] = ()
@@ -303,6 +309,8 @@ class CommitPipeline:
                     staged_state=batch.staged_state,
                     staged_continuations=stamped_continuations,
                     staged_cancellations=batch.staged_cancellations,
+                    staged_wakeups=batch.staged_wakeups,
+                    staged_wakeup_cancels=batch.staged_wakeup_cancels,
                     staged_budgets=batch.staged_budgets,
                     observer_receipts=batch.observer_receipts,
                     completed_continuation_id=batch.completed_continuation_id,
@@ -332,6 +340,8 @@ class CommitPipeline:
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_wakeups: Sequence[StagedWakeup] = (),
+        staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
@@ -351,6 +361,8 @@ class CommitPipeline:
             staged_state=staged_state,
             staged_continuations=staged_continuations,
             staged_cancellations=staged_cancellations,
+            staged_wakeups=staged_wakeups,
+            staged_wakeup_cancels=staged_wakeup_cancels,
             staged_budgets=staged_budgets,
             observer_receipts=observer_receipts,
             completed_continuation_id=completed_continuation_id,
@@ -375,6 +387,8 @@ class CommitPipeline:
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_wakeups: Sequence[StagedWakeup] = (),
+        staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
@@ -394,6 +408,8 @@ class CommitPipeline:
             staged_state=staged_state,
             staged_continuations=staged_continuations,
             staged_cancellations=staged_cancellations,
+            staged_wakeups=staged_wakeups,
+            staged_wakeup_cancels=staged_wakeup_cancels,
             staged_budgets=staged_budgets,
             observer_receipts=observer_receipts,
             completed_continuation_id=completed_continuation_id,
@@ -431,9 +447,13 @@ class CommitPipeline:
             staged_state=batch.staged_state,
             staged_continuations=batch.staged_continuations,
             staged_cancellations=batch.staged_cancellations,
+            staged_wakeups=batch.staged_wakeups,
+            staged_wakeup_cancels=batch.staged_wakeup_cancels,
             staged_budgets=batch.staged_budgets,
             staged_confirmations=batch.staged_confirmations,
             observer_receipts=batch.observer_receipts,
+            root_action_id=batch.root_action_id,
+            root_action_budget=batch.initial_root_budget,
         )
         self._host.notify_commit()
         self.deliver_committed_facts(
@@ -459,6 +479,8 @@ class CommitPipeline:
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_wakeups: Sequence[StagedWakeup] = (),
+        staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         staged_confirmations: Sequence[StagedConfirmation] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
@@ -477,6 +499,8 @@ class CommitPipeline:
             staged_state=staged_state,
             staged_continuations=staged_continuations,
             staged_cancellations=staged_cancellations,
+            staged_wakeups=staged_wakeups,
+            staged_wakeup_cancels=staged_wakeup_cancels,
             staged_budgets=staged_budgets,
             staged_confirmations=staged_confirmations,
             observer_receipts=observer_receipts,

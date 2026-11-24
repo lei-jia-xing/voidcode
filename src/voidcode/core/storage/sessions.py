@@ -64,6 +64,19 @@ from .records import (
 from .writes import apply_state_updates_locked, insert_session_event_locked, set_window_projection_locked
 
 
+def _wakeup_settlement_status(events: Sequence[EventDraft]) -> Literal["completed", "failed", "cancelled"] | None:
+    """The settle status a run-finished event in this commit assigns to its session's claim."""
+    status: Literal["completed", "failed", "cancelled"] | None = None
+    for draft in events:
+        if draft.event_type == EventType.RUN_COMPLETED:
+            status = "completed"
+        elif draft.event_type == EventType.RUN_FAILED:
+            status = "failed"
+        elif draft.event_type == EventType.RUN_INTERRUPTED:
+            status = "cancelled" if draft.payload.get("stop_cause") in ("user_stop", "owner_cancel") else "failed"
+    return status
+
+
 class _SessionsMixin(_ConnectionStore):
     """Session and event stream: session rows, event appends/readers, checkpoints, atomic commits."""
 
@@ -964,6 +977,7 @@ class _SessionsMixin(_ConnectionStore):
                                 wakeup_id, owner, workspace, session_id, payload_json, root_id, root_action_budget,
                                 role, due_at, status, claim_run_id, created_at, updated_at
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
+                            ON CONFLICT (wakeup_id) DO NOTHING
                             """,
                             (
                                 wakeup.wakeup_id,
@@ -1107,6 +1121,16 @@ class _SessionsMixin(_ConnectionStore):
                             checkpoint_ask_req,
                             now,
                         ),
+                    )
+                # A run-finished event ends the run that owns this session's claimed wakeup.
+                # Settlement is atomic with that event, so a parked approval/ask (no run-finished
+                # event) keeps its claim across resume while a terminal/resumable finish never
+                # leaves the row claimed forever.
+                wakeup_status = _wakeup_settlement_status(events)
+                if wakeup_status is not None:
+                    self._connection.execute(
+                        "UPDATE wakeups SET status = ?, updated_at = ? WHERE session_id = ? AND status = 'claimed'",
+                        (wakeup_status, now, session_id),
                     )
                 self._connection.execute("COMMIT")
                 in_transaction = False

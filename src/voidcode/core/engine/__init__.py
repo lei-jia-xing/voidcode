@@ -100,9 +100,13 @@ from ..storage.store import (
     StagedConfirmation,
     StagedContinuationDraft,
     StagedStateUpdate,
+    StagedWakeup,
+    StagedWakeupCancel,
     StaleRevision,
     StoreConflict,
     StoredEvent,
+    WakeupRecord,
+    WakeupSkip,
     canonical_json,
 )
 from ..usage import UsageProjector
@@ -429,10 +433,28 @@ class Core:
             resources.callback(self._close_runtime)
             # Initialization work still owns the resources: a failure here unwinds the stack
             # (runtime, store, workspace lease) instead of leaking an already-detached core.
-            self._fact_delivery.replay_pending()
             self._background_started = False
             self._background_workers: list[threading.Thread] = []
+            self._wakeup_workers: list[threading.Thread] = []
+            self._wakeup_tick_lock = Lock()
+            self._wakeup_tick_state: dict[str, object] = {"at_ms": None, "claimed": (), "skipped": (), "error": None}
+            self._wakeup_tick_mode = threading.local()
             resources.callback(self._stop_background_work)
+            # Startup holds the workspace lease, so a claimed wakeup run still marked
+            # running was abandoned by the process that owned it. Settle it at its last
+            # committed boundary before fact replay and before the ticker starts; never
+            # replay a run-finished session.
+            recovered = self.store.recover_claimed_wakeup_runs(
+                str(self.workspace),
+                revision_id=self.revision_id,
+                fact_observers=self.plugin_runtime.observer_owners,
+            )
+            if recovered:
+                recovered_summary = ", ".join(f"{sid}:{status}" for sid, status in recovered)
+                logger.warning("startup recovered %d claimed wakeup run(s): %s", len(recovered), recovered_summary)
+            # Deliver recovered run-finished facts (and every other unsettled fact) only after
+            # recovery has appended its exactly-once interruption events.
+            self._fact_delivery.replay_pending()
             if self.auto_drain:
                 self._start_background_work()
             # Adopt the generation LAST: a failed cold start must leave the workspace unadopted, so
@@ -489,8 +511,11 @@ class Core:
         with self._session_locks_guard:
             self._closed = True
             workers, self._background_workers = self._background_workers, []
+            wakeup_workers, self._wakeup_workers = self._wakeup_workers, []
         self._background.notify()
         for worker in workers:
+            worker.join()
+        for worker in wakeup_workers:
             worker.join()
 
     @contextmanager
@@ -1707,52 +1732,182 @@ class Core:
     ) -> CancelSubtreeReceipt:
         return self._delegation.cancel_descendant_subtree(bound_session_id, target_session_id, expected_run_id=expected_run_id, reason=reason)
 
+    def wakeup_tick_status(self) -> dict[str, object]:
+        """Last wakeup tick's bounded claim/skip/error report (never a delivery log)."""
+        with self._wakeup_tick_lock:
+            state = dict(self._wakeup_tick_state)
+        claimed_val = state.get("claimed")
+        skipped_val = state.get("skipped")
+        return {
+            "at_ms": state.get("at_ms"),
+            "claimed": tuple(claimed_val) if isinstance(claimed_val, Sequence) else (),
+            "skipped": tuple(skipped_val) if isinstance(skipped_val, Sequence) else (),
+            "error": state.get("error"),
+        }
+
+    def _record_wakeup_tick(
+        self,
+        *,
+        claimed: Sequence[str],
+        skipped: Sequence[dict[str, str]],
+        error: str | None,
+    ) -> None:
+        with self._wakeup_tick_lock:
+            self._wakeup_tick_state = {
+                "at_ms": int(time.time() * 1000),
+                "claimed": tuple(claimed)[:32],
+                "skipped": tuple(skipped)[:32],
+                "error": None if error is None else error[:500],
+            }
+
+    @staticmethod
+    def _skip_payload(skipped: Sequence[WakeupSkip]) -> list[dict[str, str]]:
+        return [{"wakeup_id": item.wakeup_id, "session_id": item.session_id, "reason": item.reason} for item in skipped[:32]]
+
     def tick(self, now_ms: int | None = None) -> dict[str, object]:
-        """Fire at most one due wakeup: claim it atomically with its run, then drive that run."""
+        """Claim every currently due wakeup and drive the ones whose sessions can start.
+
+        Explicit calls run each claimed turn synchronously. The core's own ticker
+        marks its thread-local dispatch mode and launches each claimed turn on its
+        own worker under that session's lock, so a long run never blocks the ticker
+        or another due session.
+        """
         self.ensure_open()
         now = int(time.time() * 1000) if now_ms is None else now_ms
         if type(now) is not int or now < 0:
             raise ValueError("now_ms must be a non-negative integer")
-        run_id = uuid4().hex
-        logical_turn = uuid4().hex
-        claimed = self.store.claim_and_start_wakeup(
+        async_dispatch = bool(getattr(self._wakeup_tick_mode, "async_dispatch", False))
+        claims, skipped = self.store.claim_due_wakeups(
             str(self.workspace),
             now,
-            run_id=run_id,
-            logical_turn=logical_turn,
             revision_id=self.revision_id,
             eligible_owners=self.plugin_runtime.observer_owners.get("wakeup_fired", ()),
         )
-        if claimed is None:
-            return {"fired": None}
+        skipped_payload = self._skip_payload(skipped)
+        self._record_wakeup_tick(claimed=[wakeup.wakeup_id for wakeup, _session in claims], skipped=skipped_payload, error=None)
+        if not claims:
+            return {"fired": None, **({"skipped": skipped_payload} if skipped_payload else {})}
         self.notify_commit()
-        wakeup, session = claimed
-        cursor = _Cursor(root_id=wakeup.root_id, logical_turn=logical_turn)
-        execution = _Execution(session, cursor, list(self.store.events(session.session_id)), run_id)
-        with self._session_lock(session.session_id):
-            self._fact_delivery.deliver(execution, (committed_event(execution, session.last_event_sequence, EventType.WAKEUP_FIRED),))
-            result = self._turn_driver.drive(execution)
+        if async_dispatch:
+            for wakeup, session in claims:
+                self._launch_claimed_wakeup(wakeup, session)
+            first_wakeup, first_session = claims[0]
+            return {
+                "fired": first_wakeup.wakeup_id,
+                "fired_ids": [wakeup.wakeup_id for wakeup, _session in claims],
+                "session_id": first_session.session_id,
+                "status": "dispatched",
+                "wakeup_status": "claimed",
+                **({"skipped": skipped_payload} if skipped_payload else {}),
+            }
+        results = [self._drive_claimed_wakeup(wakeup, session) for wakeup, session in claims]
+        first = results[0]
+        first["fired_ids"] = [wakeup.wakeup_id for wakeup, _session in claims]
+        if len(results) > 1:
+            first["results"] = results
+        if skipped_payload:
+            first["skipped"] = skipped_payload
+        return first
+
+    def _launch_claimed_wakeup(self, wakeup: WakeupRecord, session: SessionRecord) -> None:
+        """Run one already-claimed wakeup turn on its own worker."""
+        worker = threading.Thread(
+            target=self._drive_claimed_wakeup_safely,
+            args=(wakeup, session),
+            name=f"CoreWakeup:{session.session_id[:16]}",
+            daemon=True,
+        )
+        with self._session_locks_guard:
+            live = [item for item in self._wakeup_workers if item.is_alive()]
+            live.append(worker)
+            self._wakeup_workers = live
+        worker.start()
+
+    def _drive_claimed_wakeup_safely(self, wakeup: WakeupRecord, session: SessionRecord) -> None:
+        try:
+            self._drive_claimed_wakeup(wakeup, session)
+        except Exception as exc:
+            message = f"wakeup {wakeup.wakeup_id} run failed: {type(exc).__name__}: {exc}"
+            self._record_wakeup_tick(claimed=(), skipped=(), error=message)
+            logger.warning("%s", message)
+
+    def _drive_claimed_wakeup(self, wakeup: WakeupRecord, session: SessionRecord) -> dict[str, object]:
+        """Drive one claimed wakeup under its session lock and report its terminal status."""
+        wakeup_id = wakeup.wakeup_id
+        root_id = wakeup.root_id
+        run_id = wakeup.claim_run_id or session.run_id or ""
+        wakeup_sequence = session.last_event_sequence
+        logical_turn = uuid4().hex
+        abort = Cancellation()
+        self.register_run(session.session_id, run_id, abort)
+        try:
+            with self._session_lock(session.session_id):
+                self.ensure_open()
+                # Commands may commit beside this run without a session run lock. Re-read
+                # the tip under the lock so the driver's in-memory prefix matches durable
+                # order; the claim event itself stays addressed by its recorded sequence.
+                current = self.store.session(session.session_id)
+                if current.run_id != run_id:
+                    raise StoreConflict(f"wakeup {wakeup_id!r} claim was superseded by run {current.run_id!r}")
+                cursor = _Cursor(root_id=root_id, logical_turn=logical_turn)
+                execution = _Execution(current, cursor, list(self.store.events(session.session_id)), run_id)
+                self._fact_delivery.deliver(
+                    execution,
+                    (committed_event(execution, wakeup_sequence, EventType.WAKEUP_FIRED),),
+                )
+                result = self._turn_driver.drive(execution)
+        finally:
+            self.unregister_run(session.session_id)
+        terminal = self._wakeup_terminal_status(result)
+        if terminal is not None:
+            # The run-finished commit already settled the claim atomically; this
+            # idempotent call keeps the explicit tick contract when a driver
+            # returns a terminal result without a new claim row.
+            self.store.complete_wakeup(wakeup_id, terminal)
+        return {
+            "fired": wakeup_id,
+            "session_id": session.session_id,
+            "status": result.status,
+            "wakeup_status": terminal if terminal is not None else "claimed",
+        }
+
+    @staticmethod
+    def _wakeup_terminal_status(result: CoreResult) -> Literal["completed", "failed", "cancelled"] | None:
+        """The wakeup settlement a run result implies, or None while the run is parked."""
         if result.status in ("completed", "idle"):
-            terminal: Literal["completed", "failed", "cancelled"] = "completed"
-        elif result.status == "failed":
-            terminal = "failed"
-        elif result.stop_cause in ("user_stop", "owner_cancel"):
-            terminal = "cancelled"
-        else:
-            terminal = "failed"
-        self.store.complete_wakeup(wakeup.wakeup_id, terminal)
-        return {"fired": wakeup.wakeup_id, "session_id": session.session_id, "status": result.status, "wakeup_status": terminal}
+            return "completed"
+        if result.status == "failed":
+            return "failed"
+        if result.status in (SessionStatus.WAITING, SessionStatus.RUNNING, "waiting", "running", "queued"):
+            return None
+        if result.stop_cause in ("user_stop", "owner_cancel"):
+            return "cancelled"
+        return "failed"
 
     def _wakeup_loop(self) -> None:
-        """Core-owned tick: one due wakeup per interval, never replaying missed slots."""
-        while not self._closed:
-            try:
-                if self.tick()["fired"] is not None:
+        """Core-owned tick: claim every due wakeup, launch each run, never replay slots."""
+        self._wakeup_tick_mode.async_dispatch = True
+        last_error: str | None = None
+        try:
+            while not self._closed:
+                try:
+                    outcome = self.tick()
+                except Exception as exc:
+                    message = f"{type(exc).__name__}: {exc}"
+                    self._record_wakeup_tick(claimed=(), skipped=(), error=message)
+                    if message != last_error:
+                        logger.warning("wakeup tick failed: %s", message)
+                        last_error = message
+                    time.sleep(1.0)
                     continue
-            except Exception:
-                # A tick failure is visible to the next tick; it never kills the core.
-                pass
-            time.sleep(1.0)
+                last_error = None
+                if outcome.get("fired") is not None:
+                    continue
+                with self._session_locks_guard:
+                    self._wakeup_workers = [item for item in self._wakeup_workers if item.is_alive()]
+                time.sleep(1.0)
+        finally:
+            self._wakeup_tick_mode.async_dispatch = False
 
     # --- Background actions: owner drivers outside any model turn ---
 
@@ -2267,6 +2422,8 @@ class Core:
         staged_cancels: tuple[StagedCancellation, ...] = (),
         staged_budget: PluginBudget | None | Literal["clear"] = None,
         staged_receipts: tuple[ObserverReceiptRecord, ...] = (),
+        staged_wakeups: tuple[StagedWakeup, ...] = (),
+        staged_wakeup_cancels: tuple[StagedWakeupCancel, ...] = (),
         budget_exhaustion: BudgetExhaustion | None = None,
         staged_observations: tuple[Change, ...] = (),
         pinned_run_id: str | None = None,
@@ -2285,6 +2442,8 @@ class Core:
             staged_cancels=staged_cancels,
             staged_budget=staged_budget,
             staged_receipts=staged_receipts,
+            staged_wakeups=staged_wakeups,
+            staged_wakeup_cancels=staged_wakeup_cancels,
             budget_exhaustion=budget_exhaustion,
             staged_observations=staged_observations,
             pinned_run_id=pinned_run_id,
@@ -2411,6 +2570,8 @@ class Core:
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_wakeups: Sequence[StagedWakeup] = (),
+        staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
@@ -2431,6 +2592,8 @@ class Core:
             staged_state=staged_state,
             staged_continuations=staged_continuations,
             staged_cancellations=staged_cancellations,
+            staged_wakeups=staged_wakeups,
+            staged_wakeup_cancels=staged_wakeup_cancels,
             staged_budgets=staged_budgets,
             observer_receipts=observer_receipts,
             completed_continuation_id=completed_continuation_id,
@@ -2560,6 +2723,8 @@ class Core:
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_wakeups: Sequence[StagedWakeup] = (),
+        staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
@@ -2580,6 +2745,8 @@ class Core:
             staged_state=staged_state,
             staged_continuations=staged_continuations,
             staged_cancellations=staged_cancellations,
+            staged_wakeups=staged_wakeups,
+            staged_wakeup_cancels=staged_wakeup_cancels,
             staged_budgets=staged_budgets,
             observer_receipts=observer_receipts,
             completed_continuation_id=completed_continuation_id,
@@ -2606,6 +2773,8 @@ class Core:
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_wakeups: Sequence[StagedWakeup] = (),
+        staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         staged_confirmations: Sequence[StagedConfirmation] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
@@ -2623,6 +2792,8 @@ class Core:
             staged_state=staged_state,
             staged_continuations=staged_continuations,
             staged_cancellations=staged_cancellations,
+            staged_wakeups=staged_wakeups,
+            staged_wakeup_cancels=staged_wakeup_cancels,
             staged_budgets=staged_budgets,
             staged_confirmations=staged_confirmations,
             observer_receipts=observer_receipts,

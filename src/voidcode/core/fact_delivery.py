@@ -35,6 +35,8 @@ from .storage.store import (
     StagedCancellation,
     StagedContinuationDraft,
     StagedStateUpdate,
+    StagedWakeup,
+    StagedWakeupCancel,
     StoreConflict,
     StoredEvent,
 )
@@ -89,6 +91,8 @@ class FactDeliveryHost(Protocol):
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_wakeups: Sequence[StagedWakeup] = (),
+        staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
     ) -> tuple[StoredEvent, ...]: ...
@@ -299,6 +303,8 @@ class FactDelivery:
                 staged_state=obs_res.staged_state if obs_res else (),
                 staged_continuations=obs_res.staged_continuations if obs_res else (),
                 staged_cancellations=obs_res.staged_cancellations if obs_res else (),
+                staged_wakeups=obs_res.staged_wakeups if obs_res else (),
+                staged_wakeup_cancels=obs_res.staged_wakeup_cancels if obs_res else (),
                 staged_budgets=tuple(staged_budget_updates),
                 observer_receipts=receipts,
             )

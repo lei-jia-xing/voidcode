@@ -51,6 +51,8 @@ from ..storage.store import (
     StagedCancellation,
     StagedContinuationDraft,
     StagedStateUpdate,
+    StagedWakeup,
+    StagedWakeupCancel,
     StoredEvent,
     canonical_json,
 )
@@ -138,6 +140,8 @@ class ToolExecutionHost(Protocol):
         staged_state: Sequence[StagedStateUpdate] = (),
         staged_continuations: Sequence[StagedContinuationDraft] = (),
         staged_cancellations: Sequence[StagedCancellation] = (),
+        staged_wakeups: Sequence[StagedWakeup] = (),
+        staged_wakeup_cancels: Sequence[StagedWakeupCancel] = (),
         staged_budgets: Sequence[StagedBudgetUpdate] = (),
         observer_receipts: Sequence[ObserverReceiptRecord] = (),
         completed_continuation_id: str | None = None,
@@ -273,6 +277,8 @@ class ToolExecutionManager:
                 staged_cancels = outcome.staged_cancellations
                 staged_receipts = outcome.staged_observer_receipts
                 staged_budget = outcome.staged_budget
+                staged_wakeups = outcome.staged_wakeups
+                staged_wakeup_cancels = outcome.staged_wakeup_cancels
                 staged_observations = outcome.staged_observations
             except ToolSuspension as suspension:
                 return self.park_suspended_tool(execution, call, snapshot, suspension, effective_abort)
@@ -288,6 +294,8 @@ class ToolExecutionManager:
                 staged_cancels = ()
                 staged_budget = None
                 staged_receipts = ()
+                staged_wakeups = ()
+                staged_wakeup_cancels = ()
                 staged_observations = ()
 
             if result.tool_name != call.tool_name:
@@ -311,6 +319,8 @@ class ToolExecutionManager:
                         staged_cancels=staged_cancels,
                         staged_budget=staged_budget,
                         staged_receipts=staged_receipts,
+                        staged_wakeups=staged_wakeups,
+                        staged_wakeup_cancels=staged_wakeup_cancels,
                         staged_observations=staged_observations,
                     )
                 return self._host.stop(execution, "tool invocation was cancelled", stop_cause=stop_cause)
@@ -327,6 +337,8 @@ class ToolExecutionManager:
                 staged_cancels=staged_cancels,
                 staged_budget=staged_budget,
                 staged_receipts=staged_receipts,
+                staged_wakeups=staged_wakeups,
+                staged_wakeup_cancels=staged_wakeup_cancels,
                 staged_observations=staged_observations,
             )
             claim_id = execution.cursor.continuation_id
@@ -450,6 +462,8 @@ class ToolExecutionManager:
         staged_cancels: tuple[StagedCancellation, ...] = (),
         staged_budget: PluginBudget | None | Literal["clear"] = None,
         staged_receipts: tuple[ObserverReceiptRecord, ...] = (),
+        staged_wakeups: tuple[StagedWakeup, ...] = (),
+        staged_wakeup_cancels: tuple[StagedWakeupCancel, ...] = (),
         budget_exhaustion: BudgetExhaustion | None = None,
         staged_observations: tuple[Change, ...] = (),
         pinned_run_id: str | None = None,
@@ -593,6 +607,8 @@ class ToolExecutionManager:
             staged_state=staged_state,
             staged_continuations=staged_conts,
             staged_cancellations=staged_cancels,
+            staged_wakeups=staged_wakeups,
+            staged_wakeup_cancels=staged_wakeup_cancels,
             staged_budgets=tuple(staged_budget_updates),
             observer_receipts=staged_receipts,
             pinned_run_id=pinned_run_id,

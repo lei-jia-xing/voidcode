@@ -376,6 +376,15 @@ class WakeupRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class WakeupSkip:
+    """One due wakeup a claim scan could not start, with the durable reason it was left alone."""
+
+    wakeup_id: str
+    session_id: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class StagedWakeup:
     """A wakeup scheduled atomically with the callback that scheduled it."""
 

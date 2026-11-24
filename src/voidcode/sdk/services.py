@@ -1118,6 +1118,27 @@ class ScheduledWorkServices(Protocol):
         """Cancel a pending wakeup owned by this plugin (claimed wakeups are untouched)."""
         ...
 
+    def stage_wakeup(
+        self,
+        payload: Mapping[str, object],
+        *,
+        due_at_ms: int,
+        idempotency_key: str | None = None,
+        role: Literal["system", "user"] = "system",
+    ) -> str:
+        """Schedule a future turn atomically with the caller's tool-result state and events.
+
+        The row is inserted in the same transaction that commits the callback's
+        staged work, so a rejected/aborted commit leaves no orphan wakeup. With an
+        idempotency key the identity is deterministic and an already-committed
+        row is named instead of duplicated.
+        """
+        ...
+
+    def stage_cancel_wakeup(self, wakeup_id: str) -> None:
+        """Cancel a pending wakeup in the same transaction as the caller's staged work."""
+        ...
+
     def enqueue_background_action(
         self,
         payload: Mapping[str, object],
