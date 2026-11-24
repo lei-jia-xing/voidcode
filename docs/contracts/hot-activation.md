@@ -51,11 +51,12 @@ result is committed. No lock and no SQLite transaction is ever held across a plu
 
 ### Activation fence
 
-`Core.activate` refuses when another activation is already running, and refuses (reports busy with
-the in-flight identities) while any foreign dispatch is active. New dispatches during a final
-switch are rejected with a visible "activation is in progress" error instead of blocking a run.
-Non-gated mid-run commands and confirmations keep working because the fence is only set during an
-actual activation attempt.
+`Core.activate` refuses when another activation is already running. Before taking the fence it
+sets `BackgroundContext.activation_requested`, so cooperative long-lived drivers release their
+dispatch slots, and waits a short bounded drain window; a dispatch that never yields still refuses
+with the in-flight identities. New dispatches during a final switch are rejected with a visible
+"activation is in progress" error instead of blocking a run. Non-gated mid-run commands and
+confirmations keep working because the fence is only set during an actual activation attempt.
 
 ## Safe boundary
 

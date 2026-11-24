@@ -127,6 +127,10 @@ Commands have no approval-mode, pre-tool-hook, or tool-allowlist gate; a client
 invoking a command is the consent boundary. A command may set
 `preserve_cancelled_result=True` to keep its own explicit cancelled error result
 and staged events; the default discards a cancelled command's partial/paid body.
+A command whose external side effects are idempotent may set
+`retry_state_conflict=True`: a lost owner-state CAS re-runs the handler from a
+fresh state read (bounded), instead of returning a commit failure to the client.
+Do not declare it for a handler that cannot safely repeat its calls.
 `actor="client"` is the ordinary command provenance; `actor="user"` appears
 only on an accepted confirmation's re-execution, as explicit-decision provenance.
 

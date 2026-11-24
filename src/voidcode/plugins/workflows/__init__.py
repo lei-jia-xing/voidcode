@@ -3,9 +3,11 @@
 from collections.abc import Mapping
 from functools import partial
 
-from voidcode.sdk.plugin import Plugin
+from voidcode.sdk.plugin import Plugin, StateSchema
 
 from .workflows_plugin import (
+    SCHEMA_VERSION,
+    WORKFLOW_STATE_SCHEMA,
     WorkflowCancelCommand,
     WorkflowPauseCommand,
     WorkflowResumeCommand,
@@ -32,6 +34,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
             WorkflowCancelCommand(),
         ),
         views=(WorkflowStatusView(), WorkflowRunFormView(workflows)),
+        state=StateSchema(version=SCHEMA_VERSION, schema=WORKFLOW_STATE_SCHEMA),
         prepare_deactivate=prepare_workflows_deactivation,
         background_action=partial(drive_workflow_action, workflows=workflows),
     )

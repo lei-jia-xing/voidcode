@@ -119,6 +119,62 @@ def test_parallel_review_completes_with_combined_result(tmp_path: Path) -> None:
         assert all(node["agent"] == "review" for node in by_key.values())
 
 
+_ONE_NODE_SCRIPT = '''"""One node per run, used to overlap two runs in one session."""
+
+
+async def run(ctx, task):
+    return await ctx.agent("review", f"node: {task}", key="only")
+'''
+
+
+def test_two_concurrent_runs_in_one_session_both_complete(tmp_path: Path) -> None:
+    barrier = _TwoFlightBarrier(_reply("A done"), _reply("B done"))
+    with loopback_server([]) as server:
+        server.before_reply = barrier
+        core = _core(tmp_path, server, script=_ONE_NODE_SCRIPT)
+        session_id = core.create_session().session_id
+        first = _invoke(core, session_id, "workflow.run", {"workflow": "parallel_review", "task": "first"})
+        second = _invoke(core, session_id, "workflow.run", {"workflow": "parallel_review", "task": "second"})
+        assert first.status == "ok" and second.status == "ok"
+        assert barrier.arrived.wait(timeout=60.0), "both runs never reached the provider together"
+        barrier.release.set()
+        core.wait_background_actions(session_id, timeout_seconds=120.0)
+        for started in (first, second):
+            run_id = str(started.data["run_id"])  # type: ignore[index]
+            status = _invoke(core, session_id, "workflow.status", {"run_id": run_id})
+            assert status.status == "ok" and status.data is not None, status
+            assert status.data["status"] == "completed", status.output
+            assert status.data["nodes"][0]["status"] == "completed"  # type: ignore[index]
+
+
+def test_script_catches_node_failure_but_run_and_action_fail(tmp_path: Path) -> None:
+    script = (
+        '"""A script that swallows the node error and returns a value."""\n\n\n'
+        "async def run(ctx, task):\n"
+        "    try:\n"
+        '        await ctx.agent("review", f"boom: {task}", key="only")\n'
+        "    except Exception:\n"
+        '        return "recovered"\n'
+    )
+    with loopback_server([]) as server:
+        server.chat_status = 400
+        server.before_reply = lambda payload, index: {"error": {"message": "boom", "type": "invalid_request_error"}}
+        core = _core(tmp_path, server, script=script)
+        session_id = core.create_session().session_id
+        started = _invoke(core, session_id, "workflow.run", {"workflow": "parallel_review", "task": "fail"})
+        assert started.status == "ok", started
+        run_id = str(started.data["run_id"])  # type: ignore[index]
+        try:
+            core.wait_background_actions(session_id, timeout_seconds=120.0)
+        except RuntimeError:
+            pass
+        status = _invoke(core, session_id, "workflow.status", {"run_id": run_id})
+        assert status.status == "ok" and status.data is not None, status
+        assert status.data["status"] == "failed", status.output
+        driver = status.data["driver"]  # type: ignore[index]
+        assert driver is not None and driver["status"] == "failed", driver
+
+
 _BLOCKING_SCRIPT = '''"""Two children that park on approval until the test cancels them."""
 
 

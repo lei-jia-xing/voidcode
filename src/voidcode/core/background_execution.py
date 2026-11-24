@@ -25,6 +25,7 @@ from ..sdk.invocation import ToolContext
 from ..sdk.json_values import own_json_object
 from ..sdk.services import ArtifactPage, BudgetExhaustion, PluginBudget, ToolAwaitResult, ToolInvocationReceipt
 from ..sdk.tools import ConfirmedStop, ExecutionObservation, ToolFailure, UnconfirmedStop
+from .activation_coordinator import ActivationFenced
 from .background_actions import BackgroundActionRegistry
 from .cancellation import _EventAbortSignal
 from .coverage import read_artifact_content
@@ -96,6 +97,9 @@ class BackgroundExecutionHost(Protocol):
 
     @property
     def closed(self) -> bool: ...
+
+    @property
+    def activation_requested(self) -> threading.Event: ...
 
     def ensure_open(self) -> None: ...
 
@@ -201,6 +205,7 @@ class BackgroundContext:
         origin_visible_tools: tuple[str, ...] | None,
         origin_readonly: bool | None,
         abort: threading.Event,
+        activation_requested: threading.Event,
     ) -> None:
         self._execution = execution
         self._action_id = action_id
@@ -213,6 +218,7 @@ class BackgroundContext:
         self._origin_visible_tools = origin_visible_tools
         self._origin_readonly = origin_readonly
         self._abort = abort
+        self._activation_requested = activation_requested
 
     @property
     def action_id(self) -> str:
@@ -237,6 +243,10 @@ class BackgroundContext:
     @property
     def abort_signal(self) -> threading.Event:
         return self._abort
+
+    @property
+    def activation_requested(self) -> threading.Event:
+        return self._activation_requested
 
     def invoke[T](self, callback: Callable[[ToolContext, Any], T]) -> T:
         return self._execution.invoke(self, callback)
@@ -301,6 +311,7 @@ class BackgroundExecution:
                 origin_visible_tools=origin_visible_tools,
                 origin_readonly=origin_readonly,
                 abort=abort,
+                activation_requested=self._host.activation_requested,
             )
             snapshot = self._host.snapshot
             if snapshot is None:
@@ -344,106 +355,115 @@ class BackgroundExecution:
             raise InterruptedError(f"background action {action_id!r} was cancelled")
         staged_cancels: tuple[StagedCancellation, ...] = ()
         staged_events: tuple[EventDraft, ...] = ()
-        with host.dispatch(f"background:{owner}") as snapshot:
-            if snapshot.revision_id != revision_id:
-                raise InterruptedError(f"background action {action_id!r} belongs to a retired revision")
-            runtime = snapshot.plugin_runtime
-            session = host.store.session(session_id)
-            host.check_session(session)
-            root_state = host.store.root_budget_state(context._root_action_id)
-            if not context._root_action_id or (
-                context._initial_root_budget is not None and (root_state is None or root_state[0] < context._initial_root_budget)
-            ):
-                raise StoreConflict(f"background action {action_id!r} lost its captured finite root authorization")
-            if context._initial_root_budget is None and root_state is not None:
-                raise StoreConflict(f"background action {action_id!r} captured an uncapped root with a finite budget row")
-            effective_origin_tools = None
-            effective_origin_readonly = context._origin_readonly
-            if context._origin_visible_tools is not None and context._origin_readonly is not None:
-                current_visible = set(host.visible_tool_names_for_session(session_id, snapshot))
-                effective_origin_tools = tuple(name for name in context._origin_visible_tools if name in current_visible)
-                effective_origin_readonly = context._origin_readonly or host.session_read_only(session_id)
-            signal = _EventAbortSignal(abort)
-            tool_context = ToolContext(
-                workspace=host.workspace,
-                session_id=session_id,
-                run_id=action_id,
-                invocation_id=uuid4().hex,
-                revision_id=snapshot.revision_id,
-                actor="plugin",
-                logical_turn=action_id,
-                root_action_id=context._root_action_id,
-                initial_root_budget=context._initial_root_budget,
-                origin_visible_tools=effective_origin_tools,
-                origin_readonly=effective_origin_readonly,
-                background_action_id=action_id,
-                abort_signal=signal,
-            )
-            lease = runtime._open_lease(  # noqa: SLF001 - the core owns lease lifecycles
-                owner=owner,
-                session_id=session_id,
-                run_id=action_id,
-                invocation_id=tool_context.invocation_id,
-                readonly=host.session_read_only(session_id) or effective_origin_readonly is True,
-                actor="plugin",
-                internal_work=True,
-                root_action_id=context._root_action_id,
-                initial_root_budget=context._initial_root_budget,
-                origin_visible_tools=effective_origin_tools,
-                origin_readonly=effective_origin_readonly,
-                background_action_id=action_id,
-                abort_signal=signal,
-            )
-            services = RuntimeServices(runtime, lease)
-            try:
-                result = callback(tool_context, services)
-            except BaseException:
+        try:
+            with host.dispatch(f"background:{owner}") as snapshot:
+                if snapshot.revision_id != revision_id:
+                    raise InterruptedError(f"background action {action_id!r} belongs to a retired revision")
+                runtime = snapshot.plugin_runtime
+                session = host.store.session(session_id)
+                host.check_session(session)
+                root_state = host.store.root_budget_state(context._root_action_id)
+                if not context._root_action_id or (
+                    context._initial_root_budget is not None and (root_state is None or root_state[0] < context._initial_root_budget)
+                ):
+                    raise StoreConflict(f"background action {action_id!r} lost its captured finite root authorization")
+                if context._initial_root_budget is None and root_state is not None:
+                    raise StoreConflict(f"background action {action_id!r} captured an uncapped root with a finite budget row")
+                effective_origin_tools = None
+                effective_origin_readonly = context._origin_readonly
+                if context._origin_visible_tools is not None and context._origin_readonly is not None:
+                    current_visible = set(host.visible_tool_names_for_session(session_id, snapshot))
+                    effective_origin_tools = tuple(name for name in context._origin_visible_tools if name in current_visible)
+                    effective_origin_readonly = context._origin_readonly or host.session_read_only(session_id)
+                signal = _EventAbortSignal(abort)
+                tool_context = ToolContext(
+                    workspace=host.workspace,
+                    session_id=session_id,
+                    run_id=action_id,
+                    invocation_id=uuid4().hex,
+                    revision_id=snapshot.revision_id,
+                    actor="plugin",
+                    logical_turn=action_id,
+                    root_action_id=context._root_action_id,
+                    initial_root_budget=context._initial_root_budget,
+                    origin_visible_tools=effective_origin_tools,
+                    origin_readonly=effective_origin_readonly,
+                    background_action_id=action_id,
+                    abort_signal=signal,
+                )
+                lease = runtime._open_lease(  # noqa: SLF001 - the core owns lease lifecycles
+                    owner=owner,
+                    session_id=session_id,
+                    run_id=action_id,
+                    invocation_id=tool_context.invocation_id,
+                    readonly=host.session_read_only(session_id) or effective_origin_readonly is True,
+                    actor="plugin",
+                    internal_work=True,
+                    root_action_id=context._root_action_id,
+                    initial_root_budget=context._initial_root_budget,
+                    origin_visible_tools=effective_origin_tools,
+                    origin_readonly=effective_origin_readonly,
+                    background_action_id=action_id,
+                    abort_signal=signal,
+                )
+                services = RuntimeServices(runtime, lease)
+                try:
+                    result = callback(tool_context, services)
+                except BaseException:
+                    runtime._revoke_lease(lease)  # noqa: SLF001 - the core owns lease lifecycles
+                    raise
+                staged = runtime._staged_changes(lease)  # noqa: SLF001 - the core owns lease lifecycles
                 runtime._revoke_lease(lease)  # noqa: SLF001 - the core owns lease lifecycles
-                raise
-            staged = runtime._staged_changes(lease)  # noqa: SLF001 - the core owns lease lifecycles
-            runtime._revoke_lease(lease)  # noqa: SLF001 - the core owns lease lifecycles
-            if abort.is_set() or host.closed:
-                raise InterruptedError(f"background action {action_id!r} was cancelled")
-            (
-                staged_state,
-                staged_events,
-                staged_conts,
-                staged_cancels,
-                staged_receipts,
-                staged_budget,
-                staged_wakeups,
-                staged_wakeup_cancels,
-            ) = staged
-            staged_budget_updates: list[StagedBudgetUpdate] = []
-            if staged_budget == "clear":
-                staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
-            elif isinstance(staged_budget, PluginBudget):
-                staged_budget_updates.append(StagedBudgetUpdate(owner=staged_budget.owner, action="set", budget=staged_budget))
-            committed = False
-            for _attempt in range(8):
                 if abort.is_set() or host.closed:
                     raise InterruptedError(f"background action {action_id!r} was cancelled")
-                try:
-                    host.commit_public_staged(
-                        session_id,
-                        revision_id=snapshot.revision_id,
-                        events=staged_events,
-                        staged_state=staged_state,
-                        staged_continuations=staged_conts,
-                        staged_cancellations=staged_cancels,
-                        staged_wakeups=staged_wakeups,
-                        staged_wakeup_cancels=staged_wakeup_cancels,
-                        staged_budgets=tuple(staged_budget_updates),
-                        observer_receipts=staged_receipts,
-                        root_action_id=context._root_action_id,
-                        initial_root_budget=context._initial_root_budget,
-                    )
-                except SequenceConflict:
-                    continue
-                committed = True
-                break
-            if not committed:
-                raise SequenceConflict(f"background action {action_id!r} could not commit its staged work")
+                (
+                    staged_state,
+                    staged_events,
+                    staged_conts,
+                    staged_cancels,
+                    staged_receipts,
+                    staged_budget,
+                    staged_wakeups,
+                    staged_wakeup_cancels,
+                ) = staged
+                staged_budget_updates: list[StagedBudgetUpdate] = []
+                if staged_budget == "clear":
+                    staged_budget_updates.append(StagedBudgetUpdate(owner=owner, action="clear"))
+                elif isinstance(staged_budget, PluginBudget):
+                    staged_budget_updates.append(StagedBudgetUpdate(owner=staged_budget.owner, action="set", budget=staged_budget))
+                committed = False
+                for _attempt in range(8):
+                    if abort.is_set() or host.closed:
+                        raise InterruptedError(f"background action {action_id!r} was cancelled")
+                    try:
+                        host.commit_public_staged(
+                            session_id,
+                            revision_id=snapshot.revision_id,
+                            events=staged_events,
+                            staged_state=staged_state,
+                            staged_continuations=staged_conts,
+                            staged_cancellations=staged_cancels,
+                            staged_wakeups=staged_wakeups,
+                            staged_wakeup_cancels=staged_wakeup_cancels,
+                            staged_budgets=tuple(staged_budget_updates),
+                            observer_receipts=staged_receipts,
+                            root_action_id=context._root_action_id,
+                            initial_root_budget=context._initial_root_budget,
+                        )
+                    except SequenceConflict:
+                        continue
+                    # A StateConflict is deliberately not retried here: re-submitting the same
+                    # staged state cannot match the fresh row version. An owner that knows its
+                    # callback is a pure/idempotent mutation re-reads and re-runs it itself.
+                    committed = True
+                    break
+                if not committed:
+                    raise SequenceConflict(f"background action {action_id!r} could not commit its staged work")
+        except ActivationFenced as exc:
+            # An activation fence raised after the abort check is a driver stop, not a
+            # plugin failure: the switch parks the action and the deactivation transform
+            # owns the run row.
+            raise InterruptedError(f"background action {action_id!r} interrupted by capability activation") from exc
         self._background.notify_tool_waiters()
         if staged_cancels:
             host.owner_cancel_claimed_work(

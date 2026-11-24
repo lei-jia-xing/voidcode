@@ -28,6 +28,7 @@ from voidcode.sdk.resources import (
 from voidcode.sdk.services import (
     ArtifactPage,
     ArtifactReference,
+    CancelSubtreeReceipt,
     ChildOutcome,
     ChildSendReceipt,
     DescendantNode,
@@ -39,6 +40,7 @@ from voidcode.sdk.services import (
     ProcessResult,
     SessionInfo,
     SessionUsageReport,
+    StateConflict,
     StructuredModelResult,
     StructuredQueryParseError,
     ToolInvocationReceipt,
@@ -106,6 +108,8 @@ class FakeServices(PluginServices):
     acks: list[tuple[str, str]] = field(default_factory=list)
     cancel_calls: list[tuple[str, str]] = field(default_factory=list)
     cancel_result: bool = True
+    keyed_children: dict[str, str] = field(default_factory=dict)
+    descendant_cancel_calls: list[tuple[str, str | None, str]] = field(default_factory=list)
     child_events: dict[str, tuple[EventView, ...]] = field(default_factory=dict)
 
     wakeups: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -177,7 +181,7 @@ class FakeServices(PluginServices):
     ) -> int:
         _cur, ver = self.read_state(scope, owner=owner)
         if ver != expected_version:
-            raise RuntimeError(f"CAS mismatch: expected {expected_version}, was {ver}")
+            raise StateConflict(f"state CAS conflict: expected version {expected_version}, got {ver}")
         new_version = expected_version + 1
         key = (self.session_id, owner or self.owner, scope)
         self.states[key] = (new_version, dict(state) if state else {})
@@ -364,6 +368,9 @@ class FakeServices(PluginServices):
             run_id=f"run-{child_session_id}",
         )
 
+    def find_child(self, *, idempotency_key: str) -> str | None:
+        return self.keyed_children.get(idempotency_key)
+
     def wait_children(self, child_session_ids: Sequence[str]) -> tuple[ChildOutcome, ...]:
         selected = tuple(child_session_ids)
         self.wait_calls.append(selected)
@@ -390,6 +397,16 @@ class FakeServices(PluginServices):
     def cancel_child(self, child_session_id: str, reason: str = "owner cancellation") -> bool:
         self.cancel_calls.append((child_session_id, reason))
         return self.cancel_result
+
+    def cancel_descendant_subtree(
+        self, target_session_id: str, *, expected_run_id: str | None, reason: str = "owner cancellation"
+    ) -> CancelSubtreeReceipt:
+        self.descendant_cancel_calls.append((target_session_id, expected_run_id, reason))
+        return CancelSubtreeReceipt(
+            target_session_id=target_session_id,
+            expected_run_id=expected_run_id,
+            cancelled=(target_session_id,),
+        )
 
     def read_child_history(
         self,

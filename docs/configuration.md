@@ -99,7 +99,7 @@ The banner uses a centered header layout inspired by [dashboard-nvim](https://gi
 |---|---|---|
 | `approval_mode` | string | `ask` (default), `write`, or `yolo`. |
 | `read_only` | boolean | Default `false`. When true, `WRITE` and `EXECUTE` effects are refused outright; `READ`, `SESSION`, and `SPAWN` are not refused by this setting alone (see below). |
-| `max_root_children` | integer | Default `4`, within `1..64`. The single governed quota for how many child sessions one chain root may hold; exhausted spawns fail visibly instead of queueing. |
+| `max_root_children` | integer | Default `4`, within `1..64`. The single governed *lifetime* quota for how many child sessions one chain root may create, including completed children; exhausted spawns fail visibly instead of queueing. Wide or repeated workflows need a larger value or a fresh session. |
 
 Policy semantics:
 

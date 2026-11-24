@@ -17,6 +17,7 @@ from .records import (
     EventDraft,
     SessionRecord,
     StagedStateUpdate,
+    StateVersionConflict,
     StoreConflict,
     StoredEvent,
     _decode_session,
@@ -92,7 +93,7 @@ def apply_state_updates_locked(
                     (st.scope, st.scope_key, st.owner, st.schema_version, actual_rev_id, payload_json, now),
                 )
             except sqlite3.IntegrityError as exc:
-                raise StoreConflict(f"state already exists for owner {st.owner!r} in {st.scope}:{st.scope_key}") from exc
+                raise StateVersionConflict(f"state already exists for owner {st.owner!r} in {st.scope}:{st.scope_key}") from exc
         else:
             c = connection.execute(
                 """
@@ -103,7 +104,9 @@ def apply_state_updates_locked(
                 (st.schema_version, actual_rev_id, payload_json, now, st.scope, st.scope_key, st.owner, st.expected_version),
             )
             if c.rowcount == 0:
-                raise StoreConflict(f"state CAS conflict for {st.owner!r} in {st.scope}:{st.scope_key}: expected version {st.expected_version}")
+                raise StateVersionConflict(
+                    f"state CAS conflict for {st.owner!r} in {st.scope}:{st.scope_key}: expected version {st.expected_version}"
+                )
 
 
 def read_session(connection: sqlite3.Connection, session_id: str) -> SessionRecord:

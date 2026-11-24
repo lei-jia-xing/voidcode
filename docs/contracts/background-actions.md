@@ -32,9 +32,17 @@ drivers never take the session run lock.
   owner/revision-bound lease and commits its staged work atomically. Only a
   `SequenceConflict` retries, by re-submitting the SAME staged proposal against
   the fresh tip; any other conflict fails visibly. Callbacks are never replayed.
+  A lost owner-state CAS raises the typed SDK `StateConflict`: the transaction
+  committed nothing, and an owner that knows its callback is a pure/idempotent
+  state mutation may re-read and re-run that callback itself (bounded).
 - `ToolContext.abort_signal` inside a callback is a live view of the action's
   abort: explicit action cancellation, core shutdown, or an admitted revision
   retirement sets it, and the next invoke boundary raises `InterruptedError`.
+- `context.activation_requested` is set before an activation tries to take the
+  dispatch fence and cleared if the attempt is refused. A long-lived driver
+  should not start a new `invoke` while it is set, and should leave its current
+  one promptly, so activation can drain cooperative drivers. Refusal after the
+  bounded drain window still reports the in-flight identities.
 - A driver that returns settles `completed`; an explicit cancellation of its
   bound action settles `cancelled`. A driver that raises settles `failed` with
   its `Type: message` recorded in the envelope. Shutdown and lost work preserve

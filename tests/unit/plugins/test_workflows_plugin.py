@@ -208,3 +208,50 @@ def test_workflow_details_page_nodes_and_utf8_results_without_mutation(tmp_path,
         arguments = dict(next_page.arguments)
     assert recovered == text
     assert state == WorkflowState(runs={"run": run}).to_payload()
+
+
+def test_cancel_command_cancels_the_descendant_subtree_and_notifies(tmp_path: Path) -> None:
+    from tests.fixtures.fake_services import FakeServices
+    from voidcode.plugins.workflows.workflows_plugin import WorkflowCancelCommand, _store
+    from voidcode.sdk.commands import CommandInvocation
+    from voidcode.sdk.invocation import ToolContext
+    from voidcode.sdk.services import ChildOutcome
+
+    services = FakeServices(session_id="s")
+    run = WorkflowRun(
+        run_id="run",
+        session_id="s",
+        workflow="review",
+        source_path="review.py",
+        source_sha256="a" * 64,
+        task="t",
+        input_sha256="c" * 64,
+        status="running",
+        notify_on_completion=True,
+        nodes=(WorkflowNode(key="a", status="running", child_session_id="child-a"),),
+    )
+    state, version = _store(services).load()
+    _store(services).save(state.with_run(run), version)
+    services.roster["child-a"] = ChildOutcome(child_session_id="child-a", status="running", run_id="run-a")
+    context = ToolContext(tmp_path, "s", "r", "i", "v", "user")
+    result = WorkflowCancelCommand().invoke(CommandInvocation(context, "workflow.cancel", {"run_id": "run"}), services)
+    assert result.status == "ok", result.error
+    assert services.descendant_cancel_calls == [("child-a", "run-a", "workflow cancellation")]
+    cancelled = _store(services).load()[0].runs["run"]
+    assert cancelled.status == "cancelled" and cancelled.nodes[0].status == "cancelled"
+    assert [payload["kind"] for payload, _key, _role in services.staged_continuations] == ["workflow_terminal"]
+
+
+def test_declared_state_schema_matches_payload_and_refuses_a_version_bump() -> None:
+    import jsonschema
+
+    from voidcode.plugins.workflows import create_plugin
+    from voidcode.plugins.workflows.workflows_plugin import SCHEMA_VERSION
+
+    plugin = create_plugin({})
+    assert plugin.state.version == SCHEMA_VERSION
+    schema = plugin.state.schema
+    assert schema is not None
+    jsonschema.Draft202012Validator(schema).validate(WorkflowState(runs={}).to_payload())
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(schema).validate({"schema_version": SCHEMA_VERSION + 1, "runs": {}})

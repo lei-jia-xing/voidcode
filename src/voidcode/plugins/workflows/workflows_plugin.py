@@ -17,7 +17,9 @@ import inspect
 import json
 import threading
 import time
+import weakref
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -42,6 +44,7 @@ from voidcode.sdk.services import (
     QueryContractError,
     QueryUnavailable,
     ScheduledWorkServices,
+    StateConflict,
     StateServices,
     StructuredChildResult,
     StructuredQueryParseError,
@@ -60,8 +63,28 @@ STATUS_NODE_LIMIT = 50
 #: The join slice is short so pause/cancel land promptly; longer runs simply re-drive.
 JOIN_SLICE_SECONDS = 1.0
 MAX_CONCURRENT_NODES = 8
-#: One short lock serializes state commits; no text-match retries, no replay.
+#: Bounded re-runs of one pure workflow-state callback after a concurrent writer won the CAS.
+_STATE_CONFLICT_ATTEMPTS = 5
+#: Activation drain poll while a driver yields its dispatch slot (outside every invoke).
+_ACTIVATION_YIELD_SECONDS = 0.02
+#: This plugin's owner-state contract; the version is also the payload version.
+WORKFLOW_STATE_SCHEMA: Mapping[str, object] = MappingProxyType(
+    {
+        "type": "object",
+        "required": ["schema_version", "runs"],
+        "additionalProperties": False,
+        "properties": {
+            "schema_version": {"type": "integer", "const": SCHEMA_VERSION},
+            "runs": {"type": "object", "additionalProperties": {"type": "object"}},
+        },
+    }
+)
 _NO_CONFIG: Mapping[str, str] = MappingProxyType({})
+
+#: One process owns a workspace, so a session-keyed lock serializes every workflow state
+#: writer in it: concurrent runs and pause/resume/cancel share the same session-state row.
+_STATE_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
+_STATE_LOCKS_GUARD = threading.Lock()
 
 
 def _commit_lock_factory() -> threading.Lock:
@@ -70,6 +93,16 @@ def _commit_lock_factory() -> threading.Lock:
 
 def _node_semaphore_factory() -> threading.Semaphore:
     return threading.Semaphore(MAX_CONCURRENT_NODES)
+
+
+def _state_lock(session_id: str) -> threading.RLock:
+    """The per-session workflow-state lock; process-wide so commands and drivers agree."""
+    with _STATE_LOCKS_GUARD:
+        lock = _STATE_LOCKS.get(session_id)
+        if lock is None:
+            lock = threading.RLock()
+            _STATE_LOCKS[session_id] = lock
+        return lock
 
 
 RunStatus = Literal["running", "paused", "parked", "completed", "failed", "cancelled"]
@@ -643,8 +676,50 @@ class WorkflowContext:
     invoke: Any
     run_id: str
     task: object
+    session_id: str = ""
+    activation: threading.Event | None = None
+    abort: threading.Event | None = None
     _commit_lock: Any = field(default_factory=_commit_lock_factory, repr=False, compare=False)
     _node_slots: Any = field(default_factory=_node_semaphore_factory, repr=False, compare=False)
+    _stop: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
+    _executor: ThreadPoolExecutor | None = field(default=None, repr=False, compare=False)
+    _executor_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def stop_nodes(self) -> None:
+        """Tell node threads to leave their join loops before the run settles."""
+        self._stop.set()
+
+    def close(self) -> None:
+        """Abandon any remaining node threads without joining them."""
+        self.stop_nodes()
+        with self._executor_lock:
+            executor, self._executor = self._executor, None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _node_executor(self) -> ThreadPoolExecutor:
+        with self._executor_lock:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_NODES, thread_name_prefix="workflow-node")
+                weakref.finalize(self, _shutdown_executor, self._executor)
+            return self._executor
+
+    async def _run_node(self, function: Any, *args: object) -> Any:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._node_executor(), function, *args)
+
+    def _raises_if_stopped(self, key: str) -> None:
+        if self._stop.is_set():
+            raise _AbandonedNode(key)
+        if self.abort is not None and self.abort.is_set():
+            raise InterruptedError(f"node '{key}' interrupted by driver abort")
+        if self.activation is None:
+            return
+        while self.activation.is_set():
+            if self._stop.wait(_ACTIVATION_YIELD_SECONDS):
+                raise _AbandonedNode(key)
+            if self.abort is not None and self.abort.is_set():
+                raise InterruptedError(f"node '{key}' interrupted by driver abort")
 
     async def agent(
         self,
@@ -659,8 +734,7 @@ class WorkflowContext:
     ) -> str:
         """Run one named-agent child node, or reuse its durable outcome by key."""
         deps, scoped = _checked_node_args(agent_name, prompt, key, depends_on, tool_allowlist, max_steps)
-        outcome = await asyncio.to_thread(self._drive_node_guarded, agent_name, prompt, key, deps, label, scoped, max_steps, None)
-        return outcome
+        return await self._run_node(self._drive_node_guarded, agent_name, prompt, key, deps, label, scoped, max_steps, None)
 
     async def agent_structured(
         self,
@@ -689,7 +763,7 @@ class WorkflowContext:
             canonical_schema = canonical_result_schema(result_schema)
         except ValueError as exc:
             raise ValueError(f"node '{key}' {exc}") from exc
-        return await asyncio.to_thread(self._drive_node_structured_guarded, agent_name, prompt, key, deps, label, scoped, max_steps, canonical_schema)
+        return await self._run_node(self._drive_node_structured_guarded, agent_name, prompt, key, deps, label, scoped, max_steps, canonical_schema)
 
     def _drive_node_guarded(
         self,
@@ -768,6 +842,7 @@ class WorkflowContext:
                 context, services, self.run_id, key, depends_on, agent_name, prompt, tool_allowlist, max_steps, result_schema=result_schema
             )
 
+        self._raises_if_stopped(key)
         staged = self._commit(stage)
         if staged.settled is not None:
             if structured:
@@ -778,14 +853,27 @@ class WorkflowContext:
         plan = staged.plan
         assert plan is not None
 
+        self._raises_if_stopped(key)
+
         def attach(context: ToolContext, services: PluginServices) -> _NodePlan:
             return _attach_node_child(context, services, self.run_id, key, plan, label)
 
-        node = self._commit(attach).node
+        try:
+            node = self._commit(attach).node
+        except _ChildNotRecorded as broken:
+            # The child exists but the row does not name it. Record it in a separate
+            # best-effort commit, then park so a later resume can adopt/join it.
+            self._record_child(key, broken.child_id)
+            raise _ParkedNode(
+                key,
+                "interrupted",
+                f"child '{broken.child_id}' was created but its node could not be recorded: {broken.cause}",
+            ) from broken
         child_id = node.child_session_id
         if child_id is None:
             raise ValueError(f"node '{key}' has no child to drive")
         while True:
+            self._raises_if_stopped(key)
             outcome = self.invoke(_JoinNode(child_id, JOIN_SLICE_SECONDS))
             if outcome.status in ("completed", "failed"):
                 finished = self._commit(_FinishNode(self.run_id, key, outcome))
@@ -812,10 +900,34 @@ class WorkflowContext:
                 raise _CancelledNode(key)
             # "running" past this slice: release the lease and re-drive.
 
+    def _record_child(self, key: str, child_id: str) -> None:
+        """Best-effort durable adoption after a spawn whose row save failed."""
+
+        def adopt(_context: ToolContext, services: PluginServices) -> None:
+            state, run, version = _require_run(services, self.run_id)
+            if run.status in _TERMINAL_RUN:
+                return
+            node = run.node(key)
+            if node is None or node.child_session_id is not None:
+                return
+            run = run.with_node(replace(node, status="running", child_session_id=child_id))
+            _store(services).save(state.with_run(run), version)
+
+        try:
+            self._commit(adopt)
+        except Exception:  # noqa: BLE001 - the park reason still names the created child
+            return
+
     def _commit(self, callback: Any) -> Any:
-        """One serialized state commit; the short lock is the only cross-node coordination."""
-        with self._commit_lock:
-            return self.invoke(callback)
+        """One serialized state commit; node/run writers and commands share the session lock."""
+        with self._commit_lock, _state_lock(self.session_id):
+            for attempt in range(_STATE_CONFLICT_ATTEMPTS):
+                try:
+                    return self.invoke(callback)
+                except StateConflict:
+                    if attempt + 1 >= _STATE_CONFLICT_ATTEMPTS:
+                        raise
+            raise AssertionError("workflow state-conflict retry exhausted without a result")
 
 
 class _ParkedNode(Exception):
@@ -824,6 +936,28 @@ class _ParkedNode(Exception):
         self.key = key
         self.status = status
         self.error = error
+
+
+class _AbandonedNode(Exception):
+    """A node thread left its join loop because the run already settled or stopped."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(f"node '{key}' abandoned")
+        self.key = key
+
+
+class _ChildNotRecorded(Exception):
+    """A keyed child was created but its node row could not persist the id."""
+
+    def __init__(self, child_id: str, cause: BaseException) -> None:
+        super().__init__(f"child '{child_id}' was created but its node could not be recorded: {cause}")
+        self.child_id = child_id
+        self.cause = cause
+
+
+def _shutdown_executor(executor: ThreadPoolExecutor | None) -> None:
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 class _CancelledNode(Exception):
@@ -1037,9 +1171,23 @@ def _attach_node_child(_context: ToolContext, services: PluginServices, run_id: 
     _check_topology(run, key, node.depends_on, node, plan.effective_input)
     if node.child_session_id is not None:
         return _NodePlan(node)
+    idempotency_key = f"workflow:{run_id}:{key}"
+    # A crash (or a lost state CAS) can leave the keyed child without its node row.
+    # find_child is a pure read bound to this parent/owner, so adopt before spawning;
+    # this also works after a resume that captured a new root action identity.
+    existing_child = services.find_child(idempotency_key=idempotency_key)
+    if existing_child is not None:
+        descendants = {item.session_id: item for item in services.list_descendants()}
+        snapshot = descendants.get(existing_child)
+        # Adopt only a child that actually started. A pristine reserved-but-unstarted
+        # child is repaired by the core's keyed spawn path (same action root), never
+        # adopted into a join that could wait on it forever.
+        if snapshot is not None and (snapshot.run_id is not None or snapshot.status != "idle"):
+            node = replace(node, status="running", child_session_id=existing_child)
+            _store(services).save(state.with_run(run.with_node(node)), version)
+            return _NodePlan(node)
     # Always spawn under the same key and spec: the core reuses the mapped child,
     # repairs a pristine reserved-but-unstarted one, and refuses a different spec.
-    # find_child is pure read and stays on cancel-style paths that must not create.
     child_id = services.spawn_child(
         plan.body,
         label=label or f"{run.workflow}:{key}",
@@ -1047,11 +1195,18 @@ def _attach_node_child(_context: ToolContext, services: PluginServices, run_id: 
         max_steps=plan.budget,
         readonly=plan.readonly,
         notify_on_completion=False,
-        idempotency_key=f"workflow:{run_id}:{key}",
+        idempotency_key=idempotency_key,
         result_schema=plan.result_schema,
     )
     node = replace(node, status="running", child_session_id=child_id)
-    _store(services).save(state.with_run(run.with_node(node)), version)
+    try:
+        _store(services).save(state.with_run(run.with_node(node)), version)
+    except StateConflict:
+        # The outer _commit retry re-reads and adopts by key; a commit-stage conflict
+        # is recoverable and must not strand the created child.
+        raise
+    except Exception as exc:
+        raise _ChildNotRecorded(child_id, exc) from exc
     return _NodePlan(node)
 
 
@@ -1236,12 +1391,62 @@ def _park_node(context: ToolContext, services: StateServices, run_id: str, key: 
     _store(services).save(state.with_run(run), version)
 
 
+def _cancel_run_children(services: ChildServices, run: WorkflowRun, *, reason: str) -> tuple[str, ...]:
+    """Cancel every open node child and its subtree; returns best-effort failure notes.
+
+    The run owns only the direct node children; their descendants are owned by those
+    children. `cancel_descendant_subtree` is the one mutation that stops the whole
+    delegated subtree with a run-bound expectation, so a newer child run is never
+    cancelled by a stale workflow row.
+    """
+    descendants = {node.session_id: node for node in services.list_descendants()}
+    failures: list[str] = []
+    for node in run.nodes:
+        if node.status in ("completed", "failed", "cancelled", "skipped"):
+            continue
+        child_id = node.child_session_id
+        if child_id is None:
+            try:
+                child_id = services.find_child(idempotency_key=f"workflow:{run.run_id}:{node.key}")
+            except (ValueError, RuntimeError) as exc:
+                failures.append(f"{node.key}: {exc}")
+                continue
+        if child_id is None:
+            continue
+        snapshot = descendants.get(child_id)
+        try:
+            if snapshot is None:
+                services.cancel_child(child_id, reason=reason)
+            else:
+                services.cancel_descendant_subtree(child_id, expected_run_id=snapshot.run_id, reason=reason)
+        except (ValueError, RuntimeError, PermissionError) as exc:
+            failures.append(f"{node.key}: {type(exc).__name__}: {exc}")
+    return tuple(failures)
+
+
+def _cancellation_note(failures: Sequence[str]) -> str:
+    return "" if not failures else "; cancellation: " + "; ".join(failures[:3])
+
+
+def _settled_open_nodes(run: WorkflowRun, status: RunStatus) -> WorkflowRun:
+    """Rewrite rows left open by a failed/cancelled run as cancelled, never lying `running`."""
+    if status not in ("failed", "cancelled"):
+        return run
+    nodes = tuple(
+        replace(node, status="cancelled", budget_exhaustion=None) if node.status in ("pending", "running", "waiting", "interrupted") else node
+        for node in run.nodes
+    )
+    return replace(run, nodes=nodes)
+
+
 def _read_full_artifact(services: ArtifactServices, sha256: str) -> str:
     """Read one artifact whole: bounded pages joined as bytes, decoded once as strict UTF-8."""
     chunks: list[bytes] = []
     offset = 0
     while True:
         page = services.read_artifact(sha256, offset=offset, limit=65536)
+        if not page.data and not page.eof:
+            raise ValueError(f"artifact {sha256} read made no progress at offset {offset}")
         chunks.append(bytes(page.data))
         if page.eof:
             break
@@ -1270,49 +1475,99 @@ def drive_workflow_action(context: BackgroundContext, workflows: Mapping[str, st
         task = _task_for_action(context, run_id, workflow, script)
     except _TaskFailed as broken:
         raise RuntimeError(f"workflow run '{run_id}' failed: task is unreadable") from broken
-    driver = WorkflowContext(invoke=context.invoke, run_id=run_id, task=task)
+    driver = WorkflowContext(
+        invoke=context.invoke,
+        run_id=run_id,
+        task=task,
+        session_id=context.session_id,
+        activation=context.activation_requested,
+        abort=context.abort_signal,
+    )
     try:
         outcome = asyncio.run(script.entry(driver, task))
     except BaseExceptionGroup as group:  # noqa: BLE001 - TaskGroup packs node rests with real failures
+        driver.stop_nodes()
         landed = _settle_group(context, run_id, group)
         if landed and _group_failed(group):
             raise RuntimeError(f"workflow run '{run_id}' failed; see run status for node errors") from group
         return
     except _ParkedNode as parked:
+        driver.stop_nodes()
         _invoke_mark(context, run_id, "parked", f"node '{parked.key}' parked: {parked.status}")
         return
     except _PausedRun:
+        driver.stop_nodes()
         _invoke_mark(context, run_id, "paused", None)
         return
     except _CancelledNode as cancelled:
+        driver.stop_nodes()
+        _cancel_children(context, context.session_id, run_id, "workflow cancellation")
         _invoke_mark(context, run_id, "cancelled", str(cancelled))
         return
     except InterruptedError:
         # The aborting command already committed pause/cancel; never overwrite it.
+        driver.stop_nodes()
         return
     except Exception as failed:  # noqa: BLE001 - a script failure is a durable run failure, never a lost driver
+        driver.stop_nodes()
         detail = f"{type(failed).__name__}: {failed}"
-        if _invoke_mark(context, run_id, "failed", detail):
+        note = _cancellation_note(_cancel_children(context, context.session_id, run_id, "workflow failure"))
+        if _invoke_mark(context, run_id, "failed", detail + note):
             raise RuntimeError(f"workflow run '{run_id}' failed: {detail}") from failed
         return
     except BaseException as escaped:  # noqa: BLE001 - SystemExit/CancelledError must also settle the run row
+        driver.stop_nodes()
         detail = f"{type(escaped).__name__}: {escaped}"
-        _invoke_mark(context, run_id, "failed", detail)
+        note = _cancellation_note(_cancel_children(context, context.session_id, run_id, "workflow failure"))
+        _invoke_mark(context, run_id, "failed", detail + note)
         raise
+    finally:
+        driver.close()
     if context.abort_signal.is_set():
+        _cancel_children(context, context.session_id, run_id, "workflow cancellation")
         _invoke_mark(context, run_id, "cancelled", "owner cancellation")
         return
     try:
         result_text = _encode_result(outcome)
     except ValueError as broken:
         detail = f"workflow '{workflow}' returned a non-JSON result: {broken}"
-        if _invoke_mark(context, run_id, "failed", detail):
+        note = _cancellation_note(_cancel_children(context, context.session_id, run_id, "workflow failure"))
+        if _invoke_mark(context, run_id, "failed", detail + note):
             raise RuntimeError(f"workflow run '{run_id}' failed: {detail}") from broken
         return
     try:
-        context.invoke(_CompleteRun(run_id, result_text))
+        completed = _invoke_state(context, context.session_id, _CompleteRun(run_id, result_text))
     except InterruptedError:
         return
+    if completed is not None and completed[0] == "failed":
+        raise RuntimeError(f"workflow run '{run_id}' failed: {completed[1]}")
+
+
+def _invoke_state[T](context: BackgroundContext, session_id: str, callback: Any) -> T:
+    """One workflow state commit under the shared session lock, retried on a lost CAS."""
+    with _state_lock(session_id):
+        for attempt in range(_STATE_CONFLICT_ATTEMPTS):
+            try:
+                return context.invoke(callback)
+            except StateConflict:
+                if attempt + 1 >= _STATE_CONFLICT_ATTEMPTS:
+                    raise
+        raise AssertionError("workflow state-conflict retry exhausted without a result")
+
+
+def _cancel_children(context: BackgroundContext, session_id: str, run_id: str, reason: str) -> tuple[str, ...]:
+    """Best-effort subtree cancellation for one run; returns failure notes."""
+
+    def cancel(_context: ToolContext, services: PluginServices) -> tuple[str, ...]:
+        run = _store(services).load()[0].runs.get(run_id)
+        if run is None or run.status in _TERMINAL_RUN:
+            return ()
+        return _cancel_run_children(services, run, reason=reason)
+
+    try:
+        return _invoke_state(context, session_id, cancel)
+    except Exception as exc:  # noqa: BLE001 - a cancellation failure must not lose the terminal mark
+        return (f"{type(exc).__name__}: {exc}",)
 
 
 def _invoke_mark(context: BackgroundContext, run_id: str, status: RunStatus, error: str | None) -> bool:
@@ -1322,7 +1577,7 @@ def _invoke_mark(context: BackgroundContext, run_id: str, status: RunStatus, err
         return _mark_run(services, run_id, status, error)
 
     try:
-        return context.invoke(mark)
+        return _invoke_state(context, context.session_id, mark)
     except InterruptedError:
         return False
 
@@ -1342,15 +1597,19 @@ def _settle_group(context: BackgroundContext, run_id: str, group: BaseExceptionG
     rests, failures = _split_group(group)
     if failures:
         detail = "; ".join(f"{type(item).__name__}: {item}" for item in failures[:3])
-        return _invoke_mark(context, run_id, "failed", f"workflow nodes failed: {detail}")
+        note = _cancellation_note(_cancel_children(context, context.session_id, run_id, "workflow failure"))
+        return _invoke_mark(context, run_id, "failed", f"workflow nodes failed: {detail}{note}")
     kinds = {type(item) for item in rests}
     if _CancelledNode in kinds or InterruptedError in kinds:
-        return _invoke_mark(context, run_id, "cancelled", "; ".join(str(item) for item in rests[:3]) or "owner cancellation")
+        note = _cancellation_note(_cancel_children(context, context.session_id, run_id, "workflow cancellation"))
+        return _invoke_mark(context, run_id, "cancelled", ("; ".join(str(item) for item in rests[:3]) or "owner cancellation") + note)
     elif _PausedRun in kinds:
         return _invoke_mark(context, run_id, "paused", None)
     elif rests:
-        first = next(item for item in rests if isinstance(item, _ParkedNode))
-        return _invoke_mark(context, run_id, "parked", f"node '{first.key}' parked: {first.status}")
+        parked = next((item for item in rests if isinstance(item, _ParkedNode)), None)
+        if parked is None:
+            return False
+        return _invoke_mark(context, run_id, "parked", f"node '{parked.key}' parked: {parked.status}")
     return False
 
 
@@ -1367,7 +1626,7 @@ def _split_group(group: BaseExceptionGroup) -> tuple[list[BaseException], list[B
             nested_rests, nested_failures = _split_group(item)
             rests.extend(nested_rests)
             failures.extend(nested_failures)
-        elif isinstance(item, (_ParkedNode, _PausedRun, _CancelledNode, InterruptedError)):
+        elif isinstance(item, (_ParkedNode, _PausedRun, _CancelledNode, _AbandonedNode, InterruptedError)):
             rests.append(item)
         else:
             failures.append(item)
@@ -1379,29 +1638,35 @@ class _CompleteRun:
     run_id: str
     result_text: str
 
-    def __call__(self, context: ToolContext, services: PluginServices) -> None:
+    def __call__(self, context: ToolContext, services: PluginServices) -> tuple[RunStatus, str | None] | None:
         _ = context
         state, version = _store(services).load()
         run = state.runs.get(self.run_id)
         if run is None or run.status in _TERMINAL_RUN:
-            return
-        pending = [node.key for node in run.nodes if node.status in ("pending", "running", "waiting", "interrupted")]
-        if pending:
-            parked = run.with_status("parked", f"nodes still open: {', '.join(sorted(pending))}")
-            _store(services).save(state.with_run(parked), version)
-            return
+            return None
         failed = [node.key for node in run.nodes if node.status == "failed"]
         if failed:
-            finished = run.with_status("failed", f"nodes failed: {', '.join(sorted(failed))}")
+            note = _cancellation_note(_cancel_run_children(services, run, reason="workflow failure"))
+            error = f"nodes failed: {', '.join(sorted(failed))}{note}"
+            finished = _settled_open_nodes(run, "failed").with_status("failed", error)
             _store(services).save(state.with_run(finished), version)
             _notify_terminal(services, finished)
-            return
+            return ("failed", error)
+        pending = [node.key for node in run.nodes if node.status in ("pending", "running", "waiting", "interrupted")]
+        if pending:
+            error = f"nodes still open: {', '.join(sorted(pending))}"
+            parked = run.with_status("parked", error)
+            _store(services).save(state.with_run(parked), version)
+            _notify_park(services, parked)
+            return ("parked", error)
         cancelled = [node.key for node in run.nodes if node.status == "cancelled"]
         if cancelled:
-            finished = run.with_status("cancelled", f"nodes cancelled: {', '.join(sorted(cancelled))}")
+            note = _cancellation_note(_cancel_run_children(services, run, reason="workflow cancellation"))
+            error = f"nodes cancelled: {', '.join(sorted(cancelled))}{note}"
+            finished = _settled_open_nodes(run, "cancelled").with_status("cancelled", error)
             _store(services).save(state.with_run(finished), version)
             _notify_terminal(services, finished)
-            return
+            return ("cancelled", error)
         raw = self.result_text.encode("utf-8")
         if len(raw) > INLINE_OUTPUT_BYTES:
             reference = services.spill_artifact(self.result_text, media_type="text/plain; charset=utf-8")
@@ -1411,6 +1676,7 @@ class _CompleteRun:
         finished = run.with_status("completed", None)
         _store(services).save(state.with_run(finished), version)
         _notify_terminal(services, finished)
+        return ("completed", None)
 
 
 def _notify_terminal(services: ChildServices, run: WorkflowRun) -> None:
@@ -1437,6 +1703,23 @@ def _notify_terminal(services: ChildServices, run: WorkflowRun) -> None:
     )
 
 
+def _notify_park(services: ChildServices, run: WorkflowRun) -> None:
+    """Tell the origin once that a run parked and needs an explicit resume."""
+    if not run.notify_on_completion or run.status != "parked":
+        return
+    services.enqueue_continuation(
+        {
+            "kind": "workflow_parked",
+            "run_id": run.run_id,
+            "workflow": run.workflow,
+            "status": run.status,
+            "error": run.error,
+            "notice": "This workflow parked; inspect it with workflow.status and resume it explicitly when ready.",
+        },
+        idempotency_key=f"workflow:{run.run_id}:parked",
+    )
+
+
 class _LoadFailed(Exception):
     """The loader already marked the run; the driver must stop with a failed action."""
 
@@ -1451,7 +1734,7 @@ def _load_script_for_action(context: BackgroundContext, run_id: str, workflow: s
     try:
         loaded = context.invoke(describe)
     except Exception:  # noqa: BLE001 - state failures park visibly, never silently
-        context.invoke(park_unreadable)
+        _invoke_state(context, context.session_id, park_unreadable)
         return None
     workflows, workspace, expected_path, expected_digest, live = loaded
     if live != expected_digest:
@@ -1460,7 +1743,7 @@ def _load_script_for_action(context: BackgroundContext, run_id: str, workflow: s
         def mark_changed(_context: ToolContext, services: PluginServices) -> None:
             _mark_run(services, run_id, "failed", message)
 
-        context.invoke(mark_changed)
+        _invoke_state(context, context.session_id, mark_changed)
         raise _LoadFailed(message)
     try:
         source = context.invoke(_ReadSource(expected_digest))
@@ -1470,7 +1753,7 @@ def _load_script_for_action(context: BackgroundContext, run_id: str, workflow: s
         def mark_broken(_context: ToolContext, services: PluginServices) -> None:
             _mark_run(services, run_id, "failed", detail)
 
-        context.invoke(mark_broken)
+        _invoke_state(context, context.session_id, mark_broken)
         raise _LoadFailed(detail) from broken
     if hashlib.sha256(source).hexdigest() != expected_digest:
         message = f"workflow '{workflow}' recorded source failed its digest check"
@@ -1478,7 +1761,7 @@ def _load_script_for_action(context: BackgroundContext, run_id: str, workflow: s
         def mark_tampered(_context: ToolContext, services: PluginServices) -> None:
             _mark_run(services, run_id, "failed", message)
 
-        context.invoke(mark_tampered)
+        _invoke_state(context, context.session_id, mark_tampered)
         raise _LoadFailed(message)
     try:
         return load_workflow_script(workflow, expected_path, source)
@@ -1488,7 +1771,7 @@ def _load_script_for_action(context: BackgroundContext, run_id: str, workflow: s
         def mark_invalid(_context: ToolContext, services: PluginServices) -> None:
             _mark_run(services, run_id, "failed", detail)
 
-        context.invoke(mark_invalid)
+        _invoke_state(context, context.session_id, mark_invalid)
         raise _LoadFailed(detail) from broken
 
 
@@ -1508,7 +1791,7 @@ def _task_for_action(context: BackgroundContext, run_id: str, workflow: str, scr
         def mark_broken(_context: ToolContext, services: PluginServices) -> None:
             _mark_run(services, run_id, "failed", detail)
 
-        context.invoke(mark_broken)
+        _invoke_state(context, context.session_id, mark_broken)
         raise _TaskFailed from broken
 
 
@@ -1522,6 +1805,8 @@ class _ReadSource:
         offset = 0
         while True:
             page = services.read_artifact(self.sha256, offset=offset, limit=65536)
+            if not page.data and not page.eof:
+                raise ValueError(f"artifact {self.sha256} read made no progress at offset {offset}")
             chunks.append(bytes(page.data))
             if page.eof:
                 break
@@ -1557,9 +1842,10 @@ def _mark_run(services: PluginServices, run_id: str, status: RunStatus, error: s
     run = state.runs.get(run_id)
     if run is None or run.status in _TERMINAL_RUN:
         return False
-    finished = run.with_status(status, error)
+    finished = _settled_open_nodes(run, status).with_status(status, error)
     _store(services).save(state.with_run(finished), version)
     _notify_terminal(services, finished)
+    _notify_park(services, finished)
     return True
 
 
@@ -1711,7 +1997,6 @@ def _start_run(
 ) -> _StartedRun:
     """Snapshot one configured script, record the run, and enqueue its driver action."""
     relative, source, digest = snapshot_workflow_source(workflows, workspace, workflow)
-    state, version = _store(services).load()
     # The spill persists the recorded bytes; source_sha256 (the same digest) addresses them back.
     _reference = services.spill_artifact(source, media_type="text/x-python; charset=utf-8")
     run_id = uuid4().hex
@@ -1728,9 +2013,13 @@ def _start_run(
         created_at=now,
         updated_at=now,
     )
-    action_id = services.enqueue_background_action({"kind": "workflow", "run_id": run_id, "workflow": workflow}, idempotency_key=f"workflow:{run_id}")
-    run = replace(run, action_id=action_id)
-    _store(services).save(state.with_run(run), version)
+    with _state_lock(session_id):
+        state, version = _store(services).load()
+        action_id = services.enqueue_background_action(
+            {"kind": "workflow", "run_id": run_id, "workflow": workflow}, idempotency_key=f"workflow:{run_id}"
+        )
+        run = replace(run, action_id=action_id)
+        _store(services).save(state.with_run(run), version)
     return _StartedRun(run_id=run_id, action_id=action_id, workflow=workflow)
 
 
@@ -1750,6 +2039,7 @@ class WorkflowRunCommand:
         },
         effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN, ToolEffect.SESSION}),
         busy_gate=False,
+        retry_state_conflict=True,
         client_syntax="/workflow run",
     )
 
@@ -2046,6 +2336,7 @@ class WorkflowPauseCommand(_WorkflowRunInput):
         },
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
+        retry_state_conflict=True,
         client_syntax="/workflow pause",
     )
 
@@ -2053,24 +2344,25 @@ class WorkflowPauseCommand(_WorkflowRunInput):
         raw = invocation.arguments.get("run_id")
         if not isinstance(raw, str) or not raw:
             return CommandResult(status="error", error="workflow.pause requires a non-empty 'run_id'")
-        try:
-            state, version = _store(services).load()
-        except ValueError as exc:
-            return CommandResult(status="error", error=str(exc))
-        run = state.runs.get(raw)
-        if run is None:
-            return CommandResult(status="error", error=f"unknown workflow run: {raw!r}")
-        if run.status in _TERMINAL_RUN:
-            return CommandResult(status="error", error=f"workflow run '{raw}' is {run.status}")
-        if run.action_id is not None:
+        with _state_lock(invocation.context.session_id):
             try:
-                services.cancel_background_action(run.action_id, reason="workflow pause")
+                state, version = _store(services).load()
+            except ValueError as exc:
+                return CommandResult(status="error", error=str(exc))
+            run = state.runs.get(raw)
+            if run is None:
+                return CommandResult(status="error", error=f"unknown workflow run: {raw!r}")
+            if run.status in _TERMINAL_RUN:
+                return CommandResult(status="error", error=f"workflow run '{raw}' is {run.status}")
+            if run.action_id is not None:
+                try:
+                    services.cancel_background_action(run.action_id, reason="workflow pause")
+                except (ValueError, RuntimeError) as exc:
+                    return CommandResult(status="error", error=f"workflow run '{raw}' failed to pause: {exc}")
+            try:
+                _store(services).save(state.with_run(run.with_status("paused", None)), version)
             except (ValueError, RuntimeError) as exc:
                 return CommandResult(status="error", error=f"workflow run '{raw}' failed to pause: {exc}")
-        try:
-            _store(services).save(state.with_run(run.with_status("paused", None)), version)
-        except (ValueError, RuntimeError) as exc:
-            return CommandResult(status="error", error=f"workflow run '{raw}' failed to pause: {exc}")
         return CommandResult(
             status="ok", output=f"run {raw} paused", data={"run_id": raw, "status": "paused"}, presentation=_run_receipt(raw, "paused")
         )
@@ -2088,6 +2380,7 @@ class WorkflowResumeCommand(_WorkflowRunInput):
         },
         effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN, ToolEffect.SESSION}),
         busy_gate=False,
+        retry_state_conflict=True,
         client_syntax="/workflow resume",
     )
 
@@ -2098,37 +2391,39 @@ class WorkflowResumeCommand(_WorkflowRunInput):
         raw = invocation.arguments.get("run_id")
         if not isinstance(raw, str) or not raw:
             return CommandResult(status="error", error="workflow.resume requires a non-empty 'run_id'")
-        try:
-            workspace = invocation.context.require_workspace()
-            state, version = _store(services).load()
-        except (ValueError, RuntimeError) as exc:
-            return CommandResult(status="error", error=str(exc))
-        run = state.runs.get(raw)
-        if run is None:
-            return CommandResult(status="error", error=f"unknown workflow run: {raw!r}")
-        if run.status in _TERMINAL_RUN:
-            return CommandResult(status="error", error=f"workflow run '{raw}' is {run.status}")
-        if run.status == "running":
-            refusal = _refuse_live_driver(services, run)
-            if refusal is not None:
-                return CommandResult(status="error", error=refusal)
-        try:
-            _relative, _source, live = snapshot_workflow_source(self._workflows, workspace, run.workflow)
-        except ValueError as exc:
-            return CommandResult(status="error", error=str(exc))
-        if live != run.source_sha256:
-            return CommandResult(status="error", error=f"workflow '{run.workflow}' source changed; refusing to resume a different script")
-        try:
-            action_id = services.enqueue_background_action(
-                {"kind": "workflow", "run_id": raw, "workflow": run.workflow}, idempotency_key=f"workflow:{raw}:resume:{run.updated_at}"
-            )
-        except (ValueError, RuntimeError, PermissionError) as exc:
-            return CommandResult(status="error", error=f"workflow run '{raw}' failed to resume: {exc}")
-        run = replace(run.with_status("running", None), action_id=action_id)
-        try:
-            _store(services).save(state.with_run(run), version)
-        except (ValueError, RuntimeError) as exc:
-            return CommandResult(status="error", error=f"workflow run '{raw}' failed to resume: {exc}")
+        with _state_lock(invocation.context.session_id):
+            try:
+                workspace = invocation.context.require_workspace()
+                state, version = _store(services).load()
+            except (ValueError, RuntimeError) as exc:
+                return CommandResult(status="error", error=str(exc))
+            run = state.runs.get(raw)
+            if run is None:
+                return CommandResult(status="error", error=f"unknown workflow run: {raw!r}")
+            if run.status in _TERMINAL_RUN:
+                return CommandResult(status="error", error=f"workflow run '{raw}' is {run.status}")
+            if run.status == "running":
+                refusal = _refuse_live_driver(services, run)
+                if refusal is not None:
+                    return CommandResult(status="error", error=refusal)
+            try:
+                _relative, _source, live = snapshot_workflow_source(self._workflows, workspace, run.workflow)
+            except ValueError as exc:
+                return CommandResult(status="error", error=str(exc))
+            if live != run.source_sha256:
+                return CommandResult(status="error", error=f"workflow '{run.workflow}' source changed; refusing to resume a different script")
+            try:
+                action_id = services.enqueue_background_action(
+                    {"kind": "workflow", "run_id": raw, "workflow": run.workflow},
+                    idempotency_key=f"workflow:{raw}:resume:{run.updated_at}",
+                )
+            except (ValueError, RuntimeError, PermissionError) as exc:
+                return CommandResult(status="error", error=f"workflow run '{raw}' failed to resume: {exc}")
+            run = replace(run.with_status("running", None), action_id=action_id)
+            try:
+                _store(services).save(state.with_run(run), version)
+            except (ValueError, RuntimeError) as exc:
+                return CommandResult(status="error", error=f"workflow run '{raw}' failed to resume: {exc}")
         return CommandResult(
             status="ok",
             output=f"run {raw} resumed",
@@ -2149,6 +2444,7 @@ class WorkflowCancelCommand(_WorkflowRunInput):
         },
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
+        retry_state_conflict=True,
         client_syntax="/workflow cancel",
     )
 
@@ -2156,80 +2452,66 @@ class WorkflowCancelCommand(_WorkflowRunInput):
         raw = invocation.arguments.get("run_id")
         if not isinstance(raw, str) or not raw:
             return CommandResult(status="error", error="workflow.cancel requires a non-empty 'run_id'")
-        try:
-            state, version = _store(services).load()
-        except ValueError as exc:
-            return CommandResult(status="error", error=str(exc))
-        run = state.runs.get(raw)
-        if run is None:
-            return CommandResult(status="error", error=f"unknown workflow run: {raw!r}")
-        if run.status in _TERMINAL_RUN:
-            return CommandResult(status="error", error=f"workflow run '{raw}' is {run.status}")
-        live = [node.key for node in run.nodes if node.status in ("pending", "running", "waiting", "interrupted")]
-        if live and invocation.context.actor != "user":
-            request_id = uuid4().hex
-            return CommandResult(
-                status="pending_confirmation",
-                confirmation=ConfirmationRequest(
-                    request_id=request_id,
-                    owner="workflows",
-                    command_name=self.definition.name,
-                    arguments=invocation.arguments,
-                    ui_type="confirmation",
-                    ui_data={
-                        "request_id": request_id,
-                        "message": f"Stop run {raw} ({run.workflow}) and {len(live)} live children ({', '.join(sorted(live)[:5])})?",
-                        "actions": ["allow", "deny"],
-                    },
-                    expected_state_version=version,
-                ),
+        with _state_lock(invocation.context.session_id):
+            try:
+                state, version = _store(services).load()
+            except ValueError as exc:
+                return CommandResult(status="error", error=str(exc))
+            run = state.runs.get(raw)
+            if run is None:
+                return CommandResult(status="error", error=f"unknown workflow run: {raw!r}")
+            if run.status in _TERMINAL_RUN:
+                return CommandResult(status="error", error=f"workflow run '{raw}' is {run.status}")
+            live = [node.key for node in run.nodes if node.status in ("pending", "running", "waiting", "interrupted")]
+            if live and invocation.context.actor != "user":
+                request_id = uuid4().hex
+                return CommandResult(
+                    status="pending_confirmation",
+                    confirmation=ConfirmationRequest(
+                        request_id=request_id,
+                        owner="workflows",
+                        command_name=self.definition.name,
+                        arguments=invocation.arguments,
+                        ui_type="confirmation",
+                        ui_data={
+                            "request_id": request_id,
+                            "message": f"Stop run {raw} ({run.workflow}) and {len(live)} live children ({', '.join(sorted(live)[:5])})?",
+                            "actions": ["allow", "deny"],
+                        },
+                        expected_state_version=version,
+                    ),
+                )
+            failures = _cancel_run_children(services, run, reason="workflow cancellation")
+            if run.action_id is not None:
+                cancel_action = services.cancel_background_action
+                try:
+                    cancel_action(run.action_id, reason="workflow cancellation")
+                except (ValueError, RuntimeError) as exc:
+                    return CommandResult(status="error", error=f"workflow run '{raw}' failed to cancel: {exc}")
+            # Re-read after the slow RPCs: the driver may have committed while we cancelled.
+            try:
+                state, version = _store(services).load()
+            except ValueError as exc:
+                return CommandResult(status="error", error=str(exc))
+            run = state.runs.get(raw)
+            if run is None:
+                return CommandResult(status="error", error=f"unknown workflow run: {raw!r}")
+            if run.status in _TERMINAL_RUN:
+                return CommandResult(status="ok", output=f"run {raw} already {run.status}", data={"run_id": raw, "status": run.status})
+            nodes = tuple(
+                replace(node, status="cancelled", budget_exhaustion=None) if node.status in ("pending", "running", "waiting", "interrupted") else node
+                for node in run.nodes
             )
-        stopped: list[str] = []
-        find = services.find_child
-        for node in run.nodes:
-            child_id = node.child_session_id
-            if node.status in ("completed", "failed", "cancelled", "skipped"):
-                continue
+            error = "owner cancellation" + _cancellation_note(failures)
+            run = replace(run.with_status("cancelled", error), nodes=nodes)
             try:
-                recovered = find(idempotency_key=f"workflow:{raw}:{node.key}")
+                _store(services).save(state.with_run(run), version)
             except (ValueError, RuntimeError) as exc:
                 return CommandResult(status="error", error=f"workflow run '{raw}' failed to cancel: {exc}")
-            target = recovered or child_id
-            if target is None:
-                continue
-            try:
-                if services.cancel_child(target, reason="workflow cancellation"):
-                    stopped.append(node.key)
-            except (ValueError, RuntimeError, PermissionError) as exc:
-                return CommandResult(status="error", error=f"workflow run '{raw}' failed to cancel: {exc}")
-        if run.action_id is not None:
-            cancel_action = services.cancel_background_action
-            try:
-                cancel_action(run.action_id, reason="workflow cancellation")
-            except (ValueError, RuntimeError) as exc:
-                return CommandResult(status="error", error=f"workflow run '{raw}' failed to cancel: {exc}")
-        # Re-read after the slow RPCs: the driver may have committed while we cancelled.
-        try:
-            state, version = _store(services).load()
-        except ValueError as exc:
-            return CommandResult(status="error", error=str(exc))
-        run = state.runs.get(raw)
-        if run is None:
-            return CommandResult(status="error", error=f"unknown workflow run: {raw!r}")
-        if run.status in _TERMINAL_RUN:
-            return CommandResult(status="ok", output=f"run {raw} already {run.status}", data={"run_id": raw, "status": run.status})
-        nodes = tuple(
-            replace(node, status="cancelled", budget_exhaustion=None) if node.status in ("pending", "running", "waiting", "interrupted") else node
-            for node in run.nodes
-        )
-        run = replace(run.with_status("cancelled", "owner cancellation"), nodes=nodes)
-        try:
-            _store(services).save(state.with_run(run), version)
-        except (ValueError, RuntimeError) as exc:
-            return CommandResult(status="error", error=f"workflow run '{raw}' failed to cancel: {exc}")
+            _notify_terminal(services, run)
         return CommandResult(
             status="ok",
-            output=f"run {raw} cancelled ({len(stopped)} stopped)",
+            output=f"run {raw} cancelled ({len(live)} stopped)",
             data={"run_id": raw, "status": "cancelled"},
             presentation=_run_receipt(raw, "cancelled"),
         )
@@ -2303,9 +2585,10 @@ def prepare_workflows_deactivation(
 ) -> Mapping[str, object]:
     """Park every live run: the driver is gone, children stay core-owned for resume."""
     _ = (scope, scope_key, tip_sequence)
-    decoded = WorkflowState.from_payload(state) if isinstance(state, Mapping) else WorkflowState(MappingProxyType({}))
-    parked = {
-        run_id: run.with_status("parked", "workflows disabled; resume after re-enable") if run.status in ("running", "paused") else run
-        for run_id, run in decoded.runs.items()
-    }
-    return WorkflowState(MappingProxyType(parked)).to_payload()
+    with _state_lock(scope_key):
+        decoded = WorkflowState.from_payload(state) if isinstance(state, Mapping) else WorkflowState(MappingProxyType({}))
+        parked = {
+            run_id: run.with_status("parked", "workflows disabled; resume after re-enable") if run.status in ("running", "paused") else run
+            for run_id, run in decoded.runs.items()
+        }
+        return WorkflowState(MappingProxyType(parked)).to_payload()

@@ -656,6 +656,11 @@ class PluginRuntime:
     def command_validators(self) -> Mapping[str, Any]:
         return self._command_validators_view
 
+    def command_retries_state_conflict(self, name: str) -> bool:
+        """Whether one registered command opted into bounded state-conflict re-runs."""
+        entry = self._commands.get(name)
+        return False if entry is None else entry[0].definition.retry_state_conflict
+
     @property
     def views(self) -> tuple[str, ...]:
         return self._view_names

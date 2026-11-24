@@ -133,6 +133,15 @@ class StructuredChildResult:
         return payload
 
 
+class StateConflict(RuntimeError):
+    """One owner-state optimistic-concurrency check lost; the transaction committed nothing.
+
+    Raised both when a callback stages with a stale version and when the commit's row
+    version no longer matches. A caller that can re-read and re-apply a pure state
+    mutation may retry; a caller must never treat it as a completed write.
+    """
+
+
 class QueryUnavailable(ValueError):
     """No admitted plugin in this runtime generation answers the named query."""
 
@@ -915,8 +924,22 @@ class BackgroundContext(Protocol):
         ...
 
     @property
+    def session_id(self) -> str:
+        """The session whose state and child work this driver acts on."""
+        ...
+
+    @property
     def abort_signal(self) -> threading.Event:
         """Set when the owner cancels or the core shuts down; the driver polls it."""
+        ...
+
+    @property
+    def activation_requested(self) -> threading.Event:
+        """Set while a capability activation is trying to take the dispatch fence.
+
+        A long-running driver should stop starting new dispatches (and leave its current
+        one promptly) so activation can drain; the signal clears if the attempt is refused.
+        """
         ...
 
     def invoke[T](self, callback: Callable[[ToolContext, PluginServices], T]) -> T:

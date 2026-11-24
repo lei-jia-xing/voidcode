@@ -554,3 +554,28 @@ def test_activation_publication_survives_post_commit_replay_failure(tmp_path: Pa
         assert core.revision_id != old_revision
         assert old_runtime.closed is True
         assert core.plugin_runtime.closed is False
+
+
+def test_begin_activation_waits_for_a_short_dispatch_to_drain(tmp_path: Path) -> None:
+    import threading
+
+    core = _open(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with core.dispatch("held-callback"):
+            entered.set()
+            release.wait(5.0)
+
+    worker = threading.Thread(target=hold, daemon=True)
+    worker.start()
+    try:
+        assert entered.wait(5.0)
+        threading.Timer(0.1, release.set).start()
+        core.begin_activation()
+        core.end_activation()
+    finally:
+        release.set()
+        worker.join(5.0)
+        core.close()

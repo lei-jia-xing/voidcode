@@ -1,6 +1,7 @@
 """Workflows ctx.agent behavior over an in-memory services double."""
 
 import asyncio
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,7 @@ from voidcode.plugins.workflows.workflows_plugin import (
     _ParkNode,
 )
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import BudgetExhaustion, ChildOutcome
+from voidcode.sdk.services import BudgetExhaustion, ChildOutcome, StateConflict
 
 
 def _context(services: FakeServices) -> ToolContext:
@@ -65,6 +66,7 @@ def _spawn_with_key(services: FakeServices):  # type: ignore[no-untyped-def]
         child_id = original(prompt, **kwargs)
         if key is not None:
             keys[key] = child_id
+            services.keyed_children[key] = child_id
         return child_id
 
     return spawn
@@ -262,7 +264,7 @@ def test_large_multibyte_output_reads_whole_and_matches_cache() -> None:
     assert hashlib.sha256(second.encode("utf-8")).hexdigest() == expected_hash
 
 
-def test_attach_always_spawns_so_core_repairs_pristine_reservations() -> None:
+def test_attach_spawns_instead_of_adopting_a_pristine_reservation() -> None:
     from voidcode.plugins.workflows.workflows_plugin import _attach_node_child, _stage_pending_node
 
     services = _agent_services()
@@ -279,11 +281,28 @@ def test_attach_always_spawns_so_core_repairs_pristine_reservations() -> None:
     assert staged.settled is None and staged.plan is not None
     assert staged.node is not None and staged.node.child_session_id is None
     planned = _attach_node_child(context, services, run_id, "a", staged.plan, "")
-    # Attach must call keyed spawn (the core reuses or repairs the reservation);
-    # a pure find would leave a reserved-but-unstarted child idle forever.
-    assert find_calls == []
+    # Attach probes the keyed mapping first, but a pristine reservation with no run must
+    # still go through keyed spawn so the core repairs/starts it; adopting it would wait
+    # forever on a join that never runs.
+    assert find_calls == [f"workflow:{run_id}:a"]
     assert len(services.spawn_calls) == 1
-    assert planned.node.child_session_id is not None
+    assert planned.node.child_session_id in services.roster
+
+
+def test_attach_adopts_a_started_keyed_child_after_a_lost_save() -> None:
+    from voidcode.plugins.workflows.workflows_plugin import _attach_node_child, _stage_pending_node
+
+    services = _agent_services()
+    run_id = _seed(services)
+    context = _context(services)
+    services.keyed_children[f"workflow:{run_id}:a"] = "orphan-child"
+    services.roster["orphan-child"] = ChildOutcome(child_session_id="orphan-child", status="completed", output="adopted", run_id="run-orphan")
+    staged = _stage_pending_node(context, services, run_id, "a", (), "review", "look", None, 32)
+    assert staged.plan is not None
+    planned = _attach_node_child(context, services, run_id, "a", staged.plan, "")
+    assert services.spawn_calls == []
+    assert planned.node.child_session_id == "orphan-child"
+    assert workflows_plugin._store(services).load()[0].runs[run_id].nodes[0].child_session_id == "orphan-child"
 
 
 def _stage_roster(services: FakeServices, outcome: ChildOutcome) -> None:
@@ -479,3 +498,71 @@ def test_park_drops_prior_run_output_and_capture_data() -> None:
     assert node.output is None and node.output_sha256 is None and node.output_bytes is None
     assert node.output_preview is None and node.output_error is None and node.history_error is None
     assert node.error == "waiting on approval"
+
+
+def test_commit_retries_a_lost_state_cas_and_adopts_the_created_child() -> None:
+    services = _agent_services()
+    services.join_output = "adopted"
+    run_id = _seed(services)
+    context = _context(services)
+    driver = WorkflowContext(invoke=lambda callback: callback(context, services), run_id=run_id, task="t", session_id="s1")
+    original = services.replace_state
+    saves: list[int] = []
+
+    def flaky_replace_state(state, expected_version, scope="session", owner=None):  # type: ignore[no-untyped-def]
+        saves.append(expected_version)
+        if len(saves) == 2:  # the attach save after a successful keyed spawn
+            raise StateConflict("forced state CAS")
+        return original(state, expected_version, scope, owner)
+
+    services.replace_state = flaky_replace_state  # type: ignore[method-assign]
+    assert asyncio.run(driver.agent("review", "look", key="a")) == "adopted"
+    assert len(services.spawn_calls) == 1, "the retry must adopt the keyed child, not spawn twice"
+    node = workflows_plugin._store(services).load()[0].runs[run_id].nodes[0]
+    assert node.child_session_id in services.roster
+
+
+def test_complete_run_fails_and_cancels_open_descendants() -> None:
+    from voidcode.plugins.workflows.workflows_plugin import _CompleteRun
+
+    services = _agent_services()
+    services.roster["live-child"] = ChildOutcome(child_session_id="live-child", status="running", run_id="run-live")
+    run_id = _seed(
+        services,
+        notify_on_completion=True,
+        nodes=(
+            WorkflowNode(key="bad", status="failed", child_session_id="failed-child"),
+            WorkflowNode(key="live", status="running", child_session_id="live-child"),
+        ),
+    )
+    completed = _CompleteRun(run_id, "ignored")(_context(services), services)
+    assert completed is not None and completed[0] == "failed"
+    assert services.descendant_cancel_calls == [("live-child", "run-live", "workflow failure")]
+    run = workflows_plugin._store(services).load()[0].runs[run_id]
+    assert run.status == "failed"
+    assert {node.key: node.status for node in run.nodes} == {"bad": "failed", "live": "cancelled"}
+    assert any(payload["kind"] == "workflow_terminal" for payload, _key, _role in services.staged_continuations)
+
+
+def test_park_marks_notify_the_origin_once() -> None:
+    from voidcode.plugins.workflows.workflows_plugin import _mark_run
+
+    services = _agent_services()
+    run_id = _seed(services, notify_on_completion=True)
+    assert _mark_run(services, run_id, "parked", "waiting on approval") is True
+    kinds = [payload["kind"] for payload, _key, _role in services.staged_continuations]
+    assert kinds == ["workflow_parked"]
+    assert services.staged_continuations[0][1] == f"workflow:{run_id}:parked"
+
+
+def test_node_yields_while_activation_is_requested() -> None:
+    services = _agent_services()
+    services.join_output = "after activation"
+    run_id = _seed(services)
+    context = _context(services)
+    activation = threading.Event()
+    driver = WorkflowContext(invoke=lambda callback: callback(context, services), run_id=run_id, task="t", session_id="s1", activation=activation)
+    activation.set()
+    threading.Timer(0.05, activation.clear).start()
+    assert asyncio.run(driver.agent("review", "look", key="a")) == "after activation"
+    assert len(services.spawn_calls) == 1

@@ -325,6 +325,10 @@ class CommandDefinition:
     #: Keep the handler's explicit error result and staged events when the command lease is
     #: cancelled. Default false: a cancelled command's partial/paid body is discarded.
     preserve_cancelled_result: bool = False
+    #: Retry the handler (bounded) when its commit loses an owner-state CAS. Only declare
+    #: this for commands whose external side effects are idempotent: the handler re-runs
+    #: from a fresh state read and may repeat its calls.
+    retry_state_conflict: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_schema", own_json_object(self.argument_schema))
@@ -332,6 +336,8 @@ class CommandDefinition:
             object.__setattr__(self, "effects", frozenset(self.effects))
         if type(self.preserve_cancelled_result) is not bool:
             raise ValueError("command preserve_cancelled_result must be a boolean")
+        if type(self.retry_state_conflict) is not bool:
+            raise ValueError("command retry_state_conflict must be a boolean")
         if self.default_shortcut is not None:
             object.__setattr__(self, "default_shortcut", normalize_default_shortcut(self.default_shortcut))
         _validate_help_metadata(self.usage, self.examples, self.group)

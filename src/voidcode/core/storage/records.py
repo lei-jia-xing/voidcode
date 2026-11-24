@@ -22,6 +22,7 @@ from typing import Any, Literal, NamedTuple
 from ...sdk.json_values import json_wire_object, json_wire_value, own_json_object
 from ...sdk.plugin import StateScope
 from ...sdk.services import PluginBudget, SessionInfo
+from ...sdk.services import StateConflict as StateConflictBase
 
 #: SQLite file-header identity of a voidcode database: b'VOID' plus the schema version.
 #: The store checks both PRAGMAs on its single connection before setting any write
@@ -137,6 +138,15 @@ class SequenceConflict(StoreConflict):
 
     The transaction committed nothing, so retrying the same payload after reconciling to the
     fresh tip is safe; callers must never replay external work on this signal.
+    """
+
+
+class StateVersionConflict(StoreConflict, StateConflictBase):
+    """One owner-state row changed before this transaction could replace it.
+
+    Nothing committed. A caller that can re-read and re-apply its pure state mutation may
+    retry the whole callback; re-submitting the same staged payload cannot succeed because
+    its expected version is now stale.
     """
 
 

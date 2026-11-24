@@ -132,6 +132,9 @@ from .turn_execution import CoreResult, TurnDriver
 
 logger = logging.getLogger(__name__)
 
+#: Bounded window for cooperative drivers to release dispatch slots before an activation
+#: fence refuses. Long model turns and tools are already refused by the activation blockers.
+_ACTIVATION_DRAIN_SECONDS = 2.0
 
 _PARKED_INTERVENING_TYPES = frozenset(
     {
@@ -367,6 +370,9 @@ class Core:
         self._active_calls: dict[str, str] = {}
         self._active_dispatch_threads: dict[int, int] = {}
         self._activating_thread: int | None = None
+        # Set before the fence is attempted so long-lived drivers can release their slots;
+        # cleared if the attempt is refused or after the switch commits.
+        self._activation_requested = threading.Event()
         # ponytail: bounded in-process cache of per-revision observed_facts; a large
         # multi-revision workspace could grow it, then key it by revision only.
         self._observer_eligibility: dict[tuple[str, str], tuple[str, ...]] = {}
@@ -1397,16 +1403,33 @@ class Core:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def activation_requested(self) -> threading.Event:
+        """Set while an activation is trying to drain cooperative drivers before its fence."""
+        return self._activation_requested
+
     def begin_activation(self) -> None:
-        """Enter the dispatch fence, refusing while another activation or foreign dispatch is active."""
+        """Enter the dispatch fence after bounded cooperation from long-lived drivers.
+
+        Short dispatches (model turns, tools, commands) are waited out for the drain
+        window so a switch is not refused by a momentarily busy callback; cooperative
+        background drivers observe `activation_requested` and stop starting dispatches.
+        A driver that never yields still refuses the activation after the window.
+        """
         thread_id = threading.get_ident()
-        with self._calls_lock:
-            if self._activating_thread is not None:
-                raise ActivationFenced("another capability activation is already in progress")
-            if self._active_calls:
+        deadline = time.monotonic() + _ACTIVATION_DRAIN_SECONDS
+        while True:
+            with self._calls_lock:
+                if self._activating_thread is not None:
+                    raise ActivationFenced("another capability activation is already in progress")
+                if not self._active_calls:
+                    self._activating_thread = thread_id
+                    return
                 busy = ", ".join(sorted(self._active_calls.values()))
-                raise ActivationFenced(f"capability activation is blocked by in-flight work: {busy}")
-            self._activating_thread = thread_id
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ActivationFenced(f"capability activation is blocked by in-flight work: {busy}")
+                self._calls_lock.wait(timeout=min(remaining, 0.05))
 
     def end_activation(self) -> None:
         self._clear_fence()

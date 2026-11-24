@@ -22,7 +22,7 @@ from ...sdk.commands import CommandDescriptor, CommandResult, ConfirmationReques
 from ...sdk.invocation import ToolContext
 from ...sdk.json_values import json_wire_object
 from ...sdk.observed_effects import MAX_OBSERVED_CHANGES
-from ...sdk.services import ContinuationResult, PluginBudget, SessionUsageReport
+from ...sdk.services import ContinuationResult, PluginBudget, SessionUsageReport, StateConflict
 from ...sdk.tools import ToolDefinition, ToolEffect, denied_under_restriction
 from ..coverage import canonical_path
 from ..events import EventType
@@ -51,6 +51,8 @@ if TYPE_CHECKING:
 
 #: Session states in which a busy-gated command may run.
 _OPEN_STATUSES = frozenset({SessionStatus.IDLE, SessionStatus.COMPLETED, SessionStatus.FAILED})
+#: Bounded re-runs for a command that opted into owner-state conflict recovery.
+_COMMAND_STATE_CONFLICT_ATTEMPTS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +426,24 @@ class CommandRuntime:
         return None
 
     def _run_plugin(
+        self,
+        plan: CommandPlan,
+        *,
+        decision_event: EventDraft | None = None,
+        stage_pending: bool = True,
+    ) -> CommandOutcome:
+        snapshot = self._host.snapshot
+        retry = snapshot is not None and snapshot.plugin_runtime.command_retries_state_conflict(plan.descriptor.name)
+        attempts = _COMMAND_STATE_CONFLICT_ATTEMPTS if retry else 1
+        for attempt in range(attempts):
+            try:
+                return self._run_plugin_once(plan, decision_event=decision_event, stage_pending=stage_pending)
+            except StateConflict:
+                if attempt + 1 >= attempts:
+                    raise
+        raise AssertionError("command state-conflict retry exhausted without a result")
+
+    def _run_plugin_once(
         self,
         plan: CommandPlan,
         *,

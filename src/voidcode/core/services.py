@@ -47,7 +47,7 @@ from .artifacts import SHA256_PATTERN
 from .child_contracts import ChildSpawnRequest
 from .events import CHILD_MESSAGE_OWNER, CHILD_OUTCOME_RECEIPT_OWNER, EventType
 from .history_renderer import PAGE_BYTES, HistoryPage, render_history_page
-from .storage.store import CheckpointKind, SessionStatus
+from .storage.store import CheckpointKind, SessionStatus, StateVersionConflict
 from .transcript import transcript_entry
 
 if TYPE_CHECKING:
@@ -529,11 +529,11 @@ class RuntimeServices:
                 # it, later writes in the same lease must target that version.
                 _st, local_version, baseline = staged
                 if expected_version != local_version:
-                    raise RuntimeError(f"state CAS conflict within lease: expected version {local_version}, got {expected_version}")
+                    raise StateVersionConflict(f"state CAS conflict within lease: expected version {local_version}, got {expected_version}")
             else:
                 _, current = self._runtime.require_store().plugin_state(lease.identity.owner, scope, key)
                 if expected_version != current:
-                    raise RuntimeError(f"state CAS conflict: expected version {expected_version}, got {current}")
+                    raise StateVersionConflict(f"state CAS conflict: expected version {expected_version}, got {current}")
                 baseline = current
             local_version = baseline + 1
             lease.staging.state[(scope, key)] = (owned, local_version, baseline)

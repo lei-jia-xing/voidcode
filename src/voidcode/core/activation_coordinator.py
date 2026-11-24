@@ -10,6 +10,7 @@ Core's internals.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +98,11 @@ class ActivationHost(Protocol):
         """Leave the dispatch fence without publishing a new generation."""
         ...
 
+    @property
+    def activation_requested(self) -> threading.Event:
+        """Set while an activation wants cooperative drivers to release dispatch slots."""
+        ...
+
     def park_background_drivers(self, reason: str) -> None: ...
 
     def build_candidate_runtime(self, admission: Admission, target_revision_id: str) -> PluginRuntime: ...
@@ -128,6 +134,9 @@ class ActivationCoordinator:
 
     def __init__(self, host: ActivationHost) -> None:
         self._host = host
+        # A refused concurrent attempt must not clear the winner's driver signal.
+        self._request_lock = threading.Lock()
+        self._request_depth = 0
 
     def activate(self, *, session_id: str, source: str, request_id: str = "", target_revision_id: str = "") -> dict[str, object]:
         """Run one capability activation for an already-safe boundary."""
@@ -143,35 +152,45 @@ class ActivationCoordinator:
             error = f"activation blocked: {'; '.join(blockers)}"
             host.record_activation_refusal(session_id, request_id, source, error, blockers)
             return {"activated": False, "error": error, "request_id": request_id}
+        with self._request_lock:
+            self._request_depth += 1
+            if self._request_depth == 1:
+                host.activation_requested.set()
         try:
-            if target_revision_id:
-                admission = self._pinned_target(target_revision_id)
-            else:
-                target_revision_id, admission = self.prepare_target()
-            prepared = self._prepare_activation(snapshot, admission=admission, source=source)
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-            blocked = host.store.activation_blockers(str(host.workspace), session_id)
-            host.record_activation_refusal(session_id, request_id, source, error, blocked)
-            return {"activated": False, "error": error, "request_id": request_id}
-        try:
-            self._commit_activation(snapshot, session, request_id=request_id, source=source, prepared=prepared)
-        except Exception as exc:
-            host.end_activation()
-            published = host.snapshot
-            if published is None or published.revision_id != prepared.admission.revision_id:
-                prepared.plugin_runtime.close()
-            if not isinstance(exc, StoreConflict):
-                raise
-            host.record_activation_refusal(session_id, request_id, source, str(exc), ())
-            return {"activated": False, "error": str(exc), "request_id": request_id}
-        return {
-            "activated": True,
-            "request_id": request_id,
-            "from_revision_id": snapshot.revision_id,
-            "to_revision_id": prepared.admission.revision_id,
-            "deactivated_owners": list(prepared.copies.deactivated_owners),
-        }
+            try:
+                if target_revision_id:
+                    admission = self._pinned_target(target_revision_id)
+                else:
+                    target_revision_id, admission = self.prepare_target()
+                prepared = self._prepare_activation(snapshot, admission=admission, source=source)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                blocked = host.store.activation_blockers(str(host.workspace), session_id)
+                host.record_activation_refusal(session_id, request_id, source, error, blocked)
+                return {"activated": False, "error": error, "request_id": request_id}
+            try:
+                self._commit_activation(snapshot, session, request_id=request_id, source=source, prepared=prepared)
+            except Exception as exc:
+                host.end_activation()
+                published = host.snapshot
+                if published is None or published.revision_id != prepared.admission.revision_id:
+                    prepared.plugin_runtime.close()
+                if not isinstance(exc, StoreConflict):
+                    raise
+                host.record_activation_refusal(session_id, request_id, source, str(exc), ())
+                return {"activated": False, "error": str(exc), "request_id": request_id}
+            return {
+                "activated": True,
+                "request_id": request_id,
+                "from_revision_id": snapshot.revision_id,
+                "to_revision_id": prepared.admission.revision_id,
+                "deactivated_owners": list(prepared.copies.deactivated_owners),
+            }
+        finally:
+            with self._request_lock:
+                self._request_depth -= 1
+                if self._request_depth == 0:
+                    host.activation_requested.clear()
 
     def prepare_target(self) -> tuple[str, Admission]:
         """Pin the candidate the live configuration currently describes; imports no user code."""

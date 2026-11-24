@@ -4,6 +4,14 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Workflows: conflict-safe state, owned failure lifetime, and schema versioning
+- Workflow state commits are serialized per session across concurrent runs and pause/resume/cancel; a lost owner-state CAS is retried by re-reading and re-applying the pure callback (bounded). Mutating control commands opt into a core-command re-run (`CommandDefinition.retry_state_conflict`) only because their calls are idempotent.
+- A keyed node adopts an already-started child via `find_child` before spawning, including after a resume with a new captured root; a spawn whose node-row save is lost is recorded separately or named in the parked-run error. Pristine reserved-but-unstarted children still go through keyed spawn.
+- Node threads use a driver-owned executor, so a failed run no longer waits out sibling `to_thread` joins; any failed/cancelled terminal run cancels every open node child's descendant subtree. A script that catches a node error and returns still marks the run failed and now fails the action. Park/cancel transitions notify the origin session.
+- Workflow drivers yield their dispatch slot while `BackgroundContext.activation_requested` is set; `Core.begin_activation` waits a bounded drain window before refusing. Running/waiting child sessions still block activation as before.
+- The plugin registers `StateSchema(version=SCHEMA_VERSION)` with a minimal payload schema, so a future version bump fails admission instead of reads; README fixes the fingerprint/`label` and action-failure claims and documents the lifetime `max_root_children` requirement (default 4).
+- Tests: workflow unit (CAS retry/adoption, failure-cancels-descendants, park notice, cancel-subtree notice, state schema) and integration (two concurrent runs, caught node error failing the action) plus the existing workflow/restart and affected core background/activation/command suites.
+
 ### `user_shell`: bounded artifacts, truthful status, and cancellation
 - `!` is now the only client entry surface: the command id `shell` remains callable by RPC/CLI but is not exposed as a slash command. It uses non-login `/bin/sh -c` semantics, a configurable 1–600s timeout (default 600), and client-side single-`!` stripping; remote clients execute on the core host. It remains an independent human surface: no approval-mode, pre-tool-hook, or tool-allowlist gate, and disabling `exec` does not disable `!`.
 - Completed commands return `ok`; nonzero exits, timeouts, and cancellations return `error` with stable `data.error` codes/guidance, so CLI/RPC exit status is honest. Full captured stdout/stderr are stored as separate 128 MiB-ceiling artifacts; results carry a bounded 16 KiB preview plus references, `capture_truncated` is distinct from artifact presence, and the compact `shell_executed` event no longer carries raw streams or a record string.
