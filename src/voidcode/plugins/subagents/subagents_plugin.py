@@ -1290,7 +1290,9 @@ TASK_DESCRIPTION = (
     "only keep the child read-only, never widen it.\n"
     "- tool_allowlist narrows the child's tools and can never widen your own scope; it can be combined with "
     "subagent_type.\n"
-    "- max_steps is an optional explicit provider-turn cap for the child.\n"
+    "- max_steps is an optional explicit provider-turn cap for the initial run started by this "
+    'spawn; it is not a child-session lifetime cap. A later operation="send" follow-up starts '
+    "a new run and does not inherit the cap.\n"
     "- result_schema optionally declares one JSON Schema object the child's final result must "
     "match. Reads then report validated data or a parse_error, never a guess; when full output "
     "is unavailable or over the structured-read cap, structured_unavailable carries the cause.\n"
@@ -1332,6 +1334,8 @@ TASK_BATCH_DESCRIPTION = (
     "tool_allowlist, max_steps, subagent_type (a builtin or workspace custom child "
     "profile), and result_schema (one JSON Schema object the child's final result must match; "
     "reads report validated data, parse_error, or structured_unavailable).\n"
+    "- max_steps, when supplied per item, caps only that item's initial run; it is not a "
+    "child-session lifetime cap.\n"
     "- Pass context with optional shared background declared once for the whole group. It is "
     'merged into every item\'s prompt under fixed "Shared context" and "Task" labels; an '
     "absent or blank context leaves item prompts byte-identical. Context applies to a spawn "
@@ -1386,7 +1390,14 @@ class TaskTool:
                     "items": {"type": "string", "minLength": 1},
                     "description": "Optional tool names the child may use; never wider than your own scope.",
                 },
-                "max_steps": {"type": "integer", "minimum": 1, "description": "Optional provider-turn cap for the child session."},
+                "max_steps": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "Optional provider-turn cap for this spawn's initial run; a later send starts a new run "
+                        "and does not inherit it. Not a child-session lifetime cap."
+                    ),
+                },
                 "result_schema": {
                     "type": "object",
                     "description": (
@@ -1873,7 +1884,7 @@ class TaskBatchTool:
                             "max_steps": {
                                 "type": "integer",
                                 "minimum": 1,
-                                "description": "Optional provider-turn cap for this child session.",
+                                "description": ("Optional provider-turn cap for this item's initial run; it is not a child-session lifetime cap."),
                             },
                             "result_schema": {
                                 "type": "object",

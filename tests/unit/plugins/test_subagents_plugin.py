@@ -1400,6 +1400,18 @@ def test_task_schemas_accept_workspace_dynamic_profile_ids() -> None:
     assert item_properties["subagent_type"]["minLength"] == 1
 
 
+def test_task_surfaces_max_steps_as_a_per_run_cap() -> None:
+    """The surface never claims a child-session lifetime cap, and send does not inherit it."""
+    task_steps = str(TaskTool.definition.input_schema["properties"]["max_steps"]["description"]).lower()
+    item_steps = str(TaskBatchTool.definition.input_schema["properties"]["tasks"]["items"]["properties"]["max_steps"]["description"]).lower()
+    assert "initial run" in task_steps and "send" in task_steps
+    assert "initial run" in item_steps
+    task_description = subagents_plugin.TASK_DESCRIPTION.lower()
+    batch_description = subagents_plugin.TASK_BATCH_DESCRIPTION.lower()
+    assert "initial run" in task_description and "lifetime" in task_description
+    assert "initial run" in batch_description and "lifetime" in batch_description
+
+
 def test_standard_agent_max_turns_apply_to_task_and_batch(tmp_path: Path):
     workspace = _custom_workspace(tmp_path, "helper.md", "---\nname: helper\ndescription: d\nmaxTurns: 3\nmodel: inherit\n---\nHelp.")
     services = FakeServices()
