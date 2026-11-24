@@ -1,8 +1,32 @@
 # Slash command interaction acceptance
 
 Command IDs, schemas, effects, and revision checks remain authoritative. TUI
-and web display catalog paths with spaces. CLI/RPC accept the same structured
-arguments as before. Interaction is a client presentation of those contracts.
+and web name commands by their public path: the primary command, then exactly
+one space per subcommand level (`/goal set`, `/core reload`, `/workflow run`).
+CLI/RPC accept the same structured arguments as before. Interaction is a client
+presentation of those contracts.
+
+## Public command paths
+
+A public path is a pure projection of the admitted descriptor: its slash
+`client_syntax` when declared, otherwise the machine ID with dots as level
+separators. Clients never keep their own command table.
+
+- The dotted machine ID (`goal.set`) stays the catalog/RPC identity used by
+  `CommandDescriptor.name`, `command.invoke`, confirmations, and revision
+  checks. Typed schemas and revision binding are unchanged.
+- A dotted slash spelling (`/goal.set`) is not an alias and is refused.
+- Help and completion show each primary root once and group its subcommands
+  beneath it. A root that has subcommands but no executable descriptor
+  (`/core`, `/workflow`) gets one derived heading instead of disappearing.
+  Completion names those children, and a bare namespace that cannot execute
+  reports its subcommands instead of a bare unknown-command error.
+- CLI `voidcode invoke` accepts the canonical ID or the same space-separated
+  public path (quoted, e.g. `voidcode invoke SESSION "goal set"`). RPC/JSON keep
+  the canonical ID only.
+- `client_syntax` prefixes without a leading slash (`!`) and
+  `slash_visible=False` are unchanged: `!` remains the shell escape, and hidden
+  helpers stay callable without being advertised on the slash surface.
 
 `CommandResult.presentation` provides a validated, bounded declarative view.
 Only a direct successful reply may open choices or an editor. Historical replay
@@ -17,22 +41,22 @@ passed. Each scenario needs client behavior tests or a recorded manual check.
 
 | Commands | Current behavior / evidence | Interaction acceptance still required |
 | --- | --- | --- |
-| `skills`, `skills.show` | List returns choices; detail returns Markdown; bare show prepares dynamic name options without invocation. SDK, plugin, TUI/Web and real RPC tests cover selection and revision binding | Long skill details |
-| `goal` | `goal/goal_plugin.py`: empty state opens creation; existing goal shows bounded status/objective/usage details and applicable Edit/Pause/Resume/Clear actions. Edit prepares the prefilled form without mutation | Physical client acceptance for lifecycle actions and large-objective loading |
-| `goal.set`, `goal.edit` | Prepared multiline creation and prefilled editing; natural objective text via catalog `text_argument`; explicit JSON retained | Physical client acceptance for large objective loading and validation/refusal recovery |
-| `goal.pause`, `goal.resume`, `goal.clear`, `goal.load_objective` | Typed lifecycle commands / exact-read form helper | Actions offered from goal details; physical client acceptance remains; replacement confirmation and exact-read helper remain governed |
-| `todo`, `todo.clear`, `todo.add`, `todo.edit` | Paged Markdown with Add/Edit actions, multiline creation and state-filtered task operations; fixed revision rejects stale edits. Real Chromium and 80/40-column PTY cover creation, selection, passive replay and readable footer | Physical acceptance of every task operation and concurrent-edit recovery |
-| `plan`, `plan.off`, `plan.status` | The core overlay is the only mode truth. Status reports `Plan mode: active`/`inactive` and notes a different read-only reason; reading status does not toggle. Unit interaction test covers enter/status/leave | Physical client acceptance incl. the empty-form Ctrl+S path; overlay, restart, concurrency, malformed-legacy-state, and frozen-policy integration tests remain authoritative |
-| `skills`, `skills.show` | Choices and paged details show source/status/instructions, disabled/empty recovery, and broken entries with bounded diagnostics and recovery actions; Unicode bounds tested. Real Chromium covers page navigation and plugin disable after reload | Physical terminal acceptance of long skill details; actual enable/disable remains configuration admission |
-| `workflow.run` | Bare command prepares a configured workflow select and task editor; no preparation side effect. Natural name input and full structured JSON task remain available | Physical client acceptance of selecting, editing task, and starting only on submit |
-| `workflow.status`, `workflow.pause`, `workflow.resume`, `workflow.cancel` | Bare commands prepare state-filtered run selectors. Status shows paged nodes, readable UTF-8 result pages, and applicable Pause/Resume/Cancel actions; cancellation retains governed confirmation | Physical client acceptance of result paging, lifecycle actions and cancellation confirmation |
-| `loop` | Bare command prepares a multiline editor with interval example/default; creation offers Browse/Cancel and reports expiry. `loop.list` pages schedules with actual next-fire status, `loop.delete` shares tool deletion/disarming and states that an in-flight run is not interrupted. Natural input remains available; prompts fire as ordinary user text, never slash dispatch; preparation does not schedule | Physical client acceptance for list/cancel and claimed-run semantics |
-| `review` | Bare slash input prepares a target/focus form with default workspace changes and branch/SHA requirements; explicit natural focus and structured invocation remain available. Preparation performs no Git/provider/child work; focus survives all target types. The child is labelled `review-git`, receives only the visible `read`/`grep`/`glob` subset, and the diff is delimited as untrusted data. Plan/read-only startup is covered by integration | Physical client acceptance of target selection and missing-argument recovery |
-| `compact` | One-step explicit action returns structured accounting: event range, covered/dropped bytes, summary source and measured tokens; absent measurements remain unknown. Unit tests cover success, no-op and empty session | Physical client acceptance for accounting and refusal readability |
-| `mcp`, `lsp` | Passive service selectors open status/error details; MCP tools page through the full cached surface and distinguish undiscovered from known-empty. Unit tests verify selection, failures, disabled-configuration reporting and 61-tool Unicode pagination | Physical client acceptance of server navigation and recovery; configuration changes still require admission |
-| `btw`, shell (`!`) | Separate question / supervised shell commands | Preserve natural raw text and cancellation semantics; `!` is client-invoked and has no approval/hook gate, and an idle command is cancellable from the TUI |
+| `/skills`, `/skills show` | List returns choices; detail returns Markdown; bare show prepares dynamic name options without invocation. SDK, plugin, TUI/Web and real RPC tests cover selection and revision binding | Long skill details |
+| `/goal` | `goal/goal_plugin.py`: empty state opens creation; existing goal shows bounded status/objective/usage details and applicable Edit/Pause/Resume/Clear actions. Edit prepares the prefilled form without mutation | Physical client acceptance for lifecycle actions and large-objective loading |
+| `/goal set`, `/goal edit` | Prepared multiline creation and prefilled editing; natural objective text via catalog `text_argument`; explicit JSON retained | Physical client acceptance for large objective loading and validation/refusal recovery |
+| `/goal pause`, `/goal resume`, `/goal clear`, `/goal load_objective` | Typed lifecycle commands / exact-read form helper | Actions offered from goal details; physical client acceptance remains; replacement confirmation and exact-read helper remain governed |
+| `/todo`, `/todo clear`, `/todo add`, `/todo edit` | Paged Markdown with Add/Edit actions, multiline creation and state-filtered task operations; fixed revision rejects stale edits. Real Chromium and 80/40-column PTY cover creation, selection, passive replay and readable footer | Physical acceptance of every task operation and concurrent-edit recovery |
+| `/plan`, `/plan off`, `/plan status` | The core overlay is the only mode truth. Status reports `Plan mode: active`/`inactive` and notes a different read-only reason; reading status does not toggle. Unit interaction test covers enter/status/leave | Physical client acceptance incl. the empty-form Ctrl+S path; overlay, restart, concurrency, malformed-legacy-state, and frozen-policy integration tests remain authoritative |
+| `/skills`, `/skills show` | Choices and paged details show source/status/instructions, disabled/empty recovery, and broken entries with bounded diagnostics and recovery actions; Unicode bounds tested. Real Chromium covers page navigation and plugin disable after reload | Physical terminal acceptance of long skill details; actual enable/disable remains configuration admission |
+| `/workflow run` | Bare command prepares a configured workflow select and task editor; no preparation side effect. Natural name input and full structured JSON task remain available | Physical client acceptance of selecting, editing task, and starting only on submit |
+| `/workflow status`, `/workflow pause`, `/workflow resume`, `/workflow cancel` | Bare commands prepare state-filtered run selectors. Status shows paged nodes, readable UTF-8 result pages, and applicable Pause/Resume/Cancel actions; cancellation retains governed confirmation | Physical client acceptance of result paging, lifecycle actions and cancellation confirmation |
+| `/loop` | Bare command prepares a multiline editor with interval example/default; creation offers Browse/Cancel and reports expiry. `/loop list` pages schedules with actual next-fire status, `/loop delete` shares tool deletion/disarming and states that an in-flight run is not interrupted. Natural input remains available; prompts fire as ordinary user text, never slash dispatch; preparation does not schedule | Physical client acceptance for list/cancel and claimed-run semantics |
+| `/review` | Bare slash input prepares a target/focus form with default workspace changes and branch/SHA requirements; explicit natural focus and structured invocation remain available. Preparation performs no Git/provider/child work; focus survives all target types. The child is labelled `review-git`, receives only the visible `read`/`grep`/`glob` subset, and the diff is delimited as untrusted data. Plan/read-only startup is covered by integration | Physical client acceptance of target selection and missing-argument recovery |
+| `/compact` | One-step explicit action returns structured accounting: event range, covered/dropped bytes, summary source and measured tokens; absent measurements remain unknown. Unit tests cover success, no-op and empty session | Physical client acceptance for accounting and refusal readability |
+| `/mcp`, `/lsp` | Passive service selectors open status/error details; MCP tools page through the full cached surface and distinguish undiscovered from known-empty. Unit tests verify selection, failures, disabled-configuration reporting and 61-tool Unicode pagination | Physical client acceptance of server navigation and recovery; configuration changes still require admission |
+| `/btw`, `!<command>` (hidden command ID `shell`) | Separate question / supervised shell commands | Preserve natural raw text and cancellation semantics; `!` is client-invoked and has no approval/hook gate, and an idle command is cancellable from the TUI |
 
-Paths in the table are relative to `src/voidcode/plugins/`. Core help/status and
+Source paths in the evidence column are relative to `src/voidcode/plugins/`. Core help/status and
 client navigation also need keyboard and empty-state acceptance; they must keep
 working with zero plugins. Do not replace the catalog with a client-side list of
 plugin command names.
@@ -41,6 +65,11 @@ plugin command names.
 
 - `/` and `/sk` show one root `skills`, with its description and namespace marker.
 - `/skills ` offers `show`; bare `/skills` remains executable with Enter.
+- A root with subcommands but no executable command (`/core`, `/workflow`) shows
+  a derived `Subcommands: …` summary instead of an empty description. Typing
+  the bare root and submitting names those subcommands; no command is invoked.
+- Help lists the root first and indents its subcommands under the full
+  `/root subcommand` spelling; the dotted machine ID never appears.
 - Tab enters child namespaces. Enter on a namespace with no command enters it;
   Enter on an exact executable selection dispatches only that command.
 - Descriptions and required `<argument>` / optional `[argument]` hints come from

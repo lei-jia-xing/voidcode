@@ -20,6 +20,7 @@ import { useSession } from "./hooks/useSession";
 import {
   argumentHints,
   displaySlashPath,
+  matchNamespace,
   slashPathOf,
   useCatalog,
 } from "./hooks/useCatalog";
@@ -631,37 +632,42 @@ export const CoreApp: React.FC<CoreAppProps> = ({ baseUrl = "", token }) => {
               data-testid="slash-suggestions"
               className="absolute bottom-full mb-1 left-3 bg-neutral-900 border border-neutral-700 rounded-md shadow-xl py-1 w-64 max-h-48 overflow-y-auto z-50 text-xs"
             >
-              {composer.slashSuggestions.map((cmd, index) => (
-                <button
-                  key={cmd}
-                  type="button"
-                  onClick={() => {
-                    composer.selectSuggestion(cmd);
-                  }}
-                  className={`w-full text-left px-3 py-1.5 hover:bg-neutral-800 text-neutral-200 font-mono ${index === composer.suggestionIndex % composer.slashSuggestions.length ? "bg-neutral-700" : ""}`}
-                >
-                  /{cmd}
-                  {catalog.slashCommands.some((entry) =>
-                    slashPathOf(entry).startsWith(cmd + " "),
-                  )
-                    ? " ›"
-                    : ""}
-                  <span className="ml-3 text-neutral-200">
-                    {argumentHints(
-                      catalog.catalog.commands.find(
-                        (entry) => slashPathOf(entry) === cmd,
-                      )?.argument_schema,
-                    )}
-                  </span>
-                  <span className="ml-3 font-sans text-neutral-300">
-                    {
-                      catalog.catalog.commands.find(
-                        (entry) => slashPathOf(entry) === cmd,
-                      )?.description
-                    }
-                  </span>
-                </button>
-              ))}
+              {composer.slashSuggestions.map((cmd, index) => {
+                const descriptor = catalog.catalog.commands.find(
+                  (entry) => slashPathOf(entry) === cmd,
+                );
+                const namespace = descriptor
+                  ? null
+                  : matchNamespace(catalog.slashCommands, cmd.split(" "));
+                return (
+                  <button
+                    key={cmd}
+                    type="button"
+                    onClick={() => {
+                      composer.selectSuggestion(cmd);
+                    }}
+                    className={`w-full text-left px-3 py-1.5 hover:bg-neutral-800 text-neutral-200 font-mono ${index === composer.suggestionIndex % composer.slashSuggestions.length ? "bg-neutral-700" : ""}`}
+                  >
+                    /{cmd}
+                    {catalog.slashCommands.some((entry) =>
+                      slashPathOf(entry).startsWith(cmd + " "),
+                    )
+                      ? " ›"
+                      : ""}
+                    <span className="ml-3 text-neutral-200">
+                      {argumentHints(descriptor?.argument_schema)}
+                    </span>
+                    <span className="ml-3 font-sans text-neutral-300">
+                      {descriptor?.description ??
+                        (namespace
+                          ? t("core.subcommands", {
+                              names: namespace.children.join(", "),
+                            })
+                          : "")}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
 

@@ -7,6 +7,7 @@ from voidcode.sdk.command_help import (
     command_usage,
     grouped_help_entries,
     help_entries,
+    public_command_parts,
     public_command_path,
 )
 from voidcode.sdk.commands import CommandDefinition, CommandDescriptor
@@ -33,10 +34,16 @@ def test_public_path_and_usage_derive_from_descriptor_fields() -> None:
         group="Goal",
     )
     assert public_command_path(descriptor) == "goal set"
+    assert public_command_parts(descriptor) == ("goal", "set")
     assert command_argument_hints(descriptor) == ("<objective>", "[token_budget]")
     assert command_usage(descriptor) == "/goal set <objective> [token_budget]"
 
+    spaced = _descriptor("goal.set", "goal", "Set a goal.", client_syntax="/goal   set")
+    assert public_command_path(spaced) == "goal set"
+    assert public_command_parts(spaced) == ("goal", "set")
+
     explicit = _descriptor("shell", "user_shell", usage="!<command>", client_syntax="!")
+    assert public_command_parts(explicit) == ("shell",)
     assert command_usage(explicit) == "!<command>"
 
 
@@ -48,8 +55,34 @@ def test_help_entries_filter_sort_and_group() -> None:
         _descriptor("beta", "core", "B"),
     )
     entries = help_entries(descriptors)
-    assert [entry.name for entry in entries] == ["beta", "core.a", "zeta"]
+    assert [entry.name for entry in entries] == ["beta", "core", "core.a", "zeta"]
+    assert [(entry.path, entry.depth, entry.derived) for entry in entries] == [
+        ("beta", 1, False),
+        ("core", 1, True),
+        ("core a", 2, False),
+        ("zeta", 1, False),
+    ]
     assert [group for group, _entries in grouped_help_entries(descriptors)] == ["Core", "plugin"]
+
+
+def test_help_roots_prefix_their_subcommands_and_derive_missing_namespaces() -> None:
+    descriptors = (
+        _descriptor("goal", "goal", "Show the goal."),
+        _descriptor("goal.set", "goal", "Set the goal."),
+        _descriptor("workflow.run", "workflows", "Run a workflow.", client_syntax="/workflow.run"),
+        _descriptor("core.reload", "core", "Reload."),
+    )
+    entries = help_entries(descriptors)
+    assert [(entry.path, entry.depth, entry.derived) for entry in entries] == [
+        ("core", 1, True),
+        ("core reload", 2, False),
+        ("goal", 1, False),
+        ("goal set", 2, False),
+        ("workflow", 1, True),
+        ("workflow run", 2, False),
+    ]
+    assert entries[0].description == "Subcommands: reload"
+    assert entries[4].description == "Subcommands: run"
 
 
 def test_metadata_round_trips_through_the_catalog_payload() -> None:
@@ -108,6 +141,21 @@ def test_help_fits_narrow_and_wide_terminals_without_losing_content() -> None:
         assert "/goal set <objective>" in joined
         assert "[token_budget]" in joined
         assert "宽字符描述" in joined
+
+
+def test_help_indents_subcommands_under_their_primary_root() -> None:
+    descriptors = (
+        _descriptor("core.reload", "core", "Re-admit configured plugin sources."),
+        _descriptor("workflow.run", "workflows", "Start a configured workflow.", client_syntax="/workflow run"),
+        _descriptor("workflow.status", "workflows", "Read one workflow run.", client_syntax="/workflow status"),
+    )
+    rows = _rows(100, descriptors)
+    text = "\n".join(rows)
+    assert "/core" in text and "Subcommands: reload" in text
+    assert "/workflow" in text and "Subcommands: run, status" in text
+    assert "workflow.run" not in text and "core.reload" not in text
+    assert any(row.startswith("    /workflow  ") for row in rows)
+    assert any(row.startswith("      /workflow run  ") for row in rows)
 
 
 def test_help_columns_are_group_local_at_120() -> None:

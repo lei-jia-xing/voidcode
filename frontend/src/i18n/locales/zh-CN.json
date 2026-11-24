@@ -16,6 +16,8 @@
   "core.statusRun": "运行：{{status}}",
   "core.statusRunFailed": "运行失败：{{message}}",
   "core.statusUnknownCommand": "未知命令：/{{name}}",
+  "core.statusCommandNamespace": "未知命令：/{{name}} — {{path}} 的子命令：{{names}}",
+  "core.subcommands": "子命令：{{names}}",
   "core.statusInvalidJsonArgs": "参数必须是合法 JSON：{{args}}",
   "core.statusInvoking": "正在调用 {{name}}…",
   "core.statusInvoked": "/{{name}}：{{status}}",

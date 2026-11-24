@@ -351,6 +351,102 @@ describe("spaced slash dispatch", () => {
     h.unmount();
   });
 
+  it("normalizes declared whitespace to exactly one space", async () => {
+    const h = await mount([
+      {
+        owner: "goal",
+        name: "goal.set",
+        description: "Set goal",
+        client_syntax: "/goal  set",
+        argument_schema: {
+          type: "object",
+          properties: { objective: { type: "string" } },
+          required: ["objective"],
+        },
+      },
+    ]);
+    fireEvent.change(screen.getByTestId("prompt-input"), {
+      target: { value: "/goal se" },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("slash-suggestions")).toHaveTextContent(
+        "/goal set",
+      );
+    });
+    await submitSlash(h, "/goal   set   Ship it");
+    await waitFor(() => expect(h.invokes).toHaveLength(1));
+    expect(h.invokes[0].params.name).toBe("goal.set");
+    expect(h.invokes[0].params.arguments).toEqual({ objective: "Ship it" });
+    h.unmount();
+  });
+
+  it("never exposes a hidden non-slash command on the slash surface", async () => {
+    const h = await mount([
+      {
+        owner: "p",
+        name: "shell",
+        description: "Run a shell command",
+        client_syntax: "!",
+        slash_visible: false,
+        argument_schema: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
+      },
+      {
+        owner: "p",
+        name: "skills",
+        description: "List skills",
+        argument_schema: { type: "object", properties: {} },
+      },
+    ]);
+    fireEvent.change(screen.getByTestId("prompt-input"), {
+      target: { value: "/" },
+    });
+    const suggestions = await screen.findByTestId("slash-suggestions");
+    expect(suggestions).not.toHaveTextContent("/shell");
+    await submitSlash(h, "/shell echo hi");
+    await waitFor(() => {
+      expect(screen.getByText(/Unknown command/)).toBeVisible();
+    });
+    expect(h.invokes).toHaveLength(0);
+    h.unmount();
+  });
+
+  it("summarizes a bare namespace and names its subcommands on rejection", async () => {
+    const h = await mount([
+      {
+        owner: "workflows",
+        name: "workflow.run",
+        description: "Run",
+        argument_schema: { type: "object", properties: {} },
+      },
+      {
+        owner: "workflows",
+        name: "workflow.status",
+        description: "Status",
+        argument_schema: { type: "object", properties: {} },
+      },
+    ]);
+    fireEvent.change(screen.getByTestId("prompt-input"), {
+      target: { value: "/work" },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("slash-suggestions")).toHaveTextContent(
+        "Subcommands: run, status",
+      );
+    });
+    await submitSlash(h, "/workflow");
+    await waitFor(() => {
+      expect(
+        screen.getByText(/workflow subcommands: run, status/),
+      ).toBeVisible();
+    });
+    expect(h.invokes).toHaveLength(0);
+    h.unmount();
+  });
+
   it("groups parent commands and reveals described children after selection", async () => {
     const h = await mount([
       {

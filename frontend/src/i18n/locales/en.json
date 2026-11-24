@@ -16,6 +16,8 @@
   "core.statusRun": "Run: {{status}}",
   "core.statusRunFailed": "Run failed: {{message}}",
   "core.statusUnknownCommand": "Unknown command: /{{name}}",
+  "core.statusCommandNamespace": "Unknown command: /{{name}} — {{path}} subcommands: {{names}}",
+  "core.subcommands": "Subcommands: {{names}}",
   "core.statusInvalidJsonArgs": "Arguments must be valid JSON: {{args}}",
   "core.statusInvoking": "Invoking {{name}}...",
   "core.statusInvoked": "/{{name}}: {{status}}",

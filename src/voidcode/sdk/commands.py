@@ -116,9 +116,13 @@ class CommandDescriptor:
     argument_schema: Mapping[str, object] = field(default_factory=dict)
     effects: tuple[ToolEffect, ...] = ()
     busy_gate: bool = False
-    #: Declarative client syntax prefix, when the command declares one.
+    #: Declarative client syntax prefix, when the command declares one. A slash prefix
+    #: is the public display/input path (dots separate levels, one space per level); a
+    #: non-slash prefix such as ``!`` is that client surface's routing prefix.
     client_syntax: str | None = None
     has_input: bool = False
+    #: Hidden helpers are callable but not discovered; with a non-slash syntax they have
+    #: no slash alias (the declared prefix is their only client surface).
     slash_visible: bool = True
     text_argument: str | None = None
     #: Canonical default key chord clients may bind (None means no default).
@@ -308,11 +312,14 @@ class CommandDefinition:
     argument_schema: Mapping[str, object] = field(default_factory=dict)
     effects: frozenset[ToolEffect] | Sequence[ToolEffect] = frozenset()
     busy_gate: bool = False
-    #: Declarative client syntax prefix (clients route it; the core never parses it).
+    #: Declarative client syntax prefix (clients route it; the core never parses it). A
+    #: slash prefix is the public path: dots are level separators and every level is
+    #: joined by exactly one space; a non-slash prefix is that surface's only entry.
     client_syntax: str | None = None
     #: Optional string property receiving natural slash trailing text.
     text_argument: str | None = None
-    #: Internal UI action helpers remain callable but need not appear in slash discovery.
+    #: Internal UI action helpers remain callable but need not appear in slash discovery;
+    #: a hidden command with a non-slash syntax therefore has no slash alias.
     slash_visible: bool = True
     #: Canonical default key chord (e.g. "alt+a"); clients bind it unless reserved or conflicting.
     default_shortcut: str | None = None

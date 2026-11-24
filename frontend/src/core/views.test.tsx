@@ -169,6 +169,27 @@ describe("FormView", () => {
       busy_gate: false,
     },
   ];
+  it("shows the public command path when no explicit title is provided", () => {
+    render(
+      <FormView
+        data={{ style: null, action: "goal.set", fields: [] }}
+        sessionId="sess-1"
+        revisionId={DISPLAYED_REVISION}
+        getClient={() => ({ invoke: vi.fn() }) as unknown as CoreClient}
+        catalog={[
+          {
+            owner: "goal",
+            name: "goal.set",
+            description: "Set goal",
+            client_syntax: "/goal  set",
+          },
+        ]}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Form: goal set")).toBeVisible();
+  });
+
   it("renders inputs with initial values and submits values", async () => {
     const onSubmit = vi.fn();
     const mockClient = {

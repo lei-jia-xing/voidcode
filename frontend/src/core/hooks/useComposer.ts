@@ -2,7 +2,12 @@ import { useMemo, useState } from "react";
 import type React from "react";
 import { useTranslation } from "react-i18next";
 import type { CommandDescriptor } from "../../lib/core/types";
-import { matchSlashPath, slashPathOf } from "./useCatalog";
+import {
+  matchNamespace,
+  matchSlashPath,
+  slashDispatchable,
+  slashPathOf,
+} from "./useCatalog";
 import type { SessionScope } from "./useSession";
 
 /**
@@ -78,7 +83,9 @@ export function useComposer({
       const body = text.slice(1).trimStart();
       const tokens = body.split(/\s+/).filter((token) => token !== "");
       const match =
-        tokens.length > 0 ? matchSlashPath(catalogCommands, tokens) : null;
+        tokens.length > 0
+          ? matchSlashPath(slashDispatchable(catalogCommands), tokens)
+          : null;
 
       // Admitted plugin commands always win: local controls never shadow a
       // catalog command that happens to share the name.
@@ -96,7 +103,16 @@ export function useComposer({
           await createSession();
           return;
         }
-        setStatusMessage(t("core.statusUnknownCommand", { name: body }));
+        const namespace = matchNamespace(slashCommands, tokens);
+        setStatusMessage(
+          namespace
+            ? t("core.statusCommandNamespace", {
+                name: body,
+                path: namespace.path,
+                names: namespace.children.join(", "),
+              })
+            : t("core.statusUnknownCommand", { name: body }),
+        );
         return;
       }
       if ("ambiguous" in match) {
@@ -198,7 +214,7 @@ export function useComposer({
       return [];
     }
     const query = promptInput.slice(1).toLowerCase();
-    const builtins = ["help", "cancel", "views", "new"];
+    const builtins = ["cancel", "views", "new"];
     const fromCatalog = slashCommands.map(slashPathOf);
     const all = Array.from(new Set([...builtins, ...fromCatalog]));
     const split = query.lastIndexOf(" ");
@@ -242,7 +258,7 @@ export function useComposer({
       const exact = promptInput === `/${selected}`;
       const executable =
         slashCommands.some((entry) => slashPathOf(entry) === selected) ||
-        ["help", "cancel", "views", "new"].includes(selected);
+        ["cancel", "views", "new"].includes(selected);
       if (e.key === "Tab" || !exact || !executable) {
         e.preventDefault();
         const children = slashCommands.some((entry) =>

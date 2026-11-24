@@ -100,6 +100,21 @@ class HelloGetCommand:
         return CommandResult(status="ok", output=f"Current greeting: {greeting}", data=data)
 
 
+class HelloDetailCommand:
+    definition = CommandDefinition(
+        name="hello.detail",
+        description="Read greeting details.",
+        argument_schema={"type": "object", "additionalProperties": False},
+        effects=frozenset({ToolEffect.READ}),
+        busy_gate=False,
+    )
+
+    def invoke(self, invocation, services):
+        state, version = services.get_state("session")
+        greeting = (state or {}).get("greeting", "none")
+        return CommandResult(status="ok", data={"greeting": greeting, "version": version})
+
+
 class GatedCommand:
     definition = CommandDefinition(
         name="gated_action",
@@ -129,7 +144,7 @@ class HelloView:
 
 
 def create_plugin(config):
-    return Plugin(commands=(HelloSetCommand(), HelloGetCommand(), GatedCommand()), views=(HelloView(),)FACTORY_TAIL)
+    return Plugin(commands=(HelloSetCommand(), HelloGetCommand(), HelloDetailCommand(), GatedCommand()), views=(HelloView(),)FACTORY_TAIL)
 '''
     code = code.replace(
         "from voidcode.sdk.commands import CommandDefinition, CommandResult\n",
@@ -432,6 +447,11 @@ def test_cli_and_http_share_generic_command_route_with_restart(tmp_path: Path) -
         # same durable state without touching voidcode.json.
         again = _cli(workspace, state, "invoke", "shared-1", "hello_get")
         assert again["data"]["greeting"] == "persist-me"
+        # The same admitted command answers to its canonical ID and public path.
+        canonical = _cli(workspace, state, "invoke", "shared-1", "hello.detail")
+        assert canonical["data"]["greeting"] == "persist-me"
+        aliased = _cli(workspace, state, "invoke", "shared-1", "hello detail")
+        assert aliased["data"] == canonical["data"]
 
 
 def test_busy_gate_matrix_over_real_cli(tmp_path: Path) -> None:

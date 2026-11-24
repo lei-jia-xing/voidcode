@@ -23,6 +23,7 @@ from . import __version__
 from .bootstrap import open_core, state_directory
 from .config import BannerConfig
 from .core.storage.store import DATABASE_FILENAME, SessionRecord, open_read_only
+from .sdk.command_help import public_command_parts
 from .sdk.json_values import json_wire_object, own_json_object
 
 if TYPE_CHECKING:
@@ -41,6 +42,24 @@ def _parse_arguments(raw: str) -> dict[str, object]:
 
 
 _DEFAULT_WAIT_TIMEOUT = 300.0
+
+
+def _resolve_command_name(core: Core, name: str) -> str:
+    """Resolve the public space-separated path (``goal set``) to its canonical ID.
+
+    Dotted canonical IDs pass through unchanged, so RPC/CLI compatibility never
+    depends on a display projection; an ambiguous public path is refused rather
+    than silently choosing one command.
+    """
+    requested = tuple(name.split())
+    if not requested:
+        return name
+    matches = sorted({descriptor.name for descriptor in core.command_catalog().commands if public_command_parts(descriptor) == requested})
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise ValueError(f"Ambiguous command path: {name} ({', '.join(matches)})")
+    return name
 
 
 def _check_wait_timeout(value: object) -> float:
@@ -171,11 +190,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "invoke",
         help="Invoke an admitted command and print one JSON result",
         description="Invoke one admitted command and print the result\nas JSON.",
-        epilog="Example:\n  voidcode invoke SESSION status \\\n      --expected-revision ID",
+        epilog=(
+            "Examples:\n"
+            "  voidcode invoke SESSION status \\\n"
+            "      --expected-revision ID\n"
+            '  voidcode invoke SESSION "goal set" \\\n'
+            '      --arguments \'{"objective": "Ship it"}\' \\\n'
+            "      --expected-revision ID"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     invoke.add_argument("session_id", metavar="SESSION", help="Session that owns the invocation")
-    invoke.add_argument("name", metavar="NAME", help="Command name from the catalog")
+    invoke.add_argument("name", metavar="NAME", help="Command ID from the catalog, or its space-separated public path")
     invoke.add_argument("--arguments", default="{}", metavar="JSON", help="Command arguments as a JSON object")
     invoke.add_argument("--expected-revision", required=True, metavar="ID", help="Capability revision the displayed catalog was captured under")
     invoke.add_argument(
@@ -511,7 +537,7 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
     if args.command == "invoke":
         result = core.invoke_command(
             args.session_id,
-            args.name,
+            _resolve_command_name(core, args.name),
             args.parsed_arguments,
             expected_revision=args.expected_revision,
         )

@@ -12,7 +12,58 @@ export function slashPathOf(descriptor: {
     typeof syntax === "string" && syntax.startsWith("/")
       ? syntax.slice(1).trim()
       : "";
-  return (prefix || descriptor.name).replace(/\./g, " ");
+  return (prefix || descriptor.name)
+    .replace(/\./g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** Slash-dispatchable commands: visible, plus hidden helpers with no non-slash syntax. */
+export function slashDispatchable<
+  T extends { slash_visible?: boolean; client_syntax?: string | null },
+>(commands: T[]): T[] {
+  return commands.filter(
+    (command) =>
+      command.slash_visible !== false ||
+      !command.client_syntax ||
+      command.client_syntax.startsWith("/"),
+  );
+}
+
+/** Subcommand names directly under the longest matching visible namespace. */
+export function matchNamespace<
+  T extends {
+    name: string;
+    client_syntax?: string | null;
+    slash_visible?: boolean;
+  },
+>(
+  commands: T[],
+  tokens: string[],
+): { path: string; children: string[] } | null {
+  const paths = commands
+    .filter((command) => command.slash_visible !== false)
+    .map((command) =>
+      slashPathOf(command)
+        .split(" ")
+        .filter((part) => part !== ""),
+    );
+  for (let width = tokens.length; width > 0; width--) {
+    const prefix = tokens.slice(0, width);
+    const children = new Set<string>();
+    for (const parts of paths) {
+      if (parts.length <= width) continue;
+      if (prefix.every((token, index) => parts[index] === token)) {
+        children.add(parts[width]);
+      }
+    }
+    if (children.size > 0) {
+      return { path: prefix.join(" "), children: Array.from(children).sort() };
+    }
+  }
+  return null;
 }
 
 /** Human argument hints derived from the admitted schema. */

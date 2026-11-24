@@ -124,7 +124,9 @@ def _command_rows(
 ) -> list[str]:
     rows: list[str] = []
     for group, entries in groups:
-        items = [(entry.usage, entry.description, entry.examples) for entry in entries]
+        # Each root starts a row; its subcommands are indented beneath it while
+        # keeping the full `/root subcommand` spelling in the usage column.
+        items = [("  " * (entry.depth - 1) + entry.usage, entry.description, entry.examples) for entry in entries]
         for line in wrap_plain(group, max(1, width - 2)):
             rows.append("  " + _heading(line, styles))
         rows.extend(_table_rows(items, width=width, indent=4, styles=styles))

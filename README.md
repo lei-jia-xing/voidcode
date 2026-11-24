@@ -95,27 +95,28 @@ In a source checkout without the console script installed, use `uv run python -m
 
 ### In-session commands
 
-Every client dispatches commands from the admitted catalog. TUI and web use space-separated paths such as `/core reload` and `/goal set`; dotted slash spellings are not aliases. CLI/RPC invocation keeps the catalog ID, for example `voidcode invoke <session_id> core.reload --expected-revision <revision_id>`:
+Every client dispatches commands from the admitted catalog. TUI and web use space-separated paths such as `/core reload` and `/goal set`; dotted slash spellings are not aliases. RPC invocation and the catalog keep the dotted catalog ID, for example `core.reload`; CLI `invoke` accepts either the ID or the quoted public path (`voidcode invoke <session_id> "core reload" --expected-revision <revision_id>`):
 
 | Plugin | Commands |
 |---|---|
 | `plan` | `/plan`, `/plan off`, `/plan status` |
-| `todo` | `/todo`, `/todo clear` |
-| `goal` | `/goal`, `/goal set`, `/goal edit`, `/goal pause`, `/goal resume`, `/goal clear`, `/goal load_objective` |
-| `skills` | `/skills`, `/skills.show` |
+| `todo` | `/todo`, `/todo add`, `/todo edit`, `/todo clear` |
+| `goal` | `/goal`, `/goal set`, `/goal edit`, `/goal pause`, `/goal resume`, `/goal clear` |
+| `skills` | `/skills`, `/skills show` |
 | `providers` | `/model`, `/providers` |
 | `subagents` | alt+a (subagent monitor) |
 | `review` | `/review` |
 | `btw` | `/btw` |
-| `cron` | `/loop` |
+| `cron` | `/loop`, `/loop list`, `/loop delete` |
 | `compaction` | `/compact` |
 | `lsp` | `/lsp` |
 | `mcp` | `/mcp` |
-| `user_shell` | `/shell` |
+| `workflows` | `/workflow run`, `/workflow status`, `/workflow pause`, `/workflow resume`, `/workflow cancel` |
+| `user_shell` | `!<command>` (command ID `shell`, not a slash command) |
 
 The TUI also has client-local controls that are not admitted commands: `/tui help`, `/tui sessions`, `/tui session <id>`, `/tui new`, `/tui views`, `/tui cancel`, `/tui quit`.
 
-The TUI opens on a quiet composer: no plugin views load until requested. Goal, provider, and model details stay behind their on-demand commands (`/goal`, `/providers`, `/model`), and `/tui views [name]` (for example `/tui views goal.details`) renders passive views inline while a form, choices, or confirmation opens as a framed dialog. The status line shows meaningful progress, errors, and gates — never session hashes — and explicit `/status`, `/show`, and `/tui sessions` keep diagnostics.
+The TUI opens on a quiet composer: no plugin views load until requested. Goal, provider, and model details stay behind their on-demand commands (`/goal`, `/providers`, `/model`), the local `/tui model` and `/tui thinking` controls switch embedded sessions, and `/tui views [name]` (for example `/tui views goal.details`) renders passive views inline while a form, choices, or confirmation opens as a framed dialog. The status line shows meaningful progress, errors, and gates — never session hashes — and explicit `/status`, `/show`, and `/tui sessions` keep diagnostics.
 
 ## Architecture
 

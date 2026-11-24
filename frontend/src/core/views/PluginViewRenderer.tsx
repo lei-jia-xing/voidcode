@@ -88,6 +88,7 @@ export const PluginViewRenderer: React.FC<PluginViewRendererProps> = ({
         <ChoicesView
           title={descriptor.title}
           data={data as ChoicesViewData}
+          catalog={catalog}
           onSelect={(action, args) =>
             onAction(
               action,

@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 import webbrowser
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -1646,18 +1646,23 @@ class CoreTuiApp:
             self.composer.completion_groups = set()
         else:
             self._path_replacements = {}
+            visible_paths = [f"/{_slash_public_path(entry)}" for entry in self.catalog_cache if entry.slash_visible]
             descriptions: dict[str, str] = {}
             for entry in self.catalog_cache:
+                if not entry.slash_visible:
+                    continue
                 path = f"/{_slash_public_path(entry)}"
                 hints = " ".join(command_argument_hints(entry))
                 descriptions[path] = f"{hints} — {entry.description}" if hints else entry.description
+            groups = {candidate for candidate in candidates if candidate == "/tui" or any(path.startswith(candidate + " ") for path in visible_paths)}
+            for candidate in groups:
+                if candidate in descriptions:
+                    continue
+                children = sorted({path[len(candidate) + 1 :].split(" ", 1)[0] for path in visible_paths if path.startswith(candidate + " ")})
+                if children:
+                    descriptions[candidate] = f"Subcommands: {', '.join(children)}"
             self.composer.completion_descriptions = descriptions
-            self.composer.completion_groups = {
-                candidate
-                for candidate in candidates
-                if any(f"/{_slash_public_path(entry)}".startswith(candidate + " ") for entry in self.catalog_cache if entry.slash_visible)
-                or candidate == "/tui"
-            }
+            self.composer.completion_groups = groups
 
     def _completion_candidates(self) -> tuple[list[str], tuple[int, int] | None]:
         """Slash-command or workspace @path paths matching the draft token at cursor."""
@@ -1844,11 +1849,26 @@ class CoreTuiApp:
             self.terminal.commit_rows([f"{self.styles.fg('error', f'Unknown command: /{_safe(rest)}')} (try /help)"])
             return True
 
-        # A bare name is a local control only when no admitted command owns it.
-        if head not in {c.name for c in descriptors} and self._run_local_control(head, arg_str):
+        # Exact and namespace command paths were matched above; only a local
+        # control can own the remaining bare name.
+        if self._run_local_control(head, arg_str):
             return True
         self._dispatch_catalog_command(None, rest)
+        hint = self._namespace_hint(tokens, descriptors)
+        if hint:
+            self.terminal.commit_rows([self.styles.fg("muted", hint)])
         return True
+
+    @staticmethod
+    def _namespace_hint(tokens: list[str], descriptors: Sequence[CommandDescriptor]) -> str | None:
+        """Name the subcommands of the longest matching visible namespace prefix."""
+        paths = [_slash_public_path(entry).split() for entry in descriptors if entry.slash_visible]
+        for width in range(len(tokens), 0, -1):
+            prefix = tokens[:width]
+            children = sorted({parts[width] for parts in paths if len(parts) > width and parts[:width] == prefix})
+            if children:
+                return f"/{' '.join(prefix)} subcommands: {', '.join(children)}"
+        return None
 
     def _run_local_control(self, cmd: str, arg_str: str) -> bool:
         """Run one client-local control; False when the name is not a control."""

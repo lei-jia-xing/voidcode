@@ -1059,8 +1059,8 @@ class Core:
             lines.append("")
             lines.append(f"{group}:")
             for entry in entries:
-                lines.append(f"  {entry.usage} — {entry.description}")
-                lines.extend(f"    e.g. {example}" for example in entry.examples)
+                lines.append(f"  {'  ' * (entry.depth - 1)}{entry.usage} — {entry.description}")
+                lines.extend(f"    {'  ' * (entry.depth - 1)}e.g. {example}" for example in entry.examples)
         return CommandResult(status="ok", output="\n".join(lines), data=catalog.as_payload())
 
     def owner_cancel_claimed_work(

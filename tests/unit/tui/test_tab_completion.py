@@ -326,6 +326,43 @@ def test_root_groups_and_tab_enter_children_without_dispatch() -> None:
     assert "/tui output" in app.composer.completion
 
 
+def test_namespace_root_summary_and_subcommand_hint_come_from_catalog_paths() -> None:
+    app, terminal = _app()
+    app.catalog_cache = (
+        CommandDescriptor(name="workflow.run", owner="workflows", description="Run", client_syntax="/workflow  run"),
+        CommandDescriptor(name="workflow.status", owner="workflows", description="Status"),
+    )
+    app.catalog_revision = "rev-1"
+    _type(app, "/work")
+    assert app.composer.completion == ("/workflow",)
+    assert app.composer.completion_descriptions["/workflow"] == "Subcommands: run, status"
+    assert "/workflow" in app.composer.completion_groups
+
+    calls: list[tuple[str, Any, str]] = []
+    app._invoke_async = lambda name, arguments, revision, **kwargs: calls.append((name, arguments, revision))
+    terminal.committed.clear()
+    app._dispatch_slash_command("/workflow")
+    assert calls == []
+    assert any("Unknown command: /workflow" in row for row in terminal.committed), terminal.committed
+    assert any("/workflow subcommands: run, status" in row for row in terminal.committed), terminal.committed
+
+
+def test_spaced_core_path_dispatches_canonical_id_without_dotted_alias() -> None:
+    app, terminal = _app()
+    app.catalog_cache = (CommandDescriptor(name="core.reload", owner="core", description="Reload"),)
+    app.catalog_revision = "rev-1"
+    calls: list[tuple[str, Any, str]] = []
+    app._invoke_async = lambda name, arguments, revision, **kwargs: calls.append((name, arguments, revision))
+
+    app._dispatch_slash_command("/core   reload")
+    assert calls == [("core.reload", {}, "rev-1")]
+
+    terminal.committed.clear()
+    app._dispatch_slash_command("/core.reload")
+    assert calls == [("core.reload", {}, "rev-1")]
+    assert any("Unknown command" in row for row in terminal.committed), terminal.committed
+
+
 def test_required_arguments_open_revision_bound_form_without_invocation() -> None:
     from voidcode.tui.views import InteractiveForm
 

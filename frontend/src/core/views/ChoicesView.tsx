@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { ChoicesViewData } from "../../lib/core/types";
+import type { ChoicesViewData, CommandDescriptor } from "../../lib/core/types";
+import { displaySlashPath } from "../hooks/useCatalog";
 import { componentFg, componentStyle } from "./componentStyle";
 
 export interface ChoicesViewProps {
   title?: string;
   data: Omit<ChoicesViewData, "argument_name"> & { argument_name?: string };
+  /** The admitted catalog: display paths are projections of its machine IDs. */
+  catalog?: CommandDescriptor[];
   onSelect: (action: string, args: Record<string, unknown>) => void;
   disabled?: boolean;
 }
@@ -13,6 +16,7 @@ export interface ChoicesViewProps {
 export const ChoicesView: React.FC<ChoicesViewProps> = ({
   title,
   data,
+  catalog = [],
   onSelect,
   disabled = false,
 }) => {
@@ -62,7 +66,10 @@ export const ChoicesView: React.FC<ChoicesViewProps> = ({
         style={fg}
         className="text-xs font-semibold uppercase text-neutral-400 mb-3 tracking-wider"
       >
-        {title || t("core.choicesSelectFor", { action: data.action })}
+        {title ||
+          t("core.choicesSelectFor", {
+            action: displaySlashPath(catalog, data.action),
+          })}
       </div>
       <input
         data-testid="choices-filter"

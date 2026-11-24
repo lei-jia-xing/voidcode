@@ -6,6 +6,7 @@ import type {
   FormViewData,
 } from "../../lib/core/types";
 import type { CoreClient } from "../../lib/core/client";
+import { displaySlashPath } from "../hooks/useCatalog";
 import { componentFg, componentStyle } from "./componentStyle";
 
 export interface FormViewProps {
@@ -362,7 +363,10 @@ export const FormView: React.FC<FormViewProps> = ({
           style={fg}
           className="font-semibold text-neutral-300 uppercase tracking-wider text-xs"
         >
-          {title || t("core.formTitle", { action: data.action })}
+          {title ||
+            t("core.formTitle", {
+              action: displaySlashPath(catalog, data.action),
+            })}
         </div>
         {loading && (
           <span

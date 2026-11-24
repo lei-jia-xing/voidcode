@@ -9,12 +9,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from voidcode.bootstrap import state_directory
-from voidcode.cli import main
+from voidcode.cli import _resolve_command_name, main
 from voidcode.core.storage.store import SqliteStore
+from voidcode.sdk.commands import CommandCatalog, CommandDescriptor
 
 
 def _show_fixture(workspace: Path, state_dir: Path, session_id: str) -> str:
@@ -172,6 +174,26 @@ def test_tui_prefs_fail_visibly_on_a_malformed_file(tmp_path: Path) -> None:
     (workspace / "voidcode.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(ValueError, match="cannot read TUI preferences"):
         _tui_prefs(Namespace(server=None, no_border=False, footer=None, show_session=False), workspace=workspace)
+
+
+def _catalog(*names: str) -> SimpleNamespace:
+    commands = tuple(CommandDescriptor(name=name, owner="p", description=name) for name in names)
+    catalog = CommandCatalog(revision_id="rev-1", commands=commands)
+    return SimpleNamespace(command_catalog=lambda: catalog)
+
+
+def test_invoke_resolves_public_path_to_the_canonical_id() -> None:
+    core = _catalog("goal", "goal.set", "core.reload")
+    assert _resolve_command_name(core, "goal.set") == "goal.set"
+    assert _resolve_command_name(core, "goal  set") == "goal.set"
+    assert _resolve_command_name(core, "core reload") == "core.reload"
+    assert _resolve_command_name(core, "missing command") == "missing command"
+
+
+def test_invoke_refuses_an_ambiguous_public_path() -> None:
+    core = _catalog("goal.set", "goal set")
+    with pytest.raises(ValueError, match="Ambiguous command path: goal set"):
+        _resolve_command_name(core, "goal set")
 
 
 def test_bare_client_startup_error_writes_stderr_without_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
