@@ -2086,6 +2086,9 @@ class Core:
     def claim_pending_followup(self, session_id: str) -> Any | None:
         return self._followup.claim_pending_followup(session_id)
 
+    def recover_unstarted_child_drivers(self) -> list[tuple[str, str]]:
+        return self._delegation._recover_unstarted_child_drivers()
+
     def recover_child_publications(self) -> list[tuple[str, str]]:
         return self._delegation._recover_child_publications()
 

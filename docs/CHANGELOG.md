@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Unstarted child driver recovery
+- Spawn birth records now carry the accepted driver input (`prompt`, `max_steps`). Startup recovery continues only a pristine reservation whose queued driver future was lost at close, repairs a missing parent spawn fact first, and never replays a child that already ran or was explicitly cancelled.
+- An idle reservation that cannot be safely started (missing/malformed birth, revision/root mismatch, committed work without a run identity) is claimed once as a bounded failed run and published as a parent fact/notice instead of staying idle forever.
+- Verification: focused Core collaboration/delegation recovery tests; `ruff check`, `ruff format --check`, and `ty check src` green.
+
 ### Typed owner-budget exhaustion stops
 - A run stopped by a known owner budget now records a typed `BudgetExhaustion` on `core.run_interrupted` and `RunFinishedFact`: `owner_tokens` with the exact `max_input_tokens`/`max_output_tokens`/`max_total_tokens` source, `owner_cost_usd`, or `owner_elapsed_seconds`, with the measured consumed value, configured limit, clamped remaining, and `raise_owner_budget` continuation. Enforcement thresholds, stop status, and stop cause are unchanged; provider-turn and root-action forms are unchanged.
 - An unknown owner metric still fails before dispatch and produces no typed exhaustion, so missing token/cost/elapsed measurements are never replaced by guessed counters.

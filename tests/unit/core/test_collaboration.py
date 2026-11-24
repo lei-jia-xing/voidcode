@@ -21,6 +21,7 @@ import json
 import threading
 import time
 from collections.abc import Iterator, Mapping
+from concurrent.futures import Future
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
@@ -34,9 +35,10 @@ from tests.fixtures.s5_plugin import PROBE_TOOL as S5_PROBE_TOOL
 from tests.fixtures.s5_plugin import write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.core.delegation import DelegationManager
 from voidcode.core.engine import Core
 from voidcode.core.events import CHILD_OUTCOME_RECEIPT_OWNER, EventType, child_completion_notice_id
-from voidcode.core.storage.store import EventDraft, StoreConflict
+from voidcode.core.storage.store import EventDraft, SessionStatus, StoreConflict
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.services import ChildOutcome, ChildSendReceipt
 
@@ -1306,6 +1308,234 @@ def test_restart_republishes_an_uncommitted_child_fact_once_without_rerunning(
         assert len(child_requests) == 1
         notice_id = child_completion_notice_id(parent, child, run_id)
         _wait_for(lambda: reopened.store.continuation_status(notice_id) == "completed", what="the recovered notice consumption")
+
+
+def test_startup_recovers_an_accepted_spawn_whose_driver_was_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A close-cancelled driver is continued from the birth record, not replayed or left idle."""
+    with loopback_server([]) as server:
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            if prompt == "recovered child":
+                return _turn(output="recovered child answer")
+            return _turn(output="notice consumed")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        original_commit = core.commit_public_fact
+
+        def skip_spawn_fact(session_id: str, event: EventDraft, **kwargs: object):
+            if event.event_type == EventType.CHILD_SPAWNED:
+                return core.session(session_id)
+            return original_commit(session_id, event, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(core._delegation, "_start_child_run", lambda *args, **kwargs: True)
+            patch.setattr(core, "commit_public_fact", skip_spawn_fact)
+            child = core.spawn_child(
+                parent,
+                "recovered child",
+                notify_on_completion=True,
+                owner="probe",
+                idempotency_key="recovery-1",
+            )
+
+        assert core.session(child).status is SessionStatus.IDLE
+        assert core.session(child).run_id is None
+        assert not [event for event in core.events_after(child) if event.event_type == EventType.USER_MESSAGE]
+        assert not [event for event in core.events_after(parent) if event.event_type == EventType.CHILD_SPAWNED]
+        birth = next(event.payload for event in core.events_after(child) if event.event_type == EventType.CHILD_RESERVED)
+        assert birth["prompt"] == "recovered child" and birth["max_steps"] is None
+        core.close()
+        discard_core(core)
+
+        reopened = _open(tmp_path, server)
+        _wait_for(lambda: _child_facts(reopened, parent), what="the recovered child publication")
+        facts = _child_facts(reopened, parent)
+        assert len(facts) == 1
+        fact = facts[0]
+        assert fact["child_session_id"] == child
+        assert fact["status"] == "completed"
+        assert fact["output"] == "recovered child answer"
+        assert reopened.session(child).run_id == fact["run_id"]
+        assert reopened.session(child).status is SessionStatus.COMPLETED
+        spawned = [event.payload for event in reopened.events_after(parent) if event.event_type == EventType.CHILD_SPAWNED]
+        assert len(spawned) == 1, "the crash-window parent mapping is repaired exactly once"
+        assert spawned[0]["spawn_owner"] == "probe" and spawned[0]["idempotency_key"] == "recovery-1"
+
+        child_requests = [
+            request
+            for request in server.requests
+            if (messages := request.get("messages")) and isinstance(messages, list) and messages[-1].get("content") == "recovered child"
+        ]
+        assert len(child_requests) == 1, "exactly one recovered driver dispatched the accepted spawn"
+        reopened._delegation._recover_unstarted_child_drivers()
+        assert _child_facts(reopened, parent) == facts, "a later recovery pass never replays the run"
+        notice_id = child_completion_notice_id(parent, child, str(fact["run_id"]))
+        _wait_for(lambda: reopened.store.continuation_status(notice_id) == "completed", what="the recovered child's notice")
+
+
+def test_close_cancels_a_queued_child_driver_and_restart_continues_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real close/cancel_futures path leaves a durable reservation the next manager adopts."""
+    replies = [_turn(output="queued driver answer")]
+    with loopback_server(replies) as server:
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        executor = core._delegation._driver_executor
+        release = threading.Event()
+        occupied = [threading.Event() for _ in range(executor._max_workers)]
+
+        def occupy(started: threading.Event) -> None:
+            started.set()
+            release.wait(timeout=30)
+
+        blockers = [executor.submit(occupy, started) for started in occupied]
+        try:
+            assert all(started.wait(timeout=15) for started in occupied), "the driver pool was not saturated"
+            submitted: list[Future[None]] = []
+            original_submit = executor.submit
+
+            def capture(fn: object, *args: object, **kwargs: object):
+                future = original_submit(fn, *args, **kwargs)
+                if getattr(fn, "__name__", "") == "_run_child":
+                    submitted.append(future)
+                return future
+
+            monkeypatch.setattr(executor, "submit", capture)
+            child = core.spawn_child(parent, "queued driver child", notify_on_completion=False)
+            assert len(submitted) == 1 and not submitted[0].done(), "the child driver stayed queued"
+            core.close()
+            discard_core(core)
+            assert submitted[0].cancelled(), "close cancelled the queued driver future"
+        finally:
+            release.set()
+            for blocker in blockers:
+                blocker.result(timeout=30)
+
+        reopened = _open(tmp_path, server)
+        _wait_for(lambda: _child_facts(reopened, parent), what="the queued driver's recovered publication")
+        facts = _child_facts(reopened, parent)
+        assert len(facts) == 1
+        assert facts[0]["child_session_id"] == child
+        assert facts[0]["status"] == "completed" and facts[0]["output"] == "queued driver answer"
+        child_requests = [
+            request
+            for request in server.requests
+            if (messages := request.get("messages")) and isinstance(messages, list) and messages[-1].get("content") == "queued driver child"
+        ]
+        assert len(child_requests) == 1, "the cancelled future's work started exactly once after restart"
+
+
+def test_startup_recovery_leaves_started_and_terminal_children_untouched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Completed and parked runs are never restarted by reservation recovery."""
+    with loopback_server([]) as server:
+
+        def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+            if request.get("method") == "GET":
+                return {"data": [{"id": "exact-model"}]}
+            prompt = _last_user_text(request)
+            if prompt == "completed child":
+                return _turn(output="completed answer")
+            if prompt == "parked child":
+                return _turn(_call("parked-probe", PROBE_TOOL))
+            return _turn(output=f"unexpected request: {prompt!r}")
+
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        completed = core.spawn_child(parent, "completed child", notify_on_completion=False)
+        completed_outcome = _join(core, parent, completed)
+        assert completed_outcome.run_id is not None
+        parked = core.spawn_child(parent, "parked child", max_steps=1, notify_on_completion=False)
+        parked_outcome = core.join_child(parent, parked, timeout_seconds=30)
+        assert parked_outcome.status == "interrupted" and parked_outcome.run_id is not None
+        facts_before = _child_facts(core, parent)
+        requests_before = len(server.requests)
+        core.close()
+        discard_core(core)
+
+        reopened = _open(tmp_path, server)
+        reopened._delegation._recover_unstarted_child_drivers()
+        assert len(server.requests) == requests_before, "no terminal or parked child was replayed"
+        completed_now = reopened.session(completed)
+        assert (completed_now.status, completed_now.run_id) == (SessionStatus.COMPLETED, completed_outcome.run_id)
+        parked_now = reopened.session(parked)
+        assert (parked_now.status, parked_now.run_id) == (SessionStatus.INTERRUPTED, parked_outcome.run_id)
+        assert _child_facts(reopened, parent) == facts_before
+
+
+def test_startup_recovery_does_not_start_an_explicitly_cancelled_reservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled pristine reservation is a deliberate terminal state, not a recoverable spawn."""
+    with loopback_server([]) as server:
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        with monkeypatch.context() as patch:
+            patch.setattr(core._delegation, "_start_child_run", lambda *args, **kwargs: True)
+            child = core.spawn_child(parent, "cancelled child", notify_on_completion=False)
+        assert core.cancel_child(parent, child, reason="pre-start cancel") is True
+        assert core.session(child).status is SessionStatus.INTERRUPTED
+        cancel_run_id = core.session(child).run_id
+        core.close()
+        discard_core(core)
+
+        reopened = _open(tmp_path, server)
+        reopened._delegation._recover_unstarted_child_drivers()
+        cancelled_now = reopened.session(child)
+        assert (cancelled_now.status, cancelled_now.run_id) == (SessionStatus.INTERRUPTED, cancel_run_id)
+        assert len(server.requests) == 0, "the cancelled reservation never dispatched a provider turn"
+        assert _child_facts(reopened, parent) == [], "a pre-start cancel publishes no fabricated run fact"
+
+
+def test_startup_recovery_publishes_a_visible_outcome_for_an_unstartable_reservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed reservation fails visibly instead of staying idle forever."""
+    with loopback_server([]) as server:
+        core = _open(tmp_path, server)
+        parent = core.create_session("parent").session_id
+        with monkeypatch.context() as patch:
+            patch.setattr(core._delegation, "_start_child_run", lambda *args, **kwargs: True)
+            child = core.spawn_child(parent, "malformed child", notify_on_completion=False)
+        core.close()
+        discard_core(core)
+
+        original_birth = DelegationManager._birth_record
+
+        def damaged_birth(self: DelegationManager, child_id: str) -> dict[str, object] | None:
+            birth = original_birth(self, child_id)
+            if birth is not None and child_id == child:
+                birth = dict(birth)
+                birth.pop("prompt", None)
+            return birth
+
+        monkeypatch.setattr(DelegationManager, "_birth_record", damaged_birth)
+        reopened = _open(tmp_path, server)
+        _wait_for(lambda: _child_facts(reopened, parent), what="the unstartable reservation's visible outcome")
+        outcome = reopened.join_child(parent, child, timeout_seconds=0)
+        assert outcome.status == "failed" and outcome.output is None
+        assert outcome.error is not None and "no recoverable spawn prompt" in outcome.error
+        assert reopened.session(child).status is SessionStatus.FAILED
+        facts = _child_facts(reopened, parent)
+        assert len(facts) == 1
+        assert facts[0]["status"] == "failed" and facts[0]["output"] is None
+        assert "no recoverable spawn prompt" in str(facts[0]["error"])
+        assert len(server.requests) == 0, "the unstartable child never dispatched provider work"
+        assert reopened._delegation._start_child_run(parent, child, "must not start", None, "", False) is False
+        assert reopened._delegation._recover_unstarted_child_drivers() == []
+        assert _child_facts(reopened, parent) == facts, "the bounded failure outcome is exactly once"
 
 
 def test_recovery_publication_surfaces_provider_result_decode_failure(

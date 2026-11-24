@@ -153,6 +153,7 @@ class RunCoordinatorHost(Protocol):
         budget_exhaustion: BudgetExhaustion | None,
     ) -> None: ...
     def deliver_child_notice(self, parent_session_id: str, notice_id: str) -> None: ...
+    def recover_unstarted_child_drivers(self) -> list[tuple[str, str]]: ...
     def recover_child_publications(self) -> list[tuple[str, str]]: ...
     def first_child_message(self, session_id: str) -> ContinuationRecord | None: ...
 
@@ -633,12 +634,18 @@ class RunCoordinator:
             return
         if not self._host.auto_drain or self._host.closed:
             return
+        # An accepted spawn may have lost its driver future at close. Continue the exact
+        # captured spawn; unstartable reservations become visible terminal facts.
+        try:
+            notices = self._host.recover_unstarted_child_drivers()
+        except Exception:
+            notices = []
         # A crash can land between a child's terminal run commit and the parent fact that
         # publishes it. Rebuild the outcome from durable events; never rerun child work.
         try:
-            notices = self._host.recover_child_publications()
+            notices.extend(self._host.recover_child_publications())
         except Exception:
-            notices = []
+            pass
         for parent_id, notice_id in notices:
             if self._host.closed:
                 return
