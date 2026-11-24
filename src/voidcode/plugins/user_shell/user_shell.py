@@ -52,7 +52,7 @@ _ERROR_MESSAGES: Final[dict[ShellErrorCode, str]] = {
 }
 
 _ERROR_GUIDANCE: Final[dict[ShellErrorCode, str]] = {
-    ShellErrorCode.EMPTY_COMMAND: "Enter a non-empty command after `!` or `/shell`.",
+    ShellErrorCode.EMPTY_COMMAND: "Enter a non-empty command after `!`.",
     ShellErrorCode.INVALID_TIMEOUT: f"Use an integer timeout from 1 to {MAX_TIMEOUT_SECONDS} seconds.",
     ShellErrorCode.WORKSPACE_UNAVAILABLE: "Open a workspace-backed session before running a shell command.",
     ShellErrorCode.START_FAILED: "Check the command and workspace permissions, then retry.",

@@ -73,6 +73,9 @@ def test_shell_escape_runs_and_records_one_compact_fact(tmp_path: Path) -> None:
 
     descriptor = {command.name: command for command in core.command_catalog().commands}["shell"]
     assert descriptor.client_syntax == "!"
+    assert descriptor.slash_visible is False
+    assert descriptor.usage == "!<command>"
+    assert descriptor.examples == ("!git status",)
     assert "execute" in {effect.value for effect in descriptor.effects}
 
     result = _invoke(core, session_id, "shell", {"command": "echo hello-from-shell"})

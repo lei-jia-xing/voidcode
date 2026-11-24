@@ -194,8 +194,10 @@ class ShellCommand:
         effects=frozenset({ToolEffect.EXECUTE}),
         busy_gate=False,
         client_syntax="!",
-        usage="/shell <command>  ·  !<command>",
-        examples=("/shell git status", "!git status"),
+        # The only client entry is `!`; the exact command id remains callable by RPC/CLI.
+        slash_visible=False,
+        usage="!<command>",
+        examples=("!git status",),
         group="Shell",
         # A user shell keeps an explicit cancelled result and its bounded partial preview.
         preserve_cancelled_result=True,

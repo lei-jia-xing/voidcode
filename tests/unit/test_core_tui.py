@@ -1607,7 +1607,7 @@ def test_escape_cancels_run_but_completion_consumes_escape(monkeypatch: pytest.M
     cancelled: list[bool] = []
     monkeypatch.setattr(app, "_cancel_active_run", lambda: cancelled.append(True))
     app.composer.set_text("/sh")
-    app.composer.set_completion(("/show", "/shell"))
+    app.composer.set_completion(("/show",))
     app._handle_composer_key(Key("escape"))
     assert not cancelled
     assert app.composer.value == "/sh"
@@ -2020,8 +2020,8 @@ def test_dotted_syntax_hint_normalizes_to_spaced_path() -> None:
     assert any("Unknown command" in row for row in terminal.committed), terminal.committed
 
 
-def test_shell_syntax_stays_reachable_as_slash_and_help_lists_spaced_names() -> None:
-    """`!`-syntax commands keep their derived `/shell` path; help lists spaced names only."""
+def test_bang_syntax_is_the_only_user_shell_entry_and_help_hides_it() -> None:
+    """`!` is the only advertised shell entry; the shell id is hidden from slash discovery."""
     import time
 
     from voidcode.tui.terminal_app import CoreTuiApp
@@ -2034,6 +2034,8 @@ def test_shell_syntax_stays_reachable_as_slash_and_help_lists_spaced_names() -> 
             argument_schema={"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
             effects=(ToolEffect.EXECUTE,),
             client_syntax="!",
+            slash_visible=False,
+            usage="!<command>",
         ),
         CommandDescriptor(
             name="goal.set", owner="p", description="gs", argument_schema={"type": "object", "properties": {}}, effects=(ToolEffect.READ,)
@@ -2042,16 +2044,11 @@ def test_shell_syntax_stays_reachable_as_slash_and_help_lists_spaced_names() -> 
     terminal = _StubTerminal()
     client = _CommandClient(catalog=catalog, results={})
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)
-
-    app._dispatch_slash_command("/shell echo hi")
-    deadline = time.monotonic() + 5
-    while not client.invoked and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert [(name, args) for _, name, args, _ in client.invoked] == [("shell", {"command": "echo hi"})]
+    app.catalog_cache = tuple(catalog)
+    app.catalog_revision = "rev-1"
 
     from voidcode.tui.composer import ComposerAction, ComposerOutcome
 
-    client.invoked.clear()
     app._outcome(ComposerOutcome(ComposerAction.SUBMIT, "!echo bang"))
     deadline = time.monotonic() + 5
     while not client.invoked and time.monotonic() < deadline:
@@ -2065,9 +2062,20 @@ def test_shell_syntax_stays_reachable_as_slash_and_help_lists_spaced_names() -> 
         time.sleep(0.01)
     assert [(name, args) for _, name, args, _ in client.invoked] == [("shell", {"command": "!echo literal"})]
 
+    app.composer.set_text("/sh")
+    app._sync_slash_completion()
+    assert "/shell" not in app.composer.completion
+
+    client.invoked.clear()
+    terminal.committed.clear()
+    app._dispatch_slash_command("/shell echo hi")
+    assert client.invoked == []
+    assert any("Unknown command" in row for row in terminal.committed), terminal.committed
+
     terminal.committed.clear()
     app._dispatch_slash_command("/tui help")
     assert any("/goal set" in row for row in terminal.committed), terminal.committed
+    assert not any("/shell" in row for row in terminal.committed), terminal.committed
     assert not any("goal.set" in row for row in terminal.committed), terminal.committed
 
 

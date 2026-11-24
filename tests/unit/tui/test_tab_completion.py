@@ -43,7 +43,7 @@ class _StubClient:
                 CommandDescriptor(name="help", owner="core", description="help"),
                 CommandDescriptor(name="show", owner="core", description="show"),
                 CommandDescriptor(name="show.more", owner="core", description="more"),
-                CommandDescriptor(name="shell", owner="core", description="shell", client_syntax="!"),
+                CommandDescriptor(name="shout", owner="core", description="shout"),
             ),
         )
 
@@ -85,7 +85,7 @@ def test_no_match_closes_and_editing_reopens() -> None:
 def test_arrows_move_tab_accepts_and_esc_keeps_draft() -> None:
     app, _ = _app()
     _type(app, "/sh")
-    assert app.composer.completion == ("/shell", "/show")
+    assert app.composer.completion == ("/shout", "/show")
     app._handle_composer_key(Key("down"))
     assert app.composer.completion_index == 1
     app._handle_composer_key(Key("up"))
@@ -107,7 +107,7 @@ def test_arrows_move_tab_accepts_and_esc_keeps_draft() -> None:
     assert app.composer.value == "/sh"
     app._handle_composer_key(Key("o", text="o"))
     assert app.composer.value == "/sho"
-    assert app.composer.completion == ("/show",)
+    assert app.composer.completion == ("/shout", "/show")
 
 
 def test_partial_enter_fills_without_running_exact_enter_submits() -> None:
@@ -237,11 +237,11 @@ def test_midline_trailing_arguments_preserved() -> None:
 def test_cursor_moving_outside_slash_token_closes_completion() -> None:
     app, _ = _app()
     _type(app, "hello /sh")
-    assert app.composer.completion == ("/shell", "/show")
+    assert app.composer.completion == ("/shout", "/show")
     # Move inside token keeps completion open
     app._handle_composer_key(Key("left"))
     assert app.composer.cursor == 8
-    assert app.composer.completion == ("/shell", "/show")
+    assert app.composer.completion == ("/shout", "/show")
     app._handle_composer_key(Key("left"))
     assert app.composer.cursor == 7
     assert app.composer.completion  # "/" still matches commands
@@ -277,7 +277,7 @@ def test_tui_subcommand_filters_and_cjk_plain_text_safe() -> None:
 def test_live_catalog_refresh_updates_open_menu_and_submit_history_intact() -> None:
     app, _ = _app()
     _type(app, "/sh")
-    assert app.composer.completion == ("/shell", "/show")
+    assert app.composer.completion == ("/shout", "/show")
     app.catalog_cache = (CommandDescriptor(name="show", owner="core", description="show"),)
     app.catalog_revision = "rev-1"
     app._sync_slash_completion()
@@ -295,13 +295,13 @@ def test_live_catalog_refresh_updates_open_menu_and_submit_history_intact() -> N
 def test_composer_popup_keys_use_arrows_and_unicode_mark() -> None:
     composer = Composer(styles=Styles(None), width=40)
     composer.set_text("/sh")
-    composer.set_completion(("/shell", "/show"))
+    composer.set_completion(("/shout", "/show"))
     composer.handle_key(Key("down"))
     assert composer.completion_index == 1
     composer.handle_key(Key("tab"))
     assert composer.value == "/show"
     assert composer.completion == ()
-    composer.set_completion(("/shell", "/show"))
+    composer.set_completion(("/shout", "/show"))
     rows = composer.completion_rows()
     assert rows[0].startswith(symbol("nav.cursor"))
     assert composer.handle_key(Key("escape")).action == ComposerAction.NONE

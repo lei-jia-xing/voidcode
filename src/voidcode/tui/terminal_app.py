@@ -1819,6 +1819,12 @@ class CoreTuiApp:
         if not self.catalog_revision:
             catalog.unavailable(self)
             return False
+        # A hidden command whose declared entry is a non-slash client syntax has no
+        # slash alias: `!` is its only surface. Hidden internal helpers without a
+        # client syntax remain exact-callable as before.
+        descriptors = tuple(
+            entry for entry in descriptors if entry.slash_visible or entry.client_syntax is None or entry.client_syntax.startswith("/")
+        )
         tokens = rest.split()
         ranked = sorted(
             (

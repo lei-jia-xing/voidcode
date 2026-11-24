@@ -36,8 +36,8 @@ def test_public_path_and_usage_derive_from_descriptor_fields() -> None:
     assert command_argument_hints(descriptor) == ("<objective>", "[token_budget]")
     assert command_usage(descriptor) == "/goal set <objective> [token_budget]"
 
-    explicit = _descriptor("shell", "user_shell", usage="/shell <command>  ·  !<command>", client_syntax="!")
-    assert command_usage(explicit) == "/shell <command>  ·  !<command>"
+    explicit = _descriptor("shell", "user_shell", usage="!<command>", client_syntax="!")
+    assert command_usage(explicit) == "!<command>"
 
 
 def test_help_entries_filter_sort_and_group() -> None:
@@ -56,8 +56,8 @@ def test_metadata_round_trips_through_the_catalog_payload() -> None:
     descriptor = _descriptor(
         "shell",
         "user_shell",
-        usage="/shell <command>",
-        examples=("/shell git status",),
+        usage="!<command>",
+        examples=("!git status",),
         group="Shell",
         argument_schema={"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
     )
@@ -66,11 +66,11 @@ def test_metadata_round_trips_through_the_catalog_payload() -> None:
     definition = CommandDefinition(
         name="shell",
         description="Run a shell command.",
-        usage="/shell <command>",
-        examples=("/shell true",),
+        usage="!<command>",
+        examples=("!true",),
         group="Shell",
     )
-    assert definition.examples == ("/shell true",)
+    assert definition.examples == ("!true",)
 
 
 def _rows(width: int, descriptors: tuple[CommandDescriptor, ...]) -> list[str]:
@@ -120,7 +120,7 @@ def test_help_columns_are_group_local_at_120() -> None:
             "user_shell",
             "Run a shell command locally.",
             client_syntax="!",
-            usage="/shell <command>  ·  !<command>",
+            usage="!<command>",
             group="Shell",
         ),
         _descriptor(

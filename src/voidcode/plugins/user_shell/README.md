@@ -4,7 +4,7 @@ Run a one-shot, non-interactive shell command on the core workspace through the 
 
 ## Surface
 
-- Command `/shell` with required `command` and optional `timeout` (integer 1–600s, default 600s), exposed to clients as the `!` prefix. Effect `EXECUTE`, `busy_gate=False`.
+- Command id `shell` with required `command` and optional `timeout` (integer 1–600s, default 600s), callable by RPC/CLI. The only client entry surface is the `!` prefix; it is not exposed as a slash command. Effect `EXECUTE`, `busy_gate=False`.
 - A command that exits 0 and stores its artifacts returns `status="ok"`. A nonzero exit, timeout, cancellation, or artifact failure returns `status="error"` with a stable `data.error` code and guidance, so CLI/RPC exit status is honest.
 - The human-facing output is a bounded preview (16 KiB) plus artifact URIs when the preview is clipped. The full captured `stdout` and `stderr` are stored separately as artifacts at the exec capability's 128 MiB per-stream capture ceiling; `capture_truncated` says the capture itself was clipped, while artifact presence is not a truncation flag. Empty streams are stored too.
 - An executed command stages a compact `shell_executed` event with exit/status/duration/artifact references and failure metadata. It does not stage raw streams, a record string, or the preview; the core's `command_completed` receipt carries the bounded preview and references once.

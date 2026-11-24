@@ -121,6 +121,9 @@ def test_definition_declares_execute_timeout_and_cancellation_opt_in() -> None:
     assert definition.effects == frozenset({ToolEffect.EXECUTE})
     assert definition.busy_gate is False
     assert definition.client_syntax == "!"
+    assert definition.slash_visible is False
+    assert definition.usage == "!<command>"
+    assert definition.examples == ("!git status",)
     assert definition.preserve_cancelled_result is True
     assert definition.argument_schema["properties"]["timeout"]["maximum"] == 600
     assert definition.argument_schema["properties"]["timeout"]["default"] == DEFAULT_TIMEOUT_SECONDS

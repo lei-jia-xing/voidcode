@@ -127,7 +127,7 @@ Each plugin directory is a Python package admitted by the same rules as a third-
 | `cron` | `cron_create`, `cron_delete`, `cron_list`, `/loop` |
 | `compaction` | `/compact` context compaction |
 | `hooks` | lifecycle hook execution |
-| `user_shell` | `/shell` user shell escape |
+| `user_shell` | `!` user shell escape (command id `shell`, not a slash command) |
 | `goal` | thread goal tools and `/goal*` commands |
 | `workflows` | `workflow_run` tool, `/workflow <run\|status\|pause\|resume\|cancel>` commands, scripted child-session graphs |
 
