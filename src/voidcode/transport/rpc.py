@@ -14,7 +14,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from voidcode.capabilities.files.path_queries import PATH_COMPLETION_QUERY
 from voidcode.core.engine import Core
-from voidcode.core.storage.records import SessionRecord
+from voidcode.core.storage.store import SessionRecord
 from voidcode.sdk.client import (
     ApprovalPolicyListReceipt,
     ApprovalPolicyRevokeReceipt,

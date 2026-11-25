@@ -1,4 +1,8 @@
-"""SQLite storage facade for the VoidCode core, composing sessions, state, and continuations."""
+"""SQLite storage facade for the VoidCode core.
+
+Composes the session/lineage, event-stream, commit, owner-state, activation, adoption,
+continuation, follow-up, wakeup, and background-action domains over one connection.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +13,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Self
 
-from .continuations import _ContinuationsMixin
-from .records import (
+from . import _database
+from ._database import inspect_existing_workspace, open_read_only
+from ._values import (
     APPLICATION_ID,
     BACKGROUND_ACTION_SOURCE,
     DATABASE_FILENAME,
@@ -58,16 +63,18 @@ from .records import (
     WakeupRecord,
     WakeupSkip,
     WindowProjectionRecord,
-    _check_identity,
-    _check_regular_nonempty,
-    _load_schema_sql,
-    _read_file_identity,
     canonical_json,
-    inspect_existing_workspace,
-    open_read_only,
 )
+from .activation import _ActivationMixin
+from .adoption import _AdoptionMixin
+from .background_actions import _BackgroundActionsMixin
+from .commits import _CommitsMixin
+from .continuations import _ContinuationsMixin
+from .event_stream import _EventStreamMixin
+from .followups import _FollowupsMixin
 from .sessions import _SessionsMixin
 from .state import _StateMixin
+from .wakeups import _WakeupsMixin
 
 __all__ = [
     "APPLICATION_ID",
@@ -123,7 +130,18 @@ __all__ = [
 ]
 
 
-class SqliteStore(_SessionsMixin, _StateMixin, _ContinuationsMixin):
+class SqliteStore(
+    _SessionsMixin,
+    _EventStreamMixin,
+    _CommitsMixin,
+    _StateMixin,
+    _ActivationMixin,
+    _AdoptionMixin,
+    _ContinuationsMixin,
+    _FollowupsMixin,
+    _WakeupsMixin,
+    _BackgroundActionsMixin,
+):
     """Concrete SQLite store for core sessions, revisions, events, and checkpoints."""
 
     _path: Path
@@ -151,7 +169,7 @@ class SqliteStore(_SessionsMixin, _StateMixin, _ContinuationsMixin):
             try:
                 descriptor = os.open(resolved_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError:
-                _check_regular_nonempty(resolved_path)
+                _database._check_regular_nonempty(resolved_path)
             else:
                 os.close(descriptor)
                 is_new = True
@@ -167,13 +185,13 @@ class SqliteStore(_SessionsMixin, _StateMixin, _ContinuationsMixin):
         try:
             if not is_new:
                 assert resolved_path is not None
-                app_id, user_version = _read_file_identity(self._connection, resolved_path)
-                _check_identity(app_id, user_version, resolved_path)
+                app_id, user_version = _database._read_file_identity(self._connection, resolved_path)
+                _database._check_identity(app_id, user_version, resolved_path)
             self._connection.execute("PRAGMA busy_timeout = 5000")
             self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute("PRAGMA foreign_keys = ON")
             if is_new:
-                self._connection.executescript(_load_schema_sql())
+                self._connection.executescript(_database._load_schema_sql())
                 self._connection.execute("PRAGMA foreign_keys = ON")
                 self._connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
                 self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

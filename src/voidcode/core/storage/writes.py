@@ -12,7 +12,8 @@ import time
 from collections.abc import Mapping, Sequence
 
 from ..events import EventType
-from .records import (
+from ._rows import _decode_session
+from ._values import (
     MAX_COMMITTED_EVENT_BYTES,
     EventDraft,
     SessionRecord,
@@ -20,7 +21,6 @@ from .records import (
     StateVersionConflict,
     StoreConflict,
     StoredEvent,
-    _decode_session,
     canonical_json,
 )
 

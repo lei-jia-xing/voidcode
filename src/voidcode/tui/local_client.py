@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from voidcode import __version__
 from voidcode.capabilities.files.path_queries import PATH_COMPLETION_QUERY
-from voidcode.core.storage.records import SessionStatus
+from voidcode.core.storage.store import SessionStatus
 from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.client import (
     ApprovalPolicyRule,

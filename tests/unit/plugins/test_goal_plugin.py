@@ -12,7 +12,7 @@ import pytest
 
 from tests.fixtures.fake_services import FakeServices
 from voidcode.core.activation import plan_state_copies, validate_state_payload
-from voidcode.core.storage.records import PluginStateRow
+from voidcode.core.storage.store import PluginStateRow
 from voidcode.plugins.goal import create_plugin, goal_plugin
 from voidcode.plugins.goal.goal_plugin import (
     SCHEMA_VERSION,
