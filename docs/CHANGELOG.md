@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Core engine split behind the `Core` facade
+- `core/engine/__init__.py` is now a deliberate ~220-line facade: construction, public exports, and MRO composition live there, while lifecycle/state, activation, commands, sessions, children, wakeups, background actions, persistence hooks, and host adapters live in private responsibility mixins (`_lifecycle.py`, `_activation.py`, `_commands.py`, `_sessions.py`, `_children.py`, `_wakeups.py`, `_background.py`, `_persistence.py`, `_host_adapters.py`, `_capability.py` for reserved specs and the immutable snapshot). Every module is under 750 lines.
+- Public signatures, events, persistence, governance, approvals, and test-visible private aliases (`_commit`, `_interrupt_batch`, `_commit_control_event`, `_drive_pending`, `_drive_pending_activations`, `_wakeup_loop`) are unchanged; the engine remains free of concrete plugin/capability imports.
+- Verification: full `tests/unit/core` plus activation/command/background/followup/wakeup/collaboration/subagents integration suites; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Composer image attachments in the TUI
 - The composer accepts bounded image files by path (`Alt+I` typed path, `/tui attach <path> [path...]`) without clearing the draft or moving the caret. Pending images render above the composer with name, media type, byte size, and removal via `Alt+R` or `/tui detach [index|all]`.
 - Ingress validates extension against magic bytes (PNG/JPEG/GIF/WebP), requires at most 4 images, 2 MiB per image, and 2 MiB total; violations commit a visible transcript row and never enter `RunSpec.images`.

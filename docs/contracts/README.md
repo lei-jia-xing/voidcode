@@ -22,7 +22,7 @@ See the canonical [plugin index](../README.md#plugins): one README per bundled p
 Wire models, configuration, and tool definitions are defined directly in code, which is the only source of truth:
 - SDK contracts: `src/voidcode/sdk/` (`plugin.py`, `tools.py`, `commands.py`, `views.py`).
 - Product configuration parsing: `src/voidcode/config.py` (`voidcode.json`); product wiring: `src/voidcode/bootstrap.py` (`open_core`, `adopt_generation`).
-- Core event vocabulary and dispatch: `src/voidcode/core/engine.py`.
+- Core event vocabulary and dispatch: `src/voidcode/core/engine/` (`Core` facade; private responsibility mixins).
 - HTTP wire models: `src/voidcode/transport/models.py`; the live OpenAPI document is served at `GET /api/openapi.json`.
 ## Core Durability Semantics
 

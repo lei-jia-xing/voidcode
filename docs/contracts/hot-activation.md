@@ -60,7 +60,7 @@ confirmations keep working because the fence is only set during an actual activa
 
 ## Safe boundary
 
-`core/engine.py:_drive` consumes a staged activation only at the loop top when
+`core/engine/turn_execution.py` (`TurnDriver`) consumes a staged activation only at the loop top when
 `cursor.batch_sequence is None`, i.e. after the whole native batch was reported and committed.
 The model's request is therefore durable while the old code finishes every member of the batch it
 started, and the next provider dispatch observes the new generation. Nothing about the acting

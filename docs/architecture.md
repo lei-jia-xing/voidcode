@@ -38,7 +38,7 @@ graph TD
     end
 
     subgraph Core["Core (src/voidcode/core/)"]
-        Engine["engine.py — governed turns, approvals, budgets, continuations"]
+        Engine["engine/ — Core facade over governed turns, approvals, budgets, continuations"]
         Activation["activation.py — admission types, private snapshots"]
         Runtime["plugins.py — in-process plugin runtime"]
         Services["services.py — invocation leases"]
@@ -83,7 +83,7 @@ graph TD
 
 ### Core (`src/voidcode/core/`)
 
-- **`engine.py` (`Core`)** — the authority for a run: it plans against admitted tools, classifies tool effects (`READ`, `WRITE`, `EXECUTE`, `SPAWN`, `SESSION`, `NETWORK`), applies the neutral execution policy (`approval_mode` ∈ `ask` / `write` / `yolo` plus `read_only`), gates externally mutating work, appends durable events and checkpoints, drives durable continuations, and settles cancellations and budget exhaustion. Reserved core commands (`run`, `resume`, `show`, `status`, `help`, `core.reload`) and the reserved `core_reload` tool are dispatched through the same typed command/tool contracts plugins use.
+- **`engine/` (`Core`)** — the authority for a run: it plans against admitted tools, classifies tool effects (`READ`, `WRITE`, `EXECUTE`, `SPAWN`, `SESSION`, `NETWORK`), applies the neutral execution policy (`approval_mode` ∈ `ask` / `write` / `yolo` plus `read_only`), gates externally mutating work, appends durable events and checkpoints, drives durable continuations, and settles cancellations and budget exhaustion. Reserved core commands (`run`, `resume`, `show`, `status`, `help`, `core.reload`) and the reserved `core_reload` tool are dispatched through the same typed command/tool contracts plugins use. `engine/__init__.py` is the deliberate public facade; construction, state, activation, commands, sessions, children, wakeups, background actions, persistence hooks, and host adapters live in private responsibility mixins behind it.
 - **`activation.py`** — neutral admission types (`Admission`, `ExecutionConfig`, `ExecutionPolicy`, `SandboxPolicy`), private configuration snapshot storage, and state validation/deactivation plans for capability switches. No product configuration concepts live here.
 - **`plugins.py` (`PluginRuntime`)** — the in-process plugin runtime: loads each configured plugin package (`__init__.py:create_plugin`) under a unique namespace per generation, and dispatches tool, command, provider, hook, view, observer, and query calls by direct synchronous call. Cancellation is cooperative: a hung plugin blocks its dispatch until the core restarts.
 - **`services.py` (`RuntimeServices`)** — scoped services bound to one invocation lease: state staging, events, child sessions, governed tool requests, process spawning, usage, bounded history pages, artifacts. Read-only and hook leases are refused mutating work here, never in plugins.

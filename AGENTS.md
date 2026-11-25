@@ -34,7 +34,7 @@ graph LR
 ### Layer Rules
 
 1. **The SDK has no implementation dependencies.** `sdk/` may import the standard library, `pydantic`, and `jsonschema` only; never `core/` or `plugins/`. Enforced by `tests/unit/sdk/test_sdk_direction.py`.
-2. **The core imports no concrete plugin, no capability module, and no outer adapter.** The core knows plugin ids, roots, and configs, never a plugin module. Plugin-declared tools, commands, providers, views, queries, and resource readers arrive through admission (`core/activation.py`) and the in-process runtime (`core/plugins.py`). Separately, the core owns its own control surface: the reserved core commands (`run`, `resume`, `show`, `status`, `help`, `core.reload`) and the reserved `core_reload` tool are defined and dispatched in `engine.py` over the same typed command/tool contracts, and a plugin may never declare or shadow those names (`core/plugins.py`: `RESERVED_COMMAND_NAMES`, `RESERVED_COMMAND_PREFIXES`, `RESERVED_TOOL_NAMES`).
+2. **The core imports no concrete plugin, no capability module, and no outer adapter.** The core knows plugin ids, roots, and configs, never a plugin module. Plugin-declared tools, commands, providers, views, queries, and resource readers arrive through admission (`core/activation.py`) and the in-process runtime (`core/plugins.py`). Separately, the core owns its own control surface: the reserved core commands (`run`, `resume`, `show`, `status`, `help`, `core.reload`) and the reserved `core_reload` tool are defined and dispatched in `engine/` over the same typed command/tool contracts, and a plugin may never declare or shadow those names (`core/plugins.py`: `RESERVED_COMMAND_NAMES`, `RESERVED_COMMAND_PREFIXES`, `RESERVED_TOOL_NAMES`).
 3. **Plugins import the SDK and shared capabilities** (plus their own third-party dependencies). Shared capabilities (`src/voidcode/capabilities/`) depend only on the SDK and their own dependencies, never on the core or concrete plugins. A plugin that needs core behavior asks for it through `PluginServices`; there is no private core entry for bundled plugins.
 
 The core has no built-in tools or fallback providers: files, execution, and model providers are ordinary plugins. A zero-plugin core manages sessions and SQLite persistence only, with no assumption of file, shell, or model access. Disabling a plugin removes its capabilities completely with no hidden fallback.
@@ -142,7 +142,7 @@ codegraph sync .
 codegraph query --path . 'Core'
 
 # Inspect symbol definitions
-codegraph node --path . --file src/voidcode/core/engine.py Core
+codegraph node --path . --file src/voidcode/core/engine/__init__.py Core
 ```
 
 ## Detailed Documentation References
