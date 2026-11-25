@@ -16,7 +16,7 @@ from typing import Any, Final
 from uuid import uuid4
 
 from voidcode.sdk.observed_effects import ObservedEffects
-from voidcode.sdk.services import ProcessFailure, ProcessHandle, ProcessResult, ProcessStream
+from voidcode.sdk.services import ProcessAlreadyRunningError, ProcessFailure, ProcessHandle, ProcessResult, ProcessStream
 
 from .artifacts import MAX_PAGE_BYTES
 from .sandbox import SandboxBackend, build_plan, native_backend, read_effects_file, scratch_dir
@@ -510,7 +510,7 @@ class ProcessHost:
             if existing is not None and (existing.owner != owner or existing.session_id != session_id):
                 raise ValueError(f"background process id {identifier!r} belongs to another owner or session")
             if existing is not None and not _entry_settled(existing):
-                raise ValueError(f"background process {identifier} is already running")
+                raise ProcessAlreadyRunningError(identifier)
         for path in (stdout_path, stderr_path):
             path.parent.mkdir(parents=True, exist_ok=True)
         frame: bytes | None = None
@@ -1089,7 +1089,7 @@ class ProcessRegistry:
             if existing.owner != owner or existing.session_id != session_id:
                 raise ValueError(f"background process id {identifier!r} belongs to another owner or session")
             if not _entry_settled(existing):
-                raise ValueError(f"background process {identifier} is already running")
+                raise ProcessAlreadyRunningError(identifier)
 
     def _spawn_service(
         self,
