@@ -243,7 +243,7 @@ def test_child_run_facts_records_provider_result_decode_failure(monkeypatch: pyt
     def fail_decode(_payload: Mapping[str, object]) -> object:
         raise ValueError("decode boom")
 
-    monkeypatch.setattr("voidcode.core.delegation.decode_provider_result", fail_decode)
+    monkeypatch.setattr("voidcode.core.delegation._outcomes.decode_provider_result", fail_decode)
     facts = _fact_manager()._child_run_facts(session, "run-1", events)
     assert facts is not None
     assert facts.output is None

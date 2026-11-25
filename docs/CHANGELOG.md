@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Core plugin runtime and delegation split behind stable facades
+- `core/plugins.py` is now a package whose `PluginRuntime` facade composes private mixins for factory loading and catalog admission, invocation leases, tool/command/provider dispatch, observer/fact delivery, lifecycle hooks, and state seams. `PluginSource`, `LeaseContext`, `LeaseIdentity`, `ToolInvocationOutcome`, `FrozenStaged`, `ToolSuspension`, and `CommandInvocationOutcome` keep their names and fields.
+- `core/delegation.py` is now a package whose `DelegationManager` facade composes private mixins for durable birth/fence reads, outcome projection and its in-process cache, exactly-once terminal publication, spawn/idempotent recovery, subtree cancellation, waits/joins, owner controls, startup recovery, and notice delivery. `DELEGATION_MAX_DEPTH`, `CHILD_*` representation constants, `_child_run_status`, and `_terminal_run_result` stay importable from the facade.
+- Events, approvals, cancellation/quota/persistence semantics, and the documented public surfaces are unchanged. Only the two tests that patched `voidcode.core.delegation.decode_provider_result` point at the private outcomes module that still owns the decode call.
+- Verification: `tests/unit/core/test_collaboration.py`, plugin runtime/fact/lease/host-lifecycle/resource-reader/provider suites, and subagent monitor/cron/btw/activation integration suites; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Core services and process host split behind stable facades
 - `core/services.py` is now a package whose `RuntimeServices` facade is assembled from private concern mixins: lease gates, process access, artifacts, staged state/budgets, bounded reads, session projections, wakeups, child sessions, background actions, and governed invocation. `ResourceReaderServicesView` remains the thin same-gate read view, and `SuspendOutsideTool` keeps its name.
 - `core/processes.py` is now a package with the same `ProcessHost`, `ProcessRegistry`, and `ProcessResult` surface; capture/streams, procfs signaling, supervised entries, one-shot sandbox/exec lifecycle, cleanup/reaping, and the core-lifetime host live in private modules. Process groups, timeouts, cancellation windows, capture bounds, sandbox plans/effects, artifact references, and event staging are unchanged.

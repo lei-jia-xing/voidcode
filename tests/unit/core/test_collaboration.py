@@ -1558,7 +1558,7 @@ def test_recovery_publication_surfaces_provider_result_decode_failure(
         def fail_decode(_payload: Mapping[str, object]) -> object:
             raise ValueError("provider result decode failed")
 
-        monkeypatch.setattr("voidcode.core.delegation.decode_provider_result", fail_decode)
+        monkeypatch.setattr("voidcode.core.delegation._outcomes.decode_provider_result", fail_decode)
         core._delegation._recover_child_publications()
 
         facts = _child_facts(core, parent)
