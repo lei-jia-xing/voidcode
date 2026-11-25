@@ -88,15 +88,46 @@ def test_parse_skill_manifest_rejects_invalid_files(tmp_path: Path, contents: st
         parse_skill_manifest(contents, entry_path=entry)
 
 
-def test_discovery_is_recursive_sorted_and_rejects_duplicates(tmp_path: Path) -> None:
-    _write_skill(tmp_path, name="alpha", description="a", body="A")
+def test_discovery_is_recursive_sorted_and_isolates_duplicate_names(tmp_path: Path) -> None:
+    first = _write_skill(tmp_path, name="alpha", description="a", body="A")
     _write_skill(tmp_path, name="beta", description="b", body="B", folder="nested/deeper")
+    duplicate = _write_skill(tmp_path, name="alpha", description="dup", body="A2", folder="other")
+
     registry = SkillRegistry.discover(workspace=tmp_path)
     assert loaded_skill_names(registry) == ("alpha", "beta")
+    assert registry.skills["alpha"].entry_path == first.resolve()
+    assert len(registry.failures) == 1
+    failure = registry.failures[0]
+    assert failure.name == "alpha"
+    assert failure.label == "alpha (duplicate 1)"
+    assert str(first.resolve()) in failure.message
+    assert str(duplicate.resolve()) in failure.message
+    assert failure.display_name == "alpha (duplicate 1)"
 
-    _write_skill(tmp_path, name="alpha", description="dup", body="A2", folder="other")
-    with pytest.raises(ValueError, match="duplicate skill name 'alpha'"):
-        SkillRegistry.discover(workspace=tmp_path)
+    contribution = SkillsContextProvider(SkillsConfig(enabled=True))(_context(tmp_path), FakeServices())  # type: ignore[arg-type]
+    assert contribution is not None
+    assert "<name>alpha</name>" in contribution.content
+    assert "<skill_diagnostics>" in contribution.content
+    assert "alpha (duplicate 1)" in contribution.content
+
+    listed = SkillsCommand(SkillsConfig(enabled=True)).invoke(CommandInvocation(_context(tmp_path), "skills"), FakeServices())
+    assert listed.status == "ok"
+    assert "[broken] alpha (duplicate 1)" in str(listed.output)
+    options = listed.presentation.data["options"]  # type: ignore[index]
+    assert len({option["id"] for option in options}) == len(options)
+
+    shown = SkillShowCommand(SkillsConfig(enabled=True)).invoke(
+        CommandInvocation(_context(tmp_path), "skills.show", {"name": "alpha (duplicate 1)"}),
+        FakeServices(),
+    )
+    assert shown.status == "error" and "is broken" in str(shown.error)
+
+    healthy = _read(SkillsConfig(enabled=True), tmp_path, "skill://alpha")
+    assert isinstance(healthy, ResourcePage)
+    assert "A" in str(healthy.body["raw_content"])
+    unrelated = _read(SkillsConfig(enabled=True), tmp_path, "skill://beta")
+    assert isinstance(unrelated, ResourcePage)
+    assert "B" in str(unrelated.body["raw_content"])
 
 
 def test_missing_search_root_and_escaping_path(tmp_path: Path) -> None:
@@ -172,8 +203,10 @@ def test_catalog_text_lists_metadata_only_and_skill_uri_targets(tmp_path: Path) 
     assert catalog_skill_context(empty) == ""
 
     unavailable = catalog_skill_context(registry, read_tool_available=False)
-    assert "the read tool is not available" in unavailable
-    assert "the read tool is not available" not in catalog
+    assert "Skill bodies cannot be loaded" in unavailable
+    assert "the read tool is unavailable" in unavailable
+    assert "Use the read tool" not in unavailable
+    assert "Skill bodies cannot be loaded" not in catalog
 
     registry.apply_config_rules((SkillEnableRule(name="alpha", enabled=False),))
     disabled = catalog_skill_context(registry)
@@ -548,13 +581,26 @@ def test_skill_file_and_metadata_caps_are_per_skill_diagnostics(tmp_path: Path) 
     assert len(registry.failures) == 4
 
 
-def test_discovery_count_cap_emits_per_skill_diagnostics(tmp_path: Path) -> None:
+def test_discovery_count_cap_emits_a_bounded_cap_diagnostic(tmp_path: Path) -> None:
     for index in range(MAX_SKILLS + 2):
         _write_skill(tmp_path, name=f"skill-{index:03d}", description="d", body="body")
     registry = build_registry(workspace=tmp_path, config=SkillsConfig(enabled=True))
     assert len(registry.all()) == MAX_SKILLS
-    assert len(registry.failures) == 2
-    assert all("discovery cap" in failure.message for failure in registry.failures)
+    assert registry.failures == ()
+    assert any("discovery cap" in error for error in registry.config_errors)
+
+
+def test_skill_discovery_does_not_materialize_glob_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for index in range(MAX_SKILLS + 2):
+        _write_skill(tmp_path, name=f"skill-{index:03d}", description="d", body="body")
+
+    def forbidden_glob(*args: object, **kwargs: object) -> object:
+        raise AssertionError("skill discovery must not materialize every glob path")
+
+    monkeypatch.setattr(Path, "glob", forbidden_glob)
+    registry = build_registry(workspace=tmp_path, config=SkillsConfig(enabled=True))
+    assert len(registry.all()) == MAX_SKILLS
+    assert any("discovery cap" in error for error in registry.config_errors)
 
 
 def test_exact_cap_values_are_accepted(tmp_path: Path) -> None:
@@ -686,6 +732,22 @@ def test_symlinked_skill_entry_escaping_a_relative_root_is_rejected(tmp_path: Pa
     assert "outside the workspace" in registry.failures[0].message
     with pytest.raises(ValueError, match="outside the workspace"):
         _read(SkillsConfig(enabled=True), workspace, "skill://evil")
+
+
+def test_literal_tilde_directory_still_checks_entry_containment(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text("---\nname: evil\ndescription: d\n---\nsecret\n", encoding="utf-8")
+    link_dir = workspace / "~" / "skills" / "evil"
+    link_dir.mkdir(parents=True)
+    (link_dir / "SKILL.md").symlink_to(outside / "SKILL.md")
+
+    registry = SkillRegistry.discover(workspace=workspace, search_paths=(str(workspace / "~" / "skills"),))
+    assert registry.all() == ()
+    assert [failure.name for failure in registry.failures] == ["evil"]
+    assert "outside the workspace" in registry.failures[0].message
 
 
 def test_duplicate_entries_reached_through_overlapping_roots_load_once(tmp_path: Path) -> None:

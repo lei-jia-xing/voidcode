@@ -60,7 +60,7 @@ class SkillsCommand:
         ]
         rows.extend(
             {
-                "name": failure.name,
+                "name": failure.display_name,
                 "description": "",
                 "enabled": False,
                 "status": "broken",
@@ -152,7 +152,9 @@ class SkillShowCommand:
             return _skills_notice(f"Skills could not be discovered: {bounded_message(exc)}")
         skills = sorted(registry.all(), key=lambda skill: skill.name)
         options = [{"id": skill.name, "label": f"{skill.name} — {skill.description[:200]}"} for skill in skills]
-        options.extend({"id": failure.name, "label": f"{failure.name} — broken · {failure.message[:200]}"} for failure in registry.failures)
+        options.extend(
+            {"id": failure.display_name, "label": f"{failure.display_name} — broken · {failure.message[:200]}"} for failure in registry.failures
+        )
         if not options:
             if registry.config_errors:
                 return _skills_notice("Skills could not be discovered: " + "; ".join(registry.config_errors))
@@ -192,7 +194,7 @@ class SkillShowCommand:
             if failure is not None:
                 return CommandResult(
                     status="error",
-                    error=f"Skill '{failure.name}' is broken: {failure.message}. {_broken_skill_recovery(failure)}.",
+                    error=f"Skill '{failure.display_name}' is broken: {failure.message}. {_broken_skill_recovery(failure)}.",
                 )
             return CommandResult(status="error", error=f"Unknown skill: {name}")
         if offset > len(skill.content):

@@ -60,8 +60,8 @@ def _core(
     return core
 
 
-def _write_skill(workspace: Path, *, name: str, description: str, body: str) -> Path:
-    root = workspace / ".voidcode" / "skills" / name
+def _write_skill(workspace: Path, *, name: str, description: str, body: str, folder: str | None = None) -> Path:
+    root = workspace / ".voidcode" / "skills" / (folder or name)
     root.mkdir(parents=True, exist_ok=True)
     entry = root / "SKILL.md"
     entry.write_text(f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n", encoding="utf-8")
@@ -189,6 +189,63 @@ def test_broken_skill_does_not_break_catalog_rules_or_reads(tmp_path: Path) -> N
         failed = core.plugin_runtime.invoke(ToolCall("read", {"path": "skill://broken"}), context=context)
         assert isinstance(failed, ToolFailure)
         assert "unavailable" in failed.error and "invalid YAML" in failed.error
+
+
+def test_duplicate_skill_names_do_not_break_catalog_rules_or_reads(tmp_path: Path) -> None:
+    replies = [
+        openai_response(
+            message={"role": "assistant", "content": "plain answer"},
+            finish="stop",
+            usage={"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        )
+    ]
+    with loopback_server(replies) as server:
+        core = _core(tmp_path, server, skill_plugin_enabled=True, skills_enabled=True)
+        workspace = tmp_path / "workspace"
+        first = _write_skill(workspace, name="release", description="Cut a release", body="first body")
+        _write_skill(
+            workspace,
+            name="release",
+            description="Duplicate",
+            body="duplicate body",
+            folder="release-copy",
+        )
+        _write_skill(workspace, name="other", description="Other skill", body="other body")
+        (workspace / "AGENTS.md").write_text("root-rule-marker\n", encoding="utf-8")
+        session_id = core.create_session().session_id
+
+        assert core.run("hello", session_id=session_id).status == "completed"
+        prompt = "\n".join(str(message.get("content", "")) for message in _messages(server.requests[0]))
+        assert "<name>release</name>" in prompt
+        assert "<name>other</name>" in prompt
+        assert "<skill_diagnostics>" in prompt
+        assert "release (duplicate 1)" in prompt
+        assert "root-rule-marker" in prompt
+
+        listed = core.invoke_command(session_id, "skills", {}, expected_revision=core.command_catalog().revision_id)
+        assert listed.status == "ok"
+        assert listed.output is not None
+        assert "[enabled] release" in listed.output
+        assert "[broken] release (duplicate 1)" in listed.output
+
+        context = ToolContext(
+            workspace=workspace,
+            session_id=session_id,
+            run_id="run-duplicate-skill",
+            invocation_id="inv-duplicate-skill",
+            revision_id=core.plugin_runtime.revision_id,
+            actor="model",
+        )
+        served = core.plugin_runtime.invoke(ToolCall("read", {"path": "skill://release"}), context=context)
+        assert isinstance(served, ToolSuccess)
+        assert f"sourcePath: {first}" in str(getattr(served.output, "text", ""))
+        unrelated = core.plugin_runtime.invoke(ToolCall("read", {"path": "skill://other"}), context=context)
+        assert isinstance(unrelated, ToolSuccess)
+        assert "other body" in str(getattr(unrelated.output, "text", ""))
+
+        broken = core.plugin_runtime.invoke(ToolCall("read", {"path": "skill://release (duplicate 1)"}), context=context)
+        assert isinstance(broken, ToolFailure)
+        assert "duplicate skill name" in broken.error
 
 
 def test_disabled_skills_plugin_contributes_nothing(tmp_path: Path) -> None:

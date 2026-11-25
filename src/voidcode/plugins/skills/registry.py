@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .config import DEFAULT_SKILL_SEARCH_PATHS, SkillEnableRule, SkillsConfig
-from .discovery import LocalSkillMetadataLoader, SkillDiscovery, SkillLoadFailure
+from .discovery import LocalSkillMetadataLoader, SkillDiscovery, SkillLoadFailure, duplicate_skill_failure
 from .limits import bounded_message
 from .manifest import SkillMetadata
 
@@ -41,14 +41,27 @@ class SkillRegistry:
         workspace: Path | None = None,
     ) -> SkillRegistry:
         resolved: dict[str, SkillMetadata] = {}
+        registry_failures = list(failures)
+        duplicate_counts: dict[str, int] = {}
         for skill in skills:
             existing = resolved.get(skill.name)
             if existing is not None:
-                raise ValueError(f"duplicate skill name '{skill.name}' discovered at {existing.entry_path} and {skill.entry_path}")
+                if _resolved(existing.entry_path) == _resolved(skill.entry_path):
+                    continue
+                duplicate_counts[skill.name] = duplicate_counts.get(skill.name, 0) + 1
+                registry_failures.append(
+                    duplicate_skill_failure(
+                        name=skill.name,
+                        first_path=existing.entry_path,
+                        duplicate_path=skill.entry_path,
+                        count=duplicate_counts[skill.name],
+                    )
+                )
+                continue
             resolved[skill.name] = skill
         return cls(
             skills=resolved,
-            failures=failures,
+            failures=tuple(registry_failures),
             config_errors=[bounded_message(message) for message in config_errors],
             workspace=workspace,
         )
@@ -79,7 +92,7 @@ class SkillRegistry:
         return tuple(self.skills.values())
 
     def failure(self, skill_name: str) -> SkillLoadFailure | None:
-        return next((failure for failure in self.failures if failure.name == skill_name), None)
+        return next((failure for failure in self.failures if failure.name == skill_name or failure.display_name == skill_name), None)
 
     def apply_config_rules(self, rules: Iterable[SkillEnableRule], *, workspace: Path | None = None) -> None:
         base = workspace if workspace is not None else self.workspace
@@ -109,7 +122,9 @@ class SkillRegistry:
                 self.failures = tuple(
                     failure
                     for failure in self.failures
-                    if failure.name != rule.name and (target is None or not _failure_matches_path(failure, target))
+                    if failure.name != rule.name
+                    and failure.display_name != rule.name
+                    and (target is None or not _failure_matches_path(failure, target))
                 )
 
     def resolve(self, skill_name: str, *, allow_disabled: bool = False) -> SkillMetadata:

@@ -15,6 +15,7 @@ from .limits import (
     MAX_SKILL_NAME_CHARS,
     MAX_SKILLS,
     bounded_message,
+    bounded_sorted_files,
 )
 from .manifest import SKILL_ENTRY_FILE_NAME, SkillManifestParseError, SkillMetadata, parse_skill_manifest
 
@@ -39,10 +40,30 @@ class SkillLoadFailure:
     name: str
     path: Path
     message: str
+    #: Unique display label for failures whose declared name collides with a healthy skill.
+    label: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", bounded_message(self.name, limit=MAX_SKILL_NAME_CHARS))
         object.__setattr__(self, "message", bounded_message(self.message))
+        if self.label is not None:
+            if not isinstance(self.label, str) or not self.label.strip():
+                raise ValueError("skill load failure label must be a non-empty string or None")
+            object.__setattr__(self, "label", bounded_message(self.label, limit=MAX_SKILL_NAME_CHARS + 32))
+
+    @property
+    def display_name(self) -> str:
+        return self.label or self.name
+
+
+def duplicate_skill_failure(*, name: str, first_path: Path, duplicate_path: Path, count: int) -> SkillLoadFailure:
+    """One later distinct-path declaration of an already-loaded skill name."""
+    return SkillLoadFailure(
+        name=name,
+        path=duplicate_path,
+        label=f"{name} (duplicate {count})",
+        message=f"duplicate skill name '{name}' at {first_path} and {duplicate_path}; this entry is ignored",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +76,7 @@ class SkillDiscovery:
 
 
 def resolve_workspace_relative_path(*, workspace: Path, configured_path: str) -> Path:
-    candidate_path = Path(configured_path)
+    candidate_path = Path(configured_path).expanduser()
     if candidate_path.is_absolute():
         return candidate_path.resolve()
 
@@ -88,8 +109,10 @@ class LocalSkillMetadataLoader:
         failures: list[SkillLoadFailure] = []
         config_errors: list[str] = []
         seen_entries: set[Path] = set()
+        seen_names: dict[str, Path] = {}
+        duplicate_counts: dict[str, int] = {}
         hidden_failures = 0
-        stopped = False
+        candidate_entries: dict[Path, tuple[Path, bool]] = {}
 
         def record_failure(failure: SkillLoadFailure) -> None:
             nonlocal hidden_failures
@@ -100,58 +123,75 @@ class LocalSkillMetadataLoader:
 
         for search_path in search_paths:
             try:
-                relative_root = not Path(search_path).expanduser().is_absolute()
                 skill_root = resolve_workspace_relative_path(workspace=resolved_workspace, configured_path=search_path)
             except (OSError, ValueError) as exc:
                 config_errors.append(bounded_message(f"search path '{search_path}': {exc}; ignored"))
                 continue
             if not skill_root.is_dir():
                 continue
+            relative_root = skill_root.is_relative_to(resolved_workspace)
             try:
-                entries = sorted(skill_root.glob(f"**/{SKILL_ENTRY_FILE_NAME}"))
+                entries = bounded_sorted_files(
+                    skill_root,
+                    limit=MAX_SKILLS + 1,
+                    matches=lambda name: name == SKILL_ENTRY_FILE_NAME,
+                )
             except OSError as exc:
                 config_errors.append(bounded_message(f"search path '{search_path}': {exc}; ignored"))
                 continue
             for entry_path in entries:
-                resolved_entry = entry_path.resolve(strict=False)
-                # Overlapping roots commonly reach the same file; load it once.
-                if resolved_entry in seen_entries:
-                    continue
-                if relative_root and not resolved_entry.is_relative_to(resolved_workspace):
-                    seen_entries.add(resolved_entry)
-                    record_failure(
-                        SkillLoadFailure(
-                            name=entry_path.parent.name or SKILL_ENTRY_FILE_NAME,
-                            path=entry_path,
-                            message="entry resolves outside the workspace; ignored",
-                        )
-                    )
-                    continue
-                if not resolved_entry.is_file():
-                    continue
-                seen_entries.add(resolved_entry)
-                if len(discovered) >= MAX_SKILLS:
-                    if len(failures) >= MAX_SKILL_DIAGNOSTICS:
-                        config_errors.append(
-                            bounded_message(f"skill discovery cap of {MAX_SKILLS} skills reached; further entries under {skill_root} were ignored")
-                        )
-                        stopped = True
-                        break
-                    record_failure(
-                        SkillLoadFailure(
-                            name=entry_path.parent.name or SKILL_ENTRY_FILE_NAME,
-                            path=entry_path,
-                            message=f"not loaded: discovery cap of {MAX_SKILLS} skills reached",
-                        )
-                    )
-                    continue
-                try:
-                    discovered.append(self.load(resolved_entry))
-                except (SkillLoadError, OSError) as exc:
-                    hint = getattr(exc, "name_hint", None) or entry_path.parent.name or SKILL_ENTRY_FILE_NAME
-                    record_failure(SkillLoadFailure(name=hint, path=resolved_entry, message=str(exc)))
-            if stopped:
+                resolved_candidate = entry_path.resolve(strict=False)
+                previous = candidate_entries.get(resolved_candidate)
+                if previous is None:
+                    candidate_entries[resolved_candidate] = (entry_path, relative_root)
+                elif relative_root and not previous[1]:
+                    candidate_entries[resolved_candidate] = (entry_path, True)
+                if len(candidate_entries) > MAX_SKILLS:
+                    break
+            if len(candidate_entries) > MAX_SKILLS:
                 break
+
+        if len(candidate_entries) > MAX_SKILLS:
+            config_errors.append(bounded_message(f"skill discovery cap of {MAX_SKILLS} skills reached; further entries were ignored"))
+
+        for entry_path, relative_root in list(candidate_entries.values())[:MAX_SKILLS]:
+            resolved_entry = entry_path.resolve(strict=False)
+            # Overlapping roots commonly reach the same file; load it once.
+            if resolved_entry in seen_entries:
+                continue
+            if relative_root and not resolved_entry.is_relative_to(resolved_workspace):
+                seen_entries.add(resolved_entry)
+                record_failure(
+                    SkillLoadFailure(
+                        name=entry_path.parent.name or SKILL_ENTRY_FILE_NAME,
+                        path=entry_path,
+                        message="entry resolves outside the workspace; ignored",
+                    )
+                )
+                continue
+            if not resolved_entry.is_file():
+                continue
+            seen_entries.add(resolved_entry)
+            try:
+                skill = self.load(resolved_entry)
+            except (SkillLoadError, OSError) as exc:
+                hint = getattr(exc, "name_hint", None) or entry_path.parent.name or SKILL_ENTRY_FILE_NAME
+                record_failure(SkillLoadFailure(name=hint, path=resolved_entry, message=str(exc)))
+                continue
+            existing = seen_names.get(skill.name)
+            if existing is None:
+                seen_names[skill.name] = resolved_entry
+                discovered.append(skill)
+                continue
+            duplicate_counts[skill.name] = duplicate_counts.get(skill.name, 0) + 1
+            record_failure(
+                duplicate_skill_failure(
+                    name=skill.name,
+                    first_path=existing,
+                    duplicate_path=resolved_entry,
+                    count=duplicate_counts[skill.name],
+                )
+            )
 
         if hidden_failures:
             config_errors.append(bounded_message(f"{hidden_failures} additional broken or over-cap skill entr(ies) were not loaded or reported"))

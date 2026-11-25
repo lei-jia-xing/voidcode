@@ -8,12 +8,15 @@ result bodies.
 
 from __future__ import annotations
 
+import codecs
 import logging
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
+
+from .limits import bounded_sorted_files
 
 RULE_FILE_NAME = "AGENTS.md"
 LOCAL_RULE_FILE_NAME = "AGENTS.override.md"
@@ -27,8 +30,10 @@ class RuleLimits:
 
     max_rule_files: int = 8
     max_rule_file_chars: int = 12_000
+    max_rule_file_bytes: int = 64 * 1024
     max_total_rule_bytes: int = 36_000
     max_rulebook_files: int = 64
+    max_rulebook_file_bytes: int = 64 * 1024
     max_rulebook_content_chars: int = 12_000
     max_rulebook_metadata_chars: int = 240
     max_rulebook_prompt_chars: int = 12_000
@@ -41,6 +46,7 @@ MAX_RULE_DIAGNOSTICS = 8
 MAX_RULE_DIAGNOSTIC_CHARS = 240
 
 _RULE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+_RULE_FRONTMATTER_KEYS: frozenset[str] = frozenset({"name", "description", "application", "scope", "precedence"})
 
 RuleApplication = Literal["always_apply", "discoverable"]
 RuleScope = Literal["workspace", "repo"]
@@ -62,6 +68,34 @@ def _add_diagnostic(diagnostics: list[str], message: object) -> None:
         diagnostics.append("further rule diagnostics omitted")
         return
     diagnostics.append(msg_str)
+
+
+def _read_bounded_text(*, path: Path, limit: int, label: str, diagnostics: list[str], kind: str = "rule file") -> str | None:
+    """Read at most ``limit`` UTF-8 bytes from one rule file, reporting truncation."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            data = handle.read(limit + 1)
+    except OSError as exc:
+        _add_diagnostic(diagnostics, f"{label}: unreadable {kind} ({exc}); skipped")
+        return None
+    truncated = len(data) > limit
+    if truncated:
+        data = data[:limit]
+    try:
+        if truncated:
+            content = codecs.getincrementaldecoder("utf-8")().decode(data, final=False)
+        else:
+            content = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        _add_diagnostic(diagnostics, f"{label}: invalid UTF-8 in {kind} ({exc}); skipped")
+        return None
+    if truncated:
+        _add_diagnostic(
+            diagnostics,
+            f"{label}: file is {size} bytes; exceeds the {limit}-byte ingestion cap, content truncated",
+        )
+    return content
 
 
 class RuleDocumentError(ValueError):
@@ -186,10 +220,13 @@ def runtime_file_rule_result(
         if not resolved_path.is_relative_to(trusted_root):
             _add_diagnostic(diagnostics, f"{rel_path}: resolves outside the trusted rule root; skipped")
             continue
-        try:
-            content = resolved_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            _add_diagnostic(diagnostics, f"{rel_path}: unreadable rule file ({exc}); skipped")
+        content = _read_bounded_text(
+            path=resolved_path,
+            limit=limits.max_rule_file_bytes,
+            label=rel_path,
+            diagnostics=diagnostics,
+        )
+        if content is None:
             continue
         file_truncated = len(content) > limits.max_rule_file_chars
         content = content[: limits.max_rule_file_chars]
@@ -353,7 +390,7 @@ def _rule_sort_key(metadata: RuleMetadata) -> tuple[int, int, str]:
     return (0 if metadata.scope == "workspace" else 1, metadata.precedence, metadata.name)
 
 
-def _parse_rule_document(path: Path, text: str) -> RuleCatalogEntry:
+def _parse_rule_document(path: Path, text: str, *, limits: RuleLimits = DEFAULT_RULE_LIMITS) -> RuleCatalogEntry:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     fields: dict[str, str] = {}
     body = normalized
@@ -363,10 +400,19 @@ def _parse_rule_document(path: Path, text: str) -> RuleCatalogEntry:
         if end is None:
             raise RuleDocumentError("frontmatter block is not closed with '---'")
         for line in lines[1:end]:
-            if ":" not in line:
+            if not line.strip():
                 continue
+            if ":" not in line:
+                raise RuleDocumentError("frontmatter lines must use 'key: value'")
             key, value = line.split(":", 1)
-            fields[key.strip()] = value.strip()
+            key = key.strip()
+            if not key:
+                raise RuleDocumentError("frontmatter keys must be non-empty strings")
+            if key not in _RULE_FRONTMATTER_KEYS:
+                raise RuleDocumentError(f"unsupported frontmatter key {key!r}")
+            if key in fields:
+                raise RuleDocumentError(f"duplicate frontmatter key {key!r}")
+            fields[key] = value.strip()
         body = "\n".join(lines[end + 1 :])
     raw_name = fields.get("name") or path.stem
     name = raw_name.strip()
@@ -392,17 +438,17 @@ def _parse_rule_document(path: Path, text: str) -> RuleCatalogEntry:
     content = body.strip()
     if not content:
         raise RuleDocumentError("rule document has no body")
-    limit = DEFAULT_RULE_LIMITS.max_rulebook_content_chars
+    limit = limits.max_rulebook_content_chars
     if len(content) > limit:
         marker = "\n[Rule content truncated by runtime context policy]"
         content = content[: max(0, limit - len(marker))].rstrip() + marker
     description = fields.get("description") or next((line.strip().lstrip("#").strip() for line in content.splitlines() if line.strip()), name)
-    description = description[: DEFAULT_RULE_LIMITS.max_rulebook_metadata_chars].strip()
+    description = description[: limits.max_rulebook_metadata_chars].strip()
     metadata = RuleMetadata(name, description, application, scope, precedence, path.as_posix())
     return RuleCatalogEntry(metadata=metadata, content=content)
 
 
-def _rule_files(*, workspace_root: Path, rule_roots: tuple[str, ...]) -> tuple[tuple[Path, ...], list[str]]:
+def _rule_files(*, workspace_root: Path, rule_roots: tuple[str, ...], max_files: int) -> tuple[tuple[Path, ...], list[str]]:
     candidates: set[Path] = set()
     diagnostics: list[str] = []
     for raw_root in rule_roots:
@@ -415,10 +461,13 @@ def _rule_files(*, workspace_root: Path, rule_roots: tuple[str, ...]) -> tuple[t
         if not root.is_dir():
             continue
         try:
-            found = list(root.rglob("*.md"))
+            found = bounded_sorted_files(root, limit=max_files + 1, matches=lambda name: name.endswith(".md"))
         except OSError as exc:
             _add_diagnostic(diagnostics, f"rulebook root '{raw_root}' cannot be scanned ({exc}); ignored")
             continue
+        if len(found) > max_files:
+            _add_diagnostic(diagnostics, f"rulebook file cap {max_files} reached; extra files were ignored")
+            found = found[:max_files]
         for candidate in found:
             try:
                 resolved = candidate.resolve(strict=True)
@@ -432,30 +481,40 @@ def _rule_files(*, workspace_root: Path, rule_roots: tuple[str, ...]) -> tuple[t
                 continue
             candidates.add(resolved)
     ordered = sorted(candidates, key=lambda path: path.relative_to(workspace_root).as_posix())
-    if len(ordered) > DEFAULT_RULE_LIMITS.max_rulebook_files:
-        _add_diagnostic(
-            diagnostics,
-            f"rulebook file cap {DEFAULT_RULE_LIMITS.max_rulebook_files} reached; extra files were ignored",
-        )
-        ordered = ordered[: DEFAULT_RULE_LIMITS.max_rulebook_files]
+    if len(ordered) > max_files:
+        _add_diagnostic(diagnostics, f"rulebook file cap {max_files} reached; extra files were ignored")
+        ordered = ordered[:max_files]
     return tuple(ordered), diagnostics
 
 
-def build_rule_catalog(workspace: Path | None, *, rule_roots: tuple[str, ...] = (RULEBOOK_DIRECTORY,)) -> RuleCatalog:
+def build_rule_catalog(
+    workspace: Path | None,
+    *,
+    rule_roots: tuple[str, ...] = (RULEBOOK_DIRECTORY,),
+    limits: RuleLimits = DEFAULT_RULE_LIMITS,
+) -> RuleCatalog:
     if workspace is None:
         return RuleCatalog(())
     workspace_root = workspace.resolve(strict=False)
     parsed: dict[str, RuleCatalogEntry] = {}
-    paths, diagnostics = _rule_files(workspace_root=workspace_root, rule_roots=rule_roots)
+    paths, diagnostics = _rule_files(
+        workspace_root=workspace_root,
+        rule_roots=rule_roots,
+        max_files=limits.max_rulebook_files,
+    )
     for path in paths:
         rel_path = _display_path(path, workspace_root)
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            _add_diagnostic(diagnostics, f"{rel_path}: unreadable rulebook file ({exc}); skipped")
+        text = _read_bounded_text(
+            path=path,
+            limit=limits.max_rulebook_file_bytes,
+            label=rel_path,
+            diagnostics=diagnostics,
+            kind="rulebook file",
+        )
+        if text is None:
             continue
         try:
-            entry = _parse_rule_document(path, text)
+            entry = _parse_rule_document(path, text, limits=limits)
         except RuleDocumentError as exc:
             _add_diagnostic(diagnostics, f"{rel_path}: {exc}; skipped")
             continue

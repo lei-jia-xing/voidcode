@@ -239,14 +239,14 @@ def test_zero_budget_reports_the_first_rule_path_with_empty_content(tmp_path: Pa
 def test_unreadable_rule_file_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write(tmp_path / RULE_FILE_NAME, "root rules")
     sub_rule = _write(tmp_path / "sub" / RULE_FILE_NAME, "sub rules")
-    original = Path.read_text
+    original = Path.open
 
-    def flaky(self: Path, *args: object, **kwargs: object) -> str:
-        if self == sub_rule:
+    def flaky(self: Path, *args: object, **kwargs: object):
+        if self == sub_rule.resolve():
             raise OSError("unreadable")
         return original(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "read_text", flaky)
+    monkeypatch.setattr(Path, "open", flaky)
     result = runtime_file_rule_result(workspace=tmp_path, touched_paths=("sub/file.txt",))
     assert [context.path for context in result.contexts] == ["AGENTS.md"]
     assert any("sub/AGENTS.md: unreadable rule file" in message for message in result.diagnostics)
@@ -586,19 +586,69 @@ def test_rulebook_invalid_documents_produce_bounded_diagnostics(tmp_path: Path) 
     assert len(prompt) <= DEFAULT_RULE_LIMITS.max_rulebook_prompt_chars
 
 
+def test_rulebook_rejects_unknown_duplicate_and_empty_frontmatter_keys(tmp_path: Path) -> None:
+    root = tmp_path / ".voidcode" / "rules"
+    _write(root / "unknown.md", "---\nname: unknown\napplication: always_apply\nextra: value\n---\nbody")
+    _write(root / "duplicate.md", "---\nname: duplicate\nname: duplicate-again\napplication: always_apply\n---\nbody")
+    _write(root / "empty-key.md", "---\n: value\napplication: always_apply\n---\nbody")
+
+    catalog = build_rule_catalog(tmp_path)
+    assert catalog.entries == ()
+    joined = " | ".join(catalog.diagnostics)
+    assert "unsupported frontmatter key 'extra'" in joined
+    assert "duplicate frontmatter key 'name'" in joined
+    assert "frontmatter keys must be non-empty strings" in joined
+
+
+def test_rule_ingestion_uses_bounded_reads_for_oversized_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write(tmp_path / RULE_FILE_NAME, "x" * (DEFAULT_RULE_LIMITS.max_rule_file_bytes + 10))
+    _write(
+        tmp_path / ".voidcode" / "rules" / "large.md",
+        _rule_document(
+            name="large",
+            body="x" * (DEFAULT_RULE_LIMITS.max_rulebook_file_bytes + 10),
+        ),
+    )
+
+    def forbidden_read_text(*args: object, **kwargs: object) -> str:
+        raise AssertionError("rule ingestion must use a bounded binary read")
+
+    monkeypatch.setattr(Path, "read_text", forbidden_read_text)
+    file_rules = runtime_file_rule_result(workspace=tmp_path)
+    assert any("byte ingestion cap" in message for message in file_rules.diagnostics)
+    catalog = build_rule_catalog(tmp_path)
+    assert any("byte ingestion cap" in message for message in catalog.diagnostics)
+
+
+def test_rulebook_scan_does_not_materialize_rglob(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for index in range(DEFAULT_RULE_LIMITS.max_rulebook_files + 4):
+        _write(
+            tmp_path / ".voidcode" / "rules" / f"rule-{index:03d}.md",
+            _rule_document(name=f"rule-{index:03d}", body=f"body {index}"),
+        )
+
+    def forbidden_rglob(*args: object, **kwargs: object) -> object:
+        raise AssertionError("rulebook scan must not materialize every path")
+
+    monkeypatch.setattr(Path, "rglob", forbidden_rglob)
+    catalog = build_rule_catalog(tmp_path)
+    assert len(catalog.entries) == DEFAULT_RULE_LIMITS.max_rulebook_files
+    assert any("rulebook file cap" in message for message in catalog.diagnostics)
+
+
 def test_rulebook_unreadable_file_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = _write(
         tmp_path / ".voidcode" / "rules" / "style.md",
         _rule_document(name="style", body="Use tabs."),
     )
-    original = Path.read_text
+    original = Path.open
 
-    def flaky(self: Path, *args: object, **kwargs: object) -> str:
+    def flaky(self: Path, *args: object, **kwargs: object):
         if self == path.resolve():
             raise OSError("unreadable")
         return original(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "read_text", flaky)
+    monkeypatch.setattr(Path, "open", flaky)
     catalog = build_rule_catalog(tmp_path)
     assert catalog.entries == ()
     assert any("unreadable rulebook file" in message for message in catalog.diagnostics)

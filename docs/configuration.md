@@ -190,6 +190,16 @@ Subagent discovery and monitoring belong to `subagents`, along with
 Markdown format. See the [subagents](../src/voidcode/plugins/subagents/README.md)
 README for the supported fields and explicit runtime limitations.
 
+### Workspace skills and rules
+
+The bundled `skills` plugin owns `plugins.skills.config`: `enabled` (default
+`false`), skill search `paths`, and per-skill `config` enable/disable rules.
+It also loads the workspace `AGENTS.md` hierarchy and `.voidcode/rules` rulebook
+independently of the skills setting. See the
+[skills README](../src/voidcode/plugins/skills/README.md) for the strict config
+schema, duplicate policy, byte/character caps, rulebook `key: value` frontmatter,
+and `skill://` disabled/no-such-resource behavior.
+
 ### Scripted workflows
 
 The bundled `workflows` plugin runs explicitly configured trusted `.py` scripts:

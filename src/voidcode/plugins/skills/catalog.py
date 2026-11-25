@@ -36,7 +36,7 @@ def _catalog_diagnostics(skill_registry: SkillRegistry) -> tuple[str, ...]:
         if len(lines) >= MAX_SKILL_DIAGNOSTICS:
             hidden += 1
             continue
-        lines.append(f"- {failure.name} ({failure.path}): {failure.message}")
+        lines.append(f"- {failure.display_name} ({failure.path}): {failure.message}")
     for error in skill_registry.config_errors:
         if len(lines) >= MAX_SKILL_DIAGNOSTICS:
             hidden += 1
@@ -71,14 +71,20 @@ def catalog_skill_context(skill_registry: SkillRegistry, *, read_tool_available:
     diagnostics = _catalog_diagnostics(skill_registry)
     if not names and not diagnostics:
         return ""
+    if read_tool_available is False:
+        load_lines = ("Skill bodies cannot be loaded in this session: the read tool is unavailable.",)
+    else:
+        load_lines = (
+            "Load a skill body ONLY when its description matches the active task.",
+            'Use the read tool: read(path="skill://<name>"). Do NOT speculatively load every',
+            "skill; lazy loading keeps the harness lightweight and the model focused.",
+        )
     header = "\n".join(
         (
             "Runtime skills catalog (recommended/visible).",
             "Each entry is metadata only; the full SKILL.md body is NOT in your",
             "current context.",
-            "Load a skill body ONLY when its description matches the active task.",
-            'Use the read tool: read(path="skill://<name>"). Do NOT speculatively load every',
-            "skill; lazy loading keeps the harness lightweight and the model focused.",
+            *load_lines,
             "",
             "<available_skills>",
         )
@@ -88,12 +94,6 @@ def catalog_skill_context(skill_registry: SkillRegistry, *, read_tool_available:
     if diagnostics:
         block = "<skill_diagnostics>\n" + "\n".join(diagnostics) + "\n</skill_diagnostics>"
         suffix += "\n" + truncate_utf8(block, limit=MAX_SKILL_DIAGNOSTIC_BYTES, marker="\n[... diagnostics truncated]")
-    if read_tool_available is False and names:
-        note = (
-            "Note: the read tool is not available in this session, so skill:// bodies cannot be loaded. "
-            "Enable the files plugin (or an equivalent resource reader) before relying on this catalog."
-        )
-        suffix += "\n" + truncate_utf8(note, limit=MAX_SKILL_DIAGNOSTIC_BYTES, marker="...")
 
     budget = MAX_SKILL_CATALOG_BYTES - len(header.encode("utf-8")) - len(closing.encode("utf-8")) - len(suffix.encode("utf-8")) - 2
     entries: list[str] = []
