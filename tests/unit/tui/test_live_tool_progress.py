@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from voidcode.sdk.client import StreamEvent
+from voidcode.sdk.client import ClientCapabilities, StreamEvent
 from voidcode.sdk.codec import encode_tool_call
 from voidcode.sdk.commands import CommandCatalog
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolSuccess
@@ -36,6 +36,8 @@ class _StubTerminal:
 
 
 class _StubClient:
+    capabilities = ClientCapabilities()
+
     def __init__(self) -> None:
         self._catalog = CommandCatalog("rev-1", ())
 

@@ -12,6 +12,7 @@ import base64
 import json
 from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Annotated, Any, Final, Literal, Protocol, runtime_checkable
 
 from pydantic import Base64Bytes, BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
@@ -774,9 +775,41 @@ class StreamCancellation:
             self._task = None
 
 
+class ClientCapability(StrEnum):
+    """Optional client-arm abilities outside the shared ``SessionClient`` surface."""
+
+    #: The core runs in this process, so the workspace is the client's own filesystem.
+    EMBEDDED = "embedded"
+    #: The arm may rewrite the workspace model section and reload the core.
+    MODEL_SWITCH = "model_switch"
+    #: The arm may rewrite the workspace thinking level and reload the core.
+    THINKING_SWITCH = "thinking_switch"
+
+
+@dataclass(frozen=True, slots=True)
+class ClientCapabilities:
+    """Immutable declaration of the optional abilities one client arm supports.
+
+    Both arms implement the same base contract; callers dispatch on this
+    declaration instead of inferring anything from the transport or class.
+    """
+
+    supported: frozenset[ClientCapability] = frozenset()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "supported", frozenset(self.supported))
+
+    def supports(self, capability: ClientCapability) -> bool:
+        """Whether this arm declared the capability; absence means a visible refusal."""
+        return capability in self.supported
+
+
 @runtime_checkable
 class SessionClient(Protocol):
     """One typed client surface over a core, local or remote."""
+
+    #: Optional abilities declared by this arm; never inferred from transport identity.
+    capabilities: ClientCapabilities
 
     def close(self) -> None: ...
 
@@ -873,6 +906,8 @@ __all__ = [
     "ApprovalPolicyRule",
     "BudgetExhaustion",
     "CancelReceipt",
+    "ClientCapabilities",
+    "ClientCapability",
     "ClientWireModel",
     "CoreClientError",
     "ErrorEnvelope",

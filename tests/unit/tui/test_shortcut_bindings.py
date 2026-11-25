@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from voidcode.sdk.client import CommandCatalog
+from voidcode.sdk.client import ClientCapabilities, CommandCatalog
 from voidcode.sdk.commands import CommandDescriptor
 from voidcode.tui import catalog
 from voidcode.tui.keys import Key
@@ -34,6 +34,8 @@ class _StubTerminal:
 
 
 class _StubClient:
+    capabilities = ClientCapabilities()
+
     def __init__(self, descriptors: tuple[CommandDescriptor, ...] = ()) -> None:
         self.descriptors = descriptors
         self.inputs: list[tuple[str, str, dict[str, object]]] = []

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from voidcode.sdk.client import CommandCatalog, SessionRow
+from voidcode.sdk.client import ClientCapabilities, CommandCatalog, SessionRow
 from voidcode.sdk.commands import CommandDescriptor
 from voidcode.sdk.views import ChoiceOption, ChoicesViewData, FormField, FormViewData, PluginViewDescriptor, ViewsSnapshot
 from voidcode.tui import catalog
@@ -36,6 +36,8 @@ class _StubTerminal:
 
 
 class _FlakyClient:
+    capabilities = ClientCapabilities()
+
     def __init__(self) -> None:
         self.fail = True
         self.descriptors: tuple[CommandDescriptor, ...] = ()

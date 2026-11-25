@@ -7,8 +7,13 @@ import time
 from typing import Any
 
 from tests.fixtures.polling import wait_for
+from voidcode.sdk.client import ClientCapabilities
 from voidcode.tui.events import WakeEvent
 from voidcode.tui.terminal_app import CoreTuiApp
+
+
+class _IdleClient:
+    capabilities = ClientCapabilities()
 
 
 class _IdleTerminal:
@@ -48,7 +53,7 @@ class _IdleTerminal:
 def test_idle_main_loop_renders_once_then_sleeps() -> None:
     """No input/events/timers: exactly the initial paint, then silence (no 30 Hz wakeups)."""
     terminal = _IdleTerminal()
-    app = CoreTuiApp(client=None, session_id="", terminal=terminal)  # type: ignore[arg-type]
+    app = CoreTuiApp(_IdleClient(), session_id="", terminal=terminal)
     app.running = True
     worker = threading.Thread(target=app._main_loop, daemon=True)
     worker.start()
@@ -66,7 +71,7 @@ def test_idle_main_loop_renders_once_then_sleeps() -> None:
 def test_queued_frame_renders_while_idle() -> None:
     """One queued frame wakes an idle loop into exactly one more render."""
     terminal = _IdleTerminal()
-    app = CoreTuiApp(client=None, session_id="", terminal=terminal)  # type: ignore[arg-type]
+    app = CoreTuiApp(_IdleClient(), session_id="", terminal=terminal)
     app.running = True
     worker = threading.Thread(target=app._main_loop, daemon=True)
     worker.start()

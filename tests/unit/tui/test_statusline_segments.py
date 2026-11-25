@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from voidcode.sdk.client import CommandCatalog, HealthModel, HealthStatus
+from voidcode.sdk.client import ClientCapabilities, CommandCatalog, HealthModel, HealthStatus
 from voidcode.tui.terminal_app import CoreTuiApp
 
 
@@ -30,6 +30,8 @@ class _StubTerminal:
 
 
 class _StubClient:
+    capabilities = ClientCapabilities()
+
     def command_catalog(self) -> CommandCatalog:
         return CommandCatalog(revision_id="rev-1", commands=())
 

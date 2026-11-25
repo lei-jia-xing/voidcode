@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from voidcode.sdk.client import ClientCapabilities, ClientCapability
 from voidcode.sdk.command_help import CommandHelpEntry, command_usage, grouped_help_entries
 from voidcode.sdk.commands import CommandDescriptor
 from voidcode.tui.styles import Styles
@@ -32,7 +33,9 @@ class TuiControl:
     usage: str
     summary: str
     aliases: tuple[str, ...] = ()
-    embedded_only: bool = False
+    #: Capability that must be declared for the mutating form to work. Bare
+    #: forms may still read state; dispatch refuses the mutation visibly.
+    requires: ClientCapability | None = None
 
 
 #: The client reserves ``/tui``; these are not core commands and never appear in
@@ -44,8 +47,8 @@ TUI_CONTROLS: tuple[TuiControl, ...] = (
     TuiControl("session", "session <id>", "Switch the active session."),
     TuiControl("new", "new", "Create a new session."),
     TuiControl("views", "views [name]", "Open plugin views or forms."),
-    TuiControl("model", "model [provider/model]", "Show or switch the model.", embedded_only=True),
-    TuiControl("thinking", "thinking [level|off]", "Show or set the thinking level.", embedded_only=True),
+    TuiControl("model", "model [provider/model]", "Show or switch the model.", requires=ClientCapability.MODEL_SWITCH),
+    TuiControl("thinking", "thinking [level|off]", "Show or set the thinking level.", requires=ClientCapability.THINKING_SWITCH),
     TuiControl("cancel", "cancel", "Cancel the active run."),
     TuiControl("quit", "quit", "Exit the TUI.", aliases=("exit",)),
 )
@@ -184,11 +187,13 @@ def _key_rows(
     return out
 
 
-def _control_rows(width: int, styles: Styles) -> list[str]:
+def _control_rows(width: int, styles: Styles, capabilities: ClientCapabilities) -> list[str]:
+    #: Gated controls are embedded-derived today; the capability remains the
+    #: single source, so help cannot disagree with dispatch.
     items: list[tuple[str, str, tuple[str, ...]]] = [
         (
             f"/tui {control.usage}",
-            control.summary + (" (embedded only)" if control.embedded_only else ""),
+            control.summary + (" (embedded only)" if control.requires is not None and not capabilities.supports(control.requires) else ""),
             (),
         )
         for control in TUI_CONTROLS
@@ -205,6 +210,7 @@ def render_help(
     bindings: Mapping[str, CommandDescriptor],
     conflicts: Mapping[str, tuple[str, ...]],
     quit_arm_seconds: float,
+    capabilities: ClientCapabilities,
     catalog_error: str | None = None,
 ) -> list[str]:
     """Render the complete terminal help screen as committed scrollback rows.
@@ -240,5 +246,5 @@ def render_help(
     rows.extend(["", _heading("Keys", styles)])
     rows.extend(_key_rows(bindings, conflicts, width=width, styles=styles, quit_arm_seconds=quit_arm_seconds))
     rows.extend(["", _heading("Local controls", styles), _dim("/tui <control>", styles)])
-    rows.extend(_control_rows(width, styles))
+    rows.extend(_control_rows(width, styles, capabilities))
     return rows

@@ -9,6 +9,7 @@ import pytest
 
 from voidcode.sdk.client import (
     CancelReceipt,
+    ClientCapabilities,
     CommandCatalog,
     CommandResult,
     CoreClientError,
@@ -556,6 +557,8 @@ class _StubClient:
     worker that adopted a lying watermark fetches past the unseen rows and
     they never reach the commit sink — the loss is consumer-visible.
     """
+
+    capabilities = ClientCapabilities()
 
     def __init__(self) -> None:
         self.health_calls = 0

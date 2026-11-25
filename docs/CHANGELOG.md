@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### TUI client capability declarations
+- `SessionClient` now exposes an immutable `ClientCapabilities` declaration built from typed `ClientCapability` values. `CoreLocalClient` declares `embedded`, `model_switch`, and `thinking_switch`; `CoreRpcClient` declares an empty set. Both are exported from `voidcode.sdk`/`sdk.client`.
+- The TUI no longer type-checks concrete clients or imports them inside functions: footer `~` shortening dispatches on `embedded`, `/tui model`/`/tui thinking` switching dispatches on `model_switch`/`thinking_switch`, and help marks gated controls from the same declarations. Undeclared switches still commit the existing visible "Model config lives with the server" refusal; viewing admitted model/thinking state remains available on every arm.
+- Tests: local/RPC real-arm declarations and protocol conformance, frozen declarations, footer shortening, remote refusal without side effects, remote read-only model/thinking display, local thinking switch+reload, capability-aware help, and an AST guard against concrete-client imports and `isinstance(..., client)` in the TUI path.
+- Verification: `tests/unit/tui`, `tests/unit/test_core_tui.py`, `tests/unit/test_session_client_conformance.py`; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Native provider adapters share one tool-name map
 - Chat Completions and Anthropic Messages now derive their per-turn tool-name map from one `tool_name_maps` helper and one 64-character cap in `native/_wire_common.py`. Both wires continue to serialize the same sanitized names for tool definitions and replayed calls/results, including hash-separated collisions, so the wire payloads are unchanged.
 - Tests build both adapters' payloads and compare the serialized names against the shared map, and pin the inclusive 64-character boundary.

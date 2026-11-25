@@ -194,6 +194,7 @@ A request id from one gate is never sent to the other endpoint. Both are project
 ## TUI Client
 
 - Launched embedded against a direct in-process core (`CoreLocalClient`: no socket, same refusals and frames as HTTP) or remote with `--server`/`--token` (`CoreRpcClient`). Both implement the typed `SessionClient` Protocol (`sdk/client.py`); programmatic callers open either arm with `bootstrap.open_session_client()`.
+- Optional arm abilities are declared, never inferred: every `SessionClient` exposes an immutable `ClientCapabilities` set of `ClientCapability` values. The local arm declares `embedded`, `model_switch`, and `thinking_switch`; the remote arm declares none. The TUI dispatches footer path shortening, `/tui model`/`/tui thinking` switching, and help availability on these declarations — there is no `isinstance` check or concrete-client import in the TUI path. An undeclared capability refuses visibly instead of degrading silently.
 - Inline scrollback with a **commit-once ledger**: rows are committed to the native scrollback exactly once by the main loop, driven by a durable `last_sequence` cursor. Committed text wraps to terminal cell width without dropping long output; live input/dialog geometry remains bounded. Reconnects, follow polling, resizes, and session switches never replay or clear settled output; only the live region repaints.
 - Renders conversational rows from the canonical transcript (`core.user_message`, `core.model_turn`, `core.tool_completed`/`core.tool_interrupted`) plus the direct `CommandResult` of core read-only commands (`help`, `status`, `show`), which have no command event; command/control payloads (`core.command_completed`, gates, progress) remain dynamic. Plugin and run/resume results remain event-projected; one shared formatter renders each result once, preserving multi-line output and falling back to JSON for data-only receipts. Every model- and plugin-provided string is escaped for terminal control bytes.
 - User text is shown verbatim without role labels; thinking is muted, without a
@@ -213,29 +214,34 @@ A request id from one gate is never sent to the other endpoint. Both are project
   and ordinary multiline text do not trigger name completion. Catalog refreshes
   update an open popup; dispatch still uses the displayed revision. Overlays
   capture their rendered revision; Esc on confirmation submits an explicit deny.
-- Local controls that are not admitted commands: `/tui help|sessions|session <id>|new|views [name]|model [provider/model]|thinking [level|off]|cancel|quit` (bare forms work when no admitted command owns the name). `/tui <control>` always reaches the client control, so a plugin cannot shadow navigation. `/tui model`/`/tui thinking` with an argument rewrite the workspace `model` section and invoke `core.reload` once (embedded, idle sessions only; refused visibly when remote or busy). `/tui thinking` lists current + supported levels; numeric budgets stay valid backend config but are hidden in this UI.
+- Local controls that are not admitted commands: `/tui help|sessions|session <id>|new|views [name]|model [provider/model]|thinking [level|off]|cancel|quit` (bare forms work when no admitted command owns the name). `/tui <control>` always reaches the client control, so a plugin cannot shadow navigation. `/tui model`/`/tui thinking` with an argument rewrite the workspace `model` section and invoke `core.reload` once (requires the arm's declared `model_switch`/`thinking_switch` capability, idle sessions only; refused visibly when undeclared or busy). `/tui thinking` lists current + supported levels; numeric budgets stay valid backend config but are hidden in this UI.
 - All blocking client calls happen on worker threads; only the main loop writes rows.
 
 ### TUI footer and `health.model`
 
-The footer reads the admitted generation DTO only — `GET /api/health` — refreshed on reconcile and on `core.activation_committed`. An edited-but-unreloaded `voidcode.json` never displays. `health.model` is `{raw, provider, model, reasoning_effort, reasoning_levels}`: `reasoning_effort` is the supported level (clamped from config; `null` hides the segment), `reasoning_levels` the DTO's level list (`[]` when unknown, never null). Budget-backed tiers display their level name (high stays high, never `budget 16384`); wire fields and numeric budgets are not exposed. The workspace segment is the server's `health.workspace` (full path; local-only `~`-shortening), never the client cwd, so remote footers name the server workspace. Narrow widths degrade: crop workspace → drop session → drop workspace → `model · effort` → `model`.
+The footer reads the admitted generation DTO only — `GET /api/health` — refreshed on reconcile and on `core.activation_committed`. An edited-but-unreloaded `voidcode.json` never displays. `health.model` is `{raw, provider, model, reasoning_effort, reasoning_levels}`: `reasoning_effort` is the supported level (clamped from config; `null` hides the segment), `reasoning_levels` the DTO's level list (`[]` when unknown, never null). Budget-backed tiers display their level name (high stays high, never `budget 16384`); wire fields and numeric budgets are not exposed. The workspace segment is the server's `health.workspace` (full path; `~`-shortening only when the arm declares the `embedded` capability), never the client cwd, so remote footers name the server workspace. Narrow widths degrade: crop workspace → drop session → drop workspace → `model · effort` → `model`.
 
 ## Typed Programmatic Clients
 
 Both arms satisfy `sdk.client.SessionClient` (runtime-checkable Protocol) and
-return the same SDK types; only the transport differs. Failures raise
-`sdk.client.CoreClientError` (`str` = server message, `.code` machine code,
-`.status_code` HTTP-equivalent application status).
+return the same SDK types; only the transport differs. Each arm additionally
+declares `client.capabilities.supports(ClientCapability.EMBEDDED |
+MODEL_SWITCH | THINKING_SWITCH)`; callers dispatch on that declaration rather
+than the concrete class. Failures raise `sdk.client.CoreClientError` (`str` =
+server message, `.code` machine code, `.status_code` HTTP-equivalent
+application status).
 
 ```python
 from voidcode.bootstrap import open_session_client
-from voidcode.sdk.client import ResumeSpec, RunSpec
+from voidcode.sdk.client import ClientCapability, ResumeSpec, RunSpec
 
 with open_session_client(workspace=ws) as client:  # or server_url=..., token=...
     session = client.create_session()
     catalog = client.command_catalog()
     result = client.run(session.session_id, RunSpec(prompt="hello"))
     page = client.transcript(session.session_id)
+    if client.capabilities.supports(ClientCapability.MODEL_SWITCH):
+        ...  # only the embedded arm can rewrite the workspace config
     while page.has_more:  # advance even when entries is empty
         page = client.transcript(session.session_id, after_sequence=page.next_sequence)
 ```

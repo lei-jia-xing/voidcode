@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from voidcode.sdk.client import ClientCapabilities, ClientCapability
 from voidcode.sdk.command_help import (
     command_argument_hints,
     command_usage,
@@ -14,6 +15,8 @@ from voidcode.sdk.commands import CommandDefinition, CommandDescriptor
 from voidcode.tui.help_view import TUI_CONTROLS, render_help
 from voidcode.tui.styles import Styles
 from voidcode.tui.term import visible_width
+
+_ALL_CAPABILITIES = ClientCapabilities(frozenset(ClientCapability))
 
 
 def _descriptor(name: str, owner: str, description: str = "Description", **kwargs: object) -> CommandDescriptor:
@@ -115,6 +118,7 @@ def _rows(width: int, descriptors: tuple[CommandDescriptor, ...]) -> list[str]:
         bindings={},
         conflicts={},
         quit_arm_seconds=1.5,
+        capabilities=_ALL_CAPABILITIES,
     )
 
 
@@ -205,6 +209,7 @@ def test_help_groups_by_owner_and_lists_shortcuts() -> None:
         bindings={"alt+a": descriptors[2]},
         conflicts={},
         quit_arm_seconds=1.5,
+        capabilities=_ALL_CAPABILITIES,
     )
     text = "\n".join(rows)
     assert "Core" in text and "goal" in text and "subagents" in text
@@ -230,6 +235,7 @@ def test_catalog_failure_still_renders_local_controls() -> None:
         bindings={},
         conflicts={},
         quit_arm_seconds=1.5,
+        capabilities=_ALL_CAPABILITIES,
         catalog_error="server unavailable",
     )
     text = "\n".join(rows)
@@ -249,5 +255,6 @@ def test_shortcut_conflicts_are_explicit() -> None:
         bindings={},
         conflicts={"alt+a": ("monitor", "other")},
         quit_arm_seconds=1.5,
+        capabilities=_ALL_CAPABILITIES,
     )
     assert "conflicts: /monitor, /other (unbound)" in "\n".join(rows)

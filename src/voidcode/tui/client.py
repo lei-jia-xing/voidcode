@@ -23,6 +23,7 @@ from voidcode.sdk.client import (
     ApprovalPolicyRule,
     ArtifactPageWire,
     CancelReceipt,
+    ClientCapabilities,
     CommandCatalog,
     CommandResult,
     ContinuationResult,
@@ -54,6 +55,10 @@ _END = object()
 
 class CoreRpcClient(SessionClient):
     """One reconnectable connection; lost operations are never transparently retried."""
+
+    #: Remote core: its workspace is not this process's filesystem, and model
+    #: configuration must be changed from the server workspace.
+    capabilities = ClientCapabilities()
 
     def __init__(self, base_url: str, *, token: str | None = None) -> None:
         parsed = urllib.parse.urlsplit(base_url.rstrip("/"))

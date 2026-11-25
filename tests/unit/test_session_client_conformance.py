@@ -24,7 +24,7 @@ from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.storage.store import SqliteStore
 from voidcode.sdk import SessionClient
-from voidcode.sdk.client import CoreClientError, ResumeSpec, RunSpec
+from voidcode.sdk.client import ClientCapabilities, ClientCapability, CoreClientError, ResumeSpec, RunSpec
 from voidcode.transport.http import create_core_app
 from voidcode.tui.client import CoreRpcClient
 from voidcode.tui.local_client import CoreLocalClient
@@ -175,6 +175,16 @@ def write_approval_client(request: pytest.FixtureRequest, tmp_path: Path) -> Ite
         _configure(workspace, server, plugin, approval_mode="ask", enable_files=True)
         with _client(request.param, workspace, state) as client:
             yield client
+
+
+def test_capabilities_are_declared_by_each_arm(arm_client: tuple[str, SessionClient, Path, Path]) -> None:
+    arm, client, _workspace, _state = arm_client
+    assert isinstance(client, SessionClient)
+    assert isinstance(client.capabilities, ClientCapabilities)
+    embedded = arm == "local"
+    assert client.capabilities.supports(ClientCapability.EMBEDDED) is embedded
+    assert client.capabilities.supports(ClientCapability.MODEL_SWITCH) is embedded
+    assert client.capabilities.supports(ClientCapability.THINKING_SWITCH) is embedded
 
 
 def test_run_and_resume_forward_interaction(write_approval_client: SessionClient) -> None:

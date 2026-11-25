@@ -3,7 +3,8 @@
 Same typed surface as :class:`CoreRpcClient`, but every call is a direct
 ``Core`` invocation in this process: no socket, no HTTP framing, no JSON
 round-trip. Errors arrive as ``CoreClientError`` with the transport's
-``(status, code)`` refusal, so the TUI cannot tell the two clients apart.
+``(status, code)`` refusal. The TUI distinguishes the arms only through the
+capabilities each one declares.
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ from voidcode.sdk.client import (
     ApprovalPolicyRule,
     ArtifactPage,
     CancelReceipt,
+    ClientCapabilities,
+    ClientCapability,
     CommandCatalog,
     CommandResult,
     ContinuationResult,
@@ -74,6 +77,10 @@ _COMMIT_WAIT_POOL = ThreadPoolExecutor(thread_name_prefix="voidcode-commit-wait"
 
 class CoreLocalClient(SessionClient):
     """Direct client for a core owned by this process."""
+
+    #: Embedded core: local workspace shortening and workspace-config rewriting
+    #: via ``/tui model``/``/tui thinking`` are available.
+    capabilities = ClientCapabilities(frozenset({ClientCapability.EMBEDDED, ClientCapability.MODEL_SWITCH, ClientCapability.THINKING_SWITCH}))
 
     def __init__(self, core: Core, *, workspace: Path) -> None:
         self._core = core

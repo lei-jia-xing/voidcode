@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from voidcode.config import BannerConfig
-from voidcode.sdk.client import QueuedFollowup
+from voidcode.sdk.client import ClientCapability, QueuedFollowup
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
 from voidcode.sdk.transcript import (
@@ -274,10 +274,8 @@ def footer_context(app: CoreTuiApp, width: int) -> str:
     """Context row from health DTO and turn usage: workspace · model · effort · context · usage."""
     if app.footer_mode == "off":
         return ""
-    from voidcode.tui.local_client import CoreLocalClient
-
     model = app.upgrade.model if app.upgrade is not None else None
-    local = isinstance(app.client, CoreLocalClient)
+    local = app.client.capabilities.supports(ClientCapability.EMBEDDED)
     workspace = short_workspace(app.upgrade.workspace, local=local) if app.upgrade is not None and app.upgrade.workspace else ""
 
     context_segment: str | None = None

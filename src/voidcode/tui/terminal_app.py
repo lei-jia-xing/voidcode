@@ -21,6 +21,7 @@ from voidcode.config import BannerConfig
 from voidcode.sdk.client import (
     MAX_PROMPT_BYTES,
     MAX_PROMPT_CHARS,
+    ClientCapability,
     CommandCatalog,
     CommandResult,
     CoreClientError,
@@ -2160,6 +2161,7 @@ class CoreTuiApp:
             bindings=bindings,
             conflicts=conflicts,
             quit_arm_seconds=QUIT_ARM_SECONDS,
+            capabilities=self.client.capabilities,
         )
 
     def _show_help(self) -> None:
@@ -2177,12 +2179,13 @@ class CoreTuiApp:
                 bindings=self._shortcut_bindings,
                 conflicts=self._shortcut_conflicts,
                 quit_arm_seconds=QUIT_ARM_SECONDS,
+                capabilities=self.client.capabilities,
                 catalog_error=catalog_error,
             )
         )
 
     def _tui_model(self, arg: str) -> None:
-        """Show the admitted model detail, or switch it (embedded, idle only)."""
+        """Show the admitted model detail, or switch it (declared capability, idle only)."""
         model = getattr(self.upgrade, "model", None)
         if not arg:
             self.terminal.commit_rows(
@@ -2197,7 +2200,7 @@ class CoreTuiApp:
         self._tui_switch_model("model", arg)
 
     def _tui_thinking(self, arg: str) -> None:
-        """Show current + supported levels, or set one (embedded, idle only)."""
+        """Show current + supported levels, or set one (declared capability, idle only)."""
         model = getattr(self.upgrade, "model", None)
         if not arg:
             self.terminal.commit_rows(
@@ -2215,9 +2218,8 @@ class CoreTuiApp:
 
     def _tui_switch_model(self, field: Literal["model", "reasoning_effort"], value: str) -> None:
         """Rewrite the workspace model section and reload once, entirely off the UI thread."""
-        from voidcode.tui.local_client import CoreLocalClient
-
-        if not isinstance(self.client, CoreLocalClient):
+        capability = ClientCapability.MODEL_SWITCH if field == "model" else ClientCapability.THINKING_SWITCH
+        if not self.client.capabilities.supports(capability):
             self.terminal.commit_rows([self.styles.fg("error", "Model config lives with the server: switch from the server workspace")])
             return
         if self._run_active or self.pending_approval is not None or isinstance(self.active_overlay, InteractiveConfirmation):

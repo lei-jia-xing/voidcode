@@ -63,9 +63,10 @@ TUI 是服务端事件流之上的内联终端客户端：不持有业务真相�
 - [x] **消除 `Any` 与宽松 dict。**
   - `_handle_composer_key`/`_outcome` 改用 `Key`/`ComposerOutcome`；`_live_input` 与 `_suspended_live` 改为冻结 `LiveInput`/`_SuspendedLive`（event pump 按字段读取）。
   - `views.py` 与 `artifact_viewer.py` 的 `handle_key` 现返回封闭的结果类型（`OverlayCancelled`、`OverlayActionSelected`、`ConfirmationDecided`、`ApprovalDecided`、`AskAnswered`、`AskCancelled`、`ArtifactPageRequested`、`ArtifactOpenRequested`）；`InteractiveForm.values` 为有界 JSON `FormValue` 快照，`InteractiveAsk.values` 为 `AskValue`。
-- [ ] **以客户端能力声明替代 `isinstance(CoreLocalClient)`。**
-  - `footer_context` 的函数内导入与类型判断、`/tui model`·`/tui thinking` 的 `embedded_only` 统一为客户端声明的能力。
-  - 依赖：`sdk/TODO.md` 客户端能力声明。
+- [x] **以客户端能力声明替代 `isinstance(CoreLocalClient)`。**
+  - `SessionClient` 现暴露冻结的 `ClientCapabilities`（`ClientCapability.EMBEDDED`/`MODEL_SWITCH`/`THINKING_SWITCH`）：本地客户端声明三项，RPC 客户端声明空集。
+  - `footer_context` 的本地 `~` 缩短、`/tui model`·`/tui thinking` 的切换、帮助里的 `(embedded only)` 均按声明分派，不再函数内导入或 `isinstance`；未声明能力沿用原有可见拒绝。
+  - 测试覆盖本地/RPC 声明、未支持动作、页脚与帮助；`ruff check`、`ruff format --check`、`ty check src`。
 - [x] **删除重复与魔法数字。**
   - 删除 `terminal_app.py` 的重复 `_BUILTIN_BANNER`；`QUIT_ARM_SECONDS` 归入 `rendering.py`，页脚提示、退出判定与帮助文本共用该值。
   - `views.py` 统一 `OVERLAY_MAX_ROWS`（22）与 `_PAGE_SCROLL_ROWS`（8），live 回退周期 `_LIVE_REFRESH_FALLBACK_SECONDS`（60s）取代两处重复字面量。
