@@ -76,6 +76,13 @@ plugin command names.
   catalog data. Narrow terminals retain the selected command path.
 - Up/Down selects, Esc dismisses without clearing the draft, and editing reopens.
 - Mid-line editing and existing arguments must never be destroyed by completion.
+- `@path` suggestions come from the files plugin's `workspace.path_completion`
+  query, asynchronously: typing keeps the draft and caret, only the newest
+  request may open the popup, and dismissing it drops every in-flight reply.
+  Paths are always relative to the server workspace (the local client queries
+  the same contract), never to the client process. A disabled files plugin or
+  malformed answer is named in the transcript; the TUI never falls back to
+  reading its own file system.
 - Catalog refresh removes disabled capabilities; pending actions retain their
   displayed revision and never silently retry under another revision.
 

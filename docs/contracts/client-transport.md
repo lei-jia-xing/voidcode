@@ -74,6 +74,7 @@ execute concurrently, so a long run never blocks session cancellation.
 | `session.resume` | `session_id`, optional paired `approval_request_id`/`decision`, `max_steps`, paired `extend_root_actions`/`root_action_grant_id` → run result. |
 | `command.input` | `session_id`, `name`, `expected_revision`, optional `arguments` → read-only prepared input with its captured revision. |
 | `command.invoke` | `session_id`, `name`, `arguments`, `expected_revision` → command result. |
+| `workspace.complete_paths` | `session_id`, optional `query`/`mode`/`depth`/`limit`/`include_hidden`/`respect_gitignore` → `{answer}` naming the files plugin's `workspace.path_completion` result; a null answer means the provider knows no matching resource. Missing providers surface `data.code=query_unavailable`; malformed answers `data.code=query_contract`. |
 | `action.confirm` | `session_id`, `request_id`, `decision`, `expected_revision` → command result. |
 | `session.views` | `session_id` → views with `revision_id`. |
 | `session.drain` | `session_id`, optional `limit` → `continuations`. |
@@ -86,8 +87,9 @@ execute concurrently, so a long run never blocks session cancellation.
 | `session.unsubscribe` | `subscription_id` → `removed`; never cancels the session's execution. |
 | `artifact.read` | `sha256`, optional byte `offset`/`limit` → immutable `artifact`, `offset`, base64 `data`, `eof`. |
 
-`transport/rpc.py` owns the method registry; `transport/models.py` owns strict
-parameter models. Unknown fields and invalid types fail at ingress. The schema
+`workspace.complete_paths` is always answered against the core's workspace, so a
+remote client never resolves its own filesystem. `transport/rpc.py` owns the
+method registry; `transport/models.py` owns strict parameter models. Unknown fields and invalid types fail at ingress. The schema
 served at `/api/openapi.json` is the method table built straight from that
 registry: shared SDK DTOs, `x-rpc-methods`, and `x-rpc-notifications`. The
 frontend generator derives both DTOs and typed RPC method mappings from it.

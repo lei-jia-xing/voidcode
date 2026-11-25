@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from voidcode.capabilities.files.path_queries import PathCompletionRequest, complete_workspace_paths
 from voidcode.sdk.client import CommandCatalog
 from voidcode.sdk.commands import CommandDescriptor
+from voidcode.sdk.plugin import PluginQueryCaller
 from voidcode.tui.composer import Composer, ComposerAction
 from voidcode.tui.events import CommandPresentationEvent
 from voidcode.tui.help_view import TUI_CONTROLS
@@ -36,6 +40,9 @@ class _StubTerminal:
 
 
 class _StubClient:
+    def __init__(self, workspace: Path | None = None) -> None:
+        self.workspace = workspace or Path.cwd()
+
     def command_catalog(self) -> CommandCatalog:
         return CommandCatalog(
             revision_id="rev-1",
@@ -47,10 +54,14 @@ class _StubClient:
             ),
         )
 
+    def complete_paths(self, session_id: str, arguments: Mapping[str, object]) -> Mapping[str, object] | None:
+        request = PathCompletionRequest.from_payload(dict(arguments))
+        return complete_workspace_paths(request, PluginQueryCaller(session_id=session_id, workspace=self.workspace)).as_payload()
 
-def _app() -> tuple[CoreTuiApp, _StubTerminal]:
+
+def _app(workspace: Path | None = None) -> tuple[CoreTuiApp, _StubTerminal]:
     terminal = _StubTerminal()
-    app = CoreTuiApp(_StubClient(), session_id="s1", terminal=terminal)  # type: ignore[arg-type]
+    app = CoreTuiApp(_StubClient(workspace), session_id="s1", terminal=terminal)  # type: ignore[arg-type]
     app.catalog_cache = _StubClient().command_catalog().commands
     app.catalog_revision = "rev-1"
     return app, terminal
@@ -59,6 +70,21 @@ def _app() -> tuple[CoreTuiApp, _StubTerminal]:
 def _type(app: CoreTuiApp, text: str) -> None:
     for char in text:
         app._handle_composer_key(Key(char, text=char))
+
+
+def _settle(app: CoreTuiApp, *, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app._drain_events()
+        if app._work.pending == 0 and app.event_queue.empty():
+            return
+        time.sleep(0.005)
+    raise AssertionError("path completion frames did not settle")
+
+
+def _type_path(app: CoreTuiApp, text: str) -> None:
+    _type(app, text)
+    _settle(app)
 
 
 def test_typing_slash_opens_and_filters_without_tab() -> None:
@@ -532,7 +558,7 @@ def test_internal_command_helpers_do_not_create_discovery_namespaces() -> None:
 
 def test_typing_at_opens_workspace_path_suggestions() -> None:
     app, _ = _app()
-    _type(app, "@")
+    _type_path(app, "@")
     assert app.composer.completion
     assert "src/" in app.composer.completion
     assert "README.md" in app.composer.completion
@@ -542,14 +568,15 @@ def test_typing_at_opens_workspace_path_suggestions() -> None:
 
 def test_typing_at_filter_to_directory() -> None:
     app, _ = _app()
-    _type(app, "@sr")
+    _type_path(app, "@sr")
     assert app.composer.completion == ("src/",)
 
 
 def test_tab_directory_completes_and_allows_further_completion() -> None:
     app, _ = _app()
-    _type(app, "@sr")
+    _type_path(app, "@sr")
     app._handle_composer_key(Key("tab"))
+    _settle(app)
     assert app.composer.value == "src/"
     assert app.composer.completion
     assert "src/voidcode/" in app.composer.completion
@@ -559,7 +586,7 @@ def test_tab_file_completes_with_trailing_space_no_dispatch() -> None:
     app, _ = _app()
     dispatched: list[str] = []
     app._dispatch_user_prompt = lambda line: dispatched.append(line)  # type: ignore[method-assign]
-    _type(app, "@README.md")
+    _type_path(app, "@README.md")
     assert app.composer.completion == ("README.md",)
     app._handle_composer_key(Key("tab"))
     assert app.composer.value == "README.md "
@@ -571,6 +598,7 @@ def test_midsentence_at_path_replacement_preserves_surrounding_text() -> None:
     _type(app, "check @sr now")
     for _ in range(len(" now")):
         app._handle_composer_key(Key("left"))
+    _settle(app)
     assert app.composer.completion == ("src/",)
     app._handle_composer_key(Key("tab"))
     assert app.composer.value == "check src/ now"
@@ -578,11 +606,11 @@ def test_midsentence_at_path_replacement_preserves_surrounding_text() -> None:
 
 def test_ignored_directories_excluded() -> None:
     app, _ = _app()
-    _type(app, "@.")
+    _type_path(app, "@.")
     assert ".git/" not in app.composer.completion
     assert not any(c.startswith(".git/") for c in app.composer.completion)
     app.composer.set_text("")
-    _type(app, "@__")
+    _type_path(app, "@__")
     assert "__pycache__/" not in app.composer.completion
     assert not any(c.startswith("__pycache__/") for c in app.composer.completion)
 
@@ -591,19 +619,23 @@ def test_accepting_path_with_enter_or_tab_does_not_submit_prompt() -> None:
     app, _ = _app()
     dispatched: list[str] = []
     app._dispatch_user_prompt = lambda line: dispatched.append(line)  # type: ignore[method-assign]
-    _type(app, "@sr")
+    _type_path(app, "@sr")
     app._handle_composer_key(Key("enter"))
+    _settle(app)
     assert app.composer.value == "src/"
     assert dispatched == []
     app._handle_composer_key(Key("tab"))
+    _settle(app)
     assert "src/voidcode/" in app.composer.value
     assert dispatched == []
 
 
 def test_path_candidates_does_not_escape_workspace(tmp_path: Path) -> None:
-    app, _ = _app()
-    app._workspace_dir = str(tmp_path)
     (tmp_path / "sub").mkdir()
     (tmp_path / "file.txt").write_text("hello")
-    _type(app, "@../")
+    app, _ = _app(tmp_path)
+    _type_path(app, "@../")
     assert app.composer.completion == ()
+    app.composer.set_text("")
+    _type_path(app, "@sub/")
+    assert app.composer.value == "@sub/"

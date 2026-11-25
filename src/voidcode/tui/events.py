@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from voidcode.capabilities.files.path_queries import PathCompletionResult
 from voidcode.sdk.client import (
     CommandCatalog,
     CommandResult,
@@ -172,6 +173,20 @@ class InvokeAcceptedEvent(TuiEvent):
     action: str
     revision_id: str
     overlay: InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveAsk | InteractiveMarkdown | InteractiveArtifactViewer | None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PathCompletionEvent(TuiEvent):
+    """One async workspace query reply, tagged with the draft it was asked for."""
+
+    token: AbortToken
+    request_id: int
+    target_range: tuple[int, int]
+    draft: str
+    cursor: int
+    result: PathCompletionResult | None
+    failure: Literal["unavailable", "contract", "error"] | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -355,6 +370,7 @@ type TuiFrame = (
     | GateAcceptedEvent
     | DecisionDoneEvent
     | InvokeAcceptedEvent
+    | PathCompletionEvent
     | RunStatusEvent
     | CancelDoneEvent
     | FollowupQueuedEvent

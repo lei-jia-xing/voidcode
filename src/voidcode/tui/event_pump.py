@@ -48,6 +48,7 @@ from .events import (
     LiveViewsLoadedEvent,
     ModelSwitchDoneEvent,
     NoticeEvent,
+    PathCompletionEvent,
     ReconciledEvent,
     RunRejectedEvent,
     RunStatusEvent,
@@ -133,6 +134,8 @@ def drain_events(app: CoreTuiApp, timeout: float | None = None) -> int:
                 _handle_decision_done(app, frame, rows_to_commit)
             case InvokeAcceptedEvent():
                 _handle_invoke_accepted(app, frame, rows_to_commit)
+            case PathCompletionEvent():
+                app._apply_path_completion(frame, rows_to_commit)
             case RunStatusEvent():
                 _handle_run_status(app, frame, rows_to_commit)
             case CancelDoneEvent():

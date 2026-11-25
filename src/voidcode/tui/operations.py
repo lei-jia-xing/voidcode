@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Literal
 
+from voidcode.capabilities.files.path_queries import PATH_COMPLETION, PathCompletionRequest, PathCompletionResult
 from voidcode.config import ModelField, update_model_section
 from voidcode.sdk.client import SessionClient
+from voidcode.sdk.services import QueryContractError, QueryUnavailable
 from voidcode.sdk.views import PluginViewDescriptor
 
 from .events import (
@@ -24,6 +27,7 @@ from .events import (
     LiveViewsFailedEvent,
     LiveViewsLoadedEvent,
     ModelSwitchDoneEvent,
+    PathCompletionEvent,
     SessionCreatedEvent,
     SessionCreateFailedEvent,
     SessionsFailedEvent,
@@ -31,6 +35,55 @@ from .events import (
     ViewsFailedEvent,
     ViewsLoadedEvent,
 )
+
+
+class _ClientQueryTransport:
+    def __init__(self, client: SessionClient, session_id: str) -> None:
+        self._client = client
+        self._session_id = session_id
+
+    def query(self, name: str, arguments: Mapping[str, object] | None = None) -> Mapping[str, object] | None:
+        if name != PATH_COMPLETION.name:
+            raise QueryContractError(f"path completion transport cannot answer {name!r}")
+        return self._client.complete_paths(self._session_id, dict(arguments or {}))
+
+
+def complete_paths(
+    client: SessionClient,
+    *,
+    session_id: str,
+    generation: int,
+    request_id: int,
+    request: PathCompletionRequest,
+    token: AbortToken,
+    target_range: tuple[int, int],
+    draft: str,
+    cursor: int,
+) -> PathCompletionEvent:
+    """Ask the server-side files query; never fall back to local directory reads."""
+    result: PathCompletionResult | None = None
+    failure: Literal["unavailable", "contract", "error"] | None = None
+    error: str | None = None
+    try:
+        result = PATH_COMPLETION.ask(_ClientQueryTransport(client, session_id), request)
+    except QueryUnavailable as exc:
+        failure, error = "unavailable", str(exc)
+    except QueryContractError as exc:
+        failure, error = "contract", str(exc)
+    except Exception as exc:
+        failure, error = "error", str(exc)
+    return PathCompletionEvent(
+        token=token,
+        request_id=request_id,
+        target_range=target_range,
+        draft=draft,
+        cursor=cursor,
+        result=result,
+        failure=failure,
+        error=error,
+        session_id=session_id,
+        generation=generation,
+    )
 
 
 def list_sessions(client: SessionClient, *, session_id: str, generation: int) -> SessionsLoadedEvent | SessionsFailedEvent:

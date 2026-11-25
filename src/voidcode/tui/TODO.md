@@ -41,10 +41,10 @@ TUI 是服务端事件流之上的内联终端客户端：不持有业务真相�
   - `_present_sessions` 现展示格式为 `{session_id[:8]} · turn {turn} · {summary or status}`，支持从首条用户消息持久投影会话主题。
 - [x] **输入历史跨重启可用。**
   - TUI 启动与会话切换时从持久事件流加载历史输入至 composer，实现跨会话重启持久还原（Ctrl+R 搜索交互保持后续讨论）。
-- [ ] **`@path` 补全走工作区查询契约。**
-  - `_path_candidates` 在 UI 线程逐键同步 `iterdir()` 本地文件系统，绕过 files 插件（插件禁用时仍可列文件），远程模式下以 `cwd`/服务端路径在本地解析。
-  - 改为通过 `workspace_queries` 询问服务端，异步返回；支持递归/模糊匹配。
-  - 依赖：`plugins/TODO.md` 工作区路径补全查询。
+- [x] **`@path` 补全走工作区查询契约。**
+  - files 插件注册 `workspace.path_completion`（前缀/模糊、递归深度、忽略规则、确定排序、结果与字节上限、frozen 请求/结果）；插件禁用即 `QueryUnavailable`，TUI 不再读本地文件系统。
+  - TUI 经 `workspace.complete_paths` 异步请求（本地与 RPC 同一契约），同一时刻仅一个在途请求 + 最新待发前缀；只有 serial、会话/代次、草稿与光标都匹配的回复才更新弹窗，旧回复/取消/切会话均丢弃，草稿与光标不被回复修改。不可用/契约失败在 transcript 明示一次。
+  - 远程补全路径始终相对服务端工作区；`@` 编辑语义保持不变。
 
 ## P2：终端鲁棒性
 

@@ -144,6 +144,19 @@ class InvokeRequest(SessionParams):
     expected_revision: str = Field(min_length=1, max_length=128)
 
 
+class CompletePathsParams(SessionParams):
+    query: str = Field(default="", max_length=1024)
+    mode: Literal["prefix", "fuzzy"] = "prefix"
+    depth: int = Field(default=1, ge=1, le=16)
+    limit: int = Field(default=50, ge=1, le=200)
+    include_hidden: bool = False
+    respect_gitignore: bool = True
+
+
+class CompletePathsBody(RpcModel):
+    answer: dict[str, Any] | None = None
+
+
 class ConfirmRequest(SessionParams):
     request_id: str = Field(min_length=1, max_length=128)
     expected_revision: str = Field(min_length=1, max_length=128)

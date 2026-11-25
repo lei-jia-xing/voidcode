@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal
 
 from voidcode import __version__
+from voidcode.capabilities.files.path_queries import PATH_COMPLETION_QUERY
 from voidcode.core.storage.records import SessionStatus
 from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.client import (
@@ -44,6 +45,7 @@ from voidcode.sdk.client import (
     ViewsSnapshot,
 )
 from voidcode.sdk.commands import CommandInputSnapshot
+from voidcode.sdk.services import QueryContractError, QueryUnavailable
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage
 from voidcode.transport.projection import (
     FOLLOW_TAIL_LIMIT,
@@ -346,6 +348,16 @@ class CoreLocalClient(SessionClient):
         self._validated(session_id)
         try:
             return self._core.plugin_views(session_id)
+        except Exception as exc:
+            raise self._refusal(exc) from None
+
+    def complete_paths(self, session_id: str, request: Mapping[str, object]) -> Mapping[str, Any] | None:
+        """Ask this runtime's files query; query failures stay typed."""
+        self._validated(session_id)
+        try:
+            return self._core.plugin_query(session_id, PATH_COMPLETION_QUERY, dict(request))
+        except QueryUnavailable, QueryContractError:
+            raise
         except Exception as exc:
             raise self._refusal(exc) from None
 

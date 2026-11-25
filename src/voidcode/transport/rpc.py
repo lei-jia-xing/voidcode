@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from voidcode.capabilities.files.path_queries import PATH_COMPLETION_QUERY
 from voidcode.core.engine import Core
 from voidcode.core.storage.records import SessionRecord
 from voidcode.sdk.client import (
@@ -25,6 +26,7 @@ from voidcode.sdk.client import (
     SessionRow,
 )
 from voidcode.sdk.commands import CommandCatalog, CommandInputSnapshot, CommandResult
+from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import ImageAttachment
 from voidcode.sdk.services import SessionUsageReport
 from voidcode.sdk.transcript import ContextHistoryWire, TranscriptPageWire, encode_context_history, encode_transcript_page
@@ -121,6 +123,15 @@ METHODS: dict[str, RpcMethod] = {
         m.InvokeRequest,
         CommandResult,
         lambda c, p: c.invoke_command(p.session_id, p.name, p.arguments, expected_revision=p.expected_revision).as_payload(),
+    ),
+    "workspace.complete_paths": RpcMethod(
+        m.CompletePathsParams,
+        m.CompletePathsBody,
+        lambda c, p: {
+            "answer": None
+            if (answer := c.plugin_query(p.session_id, PATH_COMPLETION_QUERY, p.model_dump(exclude={"session_id"}))) is None
+            else json_wire_object(answer)
+        },
     ),
     "action.confirm": RpcMethod(
         m.ConfirmRequest,

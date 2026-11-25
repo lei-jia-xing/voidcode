@@ -45,7 +45,7 @@ from voidcode.sdk.client import (
     parse_session_frame,
 )
 from voidcode.sdk.commands import CommandInputSnapshot
-from voidcode.sdk.services import ArtifactPage
+from voidcode.sdk.services import ArtifactPage, QueryContractError, QueryUnavailable
 from voidcode.sdk.transcript import ContextHistory, TranscriptPage, decode_context_history, decode_transcript_page
 from voidcode.transport.models import RPC_MAX_MESSAGE_BYTES, RPC_QUEUE_MESSAGES, RPC_SUBPROTOCOL, RpcFailure, RpcNotification, RpcSuccess
 
@@ -354,6 +354,25 @@ class CoreRpcClient(SessionClient):
 
     def views(self, session_id: str) -> ViewsSnapshot:
         return ViewsSnapshot.from_payload(self._call("session.views", {"session_id": session_id}))
+
+    def complete_paths(self, session_id: str, request: Mapping[str, object]) -> Mapping[str, Any] | None:
+        """Ask the server's files query; typed absence/contract failures survive RPC."""
+        try:
+            payload = self._call("workspace.complete_paths", {"session_id": session_id, **dict(request)})
+        except CoreClientError as exc:
+            if exc.code == "query_unavailable":
+                raise QueryUnavailable(str(exc)) from None
+            if exc.code == "query_contract":
+                raise QueryContractError(str(exc)) from None
+            raise
+        if set(payload) != {"answer"}:
+            raise QueryContractError("workspace path response must contain exactly 'answer'")
+        answer = payload["answer"]
+        if answer is None:
+            return None
+        if not isinstance(answer, Mapping):
+            raise QueryContractError("workspace path answer must be an object or null")
+        return answer
 
     def drain(self, session_id: str, *, limit: int = 10) -> list[ContinuationResult]:
         return [

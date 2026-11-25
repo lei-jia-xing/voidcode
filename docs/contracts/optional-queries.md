@@ -50,6 +50,14 @@ malformed — lives with the domain contracts in the owning plugin READMEs
 behavior, substitution rules, and profile narrowing are canonical in the
 [subagents](../../src/voidcode/plugins/subagents/README.md) README.
 
+`voidcode.capabilities.files.path_queries` owns `workspace.path_completion`,
+the files-plugin contract behind TUI `@path` completion. Its request/answer
+bounds, matching modes, ignore rules, symlink policy, and ordering are
+canonical in the [files](../../src/voidcode/plugins/files/README.md) README.
+Clients reach it through the typed `workspace.complete_paths` RPC method; `QueryUnavailable` and
+`QueryContractError` survive that transport as typed exceptions, so a consumer
+never classifies a failure from message text.
+
 ## Distinct outcomes
 
 - `QueryUnavailable`: no admitted implementation. The consumer chooses its documented

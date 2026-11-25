@@ -1101,6 +1101,18 @@ class Core:
         self.ensure_open()
         return self.store.sessions(workspace=str(self.workspace), limit=limit)
 
+    def plugin_query(self, session_id: str, name: str, arguments: Mapping[str, object]) -> Mapping[str, object] | None:
+        """Answer one named read-only plugin query in this workspace's runtime.
+
+        The session lookup verifies the caller's session belongs to this core;
+        the answering plugin is selected by the current capability generation,
+        so disabling it makes the query unavailable instead of falling back to
+        a core-owned file listing.
+        """
+        self.ensure_open()
+        self.session(session_id)
+        return self.plugin_runtime.execute_query(name, arguments, session_id=session_id, workspace=self.workspace)
+
     def show(self, session_id: str, *, events: bool = False) -> dict[str, object]:
         """Return session metadata, active checkpoint, and optional events as JSON-serializable dict."""
         self.ensure_open()

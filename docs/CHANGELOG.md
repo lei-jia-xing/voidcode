@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Workspace `@path` completion uses the files query
+- The files plugin owns `workspace.path_completion`: frozen request/result dataclasses, prefix or fuzzy matching, depth 1–16, limit 1–200, hidden opt-in, root `.gitignore` filtering, deterministic directory-first ordering, a 64 KiB answer budget, and workspace-relative paths only. Symlinks resolving outside the workspace and default-ignored directories are never offered. Disabling files makes the query unavailable.
+- The TUI no longer runs synchronous `iterdir()` on the UI thread or resolves server paths locally. It asks the query asynchronously through `SessionClient.complete_paths` on both local and RPC clients, keeps at most one request in flight plus the newest pending prefix, and applies only the reply whose serial, session/generation, draft, and caret still match. A new key or a dismissed popup aborts the old token; the draft and caret are never modified by a reply. Unavailable, contract, and ordinary query failures are typed and reported once in the transcript.
+- `workspace.complete_paths` joins the JSON-RPC method table as the narrow client entry to that one query; `core_error_status` maps `QueryUnavailable` to `query_unavailable` and `QueryContractError` to `query_contract`, which both clients turn back into the SDK types. Completion is server-workspace-relative for remote clients, and docs state that no local fallback exists.
+- Tests: path-query contract/provider (prefix/fuzzy, recursion/depth, ignore/hidden, Unicode, bounds, symlink/outside), async TUI (stale/out-of-order, unavailable/contract, dismissed reply), local and RPC completion, and files-disabled behavior.
+
 ### TUI client forwarding, ack resilience, and numbered diffs
 - `CoreRpcClient.run` and `CoreLocalClient.run` now forward `RunSpec.interaction`; `resume` already forwarded it, and the local/RPC conformance suite now proves unattended run and approval→resume behavior on both client arms.
 - `CoreRpcClient.events_stream` treats `session.ack` as best-effort: a concurrent `ConnectionClosed` is ignored while other send failures still surface. `_detect_color_system` disables color whenever `NO_COLOR` is present, including the empty string.

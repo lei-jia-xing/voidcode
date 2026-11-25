@@ -407,6 +407,52 @@ export interface components {
              */
             status: "ok" | "error" | "pending_confirmation";
         };
+        /** CompletePathsBody */
+        CompletePathsBody: {
+            /**
+             * Answer
+             * @default null
+             */
+            answer?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** CompletePathsParams */
+        CompletePathsParams: {
+            /**
+             * Depth
+             * @default 1
+             */
+            depth?: number;
+            /**
+             * Include Hidden
+             * @default false
+             */
+            include_hidden?: boolean;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit?: number;
+            /**
+             * Mode
+             * @default prefix
+             * @enum {string}
+             */
+            mode?: "prefix" | "fuzzy";
+            /**
+             * Query
+             * @default
+             */
+            query?: string;
+            /**
+             * Respect Gitignore
+             * @default true
+             */
+            respect_gitignore?: boolean;
+            /** Session Id */
+            session_id: string;
+        };
         /**
          * ComponentStyle
          * @description View-local tint: semantic tone plus optional explicit colors (frozen contract).
@@ -2038,6 +2084,7 @@ export interface RpcMethods {
   "session.unsubscribe": { params: components["schemas"]["UnsubscribeParams"]; result: components["schemas"]["UnsubscribeReceipt"] };
   "session.usage": { params: components["schemas"]["UsageParams"]; result: components["schemas"]["SessionUsageReport"] };
   "session.views": { params: components["schemas"]["SessionParams"]; result: components["schemas"]["ViewsSnapshot"] };
+  "workspace.complete_paths": { params: components["schemas"]["CompletePathsParams"]; result: components["schemas"]["CompletePathsBody"] };
 }
 
 export interface RpcNotifications {

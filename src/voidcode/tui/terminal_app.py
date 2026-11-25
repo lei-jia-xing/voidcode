@@ -12,9 +12,11 @@ import threading
 import time
 import webbrowser
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from voidcode.capabilities.files.path_queries import PathCompletionRequest, PathCompletionResult
 from voidcode.config import BannerConfig
 from voidcode.sdk.client import (
     MAX_PROMPT_BYTES,
@@ -71,6 +73,7 @@ from .event_pump import drain_events
 from .formatting import (
     NoticeTone,
     StatusLineKind,
+    notice_row,
 )
 from .formatting import (
     command_result_rows as _command_result_rows,
@@ -157,7 +160,18 @@ _BUILTIN_BANNER = (
 _DEFAULT_BANNER = BannerConfig()
 
 
-_IGNORED_PATH_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".codegraph"}
+@dataclass(frozen=True, slots=True)
+class _PathCompletionRound:
+    """One requested query round; the newest serial owns the popup."""
+
+    request_id: int
+    request: PathCompletionRequest
+    target_range: tuple[int, int]
+    draft: str
+    cursor: int
+    token: events.AbortToken
+    session_id: str
+    generation: int
 
 
 class CoreTuiApp:
@@ -277,8 +291,13 @@ class CoreTuiApp:
         #: Sessions whose welcome mark already committed; each empty visit shows it once.
         self._welcomed_sessions: set[str] = set()
         self._path_replacements: dict[str, str] = {}
-        self._pending_path_replacements: dict[str, str] = {}
-        self._pending_path_descriptions: dict[str, str] = {}
+        #: One in-flight workspace query at a time; every key supersedes the
+        #: previous request by serial, and only the newest reply may render.
+        self._path_request_serial = 0
+        self._path_request_active: int | None = None
+        self._path_request_pending: _PathCompletionRound | None = None
+        self._path_request_token: events.AbortToken | None = None
+        self._path_failure_reported: str | None = None
         self.latest_input_tokens: int | None = None
         self.cumulative_input_tokens: int = 0
         self.cumulative_output_tokens: int = 0
@@ -355,6 +374,7 @@ class CoreTuiApp:
             self._input_stop.set()
             # Cancel the stream before shutdown joins its worker: an idle follow
             # stream is waiting on async network events, and cancellation wakes it.
+            self._cancel_path_completion()
             try:
                 if self._stream_cancel is not None:
                     self._stream_cancel.close()
@@ -1566,132 +1586,8 @@ class CoreTuiApp:
                 return descriptor, line[len(syntax) :]
         return None
 
-    @property
-    def _workspace_root(self) -> Path:
-        if self._workspace_dir is not None:
-            return Path(self._workspace_dir).resolve()
-        if self.upgrade is not None and self.upgrade.workspace:
-            return Path(self.upgrade.workspace).resolve()
-        return Path.cwd().resolve()
-
-    def _path_candidates(self, query: str) -> tuple[list[str], dict[str, str], dict[str, str]]:
-        root = self._workspace_root
-        try:
-            if not root.is_dir():
-                return [], {}, {}
-        except OSError:
-            return [], {}, {}
-
-        if "/" in query:
-            dir_part, _, file_part = query.rpartition("/")
-            clean_dir = dir_part.strip("/")
-            target_dir = (root / clean_dir).resolve() if clean_dir else root
-            try:
-                target_dir.relative_to(root)
-                rel_parts = target_dir.relative_to(root).parts
-                if any(part in _IGNORED_PATH_DIRS for part in rel_parts):
-                    return [], {}, {}
-            except ValueError:
-                return [], {}, {}
-            prefix = f"{clean_dir}/" if clean_dir else ""
-        else:
-            file_part = query
-            target_dir = root
-            prefix = ""
-
-        try:
-            if not target_dir.is_dir():
-                return [], {}, {}
-            entries = list(target_dir.iterdir())
-        except OSError:
-            return [], {}, {}
-
-        allow_hidden = query.startswith(".") or file_part.startswith(".")
-        matching_dirs: list[str] = []
-        matching_files: list[str] = []
-        descriptions: dict[str, str] = {}
-        replacements: dict[str, str] = {}
-
-        for entry in entries:
-            name = entry.name
-            if name in _IGNORED_PATH_DIRS:
-                continue
-            if not allow_hidden and name.startswith("."):
-                continue
-            if file_part and not name.lower().startswith(file_part.lower()):
-                continue
-
-            try:
-                is_dir = entry.is_dir()
-            except OSError:
-                continue
-
-            rel_path = f"{prefix}{name}"
-            if is_dir:
-                cand = f"{rel_path}/"
-                matching_dirs.append(cand)
-                descriptions[cand] = "directory"
-                replacements[cand] = f"{rel_path}/"
-            else:
-                cand = rel_path
-                matching_files.append(cand)
-                descriptions[cand] = "file"
-                replacements[cand] = f"{rel_path} "
-
-        matching_dirs.sort(key=lambda s: s.lower())
-        matching_files.sort(key=lambda s: s.lower())
-        candidates = (matching_dirs + matching_files)[:50]
-        return candidates, descriptions, replacements
-
-    def _sync_slash_completion(self, *, dismissed: bool = False) -> None:
-        """Refresh the slash-name or path popup after one composer key; preserve selection."""
-        if dismissed:
-            self.composer.set_completion(())
-            self._path_replacements = {}
-            self._pending_path_replacements = {}
-            self._pending_path_descriptions = {}
-            return
-        candidates, token_range = self._completion_candidates()
-        if not candidates or token_range is None:
-            self.composer.set_completion(())
-            self._path_replacements = {}
-            self._pending_path_replacements = {}
-            self._pending_path_descriptions = {}
-            return
-        previous = self.composer.completion
-        index = self.composer.completion_index
-        selected = previous[index] if previous and 0 <= index < len(previous) else None
-        self.composer.set_completion(
-            candidates,
-            index=candidates.index(selected) if selected in candidates else 0,
-            target_range=token_range,
-        )
-        if self._pending_path_replacements:
-            self._path_replacements = dict(self._pending_path_replacements)
-            self.composer.completion_descriptions = dict(self._pending_path_descriptions)
-            self.composer.completion_groups = set()
-        else:
-            self._path_replacements = {}
-            visible_paths = [f"/{_slash_public_path(entry)}" for entry in self.catalog_cache if entry.slash_visible]
-            descriptions: dict[str, str] = {}
-            for entry in self.catalog_cache:
-                if not entry.slash_visible:
-                    continue
-                path = f"/{_slash_public_path(entry)}"
-                hints = " ".join(command_argument_hints(entry))
-                descriptions[path] = f"{hints} — {entry.description}" if hints else entry.description
-            groups = {candidate for candidate in candidates if candidate == "/tui" or any(path.startswith(candidate + " ") for path in visible_paths)}
-            for candidate in groups:
-                if candidate in descriptions:
-                    continue
-                children = sorted({path[len(candidate) + 1 :].split(" ", 1)[0] for path in visible_paths if path.startswith(candidate + " ")})
-                if children:
-                    descriptions[candidate] = f"Subcommands: {', '.join(children)}"
-            self.composer.completion_descriptions = descriptions
-            self.composer.completion_groups = groups
-
-    def _completion_candidates(self) -> tuple[list[str], tuple[int, int] | None]:
-        """Slash-command or workspace @path paths matching the draft token at cursor."""
+    def _path_completion_token(self) -> tuple[int, int, str] | None:
+        """Locate the path token under the caret; never a slash-command token."""
         text = self.composer.value
         cursor = self.composer.cursor
 
@@ -1702,11 +1598,7 @@ class CoreTuiApp:
                 token_end = cursor
                 while token_end < len(text) and text[token_end] not in " \t\n)]}\"':":
                     token_end += 1
-                query = text[at_idx + 1 : cursor]
-                candidates, descriptions, replacements = self._path_candidates(query)
-                self._pending_path_descriptions = descriptions
-                self._pending_path_replacements = replacements
-                return candidates, (at_idx, token_end)
+                return at_idx, token_end, text[at_idx + 1 : cursor]
 
         slash_idx = text[:cursor].rfind("/")
         if slash_idx > 0 and text[slash_idx - 1] not in " \t\n":
@@ -1718,15 +1610,182 @@ class CoreTuiApp:
                 token_end = cursor
                 while token_end < len(text) and text[token_end] not in " \t\n)]}\"':":
                     token_end += 1
-                candidates, descriptions, replacements = self._path_candidates(path_token)
-                if candidates:
-                    self._pending_path_descriptions = descriptions
-                    self._pending_path_replacements = replacements
-                    return candidates, (path_start, token_end)
+                return path_start, token_end, path_token
+        return None
 
-        self._pending_path_descriptions = {}
-        self._pending_path_replacements = {}
+    def _cancel_path_completion(self) -> None:
+        """Supersede every pending/active round; their replies become stale."""
+        self._path_request_serial += 1
+        pending = self._path_request_pending
+        self._path_request_pending = None
+        if pending is not None:
+            pending.token.abort()
+        if self._path_request_token is not None:
+            self._path_request_token.abort()
+            self._path_request_token = None
 
+    def _request_path_completion(self, query: str, target_range: tuple[int, int]) -> None:
+        """Queue the newest workspace query without touching the draft or caret."""
+        self._path_request_serial += 1
+        request_id = self._path_request_serial
+        if self._path_request_pending is not None:
+            self._path_request_pending.token.abort()
+        if self._path_request_token is not None:
+            self._path_request_token.abort()
+        try:
+            request = PathCompletionRequest(query=query, limit=50)
+        except ValueError as exc:
+            # The query string itself is user input; an overlong token simply
+            # never completes, and the failure is reported once, not per key.
+            message = f"@path completion unavailable: {exc}"
+            self._path_request_pending = None
+            if self._path_failure_reported != message:
+                self._path_failure_reported = message
+                self._queue_notice(message, tone="warning")
+            self.composer.set_completion(())
+            self.composer.completion_descriptions = {}
+            self._path_replacements = {}
+            return
+        self._path_request_pending = _PathCompletionRound(
+            request_id=request_id,
+            request=request,
+            target_range=target_range,
+            draft=self.composer.value,
+            cursor=self.composer.cursor,
+            token=events.AbortToken(),
+            session_id=self.session_id,
+            generation=self._generation,
+        )
+        # A new prefix already invalidates the old popup; the reply owns the view.
+        self.composer.set_completion(())
+        self.composer.completion_descriptions = {}
+        self._path_replacements = {}
+        self._start_pending_path_completion()
+
+    def _start_pending_path_completion(self) -> None:
+        if self._path_request_active is not None:
+            return
+        round_ = self._path_request_pending
+        if round_ is None:
+            return
+        self._path_request_pending = None
+        self._path_request_active = round_.request_id
+        self._path_request_token = round_.token
+        self._work.submit(
+            "PathCompletion",
+            lambda: self.event_queue.put(
+                operations.complete_paths(
+                    self.client,
+                    session_id=round_.session_id,
+                    generation=round_.generation,
+                    request_id=round_.request_id,
+                    request=round_.request,
+                    token=round_.token,
+                    target_range=round_.target_range,
+                    draft=round_.draft,
+                    cursor=round_.cursor,
+                )
+            ),
+        )
+
+    def _apply_path_completion(self, frame: events.PathCompletionEvent, rows: list[str]) -> None:
+        """Apply only the newest reply for the unchanged draft; never clear the draft."""
+        if frame.request_id == self._path_request_active:
+            self._path_request_active = None
+            self._path_request_token = None
+        stale = (
+            frame.token.aborted
+            or frame.request_id != self._path_request_serial
+            or frame.draft != self.composer.value
+            or frame.cursor != self.composer.cursor
+        )
+        if not stale:
+            if frame.failure is not None or frame.result is None:
+                message = frame.error or "workspace path query failed"
+                prefix = {
+                    "unavailable": "@path completion unavailable",
+                    "contract": "@path completion contract failure",
+                    "error": "@path completion failed",
+                }[frame.failure or "error"]
+                if self._path_failure_reported != f"{prefix}: {message}":
+                    self._path_failure_reported = f"{prefix}: {message}"
+                    rows.append(notice_row(f"{prefix}: {message}", "warning" if frame.failure == "unavailable" else "error", self.styles))
+                self.composer.set_completion(())
+                self.composer.completion_descriptions = {}
+                self._path_replacements = {}
+            else:
+                self._path_failure_reported = None
+                self._render_path_completion(frame.result, frame.target_range)
+        self._start_pending_path_completion()
+
+    def _render_path_completion(self, result: PathCompletionResult, target_range: tuple[int, int]) -> None:
+        previous = self.composer.completion
+        index = self.composer.completion_index
+        selected = previous[index] if previous and 0 <= index < len(previous) else None
+        candidates = [entry.path for entry in result.entries]
+        descriptions: dict[str, str] = {entry.path: entry.kind for entry in result.entries}
+        replacements: dict[str, str] = {entry.path: entry.path if entry.kind == "directory" else f"{entry.path} " for entry in result.entries}
+        self.composer.completion_descriptions = descriptions
+        self.composer.completion_groups = set()
+        self.composer.set_completion(
+            candidates,
+            index=candidates.index(selected) if selected in candidates else 0,
+            target_range=target_range,
+        )
+        self._path_replacements = replacements if candidates else {}
+
+    def _sync_slash_completion(self, *, dismissed: bool = False) -> None:
+        """Refresh the slash-name popup or queue the workspace path query; preserve selection."""
+        if dismissed:
+            self._cancel_path_completion()
+            self.composer.set_completion(())
+            self.composer.completion_descriptions = {}
+            self._path_replacements = {}
+            return
+        path_token = self._path_completion_token()
+        if path_token is not None:
+            start, end, query = path_token
+            self._request_path_completion(query, (start, end))
+            return
+        self._cancel_path_completion()
+        candidates, token_range = self._completion_candidates()
+        if not candidates or token_range is None:
+            self.composer.set_completion(())
+            self.composer.completion_descriptions = {}
+            self._path_replacements = {}
+            return
+        previous = self.composer.completion
+        index = self.composer.completion_index
+        selected = previous[index] if previous and 0 <= index < len(previous) else None
+        self.composer.set_completion(
+            candidates,
+            index=candidates.index(selected) if selected in candidates else 0,
+            target_range=token_range,
+        )
+        self._path_replacements = {}
+        visible_paths = [f"/{_slash_public_path(entry)}" for entry in self.catalog_cache if entry.slash_visible]
+        descriptions: dict[str, str] = {}
+        for entry in self.catalog_cache:
+            if not entry.slash_visible:
+                continue
+            path = f"/{_slash_public_path(entry)}"
+            hints = " ".join(command_argument_hints(entry))
+            descriptions[path] = f"{hints} — {entry.description}" if hints else entry.description
+        groups = {candidate for candidate in candidates if candidate == "/tui" or any(path.startswith(candidate + " ") for path in visible_paths)}
+        for candidate in groups:
+            if candidate in descriptions:
+                continue
+            children = sorted({path[len(candidate) + 1 :].split(" ", 1)[0] for path in visible_paths if path.startswith(candidate + " ")})
+            if children:
+                descriptions[candidate] = f"Subcommands: {', '.join(children)}"
+        self.composer.completion_descriptions = descriptions
+        self.composer.completion_groups = groups
+
+    def _completion_candidates(self) -> tuple[list[str], tuple[int, int] | None]:
+        """Slash-command names matching the draft token at the caret."""
+        text = self.composer.value
+        cursor = self.composer.cursor
+        slash_idx = text[:cursor].rfind("/")
         if slash_idx < 0:
             return [], None
         if slash_idx > 0 and text[slash_idx - 1] not in " \t\n":
@@ -1983,6 +2042,9 @@ class CoreTuiApp:
             self.terminal.commit_rows([self.styles.fg("warning", f"Artifact viewer closed on session switch: {self.active_overlay.source.uri}")])
         self._artifact_ack_deadline = None
         self._follower.new_epoch()
+        self._cancel_path_completion()
+        self._path_request_active = None
+        self._path_failure_reported = None
         while True:
             try:
                 self.event_queue.get_nowait()
