@@ -425,6 +425,27 @@ def test_staging_failure_cancels_the_child_and_surfaces_both_ids(tmp_path: Path)
     assert services.staged_events == []
 
 
+def test_failed_join_records_only_the_post_hoc_dispatch_event(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
+    services = FakeServices()
+
+    def fail_join(child_session_id: str, *, timeout_seconds: float = 300.0) -> ChildOutcome:
+        _ = (child_session_id, timeout_seconds)
+        raise RuntimeError("join unavailable")
+
+    services.join_child = fail_join  # type: ignore[method-assign]
+
+    result = _review(services, repo, {})
+
+    assert result.status == "error"
+    assert result.data is not None
+    assert result.data["child_session_id"] == "child-1"
+    assert "join unavailable" in (result.error or "")
+    assert [event_type for event_type, _payload in services.staged_events] == ["review_dispatched"]
+    assert "review_started" not in {event_type for event_type, _payload in services.staged_events}
+
+
 def test_failed_child_surfaces_captured_output(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / "tracked.txt").write_text("base\nchanged\n", encoding="utf-8")
@@ -752,23 +773,95 @@ def test_commit_message_lines_do_not_look_like_a_diff(tmp_path: Path) -> None:
     assert service.diff_commit(sha, git=git_status_snapshot(repo)).state == "clean"
 
 
+def test_tracked_secret_paths_are_excluded_from_workspace_and_commit_diffs(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    tracked = {
+        ".env": "TOKEN=tracked-secret\n",
+        "secrets.json": '{"token": "tracked-json-secret"}\n',
+        "credentials.json": "tracked-credentials-secret\n",
+        "server.p12": "tracked-p12-secret\n",
+        "id_ed25519": "tracked-ed25519-secret\n",
+        "normal.py": "value = 1\n",
+        "secret_helper.py": "helper = 1\n",
+    }
+    for name, content in tracked.items():
+        (repo / name).write_text(content, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "--quiet", "-m", "add tracked files")
+    for name in tracked:
+        (repo / name).write_text(f"{tracked[name]}changed\n", encoding="utf-8")
+
+    service = WorkspaceReviewService(workspace=repo)
+    workspace_text = service.diff_all(git=git_status_snapshot(repo)).diff or ""
+    assert "normal.py" in workspace_text
+    assert "secret_helper.py" in workspace_text
+    assert "tracked-secret" not in workspace_text
+    assert "tracked-json-secret" not in workspace_text
+    assert "tracked-credentials-secret" not in workspace_text
+    assert "tracked-p12-secret" not in workspace_text
+    assert "tracked-ed25519-secret" not in workspace_text
+
+    _git(repo, "add", ".")
+    staged_text = service.diff_all(git=git_status_snapshot(repo)).diff or ""
+    assert "normal.py" in staged_text
+    assert "secret_helper.py" in staged_text
+    assert "tracked-secret" not in staged_text
+    assert "tracked-json-secret" not in staged_text
+
+    _git(repo, "commit", "--quiet", "-m", "change tracked files")
+    sha = _git(repo, "rev-parse", "HEAD").strip()
+    commit_text = service.diff_commit(sha, git=git_status_snapshot(repo)).diff or ""
+    assert "normal.py" in commit_text
+    assert "secret_helper.py" in commit_text
+    assert "tracked-secret" not in commit_text
+    assert "tracked-json-secret" not in commit_text
+    assert "tracked-credentials-secret" not in commit_text
+
+
 def test_untracked_secret_files_are_omitted(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / "visible.txt").write_text("review me\n", encoding="utf-8")
+    (repo / "secret_helper.py").write_text("not a secret\n", encoding="utf-8")
     (repo / ".env").write_text("TOKEN=supersecret\n", encoding="utf-8")
+    (repo / ".env.local").write_text("TOKEN=local-secret\n", encoding="utf-8")
     (repo / "server.pem").write_text("PRIVATE KEY\n", encoding="utf-8")
+    (repo / "server.p12").write_text("P12 PRIVATE\n", encoding="utf-8")
     (repo / "id_rsa").write_text("PRIVATE KEY\n", encoding="utf-8")
+    (repo / "id_ed25519").write_text("PRIVATE KEY\n", encoding="utf-8")
     (repo / "credentials").write_text("password\n", encoding="utf-8")
+    (repo / "credentials.json").write_text("credential-json\n", encoding="utf-8")
+    (repo / "secrets.json").write_text("json-secret\n", encoding="utf-8")
+    (repo / "secrets.yaml").write_text("yaml-secret\n", encoding="utf-8")
+    (repo / "secrets.yml").write_text("yml-secret\n", encoding="utf-8")
+    (repo / "secrets.toml").write_text("toml-secret\n", encoding="utf-8")
     service = WorkspaceReviewService(workspace=repo)
     diff = service.diff_all(git=git_status_snapshot(repo))
     text = diff.diff or ""
 
     assert "visible.txt" in text
+    assert "secret_helper.py" in text
+    assert "not a secret" in text
     assert "supersecret" not in text
-    assert ".env" not in text
-    assert "server.pem" not in text
-    assert "id_rsa" not in text
-    assert {Path(path).name for path in diff.skipped_untracked} == {".env", "server.pem", "id_rsa", "credentials"}
+    assert "local-secret" not in text
+    assert "json-secret" not in text
+    assert "yaml-secret" not in text
+    assert "yml-secret" not in text
+    assert "toml-secret" not in text
+    assert "credential-json" not in text
+    assert {Path(path).name for path in diff.skipped_untracked} == {
+        ".env",
+        ".env.local",
+        "server.pem",
+        "server.p12",
+        "id_rsa",
+        "id_ed25519",
+        "credentials",
+        "credentials.json",
+        "secrets.json",
+        "secrets.yaml",
+        "secrets.yml",
+        "secrets.toml",
+    }
 
 
 def test_only_secret_untracked_changes_are_refused_with_a_count(tmp_path: Path) -> None:

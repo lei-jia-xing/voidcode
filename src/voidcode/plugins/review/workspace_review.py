@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import subprocess
@@ -14,6 +15,22 @@ type GitStatusState = Literal["git_ready", "not_git_repo", "git_error"]
 _GIT_TIMEOUT_SECONDS = 30
 _MAX_GIT_ERROR_CHARS = 2_000
 _COMMIT_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+#: Conservative basenames only; content scanning of allowed files is out of scope.
+_SECRET_BASENAMES = (
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "credentials",
+    "credentials.*",
+    "id_rsa*",
+    "id_ed25519*",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
+    "secrets.toml",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,9 +120,22 @@ def _clean_ref(raw: str, *, where: str) -> str:
     return text
 
 
-def _is_secret_untracked(path: str) -> bool:
+def _is_secret_path(path: str) -> bool:
     name = Path(path).name.lower()
-    return name.startswith(".env") or name.endswith(".pem") or name.endswith(".key") or name.startswith("credentials") or name.startswith("id_")
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in _SECRET_BASENAMES)
+
+
+def _secret_pathspecs() -> tuple[str, ...]:
+    """Git pathspec excludes for tracked diff/show commands.
+
+    ``icase`` keeps the tracked exclusion consistent with the lowercased
+    untracked basename check. The patterns are deliberately filename-only.
+    """
+    return tuple(f":(exclude,icase,glob)**/{pattern}" for pattern in _SECRET_BASENAMES)
+
+
+def _tracked_pathspecs(scope: tuple[str, ...]) -> tuple[str, ...]:
+    return (*scope, *_secret_pathspecs())
 
 
 def _in_scope(path: str, scope: tuple[str, ...]) -> bool:
@@ -139,7 +169,7 @@ class WorkspaceReviewService:
             raise ValueError(f"git merge-base failed: {detail}")
         merge_base_sha = mb.stdout.strip()
         scope = self._scope_pathspec(root)
-        command = _run_git(root, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", merge_base_sha, "--", *scope)
+        command = _run_git(root, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", merge_base_sha, "--", *_tracked_pathspecs(scope))
         if command.returncode != 0:
             detail = command.stderr.strip() or "unknown git error"
             raise ValueError(f"git diff failed: {detail}")
@@ -175,7 +205,7 @@ class WorkspaceReviewService:
             "--binary",
             commit_sha,
             "--",
-            *scope,
+            *_tracked_pathspecs(scope),
         )
         if command.returncode != 0:
             detail = command.stderr.strip() or f"unknown commit '{clean_sha}'"
@@ -204,7 +234,7 @@ class WorkspaceReviewService:
     def _workspace_diff(self, root: Path, scope: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
         parts: list[str] = []
         for args in (("diff",), ("diff", "--cached")):
-            command = _run_git(root, *args, "--no-ext-diff", "--no-textconv", "--no-color", "--binary", "--", *scope)
+            command = _run_git(root, *args, "--no-ext-diff", "--no-textconv", "--no-color", "--binary", "--", *_tracked_pathspecs(scope))
             if command.returncode != 0:
                 detail = command.stderr.strip() or "unknown git error"
                 raise ValueError(f"git diff failed: {detail}")
@@ -231,7 +261,7 @@ class WorkspaceReviewService:
         for path in result.stdout.split("\x00"):
             if not path or not _in_scope(path, scope):
                 continue
-            if _is_secret_untracked(path):
+            if _is_secret_path(path):
                 skipped.append(path)
                 continue
             kept.append(path)

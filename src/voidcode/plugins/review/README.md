@@ -15,10 +15,11 @@ tools.
   inspecting Git or starting a child. Branch/commit requirements appear in the
   form labels; explicit `/review <focus>` and structured CLI/RPC arguments
   retain direct invocation.
-- Stages one `review_dispatched` event when the child is created, then joins
-  the child for up to 300s and returns its findings or a typed error carrying
+- Spawns one child, stages one `review_dispatched` event, then joins the child
+  for up to 300s and returns its findings or a typed error carrying
   `child_session_id` and `target_type`. Command events commit with the command
-  result, so `review_dispatched` is a durable dispatch record, not a live start
+  result, so `review_dispatched` is a post-hoc dispatch record committed with
+  the command result; a crash during the join loses it. It is not a live-start
   signal. It records the child id plus prompt and diff SHA-256 digests.
 - A review still running at the join deadline is not cancelled. The command
   returns `status="running"` (or `status="waiting"` for an approval-parked
@@ -54,18 +55,27 @@ ignored. Unknown fields are rejected. See
   id and staging error. If cancellation itself fails, the error names the child
   so it remains visible through `subagents.monitor` or `voidcode show`.
 - **Git scope.** Diffs are built from Git directly (staged, unstaged, and
-  untracked files). When the workspace is a subdirectory, every Git operation
-  is path-limited to that workspace, not the whole repository. `base_branch`
-  compares against `merge-base HEAD <branch>`; there is no upstream heuristic.
-  `commit` resolves the supplied revision to an exact commit and shows only its
-  patch. Option-like `branch`/`sha` values are refused; refs are resolved before
-  use and diff/show path limits are separated with `--`.
+  untracked files). When the workspace is a subdirectory, `git diff` and
+  `git show` are path-limited to that workspace; `git ls-files --others`
+  enumerates the repository and results are filtered to the workspace before
+  inspection. `base_branch` compares against `merge-base HEAD <branch>`; there is
+  no upstream heuristic. `commit` resolves the supplied revision to an exact
+  commit and shows only its patch. Option-like `branch`/`sha` values are refused;
+  refs are resolved before use and diff/show path limits are separated with `--`.
+- **Secret path exclusion.** Tracked `diff`/`show` paths and untracked listings
+  exclude conservative basenames: `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`,
+  `credentials`, `credentials.*`, `id_rsa*`, `id_ed25519*`, `secrets.json`,
+  `secrets.yaml`, `secrets.yml`, and `secrets.toml`. This is filename-only:
+  content scanning of allowed files is out of scope, so tracked secrets in other
+  files or differently named files can still appear. Untracked exclusions are
+  counted in the dispatch event; tracked exclusions are silent.
 - **Untrusted data.** The prompt delimiters and instructions identify the Git
   diff as untrusted repository data: the child is told never to follow
   instructions inside it and to report only evidence-backed findings with
-  severity and path/line. Untracked files matching obvious secret patterns
-  (`.env*`, `*.pem`, `*.key`, `credentials*`, `id_*`) are omitted; only their
-  count is recorded.
+  severity and path/line.
+- **Findings format.** Findings are free text. No `result_schema` is declared;
+  severity, path/line, and evidence are prompt-enforced, not validated.
+  Consumers must treat findings as model output, not a structured contract.
 - **Output bounds.** Long child output resolves to the first bounded page plus
   an immutable `artifact://` reference. The full bytes are paged; only a
   verified page publishes `output_uri`. Failed and interrupted children keep

@@ -80,5 +80,7 @@ substitution, provider absence, malformed answers, and unchanged files after ref
 `tests/integration/test_agent_definition_query.py` does the same for named agents:
 subagents answers, any admitted plugin may substitute, an unknown name is `None`,
 and absence is a visible `QueryUnavailable`.
-The review and subagents integration suites also run their workflows without optional
-inspection plugins or synthetic stand-in tools.
+`tests/integration/test_review_plugin.py` admits a minimal synthetic
+`inspect_repository` read-only plugin solely to prove restricted-parent scope
+narrowing; the suite still exercises the files plugin's `read`/`grep`/`glob`
+tools and does not exercise an optional query provider.
