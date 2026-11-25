@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Turn execution split behind the `TurnDriver` facade
+- `core/engine/turn_execution.py` is now a ~30-line facade re-exporting `CoreResult`, `TurnDriver`, the host protocols, `MODEL_CONFIGURATION_GUIDANCE`, and the existing private tool-call decoders. Provider streaming/decode/retry, turn policy (budgets, aborts, deferred calls, readonly batches), the governed drive loop, terminal stop/fail/result, and host contracts live in `_provider_turn.py`, `_turn_policy.py`, `_turn_drive.py`, `_turn_terminal.py`, and `_turn_contracts.py` (largest 445 lines).
+- Method bodies, signatures, events, approvals, budgets, cancellation, and concurrency are unchanged; `TurnDriver` remains the single monkeypatch surface (`driver.stop`, `driver.fail`, `stream_provider_turn`, `budget_admission`, `drive`).
+- Verification: turn/tool/commit/stream/activation/run/background/core integration suites; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### TUI terminal primitives split behind the `term` facade
 - `tui/term.py` is now a 304-line facade: `Terminal` composition, public exports, and the input/output loop stay there, while `term_text` owns ANSI-aware metrics/wrapping/layout, `term_capabilities` owns fd/size/colour/cell detection, `term_session` owns raw mode/private modes/signal lifecycle, `term_paint` owns committed rows and the inline live region, `term_kitty` owns Kitty probing/upload/placement/reply routing, and `term_clipboard` owns OSC 52 text. `term_ansi` holds the shared control sequences.
 - The facade preserves every existing import (`Terminal`, `visible_width`, `clamp_row`, `cell_len`, `copy_to_clipboard`, `TerminalKittyReply`, `_detect_color_system`, and the rest) and the test-visible private hooks used by the Kitty reply/PTY suites. Paint order, cursor anchoring, resize geometry, raw-mode restoration, and upload correlation are unchanged; no new `Any` or string dispatch was introduced.
