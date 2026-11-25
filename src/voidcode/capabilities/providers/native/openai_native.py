@@ -1,172 +1,56 @@
+"""OpenAI Chat Completions provider facade.
+
+Wire codec/response parsing lives in :mod:`openai_wire`, request serialization in
+:mod:`openai_payload`, HTTP ownership in :mod:`openai_transport`, and the stream
+loop in :mod:`openai_stream`. This module keeps the public provider/transport
+surface and the existing SDK monkeypatch seams stable.
+"""
+
 from __future__ import annotations
 
-import json
-import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from threading import Lock
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 
 import httpx2
-from openai import APIConnectionError as OpenAIAPIConnectionError
 from openai import APIError as OpenAIAPIError
-from openai import APITimeoutError as OpenAIAPITimeoutError
-from openai import OpenAI, omit
-from pydantic import ValidationError
+from openai import OpenAI
 
-from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.provider import (
     ModelContextLimits,
-    ProviderDoneReason,
     ProviderExecutionError,
     ProviderStreamEvent,
-    ProviderTokenUsage,
     ProviderTurnRequest,
     ProviderTurnResult,
 )
-from voidcode.sdk.tools import ToolCall
 
-from ..registry import PROVIDER_TABLE_BY_ID
 from ._wire_common import (
-    DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
-    OUTPUT_CAP_WHEN_UNKNOWN,
     PLACEHOLDER_API_KEY,
     OwnedResource,
-    ProviderErrorSource,
     Transport,
     TransportError,
     abort_signal_cancelled,
-    build_usage,
     cancelled_events,
     decode_response_payload,
-    fallback_execution_error,
-    iter_stream_with_timeout,
-    map_done_reason,
-    normalize_tool_call_id,
-    open_event_stream,
-    parse_tool_arguments,
-    resolve_extra_request_headers,
-    response_metadata,
-    strip_base_url,
     tool_name_maps,
-    usage_int,
 )
 from .config import OpenAIProviderConfig, ProviderEndpointConfig
-from .errors import (
-    provider_execution_error_from_payload,
+from .model_catalog import catalog_model_limits
+from .openai_payload import build_messages, build_payload, build_synthetic_feedback_messages
+from .openai_stream import stream_turn_events
+from .openai_transport import OpenAIHttpTransport
+from .openai_wire import OpenAIWireCodec as OpenAIWireCodec
+from .openai_wire import (
+    api_error_payload,
+    map_openai_exception,
+    parse_chat_response,
 )
-from .model_catalog import ProviderModelMetadata, catalog_model_limits, static_catalog_metadata
 from .provider_config import openai_wire_default_base_url
-from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_effort, reasoning_kwargs
-from .thinking_rules import thinking_rule_for
-from .trace import write_provider_trace
 
 
-def _output_cap(metadata: ProviderModelMetadata | None) -> int:
-    """The cap the kimi family always gets: the model's own maximum, else 64000."""
-    return metadata.max_output_tokens if metadata is not None and metadata.max_output_tokens else OUTPUT_CAP_WHEN_UNKNOWN
-
-
-def _requires_reasoning_content_with_tool_calls(*, provider_name: str | None, model_name: str) -> bool:
-    """Whether this model's tool-call replay must carry its reasoning content.
-
-    The answer is data (``thinking_rules.json``:
-    ``requires_reasoning_content_for_tool_calls``), never a provider name or a
-    model prefix.
-    """
-    rule = thinking_rule_for(provider_name or "", model_name)
-    return rule.requires_reasoning_content_for_tool_calls
-
-
-# Construction default of ``OpenAIChatCompletionsTransport`` for direct use only.
-# It is never a provider-level fallback: a provider resolves its own vendor
-# default (``provider_config.openai_wire_default_base_url``) or fails with
-# ``not_configured``.
-_DEFAULT_OPENAI_BASE_URL = PROVIDER_TABLE_BY_ID["openai"].default_base_url
-
-
-def _stream_event_error_payload(exc: Exception) -> dict[str, object]:
-    """Bounded, non-leaking payload for a stream event the transport cannot decode.
-
-    The SDK's decoder raises parser/model errors directly (``JSONDecodeError``,
-    pydantic errors), so they are reported through the same typed payload shape
-    the deleted SSE parser used: ``provider_execution_error_from_payload``
-    then classifies the malformed event with ``source``/guidance details.
-    Raw parser text is deliberately not forwarded.
-    """
-    return {
-        "message": "provider stream event was not a valid JSON object",
-        "details": {"reason": "invalid_stream_event", "exception_type": type(exc).__name__},
-    }
-
-
-class OpenAIChatCompletionsTransport:
+class OpenAIChatCompletionsTransport(OpenAIHttpTransport):
     """OpenAI SDK transport for the Chat Completions wire protocol."""
-
-    def __init__(
-        self,
-        *,
-        base_url: str = _DEFAULT_OPENAI_BASE_URL,
-        api_key: str | None = None,
-        organization: str | None = None,
-        project: str | None = None,
-        auth_header: str | None = None,
-        auth_scheme: str = "bearer",
-        ssl_verify: bool | None = None,
-        http_client: httpx2.Client | None = None,
-    ) -> None:
-        self.base_url = OpenAIWireCodec.normalize_base_url(base_url)
-        self.api_key = api_key
-        self.organization = organization
-        self.project = project
-        self.auth_header = auth_header
-        self.auth_scheme = auth_scheme
-        self.ssl_verify = ssl_verify
-        self.http_client = http_client
-        self._client_lock = Lock()
-        self._sdk_client: OpenAI | None = None
-
-    def _auth_headers(self) -> dict[str, str]:
-        """Resolve the configured auth scheme into the headers this wire carries.
-
-        Mirrors the deleted LiteLLM contract and ``model_catalog._headers_for_discovery``:
-        ``none`` (or a missing key) sends no credential at all, ``token`` sends the
-        raw key, ``bearer`` sends ``Bearer <key>``, and ``auth_header`` only selects
-        which header carries it.
-        """
-        if not self.api_key or self.auth_scheme == "none":
-            return {}
-        header_name = self.auth_header or "Authorization"
-        if self.auth_scheme == "token":
-            return {header_name: self.api_key}
-        return {header_name: f"Bearer {self.api_key}"}
-
-    def _request_headers(self, payload: Mapping[str, object]) -> dict[str, object]:
-        """Return the SDK kwargs for a request, dropping the SDK's own auth default.
-
-        The SDK always adds ``Authorization: Bearer <api_key>`` for whichever key it
-        was constructed with (the configured key, or the placeholder when there is
-        none). When the resolved scheme does not use that header the default has to be
-        omitted per request: ``default_headers`` can add headers but cannot remove one
-        the SDK owns. A per-request ``extra_headers`` override still wins.
-        """
-        kwargs: dict[str, object] = dict(payload)
-        auth_headers = self._auth_headers()
-        if any(name.lower() == "authorization" for name in auth_headers):
-            return kwargs
-        extra = kwargs.get("extra_headers")
-        merged: dict[str, object] = dict(extra) if isinstance(extra, Mapping) else {}
-        if not any(str(name).lower() == "authorization" for name in merged):
-            merged["Authorization"] = omit
-            kwargs["extra_headers"] = merged
-        return kwargs
-
-    def close(self) -> None:
-        with self._client_lock:
-            client, self._sdk_client = self._sdk_client, None
-        if client is not None and self.http_client is None:
-            client.close()
 
     def _sdk(self) -> OpenAI:
         with self._client_lock:
@@ -186,34 +70,13 @@ class OpenAIChatCompletionsTransport:
                     http_client=http_client,
                     max_retries=0,
                 )
-            return self._sdk_client
-
-    @staticmethod
-    def _api_error_payload(exc: OpenAIAPIError) -> dict[str, object]:
-        payload: dict[str, object] = {}
-        body = getattr(exc, "body", None)
-        if isinstance(body, Mapping):
-            payload.update(body)
-        elif isinstance(body, str) and body:
-            payload["message"] = body
-        response = getattr(exc, "response", None)
-        status_code = getattr(response, "status_code", None)
-        if isinstance(status_code, int):
-            payload["status_code"] = status_code
-        headers = getattr(response, "headers", None)
-        if isinstance(headers, Mapping):
-            payload.setdefault("headers", dict(headers))
-        if isinstance(exc, (OpenAIAPITimeoutError, OpenAIAPIConnectionError)):
-            payload["network_failure"] = True
-            payload["exception_type"] = type(exc).__name__
-        payload.setdefault("message", str(exc))
-        return payload
+            return cast(OpenAI, self._sdk_client)
 
     def request(self, payload: dict[str, object], *, timeout_seconds: float) -> object:
         try:
             result = self._sdk().chat.completions.create(**cast(Any, self._request_headers(payload)), timeout=timeout_seconds)
         except OpenAIAPIError as exc:
-            raise TransportError(self._api_error_payload(exc)) from exc
+            raise TransportError(api_error_payload(exc)) from exc
         return result
 
     def list_models(self, *, extra_headers: Mapping[str, str], timeout_seconds: float) -> tuple[str, ...]:
@@ -233,102 +96,6 @@ class OpenAIChatCompletionsTransport:
                 raise TransportError({"message": "Model listing requires non-empty string model IDs"})
             names.add(name)
         return tuple(sorted(names))
-
-
-class OpenAIWireCodec:
-    """OpenAI wire knowledge: usage fields, done tokens, base-URL rules."""
-
-    DONE_REASONS: ClassVar[dict[str, ProviderDoneReason]] = {
-        "stop": "stop",
-        "end_turn": "stop",
-        "tool_calls": "tool_calls",
-        "tool_use": "tool_calls",
-        "function_call": "function_call",
-        "length": "length",
-        "max_tokens": "length",
-        "content_filter": "content_filter",
-        "error": "error",
-    }
-
-    @staticmethod
-    def normalize_base_url(base_url: str | None) -> str:
-        """Normalize a chat-completions base URL exactly as the transport will use it."""
-        value = strip_base_url(base_url, _DEFAULT_OPENAI_BASE_URL)
-        return value if re.search(r"/v[0-9]+(?:beta|alpha)?$", value, flags=re.IGNORECASE) else f"{value}/v1"
-
-    @staticmethod
-    def usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
-        raw = payload.get("usage")
-        if not isinstance(raw, Mapping):
-            return None
-        # ``prompt_tokens`` is the inclusive prompt total (``cached_tokens`` is a
-        # component of it), so it is stored as-is; the uncached remainder is derived
-        # for pricing/telemetry only.
-        input_tokens = usage_int(raw.get("prompt_tokens"))
-        output_tokens = usage_int(raw.get("completion_tokens"))
-        details = raw.get("prompt_tokens_details")
-        cache_read = usage_int(details.get("cached_tokens")) if isinstance(details, Mapping) else None
-        uncached = input_tokens - cache_read if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else None
-        return build_usage(input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read, uncached_input_tokens=uncached)
-
-    @staticmethod
-    def done_reason(value: object) -> ProviderDoneReason:
-        return map_done_reason(value, OpenAIWireCodec.DONE_REASONS)
-
-
-def _raw_finish_reason(value: object) -> str | None:
-    """Return a reported finish-reason token verbatim for diagnostics."""
-    if isinstance(value, str):
-        return value.strip() or None
-    if value is None:
-        return None
-    try:
-        return json.dumps(value, ensure_ascii=True, sort_keys=True)
-    except TypeError, ValueError:
-        return None
-
-
-def _raise_finish_reason_error(raw_reason: str, *, provider_name: str, model_name: str) -> None:
-    raise ProviderExecutionError(
-        kind="provider_error",
-        provider_name=provider_name,
-        model_name=model_name,
-        message=f"provider reported finish_reason={raw_reason}",
-        retryable=False,
-        details={"source": "finish_reason", "reason": "provider_error", "finish_reason_raw": raw_reason},
-    )
-
-
-def _reasoning(message: Mapping[str, object]) -> str | None:
-    for key in ("reasoning_content", "reasoning"):
-        value = message.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
-def _session_id(request: ProviderTurnRequest) -> str:
-    """The session id this turn declares, empty when it declares none.
-
-    Execution identity travels in request metadata, not as a request field. An
-    empty id is what the legacy adapter passed when it had none, and it resolves
-    a ``{session_id}`` header the same way: the declaration is dropped.
-    """
-    value = request.metadata.get("session_id")
-    return value if isinstance(value, str) else ""
-
-
-@dataclass(slots=True)
-class _ToolAccumulator:
-    tool_call_id: str | None = None
-    tool_name: str | None = None
-    fragments: list[str] = field(default_factory=list)
-    explicit_streaming: bool = False
-    started: bool = False
-
-    @property
-    def arguments(self) -> str:
-        return "".join(self.fragments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,7 +161,7 @@ class OpenAIChatCompletionsProvider:
         try:
             return transport.list_models(extra_headers=self.extra_request_headers, timeout_seconds=timeout)
         except TransportError as exc:
-            raise self._map_exception(exc, provider_name=self.name, model_name="", source="model_listing") from None
+            raise map_openai_exception(exc, provider_name=self.name, model_name="", source="model_listing") from None
 
     def _transport(self) -> Transport:
         if self.transport is not None:
@@ -447,138 +214,14 @@ class OpenAIChatCompletionsProvider:
             return owned.value
 
     def _messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
-        original_to_provider, _ = tool_name_maps(request)
-        tool_images_present = any(message.role == "tool" and message.images for message in request.messages)
-        if tool_images_present:
-            return self._synthetic_feedback_messages(request, original_to_provider)
-        requires_reasoning_content = _requires_reasoning_content_with_tool_calls(
-            provider_name=request.provider_name or self.name,
-            # The mapped name is what actually reaches the provider, so a
-            # ``model_map`` alias onto a deepseek model must still replay.
+        provider_name = request.provider_name or self.name
+        if any(message.role == "tool" and message.images for message in request.messages):
+            return build_synthetic_feedback_messages(request, tool_name_maps(request)[0])
+        return build_messages(
+            request,
+            provider_name=provider_name,
             model_name=self._model_name(request),
         )
-        messages: list[dict[str, object]] = []
-        for message in request.messages:
-            if message.role == "assistant" and message.tool_calls:
-                # A reasoning-locked provider still returns tool-call turns with
-                # zero reasoning tokens when its own effort ladder decides not
-                # to think (observed on the real DeepSeek wire); replaying that
-                # authentic shape must not fail. Carry the provider's own
-                # reasoning verbatim when it exists and never synthesize it when
-                # the vendor produced none.
-                tool_calls: list[dict[str, object]] = []
-                for call in message.tool_calls:
-                    arguments = json.dumps(
-                        json_wire_object(call.arguments),
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-                    tool_calls.append(
-                        {
-                            # Ingest normalised this id once; render it verbatim
-                            # rather than substituting the tool name, which two
-                            # calls to the same tool would share.
-                            "id": call.tool_call_id,
-                            "type": "function",
-                            "function": {
-                                "name": original_to_provider.get(call.tool_name, call.tool_name),
-                                "arguments": arguments,
-                            },
-                        }
-                    )
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": message.content,
-                        # DeepSeek requires prior reasoning_content on every
-                        # assistant turn of a tools request, including turns
-                        # without tool calls; the core persists the provider's
-                        # own text, so replay it verbatim when it exists.
-                        **({"reasoning_content": message.reasoning} if requires_reasoning_content and message.reasoning else {}),
-                        "tool_calls": tool_calls,
-                    }
-                )
-                continue
-            if message.role == "tool":
-                if message.images:
-                    raise ProviderExecutionError(
-                        kind="unsupported_feature",
-                        provider_name=request.provider_name or self.name,
-                        model_name=request.model_name or "unknown",
-                        message="OpenAI chat completions wire does not support image attachments in tool messages",
-                        retryable=False,
-                    )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": message.tool_call_id,
-                        "content": message.content or "",
-                    }
-                )
-            else:
-                if message.images:
-                    content: object = [
-                        {"type": "text", "text": message.content or ""},
-                        *[{"type": "image_url", "image_url": {"url": f"data:{img.media_type};base64,{img.data}"}} for img in message.images],
-                    ]
-                else:
-                    content = message.content
-                replayed: dict[str, object] = {"role": message.role, "content": content}
-                if message.role == "assistant" and requires_reasoning_content and message.reasoning:
-                    replayed["reasoning_content"] = message.reasoning
-                messages.append(replayed)
-        return messages
-
-    def _synthetic_feedback_messages(self, request: ProviderTurnRequest, original_to_provider: Mapping[str, str]) -> list[dict[str, object]]:
-        """Keep conversation order while converting tool feedback for selected gateways."""
-        call_arguments: dict[str, Mapping[str, object]] = {}
-        messages: list[dict[str, object]] = []
-        for message in request.messages:
-            for call in message.tool_calls:
-                if call.tool_call_id is not None:
-                    call_arguments[call.tool_call_id] = call.arguments
-            if message.role == "tool":
-                arguments = call_arguments.pop(message.tool_call_id or "", None)
-                payload = {
-                    "tool_name": original_to_provider.get(message.tool_name or "", message.tool_name),
-                    "tool_call_id": message.tool_call_id,
-                    "arguments": json_wire_object(arguments) if arguments is not None else None,
-                    "status": "error" if message.is_error else "ok",
-                    "content": message.content or "",
-                }
-                if message.images:
-                    synthetic_content: list[dict[str, object]] = [
-                        {"type": "text", "text": json.dumps(payload, ensure_ascii=False, sort_keys=True)},
-                    ]
-                    for img in message.images:
-                        synthetic_content.append({"type": "image_url", "image_url": {"url": f"data:{img.media_type};base64,{img.data}"}})
-                    messages.append({"role": "user", "content": synthetic_content})
-                else:
-                    messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)})
-            elif message.role != "assistant" or not message.tool_calls or message.content or message.images:
-                if message.images:
-                    content = [
-                        {"type": "text", "text": message.content or ""},
-                        *[{"type": "image_url", "image_url": {"url": f"data:{img.media_type};base64,{img.data}"}} for img in message.images],
-                    ]
-                else:
-                    content = message.content
-                messages.append({"role": message.role, "content": content})
-        return messages
-
-    def _tools(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
-        original_to_provider, _ = tool_name_maps(request)
-        tools: list[dict[str, object]] = []
-        for tool in request.available_tools:
-            schema = json_wire_object(tool.input_schema)
-            schema.setdefault("type", "object")
-            tools.append(
-                {
-                    "type": "function",
-                    "function": {"name": original_to_provider.get(tool.name, tool.name), "description": tool.description, "parameters": schema},
-                }
-            )
-        return tools
 
     def _payload(self, request: ProviderTurnRequest, *, stream: bool) -> dict[str, object]:
         if request.cache_retention not in (None, "none"):
@@ -591,152 +234,17 @@ class OpenAIChatCompletionsProvider:
                 retryable=False,
                 details={"source": "payload", "reason": "unsupported_cache_retention"},
             )
-        model_name = self._model_name(request)
-        # The request carries no catalog object, so the shipped catalog entry for
-        # the provider and the mapped model is the authority the legacy
-        # ``request.model_metadata`` used to be.
-        metadata = static_catalog_metadata(request.provider_name or self.name, model_name)
-        if any(bool(m.images) for m in request.messages):
-            if metadata is not None and (
-                metadata.supports_vision is False or (metadata.modalities_input is not None and "image" not in metadata.modalities_input)
-            ):
-                raise ProviderExecutionError(
-                    kind="unsupported_feature",
-                    provider_name=request.provider_name or self.name,
-                    model_name=model_name,
-                    message=f"model '{model_name}' does not support image input",
-                    retryable=False,
-                )
-        rule = thinking_rule_for(request.provider_name or self.name, model_name)
-        payload: dict[str, object] = {"model": model_name, "messages": self._messages(request), "stream": stream}
-        # The catalog is the authority on what this model accepts: a model that
-        # cannot call tools is not handed a tool schema, and one that does not
-        # reason is not handed a reasoning knob.
-        if request.available_tools and (metadata is None or metadata.supports_tools is not False):
-            payload["tools"] = self._tools(request)
-            if not rule.requires_reasoning_content_for_tool_calls:
-                payload["tool_choice"] = "auto"
-        if rule.sends_output_cap_by_default:
-            # OMP sends no output cap unless the caller asks for one; the kimi
-            # family is the one exception, and it sends the model's own maximum
-            # (``resolveOpenAIOutputTokenParam``, openai-shared.ts:630-647).
-            payload[rule.max_tokens_field_or_default()] = _output_cap(metadata)
-        if request.reasoning_effort is not None and (metadata is None or metadata.supports_reasoning is not False):
-            effort = normalize_reasoning_effort(request.reasoning_effort)
-            if isinstance(effort, int):
-                if effort != 0:
-                    raise ProviderExecutionError(
-                        kind="unsupported_feature",
-                        provider_name=request.provider_name or self.name,
-                        model_name=model_name,
-                        message="This Chat Completions adapter accepts reasoning effort levels, not numeric token budgets",
-                        retryable=False,
-                        details={"source": "payload", "reason": "unsupported_reasoning_budget"},
-                    )
-                effort = "off"
-            if effort is not None:
-                supported = metadata.supported_effort_levels if metadata is not None else None
-                payload.update(
-                    reasoning_kwargs(
-                        rule=rule,
-                        effort=clamp_effort_to_supported(effort, supported),
-                        supported_levels=supported,
-                    )
-                )
-        extra_headers = resolve_extra_request_headers(self.extra_request_headers, _session_id(request))
-        if extra_headers:
-            # A request option, not a body field: the SDK merges it into the HTTP
-            # request and never serializes it into the JSON payload.
-            payload["extra_headers"] = extra_headers
-        if stream:
-            payload["stream_options"] = {"include_usage": True}
-        return payload
+        return build_payload(
+            request,
+            provider_name=request.provider_name or self.name,
+            model_name=self._model_name(request),
+            extra_request_headers=self.extra_request_headers,
+            stream=stream,
+        )
 
     def _timeout(self) -> float:
         configured = None if self.config is None else self.config.timeout_seconds
         return DEFAULT_TIMEOUT_SECONDS if configured is None else configured
-
-    @staticmethod
-    def _stream_chunk_payload(value: object) -> dict[str, object]:
-        """Decode one stream event, reporting undecodable events as stream errors.
-
-        The SDK tolerates event shapes it cannot model, so a non-object event (e.g. a
-        JSON array) reaches the transport as a non-mapping and is re-typed here rather
-        than being reported as a retryable network failure; it is a non-retryable malformed provider stream.
-        """
-        try:
-            return decode_response_payload(value)
-        except ValueError as exc:
-            raise TransportError(_stream_event_error_payload(exc)) from exc
-
-    @staticmethod
-    def _map_exception(exc: Exception, *, provider_name: str, model_name: str, source: ProviderErrorSource) -> ProviderExecutionError:
-        if isinstance(exc, OpenAIAPIError):
-            return provider_execution_error_from_payload(
-                provider_name=provider_name, model_name=model_name, payload=OpenAIChatCompletionsTransport._api_error_payload(exc), source=source
-            )
-        if source == "stream" and isinstance(exc, (json.JSONDecodeError, ValidationError)):
-            return provider_execution_error_from_payload(
-                provider_name=provider_name, model_name=model_name, payload=_stream_event_error_payload(exc), source=source
-            )
-        if isinstance(exc, TransportError):
-            return provider_execution_error_from_payload(provider_name=provider_name, model_name=model_name, payload=exc.payload, source=source)
-        return fallback_execution_error(
-            exc,
-            provider_name=provider_name,
-            model_name=model_name,
-            source=source,
-            network_error=isinstance(exc, (httpx2.TransportError, OpenAIAPITimeoutError, OpenAIAPIConnectionError)),
-        )
-
-    @staticmethod
-    def _tool_calls(message: Mapping[str, object], reverse: Mapping[str, str], *, provider_name: str, model_name: str) -> tuple[ToolCall, ...]:
-        raw_calls = message.get("tool_calls")
-        if raw_calls is None:
-            return ()
-        if not isinstance(raw_calls, list):
-            raise ProviderExecutionError(
-                kind="provider_error",
-                provider_name=provider_name,
-                model_name=model_name,
-                message="provider returned malformed tool calls",
-                retryable=False,
-                details={"source": "api", "reason": "malformed_tool_calls"},
-            )
-        parsed: list[ToolCall] = []
-        for index, item in enumerate(raw_calls):
-            if not isinstance(item, Mapping) or not isinstance(item.get("function"), Mapping):
-                raise ProviderExecutionError(
-                    kind="provider_error",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider returned a malformed tool call",
-                    retryable=False,
-                    details={"source": "api", "reason": "malformed_tool_call"},
-                )
-            function = item["function"]
-            if not isinstance(function.get("name"), str) or not function["name"]:
-                raise ProviderExecutionError(
-                    kind="provider_error",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider returned a malformed tool call",
-                    retryable=False,
-                    details={"source": "api", "reason": "malformed_tool_call"},
-                )
-            provider_tool_name = function["name"]
-            runtime_name = reverse.get(provider_tool_name, provider_tool_name)
-            explicit_id = item.get("id")
-            if explicit_id is not None and (not isinstance(explicit_id, str) or not explicit_id):
-                raise ValueError("provider tool call id was malformed")
-            parsed.append(
-                ToolCall(
-                    tool_name=runtime_name,
-                    arguments=parse_tool_arguments(function.get("arguments")),
-                    tool_call_id=normalize_tool_call_id(explicit_id, fallback=f"tool_call_{index + 1}"),
-                )
-            )
-        return tuple(parsed)
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         provider_name = request.provider_name or self.name
@@ -746,63 +254,9 @@ class OpenAIChatCompletionsProvider:
             response_payload = decode_response_payload(self._transport().request(payload, timeout_seconds=self._timeout()))
             if response_payload.get("error") is not None or response_payload.get("type") == "error":
                 raise TransportError(response_payload)
-            usage = OpenAIWireCodec.usage(response_payload)
-            metadata = response_metadata(response_payload)
-            choices = response_payload.get("choices")
-            if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
-                raise ProviderExecutionError(
-                    kind="provider_error",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider response contained no valid choices",
-                    retryable=False,
-                    details={"source": "api", "reason": "malformed_response"},
-                )
-            choice = choices[0]
-            message = choice.get("message")
-            if not isinstance(message, Mapping):
-                raise ProviderExecutionError(
-                    kind="provider_error",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider response choice contained no valid message",
-                    retryable=False,
-                    details={"source": "api", "reason": "malformed_response"},
-                )
-            message_mapping = message
-            content = message_mapping.get("content")
-            if content is not None and not isinstance(content, str):
-                raise ProviderExecutionError(
-                    kind="provider_error",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider response message content was not text",
-                    retryable=False,
-                    details={"source": "api", "reason": "malformed_response"},
-                )
-            raw_finish_reason = choice.get("finish_reason")
-            done_reason = OpenAIWireCodec.done_reason(raw_finish_reason)
-            raw_token = _raw_finish_reason(raw_finish_reason)
-            if done_reason == "error" and raw_token is not None:
-                _raise_finish_reason_error(raw_token, provider_name=provider_name, model_name=model_name)
-            if raw_token is None:
-                metadata["finish_reason_reported"] = False
-            return ProviderTurnResult(
-                tool_calls=self._tool_calls(
-                    message_mapping,
-                    tool_name_maps(request)[1],
-                    provider_name=provider_name,
-                    model_name=model_name,
-                ),
-                output=content if isinstance(content, str) else "",
-                reasoning=_reasoning(message_mapping),
-                usage=usage,
-                done_reason=done_reason,
-                finish_reason_reported=raw_token is not None,
-                metadata=metadata,
-            )
+            return parse_chat_response(response_payload, request, provider_name=provider_name, model_name=model_name)
         except Exception as exc:
-            raise self._map_exception(exc, provider_name=provider_name, model_name=model_name, source="api") from exc
+            raise map_openai_exception(exc, provider_name=provider_name, model_name=model_name, source="api") from exc
 
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         provider_name = request.provider_name or self.name
@@ -812,263 +266,15 @@ class OpenAIChatCompletionsProvider:
             return
         try:
             payload = self._payload(request, stream=True)
-            stream = open_event_stream(self._transport(), payload, timeout_seconds=self._timeout())
-            latest_usage: ProviderTokenUsage | None = None
-            metadata: dict[str, object] = {}
-            done_reason = "unknown"
-            finish_reason_reported = False
-            raw_finish_reason_token: str | None = None
-            accumulators: dict[int, _ToolAccumulator] = {}
-            reverse = tool_name_maps(request)[1]
-            for raw_chunk in iter_stream_with_timeout(
-                stream,
+            yield from stream_turn_events(
+                request,
+                default_provider_name=self.name,
+                transport=self._transport(),
+                payload=payload,
                 timeout_seconds=self._timeout(),
-                provider_name=provider_name,
-                model_name=model_name,
-                first_event_timeout_seconds=DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
-                aborted=lambda: abort_signal_cancelled(request),
-            ):
-                if abort_signal_cancelled(request):
-                    yield from cancelled_events()
-                    return
-                chunk = self._stream_chunk_payload(raw_chunk)
-                if chunk.get("error") is not None or chunk.get("type") == "error":
-                    raise TransportError(chunk)
-                metadata.update(response_metadata(chunk))
-                latest_usage = OpenAIWireCodec.usage(chunk) or latest_usage
-                choices = chunk.get("choices")
-                if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
-                    continue
-                choice = choices[0]
-                raw_finish_reason = choice.get("finish_reason")
-                if isinstance(raw_finish_reason, str) and raw_finish_reason.strip():
-                    finish_reason_reported = True
-                    done_reason = OpenAIWireCodec.done_reason(raw_finish_reason)
-                    raw_finish_reason_token = raw_finish_reason if done_reason in {"error", "unknown"} else None
-                delta = choice.get("delta")
-                if not isinstance(delta, Mapping):
-                    continue
-                for key in ("reasoning_content", "reasoning"):
-                    value = delta.get(key)
-                    if isinstance(value, str) and value:
-                        yield ProviderStreamEvent(kind="delta", channel="reasoning", text=value, metadata={"source": f"delta.{key}"})
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    yield ProviderStreamEvent(kind="delta", channel="text", text=content)
-                raw_tool_calls = delta.get("tool_calls")
-                if raw_tool_calls is None:
-                    continue
-                if not isinstance(raw_tool_calls, list):
-                    raise ProviderExecutionError(
-                        kind="provider_error",
-                        provider_name=provider_name,
-                        model_name=model_name,
-                        message="provider stream tool_calls was not a list",
-                        retryable=False,
-                        details={"source": "stream", "reason": "malformed_tool_calls"},
-                    )
-                for raw_tool in raw_tool_calls:
-                    if not isinstance(raw_tool, Mapping):
-                        raise ProviderExecutionError(
-                            kind="provider_error",
-                            provider_name=provider_name,
-                            model_name=model_name,
-                            message="provider stream tool call was not an object",
-                            retryable=False,
-                            details={"source": "stream", "reason": "malformed_tool_call"},
-                        )
-                    raw_index = raw_tool.get("index")
-                    if raw_index is not None and (not isinstance(raw_index, int) or isinstance(raw_index, bool) or raw_index < 0):
-                        raise ProviderExecutionError(
-                            kind="provider_error",
-                            provider_name=provider_name,
-                            model_name=model_name,
-                            message="provider stream tool call index was malformed",
-                            retryable=False,
-                            details={"source": "stream", "reason": "malformed_tool_call"},
-                        )
-                    index = raw_index if isinstance(raw_index, int) else 0
-                    previous = accumulators.setdefault(index, _ToolAccumulator())
-                    raw_id = raw_tool.get("id")
-                    if raw_id is not None and (not isinstance(raw_id, str) or not raw_id):
-                        raise ProviderExecutionError(
-                            kind="provider_error",
-                            provider_name=provider_name,
-                            model_name=model_name,
-                            message="provider stream tool call id was malformed",
-                            retryable=False,
-                            details={"source": "stream", "reason": "malformed_tool_call"},
-                        )
-                    if isinstance(raw_id, str) and previous.tool_call_id not in (None, raw_id):
-                        raise ProviderExecutionError(
-                            kind="provider_error",
-                            provider_name=provider_name,
-                            model_name=model_name,
-                            message="provider stream changed a tool call id",
-                            retryable=False,
-                            details={"source": "stream", "reason": "conflicting_tool_call_id"},
-                        )
-                    tool_id = normalize_tool_call_id(raw_id if isinstance(raw_id, str) else previous.tool_call_id, fallback=f"tool_call_{index + 1}")
-                    function = raw_tool.get("function")
-                    if function is not None and not isinstance(function, Mapping):
-                        raise ProviderExecutionError(
-                            kind="provider_error",
-                            provider_name=provider_name,
-                            model_name=model_name,
-                            message="provider stream function payload was malformed",
-                            retryable=False,
-                            details={"source": "stream", "reason": "malformed_tool_call"},
-                        )
-                    name = previous.tool_name
-                    fragment: str | None = None
-                    if isinstance(function, Mapping):
-                        raw_name = function.get("name")
-                        if raw_name is not None and (not isinstance(raw_name, str) or not raw_name):
-                            raise ProviderExecutionError(
-                                kind="provider_error",
-                                provider_name=provider_name,
-                                model_name=model_name,
-                                message="provider stream function name was malformed",
-                                retryable=False,
-                                details={"source": "stream", "reason": "malformed_tool_call"},
-                            )
-                        if isinstance(raw_name, str):
-                            name = raw_name
-                        raw_arguments = function.get("arguments")
-                        if raw_arguments is not None and not isinstance(raw_arguments, str):
-                            raise ProviderExecutionError(
-                                kind="provider_error",
-                                provider_name=provider_name,
-                                model_name=model_name,
-                                message="provider stream function arguments were malformed",
-                                retryable=False,
-                                details={"source": "stream", "reason": "malformed_tool_call_arguments"},
-                            )
-                        if isinstance(raw_arguments, str):
-                            fragment = raw_arguments
-                    complete_first = False
-                    if fragment and not previous.fragments:
-                        try:
-                            complete_first = isinstance(json.loads(fragment), dict)
-                        except json.JSONDecodeError:
-                            # Deliberate probe, not swallowed failure: an incomplete
-                            # fragment is exactly the answer "this is a delta".
-                            pass
-                    explicit = previous.explicit_streaming or (isinstance(raw_id, str) and bool(raw_id) and not complete_first)
-                    started = previous.started
-                    if explicit and name is not None and not started:
-                        yield ProviderStreamEvent(
-                            kind="tool_call_start", channel="tool", tool_call_id=tool_id, tool_name=reverse.get(name, name), tool_call_ordinal=index
-                        )
-                        started = True
-                    if explicit and fragment:
-                        yield ProviderStreamEvent(
-                            kind="tool_call_delta",
-                            channel="tool",
-                            tool_call_id=tool_id,
-                            arguments_delta=fragment,
-                            tool_call_ordinal=index,
-                            fragment_ordinal=len(previous.fragments),
-                        )
-                    previous.tool_call_id = raw_id if isinstance(raw_id, str) else previous.tool_call_id
-                    previous.tool_name = name
-                    if fragment is not None:
-                        previous.fragments.append(fragment)
-                    previous.explicit_streaming = explicit
-                    previous.started = started
-        except Exception as exc:
-            raise self._map_exception(exc, provider_name=provider_name, model_name=model_name, source="stream") from exc
-        if not finish_reason_reported:
-            raise ProviderExecutionError(
-                kind="provider_error",
-                provider_name=provider_name,
-                model_name=model_name,
-                message="provider stream ended without a finish_reason",
-                retryable=False,
-                details={"source": "stream", "reason": "missing_terminal_event"},
             )
-        completed: list[tuple[int, _ToolAccumulator, dict[str, object], str]] = []
-        for index, accumulator in sorted(accumulators.items()):
-            if accumulator.tool_name is None:
-                raise ProviderExecutionError(
-                    kind="provider_error",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider stream contained a malformed tool call",
-                    retryable=False,
-                    details={"source": "stream", "reason": "malformed_tool_call"},
-                )
-            try:
-                parsed = json.loads(accumulator.arguments)
-            except json.JSONDecodeError as exc:
-                raise ProviderExecutionError(
-                    kind="provider_error",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider stream ended with malformed tool-call arguments",
-                    retryable=False,
-                    details={"source": "stream", "reason": "malformed_tool_call_arguments"},
-                ) from exc
-            if not isinstance(parsed, dict):
-                raise ProviderExecutionError(
-                    kind="provider_error",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider stream tool-call arguments were not an object",
-                    retryable=False,
-                    details={"source": "stream", "reason": "malformed_tool_call_arguments"},
-                )
-            runtime_name = reverse.get(accumulator.tool_name, accumulator.tool_name)
-            completed.append((index, accumulator, parsed, runtime_name))
-        if raw_finish_reason_token is not None:
-            if done_reason == "error":
-                _raise_finish_reason_error(raw_finish_reason_token, provider_name=provider_name, model_name=model_name)
-            metadata["finish_reason_raw"] = raw_finish_reason_token
-        if any(accumulator.explicit_streaming for _index, accumulator, _parsed, _name in completed):
-            for index, accumulator, parsed, runtime_name in completed:
-                if accumulator.explicit_streaming:
-                    tool_id = normalize_tool_call_id(
-                        accumulator.tool_call_id,
-                        fallback=f"tool_call_{index + 1}",
-                    )
-                    yield ProviderStreamEvent(
-                        kind="tool_call_end",
-                        channel="tool",
-                        tool_call_id=tool_id,
-                        tool_name=runtime_name,
-                        tool_call_ordinal=index,
-                        parsed_arguments=parsed,
-                    )
-            completed = [entry for entry in completed if not entry[1].explicit_streaming]
-        if completed:
-            event_calls: list[dict[str, object]] = []
-            for index, accumulator, parsed, runtime_name in completed:
-                event_calls.append(
-                    {
-                        "tool_name": runtime_name,
-                        "arguments": parsed,
-                        "tool_call_id": normalize_tool_call_id(
-                            accumulator.tool_call_id,
-                            fallback=f"tool_call_{index + 1}",
-                        ),
-                    }
-                )
-            event_payload: dict[str, object] = event_calls[0] if len(event_calls) == 1 else {"tool_calls": event_calls}
-            yield ProviderStreamEvent(kind="content", channel="tool", text=json.dumps(event_payload))
-        metadata["finish_reason_reported"] = finish_reason_reported
-        yield ProviderStreamEvent(kind="done", done_reason=done_reason, metadata=metadata, usage=latest_usage)
-        write_provider_trace(
-            request=payload,
-            response={"native_stream": True},
-            metadata={
-                "session_id": _session_id(request) or None,
-                "provider": provider_name,
-                "model": request.model_name,
-                "attempt": request.attempt,
-                "stream": True,
-                "transport": "openai_chat_completions",
-            },
-        )
+        except Exception as exc:
+            raise map_openai_exception(exc, provider_name=provider_name, model_name=model_name, source="stream") from exc
 
 
 __all__ = [
