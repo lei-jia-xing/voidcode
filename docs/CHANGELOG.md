@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### TUI terminal primitives split behind the `term` facade
+- `tui/term.py` is now a 304-line facade: `Terminal` composition, public exports, and the input/output loop stay there, while `term_text` owns ANSI-aware metrics/wrapping/layout, `term_capabilities` owns fd/size/colour/cell detection, `term_session` owns raw mode/private modes/signal lifecycle, `term_paint` owns committed rows and the inline live region, `term_kitty` owns Kitty probing/upload/placement/reply routing, and `term_clipboard` owns OSC 52 text. `term_ansi` holds the shared control sequences.
+- The facade preserves every existing import (`Terminal`, `visible_width`, `clamp_row`, `cell_len`, `copy_to_clipboard`, `TerminalKittyReply`, `_detect_color_system`, and the rest) and the test-visible private hooks used by the Kitty reply/PTY suites. Paint order, cursor anchoring, resize geometry, raw-mode restoration, and upload correlation are unchanged; no new `Any` or string dispatch was introduced.
+- Tests: `tests/unit/tui`, `tests/unit/test_core_tui.py`, `tests/integration/test_tui_resize.py`, `test_tui_monitor.py`, `test_tui_command_browsers.py`, `test_tui_path_completion.py`, and `test_artifact_tui_surface.py`; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### SDK service vocabulary split behind the stable facade
 - `src/voidcode/sdk/services.py` is now the `src/voidcode/sdk/services/` package grouped by common errors/constants, model-query results, budgets/usage, processes, artifacts/receipts, child/session projections, and Protocols. The facade preserves every existing public name and the historical `voidcode.sdk.services` import path; frozen dataclasses, Protocol signatures, typed errors, and wire payloads are unchanged, and private TypeAdapters stay internal.
 - The SDK direction guard now resolves relative imports against the SDK root, so nested contract modules cannot escape `voidcode.sdk` or depend on core/plugins.
