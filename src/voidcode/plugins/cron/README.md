@@ -2,6 +2,8 @@
 
 Scheduled prompts as session policy over the core's durable wakeup seam: create them with tools, list them, and settle them from durable wakeup facts.
 
+Implementation lives in cohesive modules behind the `cron_plugin` facade: `runtime` (clock and policy knobs), `state` (models/parsing/CAS store), `scheduling` (create/delete and staged wakeup arming), `presentation`, `tools`, `commands`, `observer` (pending settlement and facts catch-up), and `lifecycle`. The facade preserves the historical import and `_clock_ms`/`MAX_SCHEDULES_PER_SESSION` monkeypatch paths.
+
 ## Surface
 
 - Tool `cron_create` (`SESSION`, never replayed): `schedule` + `prompt` (both required non-empty strings). Returns the schedule id (`sched-…`), human cadence, actual first-fire instant, and expiry.
