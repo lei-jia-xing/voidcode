@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections.abc import Iterator, Mapping
@@ -50,8 +49,8 @@ from ._wire_common import (
     parse_tool_arguments,
     resolve_extra_request_headers,
     response_metadata,
-    safe_tool_name,
     strip_base_url,
+    tool_name_maps,
     usage_int,
 )
 from .config import AnthropicProviderConfig
@@ -292,26 +291,8 @@ class AnthropicMessagesProvider:
         value = request.metadata.get("session_id")
         return value if isinstance(value, str) else None
 
-    @staticmethod
-    def _tool_maps(request: ProviderTurnRequest) -> tuple[dict[str, str], dict[str, str]]:
-        original: dict[str, str] = {}
-        reverse: dict[str, str] = {}
-        names = [tool.name for tool in request.available_tools]
-        for message in request.messages:
-            if message.tool_name:
-                names.append(message.tool_name)
-            names.extend(call.tool_name for call in message.tool_calls)
-        for name in dict.fromkeys(name for name in names if name):
-            candidate = safe_tool_name(name)
-            if candidate in reverse and reverse[candidate] != name:
-                suffix = "_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
-                candidate = f"{candidate[: 64 - len(suffix)]}{suffix}"
-            original[name] = candidate
-            reverse[candidate] = name
-        return original, reverse
-
     def _messages_and_system(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
-        original_to_provider, _ = self._tool_maps(request)
+        original_to_provider, _ = tool_name_maps(request)
         system_parts: list[str] = []
         messages: list[dict[str, object]] = []
 
@@ -428,7 +409,7 @@ class AnthropicMessagesProvider:
             payload["system"] = system
         tools: list[dict[str, object]] = []
         if request.available_tools and (metadata is None or metadata.supports_tools is not False):
-            original_to_provider, _ = self._tool_maps(request)
+            original_to_provider, _ = tool_name_maps(request)
             for tool in request.available_tools:
                 schema = json_wire_object(tool.input_schema)
                 schema.setdefault("type", "object")
@@ -516,7 +497,7 @@ class AnthropicMessagesProvider:
             # turn is known to have ended, not the user turn or session.
             finish_reason_reported = isinstance(stop_reason, str) and bool(stop_reason.strip())
             text, reasoning, calls = self._blocks(response)
-            _original_to_provider, reverse = self._tool_maps(request)
+            _original_to_provider, reverse = tool_name_maps(request)
             calls = tuple(
                 ToolCall(
                     tool_name=reverse.get(call.tool_name, call.tool_name),
@@ -571,7 +552,7 @@ class AnthropicMessagesProvider:
             accumulators: dict[int, _ToolAccumulator] = {}
             thinking_blocks: dict[int, dict[str, object]] = {}
             thinking_fragments: dict[int, list[str]] = {}
-            reverse = self._tool_maps(request)[1]
+            reverse = tool_name_maps(request)[1]
             stop_reason: str | None = None
             message_stopped = False
             for raw_chunk in iter_stream_with_timeout(

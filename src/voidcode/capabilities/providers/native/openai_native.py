@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections.abc import Iterator, Mapping
@@ -49,8 +48,8 @@ from ._wire_common import (
     parse_tool_arguments,
     resolve_extra_request_headers,
     response_metadata,
-    safe_tool_name,
     strip_base_url,
+    tool_name_maps,
     usage_int,
 )
 from .config import OpenAIProviderConfig, ProviderEndpointConfig
@@ -85,8 +84,6 @@ def _requires_reasoning_content_with_tool_calls(*, provider_name: str | None, mo
 # default (``provider_config.openai_wire_default_base_url``) or fails with
 # ``not_configured``.
 _DEFAULT_OPENAI_BASE_URL = PROVIDER_TABLE_BY_ID["openai"].default_base_url
-_MAX_TOOL_NAME_LENGTH = 64
-_TOOL_NAME_HASH_LENGTH = 8
 
 
 def _stream_event_error_payload(exc: Exception) -> dict[str, object]:
@@ -449,26 +446,8 @@ class OpenAIChatCompletionsProvider:
                 )
             return owned.value
 
-    @staticmethod
-    def _tool_maps(request: ProviderTurnRequest) -> tuple[dict[str, str], dict[str, str]]:
-        original: dict[str, str] = {}
-        reverse: dict[str, str] = {}
-        names = [tool.name for tool in request.available_tools if tool.name]
-        for message in request.messages:
-            names.extend(call.tool_name for call in message.tool_calls if call.tool_name)
-            if message.tool_name:
-                names.append(message.tool_name)
-        for name in dict.fromkeys(names):
-            candidate = safe_tool_name(name)
-            if candidate in reverse and reverse[candidate] != name:
-                suffix = "_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:_TOOL_NAME_HASH_LENGTH]
-                candidate = f"{candidate[: _MAX_TOOL_NAME_LENGTH - len(suffix)]}{suffix}"
-            original[name] = candidate
-            reverse[candidate] = name
-        return original, reverse
-
     def _messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
-        original_to_provider, _ = self._tool_maps(request)
+        original_to_provider, _ = tool_name_maps(request)
         tool_images_present = any(message.role == "tool" and message.images for message in request.messages)
         if tool_images_present:
             return self._synthetic_feedback_messages(request, original_to_provider)
@@ -588,7 +567,7 @@ class OpenAIChatCompletionsProvider:
         return messages
 
     def _tools(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
-        original_to_provider, _ = self._tool_maps(request)
+        original_to_provider, _ = tool_name_maps(request)
         tools: list[dict[str, object]] = []
         for tool in request.available_tools:
             schema = json_wire_object(tool.input_schema)
@@ -811,7 +790,7 @@ class OpenAIChatCompletionsProvider:
             return ProviderTurnResult(
                 tool_calls=self._tool_calls(
                     message_mapping,
-                    self._tool_maps(request)[1],
+                    tool_name_maps(request)[1],
                     provider_name=provider_name,
                     model_name=model_name,
                 ),
@@ -840,7 +819,7 @@ class OpenAIChatCompletionsProvider:
             finish_reason_reported = False
             raw_finish_reason_token: str | None = None
             accumulators: dict[int, _ToolAccumulator] = {}
-            reverse = self._tool_maps(request)[1]
+            reverse = tool_name_maps(request)[1]
             for raw_chunk in iter_stream_with_timeout(
                 stream,
                 timeout_seconds=self._timeout(),

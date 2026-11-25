@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Native provider adapters share one tool-name map
+- Chat Completions and Anthropic Messages now derive their per-turn tool-name map from one `tool_name_maps` helper and one 64-character cap in `native/_wire_common.py`. Both wires continue to serialize the same sanitized names for tool definitions and replayed calls/results, including hash-separated collisions, so the wire payloads are unchanged.
+- Tests build both adapters' payloads and compare the serialized names against the shared map, and pin the inclusive 64-character boundary.
+- Verification: `tests/unit/plugins/test_provider_tool_names.py`, provider streaming/reasoning/lifecycle and image-input suites; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Exact terminal-run capture diagnostics on child snapshots
 - `ChildSessionSnapshot` gains `terminal_run: TerminalRunCapture | None`, the newest committed `core.child_finished` fact for a visible descendant regardless of output eligibility. It carries the exact run id, terminal-fact event sequence, status, stop cause, a closed capture kind (`inline`, `artifact`, `preview_only`, `empty`, `capture_failed`, `not_completed`), the same eligibility flag, and that fact's own output reference/preview/capture causes. `latest_outcome` keeps its completed-with-full-output rule; the two may name different runs and never borrow each other's output or errors. Malformed selected facts raise the existing typed `StoreConflict`; capture kinds are never inferred from error text.
 - `agent://` renders the terminal-run identity/capture diagnosis and its own preview/reference/causes separately from the eligible published output, including when no eligible output exists. No RPC/client method or new resource scheme was added.

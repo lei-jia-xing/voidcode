@@ -18,7 +18,7 @@ from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Literal, Protocol
 
-from voidcode.sdk.provider import ProviderDoneReason, ProviderExecutionError, ProviderStreamEvent, ProviderTokenUsage
+from voidcode.sdk.provider import ProviderDoneReason, ProviderExecutionError, ProviderStreamEvent, ProviderTokenUsage, ProviderTurnRequest
 
 type ProviderErrorSource = Literal["api", "stream", "model_listing"]
 type _StreamPumpKind = Literal["item", "done", "error"]
@@ -45,17 +45,42 @@ def normalize_tool_call_id(value: str | None, *, fallback: str) -> str:
 
 
 _TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
-_MAX_TOOL_NAME_length = 64
-_TOOL_NAME_HASH_length = 8
+#: Chat Completions and Messages both require ``^[a-zA-Z0-9_-]{1,64}$``.
+_MAX_TOOL_NAME_LENGTH = 64
+_TOOL_NAME_HASH_LENGTH = 8
 
 
 def safe_tool_name(name: str) -> str:
     """Map a model-chosen tool name onto the alphabet every wire accepts."""
-    if _TOOL_NAME_PATTERN.fullmatch(name) and len(name) <= _MAX_TOOL_NAME_length:
+    if _TOOL_NAME_PATTERN.fullmatch(name) and len(name) <= _MAX_TOOL_NAME_LENGTH:
         return name
     normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", name).strip("_") or "tool"
-    suffix = "_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:_TOOL_NAME_HASH_length]
-    return f"{normalized[: _MAX_TOOL_NAME_length - len(suffix)]}{suffix}"
+    suffix = "_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:_TOOL_NAME_HASH_LENGTH]
+    return f"{normalized[: _MAX_TOOL_NAME_LENGTH - len(suffix)]}{suffix}"
+
+
+def tool_name_maps(request: ProviderTurnRequest) -> tuple[dict[str, str], dict[str, str]]:
+    """Map every tool name the turn names onto its wire-safe form, and back.
+
+    The same map covers advertised definitions and replayed calls/results, so a
+    name is sanitized once and every place it is written agrees. Distinct names
+    that collapse onto one candidate are separated by a hash of the original.
+    """
+    names = [tool.name for tool in request.available_tools if tool.name]
+    for message in request.messages:
+        names.extend(call.tool_name for call in message.tool_calls if call.tool_name)
+        if message.tool_name:
+            names.append(message.tool_name)
+    original: dict[str, str] = {}
+    reverse: dict[str, str] = {}
+    for name in dict.fromkeys(names):
+        candidate = safe_tool_name(name)
+        if candidate in reverse and reverse[candidate] != name:
+            suffix = "_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:_TOOL_NAME_HASH_LENGTH]
+            candidate = f"{candidate[: _MAX_TOOL_NAME_LENGTH - len(suffix)]}{suffix}"
+        original[name] = candidate
+        reverse[candidate] = name
+    return original, reverse
 
 
 def parse_tool_arguments(value: object) -> dict[str, object]:

@@ -32,5 +32,5 @@
   - `ManagedMcpManager._list_tools_pages_owned` 已支持 `nextCursor` 分页和上限防护。
   - `ToolHooks.post_tool`（`plugins/hooks/hooks_plugin.py`）在执行失败时记录 warning 日志与 visible failure；`plugins/skills/rules.py` 诊断和读取失败时均显式记录 warning 日志。
 - [ ] **收敛 Provider 适配器重复实现并补齐现代特性。**
-  - 消除 `openai_native.py` 与 `anthropic_native.py` 重复的 `_tool_maps` 及重复 `_MAX_TOOL_NAME_LENGTH` 常量（收敛至 `_wire_common.py`）。
+  - [x] 消除 `openai_native.py` 与 `anthropic_native.py` 重复的 `_tool_maps` 及重复 `_MAX_TOOL_NAME_LENGTH` 常量（已收敛至 `_wire_common.py` 的 `tool_name_maps` 与 `_MAX_TOOL_NAME_LENGTH`）。
   - `anthropic_native.py` 仅在 `tools[-1]`/`system` 上设置 `cache_control`，应为多轮历史消息前缀设置缓存断点；`openai_native.py` 补充 OpenAI Responses API 支持（推理摘要与状态化推理）。
