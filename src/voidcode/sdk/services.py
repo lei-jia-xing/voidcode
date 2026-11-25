@@ -508,12 +508,99 @@ class DescendantNode:
         return payload
 
 
+type TerminalCaptureKind = Literal[
+    "inline",
+    "artifact",
+    "preview_only",
+    "empty",
+    "capture_failed",
+    "not_completed",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalRunCapture:
+    """One descendant's latest committed terminal fact and its output capture diagnosis.
+
+    Identity is exact: ``run_id`` and ``terminal_sequence`` name one committed
+    ``core.child_finished`` fact in the parent stream, independent of the latest
+    *eligible* output. ``capture`` is a closed classification of why this run's
+    output is or is not eligible; ``eligible`` is the same rule the snapshot's
+    ``latest_outcome`` applies. Output fields describe THIS run only and never a
+    prior publication: an artifact reference or bounded preview when captured,
+    and the committed capture causes when full output/history bytes are absent.
+    """
+
+    run_id: str
+    terminal_sequence: int
+    status: Literal["completed", "failed", "interrupted", "cancelled"]
+    capture: TerminalCaptureKind
+    stop_cause: StopCause | None = None
+    output_sha256: str | None = None
+    output_bytes: int | None = None
+    output_preview: str | None = None
+    output_error: str | None = None
+    history_error: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, str) or not self.run_id:
+            raise ValueError("terminal run capture requires a non-empty run_id")
+        if type(self.terminal_sequence) is not int or self.terminal_sequence < 1:
+            raise ValueError("terminal run capture requires a positive terminal_sequence")
+        if self.status not in ("completed", "failed", "interrupted", "cancelled"):
+            raise ValueError(f"unknown terminal run status {self.status!r}")
+        if self.capture not in ("inline", "artifact", "preview_only", "empty", "capture_failed", "not_completed"):
+            raise ValueError(f"unknown terminal capture kind {self.capture!r}")
+        if self.capture == "not_completed":
+            if self.status == "completed":
+                raise ValueError("not_completed capture requires a non-completed terminal status")
+        elif self.status != "completed":
+            raise ValueError("completed capture kinds require a completed terminal status")
+        if self.capture == "artifact" and (not isinstance(self.output_sha256, str) or not self.output_sha256):
+            raise ValueError("artifact capture requires a non-empty output_sha256 reference")
+        if self.output_bytes is not None and (type(self.output_bytes) is not int or self.output_bytes < 0):
+            raise ValueError("terminal run capture output_bytes must be a non-negative integer")
+
+    @property
+    def eligible(self) -> bool:
+        """Whether this run's captured output satisfies the latest-output eligibility rule."""
+        return self.capture in ("inline", "artifact")
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "run_id": self.run_id,
+            "terminal_sequence": self.terminal_sequence,
+            "status": self.status,
+            "capture": self.capture,
+            "eligible": self.eligible,
+            "stop_cause": self.stop_cause,
+        }
+        if self.output_sha256 is not None:
+            payload["output_sha256"] = self.output_sha256
+        if self.output_bytes is not None:
+            payload["output_bytes"] = self.output_bytes
+        if self.output_preview is not None:
+            payload["output_preview"] = self.output_preview
+        if self.output_error is not None:
+            payload["output_error"] = self.output_error
+        if self.history_error is not None:
+            payload["history_error"] = self.history_error
+        return payload
+
+
 @dataclass(frozen=True, slots=True)
 class ChildSessionSnapshot:
-    """One caller-scoped descendant record and its latest eligible outcome."""
+    """One caller-scoped descendant record, its latest eligible output, and exact terminal diagnostics.
+
+    ``latest_outcome`` is the newest completed publication with a full captured
+    output; ``terminal_run`` is the newest committed terminal fact regardless of
+    eligibility. They may name different runs, and the terminal diagnostics are
+    never attached to the prior eligible output.
+    """
 
     descendant: DescendantNode
     latest_outcome: ChildOutcome | None = None
+    terminal_run: TerminalRunCapture | None = None
 
     def __post_init__(self) -> None:
         if self.latest_outcome is not None and self.latest_outcome.child_session_id != self.descendant.session_id:

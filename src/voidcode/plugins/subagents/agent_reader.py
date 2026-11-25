@@ -33,6 +33,28 @@ def _current_lines(snapshot: ChildSessionSnapshot) -> list[str]:
     return lines
 
 
+def _terminal_run_lines(snapshot: ChildSessionSnapshot) -> list[str]:
+    run = snapshot.terminal_run
+    if run is None:
+        return ["No committed terminal run has been published for this descendant."]
+    lines = [
+        f"Latest terminal run: run_id={run.run_id} status={run.status} capture={run.capture} "
+        f"eligible={'yes' if run.eligible else 'no'} terminal_sequence={run.terminal_sequence}."
+    ]
+    if run.stop_cause:
+        lines.append(f"Latest terminal stop_cause: {run.stop_cause}")
+    if run.output_sha256 is not None:
+        size = f", {run.output_bytes} bytes" if run.output_bytes is not None else ""
+        lines.append(f"Latest terminal output reference: artifact://{run.output_sha256}{size}.")
+    if run.output_preview is not None:
+        lines.append(f"Latest terminal output preview (untrusted):\n{run.output_preview}")
+    if run.output_error is not None:
+        lines.append(f"Latest terminal output capture error: {run.output_error}")
+    if run.history_error is not None:
+        lines.append(f"Latest terminal history capture error: {run.history_error}")
+    return lines
+
+
 def read_agent_resource(
     request: ResourceReadRequest,
     caller: ResourceReadCaller,
@@ -50,8 +72,10 @@ def read_agent_resource(
         return None
     descendant = snapshot.descendant
     outcome = snapshot.latest_outcome
+    terminal_run = None if snapshot.terminal_run is None else snapshot.terminal_run.as_payload()
     if outcome is None:
         lines = _current_lines(snapshot)
+        lines.extend(_terminal_run_lines(snapshot))
         lines.append("No nonempty completed output has been published for this descendant.")
         lines.append(f"Live transcript (separate from this status resource): transcript://{target}.")
         content = "\n".join(lines)
@@ -62,6 +86,7 @@ def read_agent_resource(
                 "type": "agent",
                 "session_id": target,
                 "current": descendant.as_payload(),
+                "terminal_run": terminal_run,
                 "latest_output": None,
                 "raw_content": content,
                 "history_uri": f"transcript://{target}",
@@ -73,12 +98,15 @@ def read_agent_resource(
     output_uri = f"artifact://{outcome.output_sha256}"
     superseded = descendant.status == "running" and descendant.run_id is not None and descendant.run_id != outcome.run_id
     lines = _current_lines(snapshot)
+    lines.extend(_terminal_run_lines(snapshot))
     lines.append(f"Latest published output run_id: {outcome.run_id or 'unknown'} (status={outcome.status}).")
     if descendant.run_id != outcome.run_id:
         if superseded:
             lines.append("This previous output is superseded while the current run is active.")
         else:
             lines.append("This is the last published output, not the current session run's result.")
+    if snapshot.terminal_run is not None and snapshot.terminal_run.run_id != outcome.run_id:
+        lines.append("The latest terminal run diagnostics above belong to a different run, never to this eligible output.")
     if outcome.output_error is not None:
         lines.append(f"Published output capture error for run_id {outcome.run_id or 'unknown'}: {outcome.output_error}")
     if outcome.history_error is not None:
@@ -130,6 +158,7 @@ def read_agent_resource(
             "type": "agent",
             "session_id": target,
             "current": descendant.as_payload(),
+            "terminal_run": terminal_run,
             "latest_output": latest,
             "superseded": superseded,
             "history_uri": f"transcript://{target}",

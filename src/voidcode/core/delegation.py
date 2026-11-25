@@ -21,7 +21,16 @@ from ..sdk.child_schema import CHILD_PROMPT_MAX_BYTES, canonical_result_schema, 
 from ..sdk.codec import decode_provider_result
 from ..sdk.hooks import StopCause, is_stop_cause
 from ..sdk.json_values import json_wire_object
-from ..sdk.services import BudgetExhaustion, CancelSubtreeReceipt, ChildOutcome, ChildSendReceipt, ChildSessionSnapshot, DescendantNode
+from ..sdk.services import (
+    BudgetExhaustion,
+    CancelSubtreeReceipt,
+    ChildOutcome,
+    ChildSendReceipt,
+    ChildSessionSnapshot,
+    DescendantNode,
+    TerminalCaptureKind,
+    TerminalRunCapture,
+)
 from .cancellation import RUN_BOUND
 from .child_contracts import ChildCompletionReceipt, ChildFinishedNoticePayload, ChildRunStatus, ChildWaitDelivery
 from .engine.governance import validate_steps
@@ -185,6 +194,67 @@ def _decode_child_outcome(child_id: str, payload: Mapping[str, object]) -> Child
         output_error=_optional_fact_str(payload, "output_error", subject),
         history_error=_optional_fact_str(payload, "history_error", subject),
         budget_exhaustion=BudgetExhaustion.from_payload(payload.get("budget_exhaustion")),
+    )
+
+
+def _terminal_capture_kind(
+    *,
+    status: str,
+    output: str | None,
+    output_preview: str | None,
+    output_sha256: str | None,
+    output_error: str | None,
+) -> TerminalCaptureKind:
+    """Classify one terminal fact's captured output from typed fields, never error text."""
+    if status != "completed":
+        return "not_completed"
+    if output_sha256:
+        return "artifact"
+    if output:
+        return "inline"
+    if output_preview:
+        return "preview_only"
+    if output_error:
+        return "capture_failed"
+    return "empty"
+
+
+def _decode_terminal_run_capture(child_id: str, event: StoredEvent) -> TerminalRunCapture:
+    """Decode the newest committed terminal fact exactly; a malformed payload fails visibly."""
+    payload = event.payload
+    subject = f"committed child terminal fact for {child_id!r} at sequence {event.sequence}"
+    fact_child = _required_fact_str(payload, "child_session_id", subject)
+    if fact_child != child_id:
+        raise StoreConflict(f"{subject} names child {fact_child!r}")
+    status = _required_fact_str(payload, "status", subject)
+    if status not in _TERMINAL_CHILD_FACT_STATUSES:
+        raise StoreConflict(f"{subject} has an unknown status: {status!r}")
+    run_id = _required_fact_str(payload, "run_id", subject)
+    stop_cause = _optional_fact_str(payload, "stop_cause", subject)
+    if stop_cause is not None and not is_stop_cause(stop_cause):
+        raise StoreConflict(f"{subject} has an unknown stop cause: {stop_cause!r}")
+    output = _optional_fact_str(payload, "output", subject)
+    output_preview = _optional_fact_str(payload, "output_preview", subject) or None
+    output_sha256 = _optional_fact_str(payload, "output_sha256", subject) or None
+    output_error = _optional_fact_str(payload, "output_error", subject) or None
+    history_error = _optional_fact_str(payload, "history_error", subject) or None
+    return TerminalRunCapture(
+        run_id=run_id,
+        terminal_sequence=event.sequence,
+        status=cast(Literal["completed", "failed", "interrupted", "cancelled"], status),
+        capture=_terminal_capture_kind(
+            status=status,
+            output=output,
+            output_preview=output_preview,
+            output_sha256=output_sha256,
+            output_error=output_error,
+        ),
+        stop_cause=stop_cause,
+        output_sha256=output_sha256,
+        output_bytes=_optional_fact_int(payload, "output_bytes", subject),
+        output_preview=output_preview,
+        output_error=output_error,
+        history_error=history_error,
     )
 
 
@@ -1360,7 +1430,9 @@ class DelegationManager:
         Non-visible and nonexistent ids share ``None``. Terminal child events are append-only;
         only a successful publication carrying nonempty inline output or a full output artifact
         replaces the latest result. Failed, interrupted, cancelled, empty, and preview-only
-        publications do not erase a prior result. Inline committed output is materialized as a
+        publications do not erase a prior result. ``terminal_run`` instead projects the newest
+        committed terminal fact exactly, whatever its eligibility, so its capture diagnosis is
+        never attached to the prior eligible output. Inline committed output is materialized as a
         deduplicated immutable artifact for resource paging; the committed event and join result
         stay unchanged. The event contract has no separate OMP-style accepted-yield marker.
         """
@@ -1378,26 +1450,32 @@ class DelegationManager:
         parent_session_id = initial_descendant.parent_session_id
 
         latest_outcome: ChildOutcome | None = None
+        terminal_event: StoredEvent | None = None
         if parent_session_id is not None:
             finished = self.core.store.events_by_types(parent_session_id, (EventType.CHILD_FINISHED,))
             for event in reversed(finished):
                 payload = event.payload
                 if event.event_type != EventType.CHILD_FINISHED or payload.get("child_session_id") != child_session_id:
                     continue
-                output = payload.get("output")
-                output_artifact = payload.get("output_sha256")
-                accepted = payload.get("status") == "completed" and (
-                    isinstance(output, str) and bool(output) or isinstance(output_artifact, str) and bool(output_artifact)
-                )
-                if accepted:
-                    latest_outcome = self._child_outcome(child_session_id, payload)
-                    if latest_outcome.output_sha256 is None and latest_outcome.output is not None:
-                        reference = self._spill_child_output(latest_outcome.output)
-                        digest = reference.get("sha256")
-                        if not isinstance(digest, str) or not digest:
-                            raise RuntimeError("inline child output did not produce an immutable artifact reference")
-                        latest_outcome = replace(latest_outcome, output_sha256=digest)
+                if terminal_event is None:
+                    terminal_event = event
+                if latest_outcome is None:
+                    output = payload.get("output")
+                    output_artifact = payload.get("output_sha256")
+                    accepted = payload.get("status") == "completed" and (
+                        isinstance(output, str) and bool(output) or isinstance(output_artifact, str) and bool(output_artifact)
+                    )
+                    if accepted:
+                        latest_outcome = self._child_outcome(child_session_id, payload)
+                        if latest_outcome.output_sha256 is None and latest_outcome.output is not None:
+                            reference = self._spill_child_output(latest_outcome.output)
+                            digest = reference.get("sha256")
+                            if not isinstance(digest, str) or not digest:
+                                raise RuntimeError("inline child output did not produce an immutable artifact reference")
+                            latest_outcome = replace(latest_outcome, output_sha256=digest)
+                if terminal_event is not None and latest_outcome is not None:
                     break
+        terminal_run = None if terminal_event is None else _decode_terminal_run_capture(child_session_id, terminal_event)
 
         descendant = next(
             (node for node in self.list_descendants(caller_session_id) if node.session_id == child_session_id),
@@ -1405,7 +1483,7 @@ class DelegationManager:
         )
         if descendant is None:
             return None
-        return ChildSessionSnapshot(descendant=descendant, latest_outcome=latest_outcome)
+        return ChildSessionSnapshot(descendant=descendant, latest_outcome=latest_outcome, terminal_run=terminal_run)
 
     def _fence_holds(self, chain: frozenset[str], child_id: str | None = None) -> str | None:
         """The active fence blocking spawn/send through this chain, if any (caller holds the lifecycle lock)."""

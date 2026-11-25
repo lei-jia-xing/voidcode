@@ -327,11 +327,14 @@ class ResourceReaderServices(Protocol):
         ...
 
     def read_child_snapshot(self, child_session_id: str) -> ChildSessionSnapshot | None:
-        """Read one visible descendant's current status and latest eligible output without joining or acknowledging.
+        """Read one visible descendant's current status, latest eligible output, and exact terminal capture.
 
         ``latest_outcome`` skips failed, interrupted, cancelled, empty, and preview-only
-        publications; current status/run identity stays separate. ``None`` covers both
-        nonexistent and out-of-scope ids, so this read is not an existence oracle.
+        publications; ``terminal_run`` projects the newest committed terminal fact with its
+        exact run identity and capture classification, even when that fact is not eligible.
+        The two may name different runs and are never conflated. Current status/run identity
+        stays separate. ``None`` covers both nonexistent and out-of-scope ids, so this read is
+        not an existence oracle.
         """
         ...
 

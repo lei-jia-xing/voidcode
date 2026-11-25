@@ -4,7 +4,7 @@ import pytest
 
 from voidcode.sdk.json_values import json_wire_object, own_json_object
 from voidcode.sdk.provider import ProviderMessage
-from voidcode.sdk.services import BudgetExhaustion, ChildSendReceipt
+from voidcode.sdk.services import BudgetExhaustion, ChildSendReceipt, TerminalRunCapture
 from voidcode.sdk.tools import ToolCall, ToolDefinition, ToolEffect
 
 
@@ -62,6 +62,58 @@ def test_child_send_receipt_preserves_parked_delivery_in_its_payload() -> None:
         "child_status": "interrupted",
         "message_id": "message-1",
     }
+
+
+def test_terminal_run_capture_payload_carries_exact_identity_and_diagnosis() -> None:
+    run = TerminalRunCapture(
+        run_id="run-2",
+        terminal_sequence=9,
+        status="completed",
+        capture="preview_only",
+        stop_cause="completed",
+        output_preview="partial output",
+        output_bytes=90_000,
+        output_error="ArtifactStoreError: quota exceeded",
+        history_error="HistoryStoreError: boom",
+    )
+
+    assert run.eligible is False
+    assert run.as_payload() == {
+        "run_id": "run-2",
+        "terminal_sequence": 9,
+        "status": "completed",
+        "capture": "preview_only",
+        "eligible": False,
+        "stop_cause": "completed",
+        "output_preview": "partial output",
+        "output_bytes": 90_000,
+        "output_error": "ArtifactStoreError: quota exceeded",
+        "history_error": "HistoryStoreError: boom",
+    }
+
+    artifact = TerminalRunCapture(
+        run_id="run-3",
+        terminal_sequence=10,
+        status="completed",
+        capture="artifact",
+        output_sha256="a" * 64,
+        output_bytes=120,
+    )
+    assert artifact.eligible is True
+    assert artifact.as_payload()["output_sha256"] == "a" * 64
+
+
+def test_terminal_run_capture_rejects_contradictory_identity_or_capture() -> None:
+    with pytest.raises(ValueError, match="run_id"):
+        TerminalRunCapture(run_id="", terminal_sequence=1, status="completed", capture="empty")
+    with pytest.raises(ValueError, match="terminal_sequence"):
+        TerminalRunCapture(run_id="run-1", terminal_sequence=0, status="completed", capture="empty")
+    with pytest.raises(ValueError, match="capture kind"):
+        TerminalRunCapture(run_id="run-1", terminal_sequence=1, status="completed", capture="mystery")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="completed terminal status"):
+        TerminalRunCapture(run_id="run-1", terminal_sequence=1, status="failed", capture="inline")
+    with pytest.raises(ValueError, match="output_sha256"):
+        TerminalRunCapture(run_id="run-1", terminal_sequence=1, status="completed", capture="artifact")
 
 
 def test_budget_exhaustion_round_trips_and_absent_stays_absent() -> None:

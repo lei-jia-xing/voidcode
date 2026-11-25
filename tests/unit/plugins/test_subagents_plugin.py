@@ -33,6 +33,7 @@ from voidcode.sdk.services import (
     ChildSessionSnapshot,
     DescendantNode,
     EventView,
+    TerminalRunCapture,
 )
 from voidcode.sdk.tools import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess, UnconfirmedStop
 
@@ -739,6 +740,107 @@ def test_agent_reader_shows_only_the_publication_run_own_errors(tmp_path: Path) 
     assert latest["run_id"] == "run-A"
     assert latest["history_error"] == history_cause
     assert latest["output_error"] is None
+    terminal = page.body["terminal_run"]
+    assert terminal is None
+
+
+def test_agent_reader_surfaces_exact_terminal_capture_without_conflating_output(tmp_path: Path) -> None:
+    services = FakeServices()
+    reference = services.spill_artifact("published findings", media_type="text/plain; charset=utf-8")
+    cause = "ArtifactStoreError: quota exceeded"
+    snapshot = ChildSessionSnapshot(
+        descendant=DescendantNode(
+            session_id="child-1",
+            parent_session_id="session-1",
+            depth=1,
+            status="running",
+            run_id="run-C",
+        ),
+        latest_outcome=ChildOutcome(
+            child_session_id="child-1",
+            status="completed",
+            output="published findings",
+            run_id="run-A",
+            output_sha256=reference.sha256,
+            output_bytes=reference.bytes,
+        ),
+        terminal_run=TerminalRunCapture(
+            run_id="run-B",
+            terminal_sequence=12,
+            status="completed",
+            capture="preview_only",
+            stop_cause="completed",
+            output_preview="partial B",
+            output_bytes=90_000,
+            output_error=cause,
+        ),
+    )
+
+    class _AgentServices:
+        def read_child_snapshot(self, child_session_id: str) -> ChildSessionSnapshot | None:
+            assert child_session_id == "child-1"
+            return snapshot
+
+        def read_artifact(self, sha256: str, *, offset: int = 0, limit: int = 65536):  # type: ignore[no-untyped-def]
+            return services.read_artifact(sha256, offset=offset, limit=limit)
+
+    page = read_agent_resource(
+        ResourceReadRequest(uri="agent://child-1"),
+        ResourceReadCaller(session_id="session-1", workspace=tmp_path, revision_id="rev-1", run_id="run-1"),
+        _AgentServices(),  # type: ignore[arg-type]
+    )
+
+    assert page is not None
+    assert isinstance(page.output, TextOutput)
+    assert "Latest terminal run: run_id=run-B status=completed capture=preview_only eligible=no terminal_sequence=12." in page.output.text
+    assert "Latest terminal output preview (untrusted):\npartial B" in page.output.text
+    assert f"Latest terminal output capture error: {cause}" in page.output.text
+    assert "belong to a different run, never to this eligible output" in page.output.text
+    terminal = page.body["terminal_run"]
+    assert isinstance(terminal, Mapping)
+    assert terminal["run_id"] == "run-B" and terminal["eligible"] is False
+    assert terminal["output_preview"] == "partial B"
+    latest = page.body["latest_output"]
+    assert isinstance(latest, Mapping) and latest["run_id"] == "run-A"
+
+
+def test_agent_reader_reports_a_non_completed_terminal_run_without_eligible_output(tmp_path: Path) -> None:
+    snapshot = ChildSessionSnapshot(
+        descendant=DescendantNode(
+            session_id="child-1",
+            parent_session_id="session-1",
+            depth=1,
+            status="failed",
+            run_id="run-B",
+        ),
+        terminal_run=TerminalRunCapture(
+            run_id="run-B",
+            terminal_sequence=5,
+            status="failed",
+            capture="not_completed",
+            stop_cause="error",
+        ),
+    )
+
+    class _AgentServices:
+        def read_child_snapshot(self, child_session_id: str) -> ChildSessionSnapshot | None:
+            assert child_session_id == "child-1"
+            return snapshot
+
+    page = read_agent_resource(
+        ResourceReadRequest(uri="agent://child-1"),
+        ResourceReadCaller(session_id="session-1", workspace=tmp_path, revision_id="rev-1", run_id="run-1"),
+        _AgentServices(),  # type: ignore[arg-type]
+    )
+
+    assert page is not None
+    assert isinstance(page.output, TextOutput)
+    assert "Latest terminal run: run_id=run-B status=failed capture=not_completed eligible=no terminal_sequence=5." in page.output.text
+    assert "No nonempty completed output has been published for this descendant." in page.output.text
+    assert page.body["latest_output"] is None
+    terminal = page.body["terminal_run"]
+    assert isinstance(terminal, Mapping)
+    assert terminal["run_id"] == "run-B" and terminal["capture"] == "not_completed"
 
 
 def test_send_maps_the_receipt_without_claiming_consumption(tmp_path: Path) -> None:
