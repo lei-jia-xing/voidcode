@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Core services and process host split behind stable facades
+- `core/services.py` is now a package whose `RuntimeServices` facade is assembled from private concern mixins: lease gates, process access, artifacts, staged state/budgets, bounded reads, session projections, wakeups, child sessions, background actions, and governed invocation. `ResourceReaderServicesView` remains the thin same-gate read view, and `SuspendOutsideTool` keeps its name.
+- `core/processes.py` is now a package with the same `ProcessHost`, `ProcessRegistry`, and `ProcessResult` surface; capture/streams, procfs signaling, supervised entries, one-shot sandbox/exec lifecycle, cleanup/reaping, and the core-lifetime host live in private modules. Process groups, timeouts, cancellation windows, capture bounds, sandbox plans/effects, artifact references, and event staging are unchanged.
+- Every split module is under 400 lines; the two old modules (1596 and 1287 lines) are gone. No callers or tests needed import changes; only monkeypatch-visible public methods remain on the same classes.
+- Verification: process host/lease, resource-reader, child-capture, media-projection, payload-bound, transcript-contract, command-lifecycle, and sandbox integration suites; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Core engine split behind the `Core` facade
 - `core/engine/__init__.py` is now a deliberate ~220-line facade: construction, public exports, and MRO composition live there, while lifecycle/state, activation, commands, sessions, children, wakeups, background actions, persistence hooks, and host adapters live in private responsibility mixins (`_lifecycle.py`, `_activation.py`, `_commands.py`, `_sessions.py`, `_children.py`, `_wakeups.py`, `_background.py`, `_persistence.py`, `_host_adapters.py`, `_capability.py` for reserved specs and the immutable snapshot). Every module is under 750 lines.
 - Public signatures, events, persistence, governance, approvals, and test-visible private aliases (`_commit`, `_interrupt_batch`, `_commit_control_event`, `_drive_pending`, `_drive_pending_activations`, `_wakeup_loop`) are unchanged; the engine remains free of concrete plugin/capability imports.
