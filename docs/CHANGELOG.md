@@ -4,10 +4,10 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
-### OpenAI tool-result images preserve tool structure
-- OpenAI Chat Completions no longer rewrites a request with tool-result images into synthetic JSON user messages. Assistant tool-call turns and native `tool` messages stay intact; tool-result images are appended after the tool batch as one labelled user feedback message identifying the call id/name, with already-emitted images deduplicated. User images keep the normal `image_url` path.
-- This applies on first dispatch and on history replay: each tool result's images are regenerated once into the same labelled feedback message, never as a synthetic tool result. Text-only payloads are byte-shape unchanged.
-- Verification: provider payload/streaming and image/media/composite projection tests, including a real Core two-turn replay and a duplicate-image regression; `ruff check`, `ruff format --check`, `ty check src`.
+### C1 image slices: magic raster ingress and OpenAI tool structure
+- `read` classifies raster attachments by magic bytes, sharing one PNG/JPEG/GIF/WebP sniffer with TUI attachments. A raster extension must agree with the bytes; extensionless or non-raster filenames with proven raster bytes attach under the detected MIME. Empty, truncated-header, and extension/bytes-mismatched rasters fail as typed `invalid_image` results before any artifact spill. The shared TUI/web e2e artifact fixture now exercises the extensionless screenshot.
+- OpenAI Chat Completions preserves assistant tool-call turns and native `tool` messages when a tool result carries images instead of rewriting the request into synthetic JSON user messages. Images are appended after each tool batch as one labelled user feedback message identifying the call id/name, with already-emitted images deduplicated; user images keep the normal `image_url` path. Replay behaves identically, and text-only payloads are byte-shape unchanged.
+- Verification: files/artifacts/read, media/image/composite projection, provider payload/streaming, and TUI artifact-surface suites, including a real Core two-turn replay and the TUI PTY artifact scene; `ruff check`, `ruff format --check`, `ty check src`.
 
 ### Production hardening
 - **Web:** `web_fetch` classifies the destination after unwrapping IPv4-mapped IPv6 and rejects anything that is not global-unicast or multicast (loopback, private, link-local, CGNAT/cloud metadata, reserved, benchmarking) before connecting and again on every redirect; DNS resolution failures fail closed and redirect rejection reasons survive. Fetch and search clients ignore proxy environment variables, and search checks cancellation per streamed chunk. `VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH=1` remains the documented test-only override. Residuals: DNS-rebinding between validation and connect, and decompression byte caps that are not hard memory bounds.

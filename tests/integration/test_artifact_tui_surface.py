@@ -312,7 +312,7 @@ def test_real_cli_unconfirmed_kitty_uses_explicit_safe_external_copy(artifact_se
         exported = json.loads(opened.read_text())
         copied = Path(exported["path"])
         assert copied.exists() and exported["sha256"] == scene["png_sha256"] and exported["mode"] == 0o600
-        assert copied != Path(scene["workspace"]) / "screen.png"
+        assert copied != Path(scene["workspace"]) / "screen"
         assert decode_rgb_png(copied.read_bytes())[:2] == (384, 300)
     finally:
         terminal.close()
