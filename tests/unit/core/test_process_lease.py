@@ -368,6 +368,45 @@ def test_a_cancelled_run_reports_what_the_child_had_already_written(tmp_path: Pa
     assert registry.live_group_count() == 0
 
 
+def test_post_exit_drain_timeout_reports_flagged_partial_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reader still blocked at the drain deadline must not look like a complete capture."""
+    release = threading.Event()
+
+    def blocked_sink(_stream: object, _chunk: bytes) -> None:
+        release.wait(timeout=5)
+
+    monkeypatch.setattr("voidcode.core.processes._exec._READER_GRACE_SECONDS", 0.05)
+    full = "a" * 1024 + "b" * 1024
+    script = _python(
+        "import sys, time",
+        "sys.stdout.write('a' * 1024)",
+        "sys.stdout.flush()",
+        "time.sleep(0.05)",
+        "sys.stdout.write('b' * 1024)",
+        "sys.stdout.flush()",
+    )
+    try:
+        result = ProcessRegistry().run(
+            script,
+            cwd=tmp_path,
+            env=None,
+            stdin=None,
+            timeout_seconds=5,
+            max_output_bytes=4096,
+            on_output=blocked_sink,
+        )
+    finally:
+        release.set()
+
+    assert result.exit_code == 0
+    assert result.timed_out is False
+    assert result.cancelled is False
+    assert result.truncated is True
+    assert result.capture_issue == "reader_drain_timeout"
+    assert full.startswith(result.stdout)
+    assert len(result.stdout) < len(full)
+
+
 def test_read_only_lease_refuses_to_run_a_process(tmp_path: Path) -> None:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", process_tool=True)

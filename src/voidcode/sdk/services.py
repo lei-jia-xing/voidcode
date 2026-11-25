@@ -848,6 +848,10 @@ class ProcessResult:
     effects: ObservedEffects | None = None
     #: Raw byte captures: empty in text mode (today); exactly (stdout, stderr) when requested.
     raw: tuple[RawStreamCapture, ...] = ()
+    #: Why capture is a partial prefix. ``reader_drain_timeout`` means the child exited but a
+    #: pipe reader had not reached EOF before the bounded post-exit drain deadline; stdout and
+    #: stderr then hold only the bytes read so far and ``truncated`` is true.
+    capture_issue: Literal["reader_drain_timeout"] | None = None
 
     def __post_init__(self) -> None:
         raw = tuple(self.raw)
@@ -858,6 +862,10 @@ class ProcessResult:
             raise ValueError("process result raw must be empty or exactly its stdout/stderr pair")
         if len(raw) == 2 and (raw[0].stream != "stdout" or raw[1].stream != "stderr"):
             raise ValueError("process result raw captures must arrive in stdout/stderr order")
+        if self.capture_issue not in (None, "reader_drain_timeout"):
+            raise ValueError(f"unknown process capture issue: {self.capture_issue!r}")
+        if self.capture_issue is not None and not self.truncated:
+            raise ValueError("a process capture issue requires truncated=True")
 
 
 @dataclass(frozen=True, slots=True)

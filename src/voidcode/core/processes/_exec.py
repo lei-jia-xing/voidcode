@@ -59,6 +59,23 @@ class _GroupTable:
         return processes
 
 
+def _join_capture(
+    readers: list[threading.Thread],
+    stdin_thread: threading.Thread,
+    drain_until: float,
+) -> bool:
+    """Join pipe readers inside the drain budget; False means a reader may still hold data.
+
+    The stdin thread is not part of capture completeness: a child that exited without reading
+    its pipe can leave that writer waiting harmlessly. Only a live stdout/stderr reader means
+    the returned prefix may be missing bytes the child already wrote.
+    """
+    for reader in readers:
+        reader.join(timeout=max(0.0, drain_until - time.monotonic()))
+    stdin_thread.join(timeout=max(0.0, drain_until - time.monotonic()))
+    return not any(reader.is_alive() for reader in readers)
+
+
 def run_oneshot(
     groups: _GroupTable,
     argv: Sequence[str],
@@ -164,6 +181,9 @@ def run_oneshot(
             stop_process(process, drain_until=drain_until)
             break
         if process.poll() is not None:
+            # The drain budget starts when the child exits, not when the poll loop began:
+            # a long run must still get the full bounded reader-drain window.
+            drain_until = time.monotonic() + _READER_GRACE_SECONDS
             break
         # Block on the lease's cancellation instead of polling it, so a cancel stops the
         # group immediately rather than up to one poll interval later.
@@ -173,10 +193,9 @@ def run_oneshot(
         else:
             time.sleep(slot)
     # Every reader is joined inside the drain budget: the pipes close when the group dies, so
-    # whatever the child wrote before it was stopped is captured rather than discarded.
-    for reader in readers:
-        reader.join(timeout=max(0.0, drain_until - time.monotonic()))
-    stdin_thread.join(timeout=max(0.0, drain_until - time.monotonic()))
+    # whatever the child wrote before it was stopped is captured rather than discarded. A reader
+    # still alive after the budget is a partial prefix, never a silent complete result.
+    drained = _join_capture(readers, stdin_thread, drain_until)
     duration_ms = int((time.monotonic() - started) * 1000)
 
     groups.discard(process.pid)
@@ -184,16 +203,19 @@ def run_oneshot(
     if reader_errors:
         first = reader_errors[0]
         raise ProcessFailure("capture_failed", f"failed while reading process output: {type(first).__name__}: {first}")
+    stdout, stdout_truncated = stdout_capture.snapshot()
+    stderr, stderr_truncated = stderr_capture.snapshot()
     return ProcessResult(
         # A process the runtime stopped has no exit status of its own: None here is honest,
         # and `timed_out`/`cancelled` say which stop it was.
         exit_code=None if (cancelled or timed_out) else process.returncode,
-        stdout=stdout_capture.text(),
-        stderr=stderr_capture.text(),
+        stdout=stdout,
+        stderr=stderr,
         duration_ms=duration_ms,
-        truncated=stdout_capture.truncated or stderr_capture.truncated,
+        truncated=stdout_truncated or stderr_truncated or not drained,
         timed_out=timed_out,
         cancelled=cancelled,
+        capture_issue=None if drained else "reader_drain_timeout",
     )
 
 
@@ -287,15 +309,17 @@ def _run_confined(
             stop_process(process, drain_until=drain_until)
             break
         if process.poll() is not None:
+            # Same contract as the unconfined path: the reader budget begins at exit.
+            drain_until = time.monotonic() + _READER_GRACE_SECONDS
             break
         slot = _POLL_SECONDS if remaining is None else min(_POLL_SECONDS, remaining)
         if cancel_event is not None:
             cancel_event.wait(slot)
         else:
             time.sleep(slot)
-    for reader in readers:
-        reader.join(timeout=max(0.0, drain_until - time.monotonic()))
-    stdin_thread.join(timeout=max(0.0, drain_until - time.monotonic()))
+    # A reader still alive after the budget leaves a partial prefix; mark it instead of
+    # returning a normal complete capture.
+    drained = _join_capture(readers, stdin_thread, drain_until)
     duration_ms = int((time.monotonic() - started) * 1000)
     groups.discard(process.pid)
     if reader_errors:
@@ -313,15 +337,18 @@ def _run_confined(
         raise ProcessFailure("sandbox_failed", f"sandbox helper failed (exit {process.returncode}): {stderr_capture.text()[:2000]}")
     else:
         exit_code = process.returncode
+    stdout, stdout_truncated = stdout_capture.snapshot()
+    stderr, stderr_truncated = stderr_capture.snapshot()
     return ProcessResult(
         exit_code=exit_code,
-        stdout=stdout_capture.text(),
-        stderr=stderr_capture.text(),
+        stdout=stdout,
+        stderr=stderr,
         duration_ms=duration_ms,
-        truncated=stdout_capture.truncated or stderr_capture.truncated,
+        truncated=stdout_truncated or stderr_truncated or not drained,
         timed_out=timed_out,
         cancelled=cancelled,
         effects=effects,
+        capture_issue=None if drained else "reader_drain_timeout",
     )
 
 

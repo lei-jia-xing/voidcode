@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Partial post-exit process capture is explicit
+- After the child exits, the process host still joins its pipe readers inside the documented 2-second drain budget. A reader that is still alive at expiry now marks the result `truncated=True` with `ProcessResult.capture_issue == "reader_drain_timeout"`; stdout/stderr are the consistent prefix read so far, never a complete-looking capture.
+- Normal exits, process-group cleanup, timeouts, cancellation, capture bounds, and sandboxed runs keep their existing paths. The capture snapshot is locked so a stalled reader cannot race the returned prefix.
+- Regression: `test_post_exit_drain_timeout_reports_flagged_partial_capture` blocks the progress sink across child exit and asserts the flagged partial prefix. Verification: process lease/host, shell exec/user shell, large media capture, sandbox integration; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Core plugin runtime and delegation split behind stable facades
 - `core/plugins.py` is now a package whose `PluginRuntime` facade composes private mixins for factory loading and catalog admission, invocation leases, tool/command/provider dispatch, observer/fact delivery, lifecycle hooks, and state seams. `PluginSource`, `LeaseContext`, `LeaseIdentity`, `ToolInvocationOutcome`, `FrozenStaged`, `ToolSuspension`, and `CommandInvocationOutcome` keep their names and fields.
 - `core/delegation.py` is now a package whose `DelegationManager` facade composes private mixins for durable birth/fence reads, outcome projection and its in-process cache, exactly-once terminal publication, spawn/idempotent recovery, subtree cancellation, waits/joins, owner controls, startup recovery, and notice delivery. `DELEGATION_MAX_DEPTH`, `CHILD_*` representation constants, `_child_run_status`, and `_terminal_run_result` stay importable from the facade.

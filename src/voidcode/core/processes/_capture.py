@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -17,28 +18,39 @@ _READ_CHUNK_BYTES: Final[int] = 8192
 
 @dataclass(slots=True)
 class _StreamCapture:
-    """Bounded in-memory capture; excess bytes are dropped and reported."""
+    """Bounded in-memory capture; excess bytes are dropped and reported.
+
+    The lock lets the result path snapshot a prefix while a stalled reader thread is still
+    alive: the reader may append later, but a returned result is always a consistent prefix.
+    """
 
     limit: int
     chunks: list[bytes] = field(default_factory=list)
     byte_count: int = 0
     truncated: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def append(self, chunk: bytes) -> None:
-        room = self.limit - self.byte_count
-        if room <= 0:
-            self.truncated = True
-            return
-        if len(chunk) > room:
-            self.chunks.append(chunk[:room])
-            self.byte_count = self.limit
-            self.truncated = True
-            return
-        self.chunks.append(chunk)
-        self.byte_count += len(chunk)
+        with self._lock:
+            room = self.limit - self.byte_count
+            if room <= 0:
+                self.truncated = True
+                return
+            if len(chunk) > room:
+                self.chunks.append(chunk[:room])
+                self.byte_count = self.limit
+                self.truncated = True
+                return
+            self.chunks.append(chunk)
+            self.byte_count += len(chunk)
+
+    def snapshot(self) -> tuple[str, bool]:
+        with self._lock:
+            text = b"".join(self.chunks).decode("utf-8", errors="replace").replace("\r\n", "\n")
+            return text, self.truncated
 
     def text(self) -> str:
-        return b"".join(self.chunks).decode("utf-8", errors="replace").replace("\r\n", "\n")
+        return self.snapshot()[0]
 
 
 def _write_stdin(process: subprocess.Popen[Any], payload: bytes | None) -> None:
