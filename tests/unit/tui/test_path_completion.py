@@ -214,7 +214,7 @@ def test_out_of_order_reply_with_matching_draft_is_still_rejected() -> None:
     _drain_until(app, lambda: bool(app.composer.completion))
     # Simulate an older serial delivering a plausible answer after a newer key.
     app.composer.set_text("@s")
-    app._path_request_serial += 1
+    app._completion.cancel()
     stale = PathCompletionEvent(
         token=AbortToken(),
         request_id=1,

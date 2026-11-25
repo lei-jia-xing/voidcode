@@ -275,7 +275,7 @@ def test_stale_reply_never_touches_replaced_overlay() -> None:
     stale_token = app._follower.begin_live()
     app._follower.begin_live()  # supersede the crafted token: the reply is now stale
     newer = InteractiveChoices(app.active_overlay.view, revision_id="rev-1")
-    app.active_overlay = newer
+    app._overlays.show(newer)
     app.event_queue.put(
         LiveInputReadyEvent(
             token=stale_token,
@@ -320,7 +320,7 @@ def test_queued_gates_present_before_suspended_monitor() -> None:
     app._apply_gate_change(ConfirmationRequested(gate))
     assert isinstance(app.active_overlay, InteractiveConfirmation)
     other = InteractiveConfirmation(ConfirmationViewData(request_id="other-1", message="Other?", actions=("allow", "deny")), revision_id="rev-1")
-    app.queued_confirmations["other-1"] = other
+    app._overlays.request_confirmation(other, decided=app._gates.decided, live_input=None)
     app._apply_gate_change(GateDecided("cancel-1"))
     assert isinstance(app.active_overlay, InteractiveConfirmation)
     assert app.active_overlay.request_id == "other-1"

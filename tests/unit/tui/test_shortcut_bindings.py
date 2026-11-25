@@ -103,7 +103,7 @@ def test_shortcut_ignored_under_gates_and_overlays() -> None:
     app, _, _ = _app((descriptor,))
     calls: list[str] = []
     app._prepare_command_input_async = lambda entry, **kwargs: calls.append(entry.name)  # type: ignore[method-assign]
-    app.active_overlay = InteractiveForm(FormViewData(fields=(FormField(name="f", label="F"),), action="edit"), revision_id="rev-1")
+    app._overlays.show(InteractiveForm(FormViewData(fields=(FormField(name="f", label="F"),), action="edit"), revision_id="rev-1"))
     # Overlay branch owns the key: the composer shortcut path never runs.
     app._handle_overlay_key(Key("alt+a"))
     assert calls == []

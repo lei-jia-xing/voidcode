@@ -131,7 +131,7 @@ def test_failed_overlay_prepare_input_keeps_the_overlay() -> None:
         ChoicesViewData(options=(ChoiceOption(id="one", label="One"),), action="demo.set", prepare_input=True),
         revision_id="rev-1",
     )
-    app.active_overlay = overlay
+    app._overlays.show(overlay)
     app._handle_overlay_key(Key("enter"))
     assert app.active_overlay is overlay
     _assert_unavailable(app)

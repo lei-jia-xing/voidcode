@@ -786,8 +786,8 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     terminal = _StubTerminal()
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
     app._session_cursors["s1"] = 10
-    app.pending_approval = InteractiveApproval(_approval_gate("appr-1"))
-    app.active_overlay = InteractiveConfirmation(ConfirmationViewData(request_id="conf-9", message="Confirm?"), revision_id="rev-1")
+    app._overlays.show_approval(InteractiveApproval(_approval_gate("appr-1")))
+    app._overlays.show(InteractiveConfirmation(ConfirmationViewData(request_id="conf-9", message="Confirm?"), revision_id="rev-1"))
     # workers' own follow-up envelopes: each failed submission ends with a
     # decision_done frame that clears its in-flight marker, so both markers
     # clearing means both workers answered. No production thread registry, no
@@ -809,7 +809,7 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     assert "appr-1" not in app._in_flight and "conf-9" not in app._in_flight
     # A NEW approval parks while the old gate is still mounted; a late
     # acceptance envelope for the OLD id must not close the new gate.
-    app.pending_approval = InteractiveApproval(_approval_gate("appr-2"))
+    app._overlays.show_approval(InteractiveApproval(_approval_gate("appr-2")))
     app.event_queue.put(GateAcceptedEvent(request_id="appr-1", generation=0, session_id="s1"))
     app._drain_events()
     assert app.pending_approval is not None and app.pending_approval.request_id == "appr-2"
@@ -842,7 +842,7 @@ def test_real_503_handlers_keep_both_gates_then_decided_facts_close_each_once() 
     )
     app._drain_events()
     assert app.active_overlay is None
-    assert list(app.queued_confirmations) == []
+    assert app._overlays.queued_confirmation_ids == ()
 
 
 def test_automatic_refresh_is_silent_until_views_are_explicitly_requested() -> None:
@@ -932,7 +932,7 @@ def test_durable_gates_survive_automatic_view_refresh() -> None:
     app._render_frame()
     assert any("Tool approval required" in row for row in terminal.frames[-1]), terminal.frames[-1]
 
-    app.pending_approval = None
+    app._overlays.clear_approval()
     handle_stream_event(
         app,
         _event(
@@ -1173,14 +1173,14 @@ def test_late_completion_does_not_overwrite_gate_or_fence_status() -> None:
     terminal = _StubTerminal()
     app = CoreTuiApp(_CommandClient(), session_id="s1", terminal=terminal)
 
-    app.pending_approval = InteractiveApproval(_approval_gate("appr-1"))
+    app._overlays.show_approval(InteractiveApproval(_approval_gate("appr-1")))
     app.status_line = "Tool approval required: write"
     app.event_queue.put(CommandDoneEvent(name="status", status="ok", result=None, session_id="s1", generation=0))
     app._drain_events()
     assert app.status_line == "Tool approval required: write"
 
-    app.pending_approval = None
-    app.active_overlay = None
+    app._overlays.clear_approval()
+    app._overlays.clear_active()
     app.upgrade = _health(fenced=True)
     app.status_line = "Core upgrade in progress: dispatch paused"
     app.event_queue.put(CommandDoneEvent(name="status", status="ok", result=None, session_id="s1", generation=0))
@@ -1840,7 +1840,7 @@ def test_ctrl_c_does_not_decide_pending_approval() -> None:
     app = CoreTuiApp(_RunClient(), session_id="s1", terminal=terminal)
     app.running = True
     approval = InteractiveApproval(_approval_gate())
-    app.pending_approval = approval
+    app._overlays.show_approval(approval)
     app._handle_input_bytes(b"\x03")
     assert app.running
     assert app.pending_approval is approval
@@ -2272,7 +2272,7 @@ def test_command_validation_failure_preserves_form_draft_for_correction() -> Non
     app = CoreTuiApp(client, session_id="s1", terminal=terminal)  # type: ignore[arg-type]
     form = InteractiveForm(FormViewData(fields=(FormField(name="objective", label="Objective"),), action="goal.set"), revision_id="rev-1")
     form.values["objective"] = "Keep this draft"
-    app.active_overlay = form
+    app._overlays.show(form)
     app._handle_overlay_key(Key("ctrl+s"))
     _drain_until(app, terminal, "budget must be positive")
     assert app.active_overlay is form
@@ -2339,13 +2339,13 @@ def test_late_command_reply_never_closes_or_reopens_an_editor_after_cancel() -> 
     app.catalog_revision = "rev-1"
     old = InteractiveForm(FormViewData(fields=(FormField(name="text", label="Text"),), action="edit"), revision_id="rev-1")
     old.values["text"] = "Old"
-    app.active_overlay = old
+    app._overlays.show(old)
     app._handle_overlay_key(Key("ctrl+s"))
     assert started.wait(timeout=2)
     app._handle_overlay_key(Key("esc"))
     newer = InteractiveForm(old.view, revision_id="rev-1")
     newer.values["text"] = "New draft"
-    app.active_overlay = newer
+    app._overlays.show(newer)
     release.set()
     frames = []
     while True:

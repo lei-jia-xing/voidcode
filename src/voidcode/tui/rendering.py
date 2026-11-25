@@ -103,6 +103,91 @@ class ActiveToolProgress:
         return items[-count:]
 
 
+@dataclass(frozen=True, slots=True)
+class LiveToolSnapshot:
+    """One active tool frozen for the pure live-band layout."""
+
+    tool_name: str
+    elapsed_seconds: float
+    icon: Icon | None
+    tail: tuple[str, ...]
+
+    @classmethod
+    def from_progress(cls, tool: ActiveToolProgress, *, now: float) -> LiveToolSnapshot:
+        return cls(
+            tool_name=tool.tool_name,
+            elapsed_seconds=max(0.0, now - tool.start_time),
+            icon=tool.icon,
+            tail=tuple(tool.visible_tail(len(tool.lines) + 1)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LiveRegion:
+    """Immutable snapshot of every input the composer live band lays out."""
+
+    remaining: int
+    views: tuple[PluginViewDescriptor, ...] = ()
+    tools: tuple[LiveToolSnapshot, ...] = ()
+    stream_rows: tuple[str, ...] = ()
+    has_stream_dispatch: bool = False
+    spinner: str = ""
+
+
+def layout_live_region(region: LiveRegion, *, width: int, styles: Styles) -> tuple[str, ...]:
+    """Lay out the live rows above the composer from a frozen snapshot.
+
+    Pure: no app, terminal, clock, or mutable progress state is read. Callers
+    freeze elapsed times, tails, views, and spinner state before calling.
+    """
+    remaining_live = max(0, region.remaining)
+    has_other_live = bool(region.tools or region.has_stream_dispatch)
+    view_budget = remaining_live if not has_other_live else max(0, remaining_live - 1)
+    view_rows = live_view_rows(region.views, width=width, max_rows=view_budget, styles=styles)
+    live_space = max(0, remaining_live - len(view_rows))
+    live: list[str] = []
+    if live_space > 0:
+        if region.tools:
+            if len(region.tools) > live_space:
+                tool_pairs = [(tool.tool_name, tool.elapsed_seconds) for tool in region.tools]
+                live.extend(render_active_tools_summary(tool_pairs, width, styles, spinner=region.spinner))
+                remaining = max(0, live_space - len(live))
+                for tool in region.tools[-remaining:] if remaining > 0 else ():
+                    live.extend(
+                        render_active_tool(
+                            tool.tool_name,
+                            tool.elapsed_seconds,
+                            [],
+                            width,
+                            styles,
+                            icon=tool.icon,
+                            spinner=region.spinner,
+                            max_tail_rows=0,
+                        )
+                    )
+            else:
+                remaining_tail_space = live_space - len(region.tools)
+                for index, tool in enumerate(region.tools):
+                    is_latest = index == len(region.tools) - 1
+                    tail_budget = remaining_tail_space if is_latest else 0
+                    live_tail = list(tool.tail[-tail_budget:]) if tail_budget > 0 else []
+                    live.extend(
+                        render_active_tool(
+                            tool.tool_name,
+                            tool.elapsed_seconds,
+                            live_tail,
+                            width,
+                            styles,
+                            icon=tool.icon,
+                            spinner=region.spinner,
+                            max_tail_rows=tail_budget,
+                        )
+                    )
+        elif region.stream_rows:
+            live = list(region.stream_rows[-live_space:])
+    return tuple([*view_rows, *live])
+
+
 def banner_rows(banner: BannerConfig | None, styles: Styles, *, width: int) -> list[str]:
     """Centered welcome mark rows, or nothing when disabled/widthless."""
     if banner is None or width <= 0:
@@ -445,55 +530,18 @@ def _render_composer(app: CoreTuiApp, width: int, footer_rows: tuple[str, ...]) 
     pending = pending_attachment_rows(app._pending_images.items, width=width, styles=app.styles)
     path_rows = attachment_path_rows(app._attachment_path, width=width, styles=app.styles) if app._attachment_path is not None else []
     remaining_live = max(0, available - len(composer_rows) - len(popup) - len(queued) - len(pending) - len(path_rows))
-    has_other_live = bool(app._active_tools or app._stream_dispatch is not None)
-    view_budget = remaining_live if not has_other_live else max(0, remaining_live - 1)
-    view_rows = live_view_rows(app._live_views, width=width, max_rows=view_budget, styles=app.styles)
-    live_space = max(0, remaining_live - len(view_rows))
-    live: list[str] = []
-    if live_space > 0:
-        tools = list(app._active_tools.values())
-        num_tools = len(tools)
-        if num_tools > 0:
-            spinner = SPINNER_FRAMES[app._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
-            if num_tools > live_space:
-                tool_pairs = [(t.tool_name, max(0.0, time.monotonic() - t.start_time)) for t in tools]
-                live.extend(render_active_tools_summary(tool_pairs, width, app.styles, spinner=spinner))
-                remaining = max(0, live_space - len(live))
-                for t in tools[-remaining:] if remaining > 0 else []:
-                    live.extend(
-                        render_active_tool(
-                            t.tool_name,
-                            max(0.0, time.monotonic() - t.start_time),
-                            [],
-                            width,
-                            app.styles,
-                            icon=t.icon,
-                            spinner=spinner,
-                            max_tail_rows=0,
-                        )
-                    )
-            else:
-                remaining_tail_space = live_space - num_tools
-                for index, t in enumerate(tools):
-                    is_latest = index == num_tools - 1
-                    tail_budget = remaining_tail_space if is_latest else 0
-                    live_tail = t.visible_tail(tail_budget) if tail_budget > 0 else []
-                    live.extend(
-                        render_active_tool(
-                            t.tool_name,
-                            max(0.0, time.monotonic() - t.start_time),
-                            live_tail,
-                            width,
-                            app.styles,
-                            icon=t.icon,
-                            spinner=spinner,
-                            max_tail_rows=tail_budget,
-                        )
-                    )
-        else:
-            stream_rows = app._live_stream_rows(width)
-            live = stream_rows[-live_space:] if stream_rows else []
-    combined_live = [*view_rows, *live]
+    now = time.monotonic()
+    spinner = SPINNER_FRAMES[app._spinner_tick % len(SPINNER_FRAMES)] if SPINNER_FRAMES else ""
+    tools = tuple(LiveToolSnapshot.from_progress(tool, now=now) for tool in app._active_tools.values())
+    region = LiveRegion(
+        remaining=remaining_live,
+        views=app._live_views,
+        tools=tools,
+        stream_rows=tuple(app._live_stream_rows(width)) if not tools and remaining_live > 0 else (),
+        has_stream_dispatch=app._stream_dispatch is not None,
+        spinner=spinner,
+    )
+    combined_live = list(layout_live_region(region, width=width, styles=app.styles))
     if app._attachment_path is not None:
         row = len(combined_live) + len(popup) + len(queued) + len(pending)
         cursor = (row, attachment_path_cursor(app._attachment_path, width))

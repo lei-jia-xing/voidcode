@@ -419,7 +419,7 @@ def _handle_invoke_accepted(app: CoreTuiApp, frame: InvokeAcceptedEvent, _rows: 
         and overlay is frame.overlay
     ):
         app._close_live_input()
-        app.active_overlay = None
+        app._overlays.clear_active()
         app._present_queued_confirmation()
 
 

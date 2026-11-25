@@ -13,11 +13,9 @@ import threading
 import time
 import webbrowser
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict
 
-from voidcode.capabilities.files.path_queries import PathCompletionRequest, PathCompletionResult
 from voidcode.config import BannerConfig
 from voidcode.sdk.client import (
     MAX_PROMPT_BYTES,
@@ -34,7 +32,6 @@ from voidcode.sdk.client import (
     SessionRow,
     StreamCancellation,
 )
-from voidcode.sdk.command_help import command_argument_hints
 from voidcode.sdk.commands import CommandDescriptor
 from voidcode.sdk.provider import ImageAttachment, ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.tools import (
@@ -87,13 +84,10 @@ from .attachments import (
     load_image_file,
 )
 from .clipboard_image import ClipboardImageUnavailable, read_clipboard_image
+from .completion import CompletionCatalog, CompletionController
 from .composer import SHELL_ESCAPE_PREFIX, Composer, ComposerAction, ComposerOutcome
 from .event_pump import drain_events
-from .formatting import (
-    NoticeTone,
-    StatusLineKind,
-    notice_row,
-)
+from .formatting import NoticeTone, StatusLineKind
 from .formatting import (
     command_result_rows as _command_result_rows,
 )
@@ -120,6 +114,7 @@ from .formatting import (
 )
 from .help_view import TUI_CONTROLS, TUI_CONTROLS_BY_NAME, render_help
 from .keys import Key, KeyDecoder
+from .overlays import OverlayStack
 from .rendering import QUIT_ARM_SECONDS, ActiveToolProgress, render_frame, run_notice_rows
 from .rendering import banner_rows as _banner_rows
 from .session_follower import SessionFollower
@@ -177,34 +172,6 @@ _MAX_IDLE_BLOCK_SECONDS = 1.0
 #: Immutable ctor/entry default: None at the boundary always means disabled.
 _DEFAULT_BANNER = BannerConfig()
 
-#: `@path` popup bounds. Normal completion stays prefix/depth-1; an explicit
-#: `**` path segment requests recursive traversal up to this depth.
-_PATH_COMPLETION_LIMIT = 50
-_PATH_RECURSIVE_DEPTH = 6
-_PATH_RECURSIVE_SEGMENT = "**"
-
-
-@dataclass(frozen=True, slots=True)
-class _PathCompletionRound:
-    """One requested query round; the newest serial owns the popup."""
-
-    request_id: int
-    request: PathCompletionRequest
-    target_range: tuple[int, int]
-    draft: str
-    cursor: int
-    token: events.AbortToken
-    session_id: str
-    generation: int
-
-
-@dataclass(frozen=True, slots=True)
-class _SuspendedLive:
-    """A live choices/markdown overlay paused under its own confirmation."""
-
-    overlay: InteractiveChoices | InteractiveMarkdown
-    live_input: events.LiveInput
-
 
 class _ArtifactContext(TypedDict):
     """Correlation fields every artifact worker frame carries."""
@@ -212,29 +179,6 @@ class _ArtifactContext(TypedDict):
     viewer: str
     session_id: str
     generation: int
-
-
-def _recursive_path_query(query: str) -> tuple[str, str] | None:
-    """Split an explicit ``DIR/**`` or ``DIR/**/FRAGMENT`` token.
-
-    A bare ``**`` recurses from the workspace root. Only one trailing marker
-    segment is recognized; anything else stays a literal prefix query, so the
-    normal ``@path`` behavior is never reinterpreted.
-    """
-    marker = _PATH_RECURSIVE_SEGMENT
-    if query == marker:
-        base, fragment = "", ""
-    elif query.startswith(f"{marker}/"):
-        base, fragment = "", query[len(marker) + 1 :]
-    elif f"/{marker}/" in query:
-        base, fragment = query.split(f"/{marker}/", 1)
-    elif query.endswith(f"/{marker}"):
-        base, fragment = query[: -len(marker) - 1], ""
-    else:
-        return None
-    if "/" in fragment:
-        return None
-    return base.strip("/"), fragment
 
 
 class CoreTuiApp:
@@ -291,7 +235,8 @@ class CoreTuiApp:
         #: a held Enter/click while one is outstanding is ignored, never a
         #: second thread. Cleared on response, decided fact, or error.
         self._in_flight: set[str] = set()
-        self.active_overlay: events.InteractiveOverlay | None = None
+        #: Approval, active overlay, queued gates, and the suspended live view.
+        self._overlays = OverlayStack()
         #: Chord -> descriptor for this catalog revision, rebuilt on every catalog load.
         self._shortcut_bindings: dict[str, CommandDescriptor] = {}
         #: Chord -> claimant names when 2+ descriptors claim one chord (binds nobody).
@@ -305,15 +250,6 @@ class CoreTuiApp:
         self._live_views: tuple[PluginViewDescriptor, ...] = ()
         self._live_views_inflight: bool = False
         self._live_views_refresh_at: float = 0.0
-        #: Retained live view while a confirmation overlays it.
-        self._suspended_live: _SuspendedLive | None = None
-        # Native tool approval (core permission gate) is not a plugin Action
-        # confirmation: it resumes the parked run with its own request id.
-        self.pending_approval: InteractiveApproval | None = None
-        #: Confirmation requests that arrived while another overlay owned the live
-        #: region, keyed by request_id in request order: none is ever dropped.
-        self.queued_confirmations: dict[str, InteractiveConfirmation] = {}
-        self.queued_asks: dict[str, InteractiveAsk] = {}
         #: Typed pending gates (the reducer truth) plus decided-id tombstones.
         self._gates = GateState()
         #: Live token buffer keyed by dispatch id: text fragments arrive as
@@ -355,14 +291,14 @@ class CoreTuiApp:
         self._input_thread: threading.Thread | None = None
         #: Sessions whose welcome mark already committed; each empty visit shows it once.
         self._welcomed_sessions: set[str] = set()
-        self._path_replacements: dict[str, str] = {}
-        #: One in-flight workspace query at a time; every key supersedes the
-        #: previous request by serial, and only the newest reply may render.
-        self._path_request_serial = 0
-        self._path_request_active: int | None = None
-        self._path_request_pending: _PathCompletionRound | None = None
-        self._path_request_token: events.AbortToken | None = None
-        self._path_failure_reported: str | None = None
+        #: Slash/path popup state and the one in-flight workspace query.
+        self._completion = CompletionController(
+            composer=self.composer,
+            styles=self.styles,
+            work=self._work,
+            event_queue=self.event_queue,
+            client=self.client,
+        )
         self.latest_input_tokens: int | None = None
         self.cumulative_input_tokens: int = 0
         self.cumulative_output_tokens: int = 0
@@ -411,6 +347,16 @@ class CoreTuiApp:
         return self._follower.cancel_handle
 
     @property
+    def active_overlay(self) -> events.InteractiveOverlay | None:
+        """Facade read view: the overlay stack's focused overlay."""
+        return self._overlays.active
+
+    @property
+    def pending_approval(self) -> InteractiveApproval | None:
+        """Facade read view: the native approval gate above every other overlay."""
+        return self._overlays.approval
+
+    @property
     def running(self) -> bool:
         return self._running
 
@@ -439,7 +385,7 @@ class CoreTuiApp:
             self._input_stop.set()
             # Cancel the stream before shutdown joins its worker: an idle follow
             # stream is waiting on async network events, and cancellation wakes it.
-            self._cancel_path_completion()
+            self._completion.cancel()
             try:
                 if self._stream_cancel is not None:
                     self._stream_cancel.close()
@@ -727,7 +673,7 @@ class CoreTuiApp:
         viewer = InteractiveArtifactViewer(
             sources, revision_id=catalog.displayed_revision(self), session_id=self.session_id, title=f"Tool artifacts: {title}"
         )
-        self.active_overlay = viewer
+        self._overlays.show(viewer)
         self._load_artifact_page(viewer, 0)
 
     def _artifact_context(self, viewer: InteractiveArtifactViewer) -> _ArtifactContext:
@@ -855,58 +801,57 @@ class CoreTuiApp:
         rows.extend(run_notice_rows(status, detail, self.styles, stop_cause=stop_cause))
 
     def _apply_gate_change(self, change: GateChange) -> None:
-        """Fold one typed gate change and sync the mounted widgets to the reducer."""
+        """Fold one typed gate change and apply its explicit overlay transition."""
         before = self._gates
         after = reduce_gates(before, change)
         self._gates = after
         if isinstance(change, ApprovalRequested):
             if after.approval is not None and after.approval.request_id == change.gate.request_id:
-                current = self.pending_approval
+                current = self._overlays.approval
                 if current is None or current.request_id != change.gate.request_id:
-                    self.pending_approval = InteractiveApproval(change.gate)
+                    self._overlays.show_approval(InteractiveApproval(change.gate))
                 self.status_line = f"Tool approval required: {change.gate.tool_name}"
             return
         if isinstance(change, ConfirmationRequested):
             gate = change.gate
             if gate.request_id in after.decided or not any(entry.request_id == gate.request_id for entry in after.confirmations):
                 return
-            self._show_or_queue_confirmation(InteractiveConfirmation(gate.view, revision_id=gate.revision_id))
+            disposition = self._overlays.request_confirmation(
+                InteractiveConfirmation(gate.view, revision_id=gate.revision_id),
+                decided=after.decided,
+                live_input=self._live_input,
+            )
+            if disposition in ("shown", "suspended"):
+                self.status_line = "Confirmation required"
+            if disposition == "suspended":
+                # A live view yields to its own cancel confirmation: the instance
+                # (filter/selection/scroll) is retained, polling pauses, and only a
+                # direct decision restores it — never a historical replay.
+                self._live_refresh_at = 0.0
+                self._follower.abort_live()
             return
         if isinstance(change, AskRequested):
             gate = change.gate
             if gate.request_id in after.decided or not any(entry.request_id == gate.request_id for entry in after.asks):
                 return
-            self._show_or_queue_ask(InteractiveAsk(gate.request, revision_id=gate.revision_id))
+            if self._overlays.request_ask(InteractiveAsk(gate.request, revision_id=gate.revision_id), decided=after.decided) == "shown":
+                self.status_line = "Interactive ask required"
             return
         if isinstance(change, GateDecided):
-            decided = change.request_id
-            self.queued_confirmations.pop(decided, None)
-            self.queued_asks.pop(decided, None)
-            current = self.pending_approval
-            if current is not None and current.request_id == decided:
-                self.pending_approval = None
-            overlay = self.active_overlay
-            if isinstance(overlay, (InteractiveConfirmation, InteractiveAsk)) and getattr(overlay, "request_id", "") == decided:
-                self.active_overlay = None
+            if self._overlays.decide(change.request_id):
                 self._present_queued_confirmation()
             return
         if isinstance(change, ActivationCommitted):
-            self.pending_approval = None
-            for queued_id in [i for i, q in self.queued_confirmations.items() if q.revision_id != change.to_revision_id]:
-                del self.queued_confirmations[queued_id]
-            for queued_id in [i for i, q in self.queued_asks.items() if q.revision_id != change.to_revision_id]:
-                del self.queued_asks[queued_id]
-            if self._suspended_live is not None and self._suspended_live.overlay.revision_id != change.to_revision_id:
-                self._suspended_live = None
+            self._overlays.clear_approval()
+            if self._overlays.retain_revision(change.to_revision_id):
                 self._live_input = None
                 self._live_refresh_at = 0.0
             if before.approval is not None or len(before.confirmations) != len(after.confirmations) or len(before.asks) != len(after.asks):
                 self._present_queued_confirmation()
             return
         if isinstance(change, RunTerminated):
-            current = self.pending_approval
-            if current is not None and after.approval is None:
-                self.pending_approval = None
+            if self._overlays.approval is not None and after.approval is None:
+                self._overlays.clear_approval()
                 self._present_queued_confirmation()
             return
         raise ValueError(f"unknown gate change: {type(change).__name__}")
@@ -947,89 +892,21 @@ class CoreTuiApp:
         self._live_input = None
         self._live_refresh_at = 0.0
         self._follower.abort_live()
-        self._suspended_live = None
-
-    def _restore_suspended_live(self) -> None:
-        """Bring back the live view a direct confirmation decision just closed."""
-        suspended = self._suspended_live
-        self._suspended_live = None
-        if suspended is None:
-            return
-        if self.active_overlay is not None or self.pending_approval is not None:
-            return
-        revision = suspended.overlay.revision_id
-        if not revision or revision != self.catalog_revision:
-            return
-        self.active_overlay = suspended.overlay
-        self._live_input = suspended.live_input
-        self._live_refresh_at = time.monotonic()
-        self.status_line = ""
-
-    def _show_or_queue_confirmation(self, overlay: InteractiveConfirmation) -> None:
-        """Show one pending confirmation, or retain it until the live region frees.
-
-        The stored request id is the identity: the same request arriving again as a
-        duplicate fact or as its live pending result never resets the modal, and a
-        decided request never comes back.
-        """
-        request_id = overlay.request_id
-        if not request_id or request_id in self._gates.decided:
-            return
-        current = self.active_overlay
-        if isinstance(current, InteractiveConfirmation) and current.request_id == request_id:
-            return
-        if current is None and self.pending_approval is None:
-            self.active_overlay = overlay
-            self.status_line = "Confirmation required"
-            return
-        if isinstance(current, (InteractiveChoices, InteractiveMarkdown)) and self._live_input is not None and self._suspended_live is None:
-            # A live view yields to its own cancel confirmation: the instance
-            # (filter/selection/scroll) is retained, polling pauses, and only a
-            # direct decision restores it — never a historical replay.
-            self._suspended_live = _SuspendedLive(overlay=current, live_input=self._live_input)
-            self._live_refresh_at = 0.0
-            self._follower.abort_live()
-            self.active_overlay = overlay
-            self.status_line = "Confirmation required"
-            return
-        self.queued_confirmations.setdefault(request_id, overlay)
-
-    def _show_or_queue_ask(self, overlay: InteractiveAsk) -> None:
-        """Show one pending ask, or retain it until the live region frees."""
-        request_id = overlay.request_id
-        if not request_id or request_id in self._gates.decided:
-            return
-        current = self.active_overlay
-        if isinstance(current, InteractiveAsk) and current.request_id == request_id:
-            return
-        if current is None and self.pending_approval is None:
-            self.active_overlay = overlay
-            self.status_line = "Interactive ask required"
-            return
-        self.queued_asks.setdefault(request_id, overlay)
+        self._overlays.clear_suspended()
 
     def _present_queued_confirmation(self) -> None:
-        """Present the oldest still-pending confirmation or ask once the live region is free."""
-        if self.active_overlay is not None or self.pending_approval is not None:
-            return
-        while self.queued_confirmations:
-            request_id, overlay = next(iter(self.queued_confirmations.items()))
-            del self.queued_confirmations[request_id]
-            if request_id in self._gates.decided:
-                continue
-            self.active_overlay = overlay
+        """Present the oldest still-pending gate, then restore a suspended live view."""
+        presented = self._overlays.present(decided=self._gates.decided, catalog_revision=self.catalog_revision)
+        if presented.kind == "confirmation":
             self.status_line = "Confirmation required"
-            return
-        while self.queued_asks:
-            request_id, ask_overlay = next(iter(self.queued_asks.items()))
-            del self.queued_asks[request_id]
-            if request_id in self._gates.decided:
-                continue
-            self.active_overlay = ask_overlay
+        elif presented.kind == "ask":
             self.status_line = "Interactive ask required"
-            return
-        if self._suspended_live is not None:
-            self._restore_suspended_live()
+        elif presented.kind == "live":
+            suspended = presented.suspended
+            assert suspended is not None
+            self._live_input = suspended.live_input
+            self._live_refresh_at = time.monotonic()
+            self.status_line = ""
 
     def _apply_kitty_reply(self, reply: TerminalKittyReply) -> None:
         viewer = self.active_overlay
@@ -1199,7 +1076,7 @@ class CoreTuiApp:
         if isinstance(outcome, OverlayCancelled):
             self._follower.abort_interaction()
             self._close_live_input()
-            self.active_overlay = None
+            self._overlays.clear_active()
             self._artifact_ack_deadline = None
             self.status_line = ""
             self._present_queued_confirmation()
@@ -1236,7 +1113,7 @@ class CoreTuiApp:
         action = outcome.action
         arguments = outcome.arguments
         if isinstance(overlay, InteractiveChoices) and action == "tui.switch_session":
-            self.active_overlay = None
+            self._overlays.clear_active()
             target_id = str(arguments.get("session_id", ""))
             if target_id and target_id != self.session_id:
                 self._switch_session(target_id)
@@ -1253,7 +1130,7 @@ class CoreTuiApp:
                 return
             if self._live_input is not None:
                 self._live_input = events.LiveInput(name=action, arguments=arguments, revision=revision, source=overlay)
-            self.active_overlay = None
+            self._overlays.clear_active()
             self._prepare_command_input_async(descriptor, arguments=arguments)
             return
         # The overlay (with its typed inputs) stays mounted until the
@@ -1589,8 +1466,8 @@ class CoreTuiApp:
                     return
         if name in ("enter", "tab") and self.composer.completion:
             selected = self.composer.completion[self.composer.completion_index]
-            if selected in self._path_replacements:
-                replacement = self._path_replacements[selected]
+            replacement = self._completion.path_replacement(selected)
+            if replacement is not None:
                 self.composer.accept_completion_with(replacement)
                 self._sync_slash_completion()
                 return
@@ -1676,246 +1553,28 @@ class CoreTuiApp:
                 return descriptor, line[len(syntax) :]
         return None
 
-    def _path_completion_token(self) -> tuple[int, int, str] | None:
-        """Locate the path token under the caret; never a slash-command token."""
-        text = self.composer.value
-        cursor = self.composer.cursor
-
-        at_idx = text[:cursor].rfind("@")
-        if at_idx >= 0 and (at_idx == 0 or text[at_idx - 1] in " \t\n([{\"':"):
-            token_mid = text[at_idx:cursor]
-            if not any(c in " \t\n" for c in token_mid):
-                token_end = cursor
-                while token_end < len(text) and text[token_end] not in " \t\n)]}\"':":
-                    token_end += 1
-                return at_idx, token_end, text[at_idx + 1 : cursor]
-
-        slash_idx = text[:cursor].rfind("/")
-        if slash_idx > 0 and text[slash_idx - 1] not in " \t\n":
-            path_start = cursor
-            while path_start > 0 and text[path_start - 1] not in " \t\n([{\"':":
-                path_start -= 1
-            path_token = text[path_start:cursor]
-            if "/" in path_token and "\n" not in path_token:
-                token_end = cursor
-                while token_end < len(text) and text[token_end] not in " \t\n)]}\"':":
-                    token_end += 1
-                return path_start, token_end, path_token
-        return None
-
-    def _cancel_path_completion(self) -> None:
-        """Supersede every pending/active round; their replies become stale."""
-        self._path_request_serial += 1
-        pending = self._path_request_pending
-        self._path_request_pending = None
-        if pending is not None:
-            pending.token.abort()
-        if self._path_request_token is not None:
-            self._path_request_token.abort()
-            self._path_request_token = None
-
-    @staticmethod
-    def _path_request(query: str) -> PathCompletionRequest:
-        """Translate the draft token into the typed query, including recursion."""
-        recursive = _recursive_path_query(query)
-        if recursive is None:
-            return PathCompletionRequest(query=query, limit=_PATH_COMPLETION_LIMIT)
-        base, fragment = recursive
-        if fragment:
-            joined = f"{base}/{fragment}" if base else fragment
-        else:
-            joined = f"{base}/" if base else ""
-        return PathCompletionRequest(query=joined, depth=_PATH_RECURSIVE_DEPTH, limit=_PATH_COMPLETION_LIMIT)
-
-    def _request_path_completion(self, query: str, target_range: tuple[int, int]) -> None:
-        """Queue the newest workspace query without touching the draft or caret."""
-        self._path_request_serial += 1
-        request_id = self._path_request_serial
-        if self._path_request_pending is not None:
-            self._path_request_pending.token.abort()
-        if self._path_request_token is not None:
-            self._path_request_token.abort()
-        try:
-            request = self._path_request(query)
-        except ValueError as exc:
-            # The query string itself is user input; an overlong token simply
-            # never completes, and the failure is reported once, not per key.
-            message = f"@path completion unavailable: {exc}"
-            self._path_request_pending = None
-            if self._path_failure_reported != message:
-                self._path_failure_reported = message
-                self._queue_notice(message, tone="warning")
-            self.composer.set_completion(())
-            self.composer.completion_descriptions = {}
-            self._path_replacements = {}
-            return
-        self._path_request_pending = _PathCompletionRound(
-            request_id=request_id,
-            request=request,
-            target_range=target_range,
-            draft=self.composer.value,
-            cursor=self.composer.cursor,
-            token=events.AbortToken(),
-            session_id=self.session_id,
-            generation=self._generation,
-        )
-        # A new prefix already invalidates the old popup; the reply owns the view.
-        self.composer.set_completion(())
-        self.composer.completion_descriptions = {}
-        self._path_replacements = {}
-        self._start_pending_path_completion()
-
-    def _start_pending_path_completion(self) -> None:
-        if self._path_request_active is not None:
-            return
-        round_ = self._path_request_pending
-        if round_ is None:
-            return
-        self._path_request_pending = None
-        self._path_request_active = round_.request_id
-        self._path_request_token = round_.token
-        self._work.submit(
-            "PathCompletion",
-            lambda: self.event_queue.put(
-                operations.complete_paths(
-                    self.client,
-                    session_id=round_.session_id,
-                    generation=round_.generation,
-                    request_id=round_.request_id,
-                    request=round_.request,
-                    token=round_.token,
-                    target_range=round_.target_range,
-                    draft=round_.draft,
-                    cursor=round_.cursor,
-                )
-            ),
-        )
-
     def _apply_path_completion(self, frame: events.PathCompletionEvent, rows: list[str]) -> None:
         """Apply only the newest reply for the unchanged draft; never clear the draft."""
-        if frame.request_id == self._path_request_active:
-            self._path_request_active = None
-            self._path_request_token = None
-        stale = (
-            frame.token.aborted
-            or frame.request_id != self._path_request_serial
-            or frame.draft != self.composer.value
-            or frame.cursor != self.composer.cursor
-        )
-        if not stale:
-            if frame.failure is not None or frame.result is None:
-                message = frame.error or "workspace path query failed"
-                prefix = {
-                    "unavailable": "@path completion unavailable",
-                    "contract": "@path completion contract failure",
-                    "error": "@path completion failed",
-                }[frame.failure or "error"]
-                if self._path_failure_reported != f"{prefix}: {message}":
-                    self._path_failure_reported = f"{prefix}: {message}"
-                    rows.append(notice_row(f"{prefix}: {message}", "warning" if frame.failure == "unavailable" else "error", self.styles))
-                self.composer.set_completion(())
-                self.composer.completion_descriptions = {}
-                self._path_replacements = {}
-            else:
-                self._path_failure_reported = None
-                self._render_path_completion(frame.result, frame.target_range)
-        self._start_pending_path_completion()
-
-    def _render_path_completion(self, result: PathCompletionResult, target_range: tuple[int, int]) -> None:
-        previous = self.composer.completion
-        index = self.composer.completion_index
-        selected = previous[index] if previous and 0 <= index < len(previous) else None
-        candidates = [entry.path for entry in result.entries]
-        descriptions: dict[str, str] = {entry.path: entry.kind for entry in result.entries}
-        replacements: dict[str, str] = {entry.path: entry.path if entry.kind == "directory" else f"{entry.path} " for entry in result.entries}
-        self.composer.completion_descriptions = descriptions
-        self.composer.completion_groups = set()
-        self.composer.set_completion(
-            candidates,
-            index=candidates.index(selected) if selected in candidates else 0,
-            target_range=target_range,
-        )
-        self._path_replacements = replacements if candidates else {}
+        self._completion.apply(frame, rows)
 
     def _sync_slash_completion(self, *, dismissed: bool = False) -> None:
         """Refresh the slash-name popup or queue the workspace path query; preserve selection."""
-        if dismissed:
-            self._cancel_path_completion()
-            self.composer.set_completion(())
-            self.composer.completion_descriptions = {}
-            self._path_replacements = {}
-            return
-        path_token = self._path_completion_token()
-        if path_token is not None:
-            start, end, query = path_token
-            self._request_path_completion(query, (start, end))
-            return
-        self._cancel_path_completion()
-        candidates, token_range = self._completion_candidates()
-        if not candidates or token_range is None:
-            self.composer.set_completion(())
-            self.composer.completion_descriptions = {}
-            self._path_replacements = {}
-            return
-        previous = self.composer.completion
-        index = self.composer.completion_index
-        selected = previous[index] if previous and 0 <= index < len(previous) else None
-        self.composer.set_completion(
-            candidates,
-            index=candidates.index(selected) if selected in candidates else 0,
-            target_range=token_range,
+        self._completion.sync(
+            dismissed=dismissed,
+            catalog=CompletionCatalog(revision=self.catalog_revision, commands=self.catalog_cache),
+            ensure_catalog=self._ensure_completion_catalog,
+            session_id=self.session_id,
+            generation=self._generation,
         )
-        self._path_replacements = {}
-        visible_paths = [f"/{_slash_public_path(entry)}" for entry in self.catalog_cache if entry.slash_visible]
-        descriptions: dict[str, str] = {}
-        for entry in self.catalog_cache:
-            if not entry.slash_visible:
-                continue
-            path = f"/{_slash_public_path(entry)}"
-            hints = " ".join(command_argument_hints(entry))
-            descriptions[path] = f"{hints} — {entry.description}" if hints else entry.description
-        groups = {candidate for candidate in candidates if candidate == "/tui" or any(path.startswith(candidate + " ") for path in visible_paths)}
-        for candidate in groups:
-            if candidate in descriptions:
-                continue
-            children = sorted({path[len(candidate) + 1 :].split(" ", 1)[0] for path in visible_paths if path.startswith(candidate + " ")})
-            if children:
-                descriptions[candidate] = f"Subcommands: {', '.join(children)}"
-        self.composer.completion_descriptions = descriptions
-        self.composer.completion_groups = groups
 
-    def _completion_candidates(self) -> tuple[list[str], tuple[int, int] | None]:
-        """Slash-command names matching the draft token at the caret."""
-        text = self.composer.value
-        cursor = self.composer.cursor
-        slash_idx = text[:cursor].rfind("/")
-        if slash_idx < 0:
-            return [], None
-        if slash_idx > 0 and text[slash_idx - 1] not in " \t\n":
-            return [], None
-        prefix = text[slash_idx + 1 : cursor]
-        if "\n" in prefix:
-            return [], None
-
-        token_end = cursor
-        while token_end < len(text) and (text[token_end].isalnum() or text[token_end] in "_-"):
-            token_end += 1
-
+    def _ensure_completion_catalog(self) -> CompletionCatalog:
+        """Report once when completion is the first visible catalog-dependent action."""
+        catalog.get(self)
         if not self.catalog_revision:
-            # Completion is the first visible hint that commands are unavailable;
-            # report once (no forced retry) and keep the typed draft untouched.
-            catalog.get(self)
-            if not self.catalog_revision:
-                catalog.unavailable(self)
-        names = [_slash_public_path(entry) for entry in self.catalog_cache if entry.slash_visible]
-        names.extend(f"tui {control.name}" for control in TUI_CONTROLS)
-        parent, _, partial = prefix.rpartition(" ")
-        base = f"{parent} " if parent else ""
-        candidates = {base + name[len(base) :].split(" ", 1)[0] for name in names if name.startswith(base) and name[len(base) :].startswith(partial)}
-        candidate_list = sorted(f"/{name}" for name in candidates if name and name != parent)
-        if not candidate_list:
-            return [], None
-        return candidate_list, (slash_idx, token_end)
+            catalog.unavailable(self)
+        return CompletionCatalog(revision=self.catalog_revision, commands=self.catalog_cache)
+
+    _path_request = staticmethod(CompletionController.path_request)
 
     def _begin_attachment_path(self) -> None:
         """Open the one-line path prompt without touching the composer draft or caret."""
@@ -1924,7 +1583,7 @@ class CoreTuiApp:
             return
         self.composer.set_completion(())
         self.composer.completion_descriptions = {}
-        self._cancel_path_completion()
+        self._completion.cancel()
         self._attachment_path = ""
         self.status_line = "Image path: type a path, Enter to attach, Esc to cancel — draft kept"
 
@@ -2323,9 +1982,7 @@ class CoreTuiApp:
             self.terminal.commit_rows([self.styles.fg("warning", f"Artifact viewer closed on session switch: {self.active_overlay.source.uri}")])
         self._artifact_ack_deadline = None
         self._follower.new_epoch()
-        self._cancel_path_completion()
-        self._path_request_active = None
-        self._path_failure_reported = None
+        self._completion.reset_session()
         while True:
             try:
                 self.event_queue.get_nowait()
@@ -2333,9 +1990,7 @@ class CoreTuiApp:
                 break
         self.session_id = session_id
         self._close_live_input()
-        self.active_overlay = None
-        self.queued_confirmations.clear()
-        self.queued_asks.clear()
+        self._overlays.reset_session()
         self.composer.load_history(())
         self._pending_images.clear()
         self._attachment_path = None
@@ -2525,7 +2180,7 @@ class CoreTuiApp:
             if row.session_id == self.session_id:
                 overlay.selected_index = idx
                 break
-        self.active_overlay = overlay
+        self._overlays.show(overlay)
 
     def _create_session(self) -> None:
         """Create a session off the UI thread, then switch only if still on the same binding."""
@@ -2578,15 +2233,15 @@ class CoreTuiApp:
         if isinstance(data, MarkdownViewData):
             if not data.actions:
                 return False
-            self.active_overlay = InteractiveMarkdown(data, revision_id=revision, title=view.title)
+            self._overlays.show(InteractiveMarkdown(data, revision_id=revision, title=view.title))
         elif isinstance(data, ChoicesViewData):
-            self.active_overlay = InteractiveChoices(data, revision_id=revision, title=view.title)
+            self._overlays.show(InteractiveChoices(data, revision_id=revision, title=view.title))
         elif isinstance(data, FormViewData):
             form = InteractiveForm(data, action_schema=self._action_schema(data.action), revision_id=revision, title=view.title)
             self._maybe_load_form_data(form)
-            self.active_overlay = form
+            self._overlays.show(form)
         elif isinstance(data, ConfirmationViewData):
-            self.active_overlay = InteractiveConfirmation(data, revision_id=revision)
+            self._overlays.show(InteractiveConfirmation(data, revision_id=revision))
         else:
             return False
         return True
@@ -2700,7 +2355,7 @@ class CoreTuiApp:
         """Mount one live view and arm its refresh; empty choices stay open."""
         if not self._mount_interactive_view(view, revision):
             return False
-        self._suspended_live = None
+        self._overlays.clear_suspended()
         self._arm_live_input(name=name, arguments=arguments, revision=revision, refresh_after_ms=refresh_after_ms, source=self.active_overlay)
         return True
 
@@ -2763,11 +2418,13 @@ class CoreTuiApp:
                     )
                     for name, spec, field_type in field_specs
                 )
-                self.active_overlay = InteractiveForm(
-                    FormViewData(fields=fields, action=cmd_desc.name),
-                    action_schema=schema,
-                    revision_id=revision,
-                    title=cmd_desc.description,
+                self._overlays.show(
+                    InteractiveForm(
+                        FormViewData(fields=fields, action=cmd_desc.name),
+                        action_schema=schema,
+                        revision_id=revision,
+                        title=cmd_desc.description,
+                    )
                 )
                 return
         if not arg_str:

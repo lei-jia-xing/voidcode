@@ -268,7 +268,7 @@ def _activation_committed(app: CoreTuiApp, payload: Mapping[str, object], rows: 
     dropped = overlay is not None and not isinstance(overlay, InteractiveArtifactViewer) and getattr(overlay, "revision_id", "") != to_revision_id
     if dropped:
         app._close_live_input()
-        app.active_overlay = None
+        app._overlays.clear_active()
     app._apply_gate_change(ActivationCommitted(to_revision_id))
     catalog.load(app)
     app._refresh_health_async()

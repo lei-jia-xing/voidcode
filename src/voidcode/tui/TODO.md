@@ -59,7 +59,7 @@ TUI 是服务端事件流之上的内联终端客户端：不持有业务真相�
 
 ## P2：结构与类型收敛
 
-- [ ] **拆分 `CoreTuiApp`（约 2200 行、约 50 个状态字段）。**
+- [x] **拆分 `CoreTuiApp`（约 2200 行、约 50 个状态字段）。**
   - `active_overlay`、`pending_approval`、`queued_confirmations`、`_suspended_live` 合并为一个类型明确的 overlay 栈，消除互相同步的分支。
   - 斜杠/路径补全（`_completion_candidates`、`_sync_slash_completion`、`_pending_path_*`）收拢为独立补全控制器。
   - `_render_composer` 的 live 区布局抽为纯函数并单测。
