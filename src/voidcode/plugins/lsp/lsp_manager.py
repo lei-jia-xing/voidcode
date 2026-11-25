@@ -144,7 +144,7 @@ class ManagedLspManager:
 
     def __init__(self, config: RuntimeLspConfig) -> None:
         self._configuration = LspConfigState.from_runtime_config(config)
-        self._lifecycle = _server_lifecycle.ServerLifecycle(_SESSION_SCOPED_LSP_REGISTRY, self._configuration.servers)
+        self._lifecycle = _server_lifecycle.ServerLifecycle(lambda: _SESSION_SCOPED_LSP_REGISTRY, self._configuration.servers)
         self._server_states = self._lifecycle.server_states
         self._running_servers = self._lifecycle.running_servers
         self._leased_servers = self._lifecycle.leased_servers

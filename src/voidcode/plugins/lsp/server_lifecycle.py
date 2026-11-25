@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Protocol
 
@@ -85,8 +85,8 @@ class SendNotification(Protocol):
 class ServerLifecycle:
     """Owns local server/lease maps and the process lifecycle around them."""
 
-    def __init__(self, registry: SessionScopedLspRegistry, server_names: Iterable[str]) -> None:
-        self._registry = registry
+    def __init__(self, registry: Callable[[], SessionScopedLspRegistry], server_names: Iterable[str]) -> None:
+        self._registry_provider = registry
         self.server_states: dict[str, LspServerState] = {name: LspServerState(name=name) for name in server_names}
         self.running_servers: dict[LocalServerKey, RunningLspServer] = {}
         self.leased_servers: dict[LocalServerKey, LspServerLease] = {}
@@ -126,7 +126,7 @@ class ServerLifecycle:
             status="starting",
         )
         try:
-            running_server, lease, outcome = self._registry.acquire(
+            running_server, lease, outcome = self._registry_provider().acquire(
                 key=lease_key,
                 config=server_config,
                 start=lambda process_id: start(
@@ -192,9 +192,9 @@ class ServerLifecycle:
         running_server.stdout_cursor = 0
         self.running_servers.pop(local_key, None)
         lease = self.leased_servers.pop(local_key, None)
-        self._registry.invalidate(key=old_key, process_id=process_id)
+        self._registry_provider().invalidate(key=old_key, process_id=process_id)
         if lease is not None:
-            self._registry.release(lease=lease)
+            self._registry_provider().release(lease=lease)
         if stopped:
             self.server_states[lease_key.server_name] = LspServerState(name=lease_key.server_name, status="stopped")
         else:
@@ -213,9 +213,9 @@ class ServerLifecycle:
             return
         self.running_servers.pop(local_key, None)
         lease = self.leased_servers.pop(local_key, None)
-        self._registry.invalidate(key=lease_key, process_id=process_id)
+        self._registry_provider().invalidate(key=lease_key, process_id=process_id)
         if lease is not None:
-            self._registry.release(lease=lease)
+            self._registry_provider().release(lease=lease)
 
     def cancel_own_server_owned(
         self,
@@ -252,7 +252,7 @@ class ServerLifecycle:
             self.running_servers.pop(key, None)
             lease = self.leased_servers.pop(key, None)
             if lease is not None:
-                self._registry.release(lease=lease)
+                self._registry_provider().release(lease=lease)
 
     def start_running_server(
         self,
