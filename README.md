@@ -17,7 +17,7 @@ VoidCode is an open-source, local-first coding agent built as a small trusted co
 - **Three client surfaces, one contract**: the product CLI executes commands directly, and the inline terminal UI and React web client speak the same WebSocket RPC contract — one command catalog, one set of declarative views, one event stream.
 - **Agent-facing delegation**: the primary agent delegates focused work through the `task`/`task_batch` tools; there is no separate human task console.
 - **Explicit execution budgets**: fresh runs have no implicit 32-turn lifetime. Optional provider-turn caps and operator-granted root-action budgets are separate; finite root authorization is shared by descendants and survives restart without refilling.
-- **Immutable result recovery**: selected tool text is projected once; complete machine results and captured resources remain byte-page readable through local or authenticated RPC clients. Viewer/image-terminal presentation is a separate surface; current limits and SDK gaps are tracked in [TODO](./docs/TODO.md).
+- **Immutable result recovery**: selected tool text is projected once; complete machine results and captured resources remain byte-page readable through local or authenticated RPC clients. Viewer/image-terminal presentation is a separate surface; current limits and SDK gaps are tracked in the [TUI](./src/voidcode/tui/TODO.md) and [SDK](./src/voidcode/sdk/TODO.md) TODOs.
 
 ## Quickstart
 

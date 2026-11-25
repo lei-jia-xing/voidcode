@@ -41,7 +41,6 @@ passed. Each scenario needs client behavior tests or a recorded manual check.
 
 | Commands | Current behavior / evidence | Interaction acceptance still required |
 | --- | --- | --- |
-| `/skills`, `/skills show` | List returns choices; detail returns Markdown; bare show prepares dynamic name options without invocation. SDK, plugin, TUI/Web and real RPC tests cover selection and revision binding | Long skill details |
 | `/goal` | `goal/goal_plugin.py`: empty state opens creation; existing goal shows bounded status/objective/usage details and applicable Edit/Pause/Resume/Clear actions. Edit prepares the prefilled form without mutation | Physical client acceptance for lifecycle actions and large-objective loading |
 | `/goal set`, `/goal edit` | Prepared multiline creation and prefilled editing; natural objective text via catalog `text_argument`; explicit JSON retained | Physical client acceptance for large objective loading and validation/refusal recovery |
 | `/goal pause`, `/goal resume`, `/goal clear`, `/goal load_objective` | Typed lifecycle commands / exact-read form helper | Actions offered from goal details; physical client acceptance remains; replacement confirmation and exact-read helper remain governed |

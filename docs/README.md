@@ -42,4 +42,4 @@ Each bundled plugin documents its own surface, configuration, behavior, and limi
 
 ## Open work
 
-- [`TODO.md`](./TODO.md): Module-owned open work; see [command UX acceptance](./command-ux.md) for per-command checks.
+- [`src/voidcode/TODO.md`](../src/voidcode/TODO.md): Product, transport, web, and engineering open work. Module TODOs live beside their code; see [command UX acceptance](./command-ux.md) for per-command checks.

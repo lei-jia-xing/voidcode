@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import json
-import threading
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
 
+from tests.fixtures.core_factory import loopback_server, open_core_for_test
 from tests.fixtures.fake_services import FakeServices
-from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.bootstrap import open_core
+from tests.provider_loopback import openai_response
 from voidcode.capabilities.files.find_queries import FIND_GREP, FIND_READ
 from voidcode.capabilities.files.grep_tool import GrepTool
 from voidcode.capabilities.files.read_tool import ReadResultBody, ReadTool
@@ -992,19 +990,6 @@ class _CoreJudgeServices(FakeServices):
         )
 
 
-@contextmanager
-def _loopback(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
 def test_real_core_judge_round_trip(tmp_path: Path) -> None:
     verdict = {
         "candidate_id": 0,
@@ -1023,7 +1008,7 @@ def test_real_core_judge_round_trip(tmp_path: Path) -> None:
     }
     reply = openai_response(message={"role": "assistant", "content": json.dumps({"verdicts": [verdict, declined]})}, finish="stop")
     workspace = _tree(tmp_path / "workspace")
-    with _loopback([reply]) as server:
+    with loopback_server([reply]) as server:
         (workspace / "voidcode.json").write_text(
             json.dumps(
                 {
@@ -1041,7 +1026,7 @@ def test_real_core_judge_round_trip(tmp_path: Path) -> None:
             ),
             encoding="utf-8",
         )
-        core = open_core(workspace, state_dir=tmp_path / "state")
+        core = open_core_for_test(tmp_path)
         try:
             session_id = core.create_session("sess-find").session_id
             services = _CoreJudgeServices()
@@ -1095,7 +1080,7 @@ def test_real_core_projection_surfaces_limit_drops(tmp_path: Path) -> None:
         openai_response(message={"role": "assistant", "content": json.dumps(verdicts)}, finish="stop"),
         openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
     ]
-    with _loopback(replies) as server:
+    with loopback_server(replies) as server:
         (workspace / "voidcode.json").write_text(
             json.dumps(
                 {
@@ -1113,7 +1098,7 @@ def test_real_core_projection_surfaces_limit_drops(tmp_path: Path) -> None:
             ),
             encoding="utf-8",
         )
-        with open_core(workspace, state_dir=tmp_path / "state") as core:
+        with open_core_for_test(tmp_path) as core:
             session_id = core.create_session("sess-find-projection").session_id
             result = core.run("locate discount behavior", session_id=session_id)
             assert result.status == "completed", result.error
@@ -1141,7 +1126,7 @@ def test_real_core_files_disabled_makes_find_fail_visibly(tmp_path: Path) -> Non
         openai_response(message={"role": "assistant", "content": None, "tool_calls": [find_call]}, finish="tool_calls"),
         openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
     ]
-    with _loopback(replies) as server:
+    with loopback_server(replies) as server:
         (workspace / "voidcode.json").write_text(
             json.dumps(
                 {
@@ -1159,7 +1144,7 @@ def test_real_core_files_disabled_makes_find_fail_visibly(tmp_path: Path) -> Non
             ),
             encoding="utf-8",
         )
-        with open_core(workspace, state_dir=tmp_path / "state") as core:
+        with open_core_for_test(tmp_path) as core:
             session_id = core.create_session("sess-find-no-files").session_id
             result = core.run("locate discount behavior", session_id=session_id)
             assert result.status == "completed", result.error

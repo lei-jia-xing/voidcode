@@ -13,18 +13,15 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from tests.fixtures.core_factory import register_core
+from tests.fixtures.core_factory import loopback_server, open_core_for_test, write_loopback_config
 from tests.fixtures.reload_plugin import PROBE_TOOL, PROCESS_READ_TOOL, PROCESS_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.bootstrap import open_core
 from voidcode.core.activation import SandboxPolicy
-from voidcode.core.engine import Core
 from voidcode.core.plugins import LeaseContext, LeaseIdentity
 from voidcode.core.processes import ProcessRegistry
 from voidcode.core.sandbox import SandboxBackend
@@ -42,48 +39,6 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
     return openai_response(
         message={"role": "assistant", "content": output, "reasoning_content": "process reasoning", "tool_calls": list(calls)},
         finish="tool_calls" if calls else "stop",
-    )
-
-
-@contextmanager
-def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
-
-
-def _open(tmp_path: Path) -> Core:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir(parents=True, exist_ok=True)
-    core = open_core(workspace, state_dir=tmp_path / "state")
-    register_core(core)
-    return core
-
-
-def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
-    workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "model": {"model": "endpoint/exact-model"},
-                "policy": {"approval_mode": "yolo"},
-                "providers": {
-                    "endpoint": {
-                        "api_key": "loopback-secret-not-for-storage",
-                        "base_url": f"http://127.0.0.1:{server.server_port}/v1",
-                    }
-                },
-                "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
-            }
-        ),
-        encoding="utf-8",
     )
 
 
@@ -273,9 +228,9 @@ def test_run_process_returns_stdout_stderr_exit_code_and_stdin(tmp_path: Path) -
         _turn(_call("run-1", PROCESS_TOOL, argv=script, stdin="hello")),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-process")
         assert core.run("run it", session_id="sess-process").status == "completed"
 
@@ -297,9 +252,9 @@ def test_run_process_bounds_each_stream_and_reports_truncation(tmp_path: Path) -
         _turn(_call("run-1", PROCESS_TOOL, argv=script, max_output_bytes=100)),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-process-bounds")
         assert core.run("run it", session_id="sess-process-bounds").status == "completed"
 
@@ -331,9 +286,9 @@ def test_run_process_timeout_kills_the_whole_group(tmp_path: Path) -> None:
         _turn(_call("run-1", PROCESS_TOOL, argv=script, timeout_seconds=1)),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(workspace, server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(workspace, server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-process-timeout")
         assert core.run("run it", session_id="sess-process-timeout").status == "completed"
 
@@ -365,9 +320,9 @@ def test_session_cancel_kills_the_process_group_and_reports_cancellation(tmp_pat
         "time.sleep(120)",
     )
     replies = [_turn(_call("run-1", PROCESS_TOOL, argv=script)), _turn(output="done")]
-    with _server(replies) as server:
-        _configure(workspace, server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(workspace, server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-process-cancel")
         worker = threading.Thread(target=lambda: core.run("run it", session_id="sess-process-cancel"), daemon=True)
         worker.start()
@@ -420,9 +375,9 @@ def test_read_only_lease_refuses_to_run_a_process(tmp_path: Path) -> None:
         _turn(_call("run-1", PROCESS_READ_TOOL, argv=_python("print('should not run')"))),
         _turn(output="done"),
     ]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-process-readonly")
         assert core.run("try it", session_id="sess-process-readonly").status == "completed"
 
@@ -441,9 +396,9 @@ def test_hook_lease_refuses_to_run_a_process(tmp_path: Path) -> None:
         post_tool_match=(PROBE_TOOL,),
     )
     replies = [_turn(_call("probe-1", PROBE_TOOL)), _turn(output="done")]
-    with _server(replies) as server:
-        _configure(tmp_path / "workspace", server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(tmp_path / "workspace", server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-process-hook")
         assert core.run("write something", session_id="sess-process-hook").status == "completed"
 
@@ -465,9 +420,9 @@ def test_host_close_reaps_live_process_groups(tmp_path: Path) -> None:
         "time.sleep(120)",
     )
     replies = [_turn(_call("run-1", PROCESS_TOOL, argv=script)), _turn(output="done")]
-    with _server(replies) as server:
-        _configure(workspace, server, source)
-        core = _open(tmp_path)
+    with loopback_server(replies) as server:
+        write_loopback_config(workspace, server, source, plugin_id=PLUGIN_ID)
+        core = open_core_for_test(tmp_path)
         core.create_session("sess-process-shutdown")
 
         def drive() -> None:
@@ -487,7 +442,7 @@ def test_host_close_reaps_live_process_groups(tmp_path: Path) -> None:
 
 
 def test_read_only_lease_allows_run_query_process_and_hook_lease_rejects_both(tmp_path: Path) -> None:
-    core = _open(tmp_path)
+    core = open_core_for_test(tmp_path)
     runtime = core._snapshot.plugin_runtime
 
     ro_lease = LeaseContext(
@@ -534,7 +489,7 @@ def test_read_only_lease_allows_run_query_process_and_hook_lease_rejects_both(tm
 
 
 def test_run_query_process_enforces_read_only_sandbox_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    core = _open(tmp_path)
+    core = open_core_for_test(tmp_path)
     runtime = core._snapshot.plugin_runtime
     ro_lease = LeaseContext(
         LeaseIdentity(

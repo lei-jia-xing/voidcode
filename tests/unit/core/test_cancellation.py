@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from voidcode.bootstrap import open_core
+from tests.fixtures.core_factory import open_core_for_test
 from voidcode.core.cancellation import CURRENT, RUN_BOUND, Cancellation, CancellationCoordinator
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import EventDraft, SessionStatus
@@ -82,12 +82,6 @@ def test_concurrent_register_and_fire_delivers_exactly_once() -> None:
         assert not thread.is_alive()
     assert sorted(counts) == list(range(64))
     assert set(counts.values()) == {1}
-
-
-def _open_core(tmp_path: Path) -> Core:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir(parents=True, exist_ok=True)
-    return open_core(workspace, state_dir=tmp_path / "state")
 
 
 def _commit_live_run(core: Core, session_id: str, run_id: str) -> None:
@@ -212,7 +206,7 @@ def test_concurrent_command_aborts_register_and_signal_once() -> None:
 
 
 def test_cancel_session_current_and_bound_run_identities(tmp_path: Path) -> None:
-    with _open_core(tmp_path) as core:
+    with open_core_for_test(tmp_path) as core:
         core.create_session("s")
         reserved = Cancellation()
         core._cancellations.register_run("s", None, reserved)
@@ -222,7 +216,7 @@ def test_cancel_session_current_and_bound_run_identities(tmp_path: Path) -> None
         assert core.cancel_session("s", target=RUN_BOUND(None)) is True
         assert reserved.cancelled is True
 
-    with _open_core(tmp_path / "second") as core:
+    with open_core_for_test(tmp_path / "second") as core:
         core.create_session("s")
         _commit_live_run(core, "s", "run-1")
         live = Cancellation()
@@ -235,7 +229,7 @@ def test_cancel_session_current_and_bound_run_identities(tmp_path: Path) -> None
 
 
 def test_stale_bound_cancel_touches_no_signal(tmp_path: Path) -> None:
-    with _open_core(tmp_path) as core:
+    with open_core_for_test(tmp_path) as core:
         core.create_session("s")
         stale = Cancellation()
         command = Cancellation()
@@ -249,7 +243,7 @@ def test_stale_bound_cancel_touches_no_signal(tmp_path: Path) -> None:
 
 
 def test_close_signals_every_live_run_and_command_abort(tmp_path: Path) -> None:
-    core = _open_core(tmp_path)
+    core = open_core_for_test(tmp_path)
     core.create_session("s")
     run = Cancellation()
     command = Cancellation()

@@ -24,10 +24,10 @@
 
 - [ ] **清理 `bootstrap.py`、`config.py`、`cli.py` 的配置多重投影与重复解析。**
   - 例如统一 `cli.py` 的 `_session_payload` 与 `transport/projection.py` 的 `session_payload`，消除外层多处重复拼装。
-- [ ] **修正过时与自相矛盾的文档。**
-  - 修复 `docs/README.md:45` 与 `README.md:20` 指向已删除 `docs/TODO.md` 的失效链接。
-  - 消除 `docs/configuration.md` 第 5 行（支持无配置文件从环境变量发现 provider）与第 244 行（“仅设置 API key 环境变量不会配置 provider”）的矛盾。
-  - 删除 `docs/command-ux.md` 第 20 行与第 26 行重复的 `skills, skills.show` 条目。
+- [x] **修正过时与自相矛盾的文档。**
+  - 已修复 `docs/README.md:45` 与 `README.md:20` 指向已删除 `docs/TODO.md` 的失效链接。
+  - `docs/configuration.md` 第 5 行与“仅设置 API key 环境变量不会配置 provider”的矛盾已在 provider 文档更正（`f9d46d42`）中消除，本次复核无残留。
+  - 已删除 `docs/command-ux.md` 中重复的 `skills, skills.show` 条目。
 - [ ] **清理 `pyproject.toml` 未用依赖并收敛剩余测试夹具副本。**
-  - `click`、`tenacity`、`pydantic-settings`、`rapidfuzz` 在 `src/`、`tests/`、`scripts/` 中均无引用。
-  - 将仍保留私有 core/loopback 夹具副本的 6 个测试文件（`tests/fixtures/s5_plugin.py`、`test_goal_plugin.py`、`test_cancellation.py`、`test_followup_image_refs.py`、`test_process_lease.py`、`test_find_plugin.py`）收敛至 `tests/fixtures/core_factory.py`。
+  - [x] `click`、`tenacity`、`pydantic-settings`、`rapidfuzz` 在 `src/`、`tests/`、`scripts/` 中均无引用；已从 `pyproject.toml` 移除并由 `uv lock` 更新锁文件。
+  - [x] 已核查列出的 6 个文件并收敛可机械替换的副本：`test_process_lease.py`、`test_cancellation.py`、`test_followup_image_refs.py`、`test_find_plugin.py` 与 integration `test_goal_plugin.py` 改用 `core_factory`；`tests/fixtures/s5_plugin.py` 与 unit `test_goal_plugin.py` 不含 core/loopback 夹具。goal/find 的配置内联保留（分别需要 files 启用与无 path 插件），其余测试文件的本地 loopback 副本不在本项列出的 6 个文件内。

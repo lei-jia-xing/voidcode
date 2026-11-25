@@ -11,10 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.core_factory import loopback_server
+from tests.fixtures.core_factory import loopback_server, open_core_for_test, write_loopback_config
 from tests.fixtures.reload_plugin import BLOCK_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
-from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import MAX_CONTINUATION_PAYLOAD_BYTES, StoreConflict, canonical_json
 from voidcode.sdk.provider import ImageAttachment
@@ -36,18 +35,9 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
 def _setup_core(tmp_path: Path, server: OpenAILoopbackServer) -> tuple[Core, Path]:
     source = tmp_path / "plugin"
     write_reload_plugin(source, tool_output="v1", blocking=True)
-    config = {
-        "schema_version": 1,
-        "model": {"model": "endpoint/exact-model"},
-        "policy": {"approval_mode": "yolo", "read_only": False},
-        "providers": {"endpoint": {"api_key": "loopback-secret", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
-        "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
-    }
     workspace = tmp_path / "workspace"
-    workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
-    core = open_core(workspace, state_dir=tmp_path / "state")
-    return core, workspace
+    write_loopback_config(workspace, server, source, plugin_id=PLUGIN_ID)
+    return open_core_for_test(tmp_path), workspace
 
 
 def _wait_for_marker(workspace: Path) -> None:

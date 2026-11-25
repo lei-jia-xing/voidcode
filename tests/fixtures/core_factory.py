@@ -51,10 +51,14 @@ def discard_core(core: Core) -> None:
 def open_core_for_test(tmp_path: Path) -> Core:
     """Open a Core at ``tmp_path/workspace`` with state in ``tmp_path/state``.
 
-    The Core is registered for the autouse ``close_cores`` teardown, so a test
-    that fails mid-turn still releases its processes and database handles.
+    The workspace is created when absent, so a test with no ``voidcode.json``
+    can use the helper directly. The Core is registered for the autouse
+    ``close_cores`` teardown, so a test that fails mid-turn still releases its
+    processes and database handles.
     """
-    core = open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    core = open_core(workspace, state_dir=tmp_path / "state")
     _CREATED.append(core)
     return core
 
@@ -98,4 +102,6 @@ def close_cores() -> Iterator[None]:
         yield
     finally:
         while _CREATED:
-            _CREATED.pop().close()
+            core = _CREATED.pop()
+            if not core.closed:
+                core.close()

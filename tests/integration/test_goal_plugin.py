@@ -7,31 +7,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
-from tests.fixtures.core_factory import discard_core, register_core
+from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
 from voidcode.sdk.commands import CommandResult
 
 _GOAL_PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "voidcode" / "plugins" / "goal"
-
-
-@contextmanager
-def _loopback_server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(replies)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
-        server.server_close()
 
 
 def _core_with_loopback(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
@@ -156,7 +141,7 @@ def test_goal_autonomous_execution_and_completion(tmp_path: Path) -> None:
     )
 
     replies = [turn_1, turn_2, turn_3, turn_4, turn_5, turn_6]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core_with_loopback(tmp_path, server)
         session_id = core.create_session().session_id
 
@@ -195,7 +180,7 @@ def test_goal_command_opens_create_then_details_and_prepared_edit_without_mutati
         finish="stop",
         usage={"prompt_tokens": 6000, "completion_tokens": 1, "total_tokens": 6001},
     )
-    with _loopback_server([reply]) as server:
+    with loopback_server([reply]) as server:
         core = _core_with_loopback(tmp_path, server)
         session = core.create_session().session_id
         shown = _invoke(core, session, "goal", {})
@@ -256,7 +241,7 @@ def test_long_model_goal_round_trips_after_restart_without_workspace_writes(tmp_
         ),
         openai_response(message={"role": "assistant", "content": "long-goal-round-trip"}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core_with_loopback(tmp_path, server)
         core.auto_drain = False
         workspace = tmp_path / "workspace"
@@ -295,7 +280,7 @@ def test_goal_creation_and_completed_run_leave_one_pending_pursuit(tmp_path: Pat
         ),
         openai_response(message={"role": "assistant", "content": "Goal created."}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core_with_loopback(tmp_path, server)
         core.auto_drain = False
         session_id = core.create_session().session_id
@@ -312,7 +297,7 @@ def test_goal_creation_and_completed_run_leave_one_pending_pursuit(tmp_path: Pat
 
 def test_goal_state_schema_survives_hot_reload_with_live_and_cleared_state(tmp_path: Path) -> None:
     """Hot activation validates live goal state and the explicit cleared {} row."""
-    with _loopback_server([]) as server:
+    with loopback_server([]) as server:
         core = _core_with_loopback(tmp_path, server)
         core.auto_drain = False
         session_id = core.create_session().session_id
@@ -347,7 +332,7 @@ def test_completed_automatic_pursuit_run_queues_exactly_one_next_pursuit(tmp_pat
         openai_response(message={"role": "assistant", "content": "Created."}, finish="stop"),
         openai_response(message={"role": "assistant", "content": "Furthered the goal."}, finish="stop"),
     ]
-    with _loopback_server(replies) as server:
+    with loopback_server(replies) as server:
         core = _core_with_loopback(tmp_path, server)
         core.auto_drain = False
         session_id = core.create_session().session_id
