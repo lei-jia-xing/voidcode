@@ -25,6 +25,7 @@ from .events import (
     ArtifactPageEvent,
     ArtifactTransmittedEvent,
     CancelDoneEvent,
+    ClipboardImageEvent,
     CommandDoneEvent,
     CommandInputReadyEvent,
     CommandPresentationEvent,
@@ -144,6 +145,8 @@ def drain_events(app: CoreTuiApp, timeout: float | None = None) -> int:
                 _handle_followup_queued(app, frame, rows_to_commit)
             case FollowupFailedEvent():
                 _handle_followup_failed(app, frame, rows_to_commit)
+            case ClipboardImageEvent():
+                _handle_clipboard_image(app, frame, rows_to_commit)
             case FollowupsLoadedEvent():
                 _handle_followups_loaded(app, frame, rows_to_commit)
             case FollowupsLoadFailedEvent():
@@ -444,9 +447,25 @@ def _handle_followup_queued(app: CoreTuiApp, _frame: FollowupQueuedEvent, _rows:
     app._refresh_followups()
 
 
+def _handle_clipboard_image(app: CoreTuiApp, frame: ClipboardImageEvent, rows: list[str]) -> None:
+    if frame.error is not None:
+        message = safe(frame.error)
+        rows.append(app.styles.fg("warning", message))
+        app.status_line = message
+        return
+    if frame.image is None:
+        message = "Clipboard image unavailable: empty clipboard reply"
+        rows.append(app.styles.fg("warning", message))
+        app.status_line = message
+        return
+    if app._accept_pending_image(frame.image):
+        app._announce_pending_images("Attached clipboard image")
+
+
 def _handle_followup_failed(app: CoreTuiApp, frame: FollowupFailedEvent, _rows: list[str]) -> None:
     if not app.composer.value.strip():
         app.composer.set_text(frame.prompt)
+        app._restore_attachments(frame.images)
     app.status_line = f"Error: {frame.error}"
 
 
@@ -482,6 +501,7 @@ def _handle_run_rejected(app: CoreTuiApp, frame: RunRejectedEvent, _rows: list[s
     app._cancel_pending = False
     if not app.composer.value:
         app.composer.set_text(frame.prompt)
+        app._restore_attachments(frame.images)
 
 
 def _handle_run_waiting(app: CoreTuiApp, frame: RunWaitingEvent, _rows: list[str]) -> None:

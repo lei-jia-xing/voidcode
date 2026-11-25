@@ -19,10 +19,12 @@ from voidcode.sdk.client import (
     SessionRow,
 )
 from voidcode.sdk.commands import ConfirmationRequest
+from voidcode.sdk.provider import ImageAttachment
 from voidcode.sdk.services import ArtifactPage
 from voidcode.sdk.views import PluginViewDescriptor, ViewsSnapshot
 
 from .artifact_viewer import InteractiveArtifactViewer
+from .attachments import PendingImage
 from .formatting import NoticeTone
 from .gates import ApprovalGate
 from .term import TerminalKittyReply
@@ -230,6 +232,7 @@ class FollowupQueuedEvent(TuiEvent):
 class FollowupFailedEvent(TuiEvent):
     prompt: str
     error: str
+    images: tuple[ImageAttachment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -255,6 +258,13 @@ class FollowupWithdrawFailedEvent(TuiEvent):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RunRejectedEvent(TuiEvent):
     prompt: str
+    images: tuple[ImageAttachment, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClipboardImageEvent(TuiEvent):
+    image: PendingImage | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -395,6 +405,7 @@ type TuiFrame = (
     | CancelDoneEvent
     | FollowupQueuedEvent
     | FollowupFailedEvent
+    | ClipboardImageEvent
     | FollowupsLoadedEvent
     | FollowupsLoadFailedEvent
     | FollowupWithdrawnEvent

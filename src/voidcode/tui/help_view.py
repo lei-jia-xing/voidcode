@@ -47,6 +47,9 @@ TUI_CONTROLS: tuple[TuiControl, ...] = (
     TuiControl("session", "session <id>", "Switch the active session."),
     TuiControl("new", "new", "Create a new session."),
     TuiControl("views", "views [name]", "Open plugin views or forms."),
+    TuiControl("attach", "attach <path> [path...]", "Attach image file(s) to the next prompt."),
+    TuiControl("image", "image", "Attach an image from the system clipboard.", aliases=("paste-image",)),
+    TuiControl("detach", "detach [index|all]", "Remove pending image attachments."),
     TuiControl("model", "model [provider/model]", "Show or switch the model.", requires=ClientCapability.MODEL_SWITCH),
     TuiControl("thinking", "thinking [level|off]", "Show or set the thinking level.", requires=ClientCapability.THINKING_SWITCH),
     TuiControl("cancel", "cancel", "Cancel the active run."),
@@ -150,6 +153,9 @@ def _key_rows(
         ("Ctrl+D", "Quit when the draft is empty."),
         ("Ctrl+O", "Open the latest tool artifact or truncated output."),
         ("Alt+Up", "Withdraw the last queued follow-up into the composer for editing."),
+        ("Alt+I", "Attach image file(s) by path; the draft and caret stay intact."),
+        ("Alt+V", "Attach an image from the system clipboard."),
+        ("Alt+R", "Remove the last pending image attachment."),
     ]
     rows: list[tuple[str, str]] = [(chord, summary) for chord, summary in fixed]
     for chord in sorted(bindings):

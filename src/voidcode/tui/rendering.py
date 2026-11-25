@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,7 @@ from voidcode.sdk.transcript import (
 from voidcode.sdk.views import FieldsViewData, PluginViewDescriptor, StatusViewData, TableViewData, parse_view_data
 
 from .artifact_viewer import InteractiveArtifactViewer
+from .attachments import MAX_PENDING_IMAGES, PendingImage, format_bytes
 from .formatting import effort_segment, footer_row, json_safe, model_segment, prefixed_rows, safe, short_workspace
 from .region import TuiFrame
 from .styles import SPINNER_FRAMES, Styles
@@ -229,6 +231,47 @@ def queued_followup_rows(followups: tuple[QueuedFollowup, ...], *, width: int, s
     return [clamp_row(row, width) for row in rows]
 
 
+#: Typed path entry lives in one composer-adjacent row; the draft stays untouched.
+ATTACHMENT_PATH_PREFIX = "Image path: "
+
+
+def pending_attachment_rows(images: Sequence[PendingImage], *, width: int, styles: Styles) -> list[str]:
+    """Render pending composer images with their one visible removal path."""
+    if not images or width <= 0:
+        return []
+    rows: list[str] = []
+    for index, image in enumerate(images):
+        label = escape_terminal_controls(image.label, preserve_tabs=False)
+        meta = f"{image.media_type}, {format_bytes(image.bytes)}"
+        suffix = f" · {len(images)}/{MAX_PENDING_IMAGES}"
+        if index == len(images) - 1:
+            suffix += f" · Alt+R remove last · /tui detach {index + 1}"
+        prefix = f"[{index + 1}] "
+        available = max(1, width - visible_width(prefix) - visible_width(meta) - visible_width(suffix) - 3)
+        shown = label if visible_width(label) <= available else clamp_row(label, max(1, available - 1)) + "…"
+        row = styles.fg("accent", prefix) + styles.fg("text", shown) + styles.fg("dim", f" ({meta}){suffix}")
+        rows.append(clamp_row(row, width))
+    return rows
+
+
+def attachment_path_rows(prompt: str, *, width: int, styles: Styles) -> list[str]:
+    """One typed path-entry row; failures and the draft-preservation promise stay visible."""
+    if width <= 0:
+        return []
+    typed = escape_terminal_controls(prompt, preserve_tabs=False)
+    hint = " Enter attach · Esc cancel · draft kept"
+    available = max(1, width - visible_width(ATTACHMENT_PATH_PREFIX) - visible_width(hint))
+    shown = typed if visible_width(typed) <= available else clamp_row(typed, max(1, available - 1)) + "…"
+    row = styles.fg("accent", ATTACHMENT_PATH_PREFIX) + styles.fg("text", shown) + styles.fg("dim", hint)
+    return [clamp_row(row, width)]
+
+
+def attachment_path_cursor(prompt: str, width: int) -> int:
+    """Native cursor column at the typed path's end, bounded by the terminal width."""
+    typed = escape_terminal_controls(prompt, preserve_tabs=False)
+    return min(max(0, width - 1), visible_width(ATTACHMENT_PATH_PREFIX) + visible_width(typed))
+
+
 def live_view_rows(views: tuple[PluginViewDescriptor, ...], *, width: int, max_rows: int, styles: Styles) -> list[str]:
     """Render live-enabled declarative plugin views above the composer."""
     if not views or width <= 0 or max_rows <= 0:
@@ -396,7 +439,9 @@ def _render_composer(app: CoreTuiApp, width: int, footer_rows: tuple[str, ...]) 
     cursor = app.composer.cursor_position
     popup = list(app.composer.completion_rows(max_rows=max(1, min(6, available - len(composer_rows)))))
     queued = queued_followup_rows(app._queued_followups, width=width, styles=app.styles) if available > len(composer_rows) else []
-    remaining_live = max(0, available - len(composer_rows) - len(popup) - len(queued))
+    pending = pending_attachment_rows(app._pending_images.items, width=width, styles=app.styles)
+    path_rows = attachment_path_rows(app._attachment_path, width=width, styles=app.styles) if app._attachment_path is not None else []
+    remaining_live = max(0, available - len(composer_rows) - len(popup) - len(queued) - len(pending) - len(path_rows))
     has_other_live = bool(app._active_tools or app._stream_dispatch is not None)
     view_budget = remaining_live if not has_other_live else max(0, remaining_live - 1)
     view_rows = live_view_rows(app._live_views, width=width, max_rows=view_budget, styles=app.styles)
@@ -446,7 +491,16 @@ def _render_composer(app: CoreTuiApp, width: int, footer_rows: tuple[str, ...]) 
             stream_rows = app._live_stream_rows(width)
             live = stream_rows[-live_space:] if stream_rows else []
     combined_live = [*view_rows, *live]
-    if cursor is not None and (combined_live or popup or queued):
+    if app._attachment_path is not None:
+        row = len(combined_live) + len(popup) + len(queued) + len(pending)
+        cursor = (row, attachment_path_cursor(app._attachment_path, width))
+    elif cursor is not None and (combined_live or popup or queued or pending):
         row, column = cursor
-        cursor = (row + len(combined_live) + len(popup) + len(queued), column)
-    app.terminal.paint_frame(TuiFrame(transcript_rows=(), chrome_rows=(*combined_live, *popup, *queued, *composer_rows, *footer_rows), cursor=cursor))
+        cursor = (row + len(combined_live) + len(popup) + len(queued) + len(pending), column)
+    app.terminal.paint_frame(
+        TuiFrame(
+            transcript_rows=(),
+            chrome_rows=(*combined_live, *popup, *queued, *pending, *path_rows, *composer_rows, *footer_rows),
+            cursor=cursor,
+        )
+    )

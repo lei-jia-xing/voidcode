@@ -7,6 +7,7 @@ import logging
 import mimetypes
 import os
 import queue
+import shlex
 import tempfile
 import threading
 import time
@@ -35,7 +36,7 @@ from voidcode.sdk.client import (
 )
 from voidcode.sdk.command_help import command_argument_hints
 from voidcode.sdk.commands import CommandDescriptor
-from voidcode.sdk.provider import ProviderTokenUsage, ProviderTurnResult
+from voidcode.sdk.provider import ImageAttachment, ProviderTokenUsage, ProviderTurnResult
 from voidcode.sdk.tools import (
     ToolEffect,
     ToolResult,
@@ -77,6 +78,15 @@ from .artifact_viewer import (
     png_dimensions,
     read_artifact_bytes,
 )
+from .attachments import (
+    MAX_PENDING_IMAGES,
+    AttachmentError,
+    PendingAttachments,
+    PendingImage,
+    format_bytes,
+    load_image_file,
+)
+from .clipboard_image import ClipboardImageUnavailable, read_clipboard_image
 from .composer import SHELL_ESCAPE_PREFIX, Composer, ComposerAction, ComposerOutcome
 from .event_pump import drain_events
 from .formatting import (
@@ -146,6 +156,9 @@ _ESCAPE_FLUSH_SECONDS = 0.05
 #: Fallback live-view cadence when a reply carries no explicit refresh interval;
 #: only a reply rearms, so this never stacks workers.
 _LIVE_REFRESH_FALLBACK_SECONDS = 60.0
+
+#: One typed image path is bounded like any other client-side text buffer.
+_MAX_ATTACHMENT_PATH_CHARS = 4096
 
 #: Spinner/live cadence while animations run; matches the pre-cutover 30 fps render loop.
 _SPINNER_TICK_SECONDS = 1 / 30
@@ -257,6 +270,10 @@ class CoreTuiApp:
         self.composer = Composer(
             styles=self.styles, width=self.terminal.width, style="claude" if border == "lines" else border, gutter="none", padding="compact"
         )
+        #: Validated images waiting for the next prompt; every add is bounded.
+        self._pending_images = PendingAttachments()
+        #: Typed path-entry mode; None means closed, a string is the in-progress path.
+        self._attachment_path: str | None = None
         self.key_decoder = KeyDecoder()
         self._escape_flush_at = 0.0
         self.event_queue: queue.Queue[events.TuiFrame] = queue.Queue()
@@ -1065,6 +1082,10 @@ class CoreTuiApp:
                 # "esc". The composer keeps the decoder's own name.
                 key = Key("esc")
             if key.name == "ctrl+c":
+                if self._attachment_path is not None:
+                    self._attachment_path = None
+                    self.status_line = "Image attach cancelled"
+                    continue
                 now = time.monotonic()
                 if now - self._quit_armed_at < QUIT_ARM_SECONDS:
                     self.running = False
@@ -1073,7 +1094,14 @@ class CoreTuiApp:
                 self.composer.clear()
                 continue
             self._quit_armed_at = float("-inf")
-            if key.name == "ctrl+d" and not self.composer.value and self.pending_approval is None and self.active_overlay is None:
+            if (
+                key.name == "ctrl+d"
+                and not self.composer.value
+                and self._attachment_path is None
+                and not len(self._pending_images)
+                and self.pending_approval is None
+                and self.active_overlay is None
+            ):
                 self.running = False
                 return True
             if self.pending_approval is not None:
@@ -1513,6 +1541,9 @@ class CoreTuiApp:
         self.clear_loading_status()
         self._follower.abort_interaction()
         name = key.name
+        if self._attachment_path is not None:
+            self._handle_attachment_path_key(key)
+            return
         chord = _normalize_chord(name)
         if chord in self._shortcut_bindings:
             # A catalog chord: never through the composer, never as slash text.
@@ -1521,6 +1552,15 @@ class CoreTuiApp:
         if chord in self._shortcut_conflicts:
             claimants = ", ".join(f"/{_slash_display(entry)}" for entry in self._shortcut_conflicts[chord])
             self.terminal.commit_rows([self.styles.fg("warning", f"Shortcut {name} is claimed by {claimants}; no action bound")])
+            return
+        if chord == "alt+i":
+            self._begin_attachment_path()
+            return
+        if chord == "alt+v":
+            self._attach_clipboard_image()
+            return
+        if chord == "alt+r":
+            self._remove_last_image()
             return
         if not self.catalog_revision and "+" in chord and chord not in ("ctrl+o", "alt+up") and not self.composer.owns_key(chord):
             # A modified chord the composer does not own can only be a catalog
@@ -1535,6 +1575,9 @@ class CoreTuiApp:
             return
         if name == "enter" and not self.composer.completion:
             line = self.composer.value.strip()
+            if len(self._pending_images) and not line:
+                self.status_line = "Attached images are not sent alone — write a prompt; images kept"
+                return
             if line and not line.startswith("/"):
                 nchars = len(line)
                 nbytes = len(line.encode("utf-8"))
@@ -1615,7 +1658,11 @@ class CoreTuiApp:
                     ]
                 )
                 return
-            self._dispatch_user_prompt(line)
+            images = self._pending_images.take()
+            if images:
+                self._dispatch_user_prompt(line, images=images)
+            else:
+                self._dispatch_user_prompt(line)
 
     def _client_syntax_command(self, line: str) -> tuple[CommandDescriptor, str] | None:
         """Match a non-slash catalog prefix (``!`` for shell), never a client table."""
@@ -1870,9 +1917,171 @@ class CoreTuiApp:
             return [], None
         return candidate_list, (slash_idx, token_end)
 
-    def _dispatch_user_prompt(self, prompt: str) -> None:
+    def _begin_attachment_path(self) -> None:
+        """Open the one-line path prompt without touching the composer draft or caret."""
+        if len(self._pending_images) >= MAX_PENDING_IMAGES:
+            self._commit_attachment_failure(f"At most {MAX_PENDING_IMAGES} images can be attached to one prompt; remove one first")
+            return
+        self.composer.set_completion(())
+        self.composer.completion_descriptions = {}
+        self._cancel_path_completion()
+        self._attachment_path = ""
+        self.status_line = "Image path: type a path, Enter to attach, Esc to cancel — draft kept"
+
+    def _handle_attachment_path_key(self, key: Key) -> None:
+        """Consume keys for the path prompt; the normal composer never sees them."""
+        assert self._attachment_path is not None
+        name = key.name
+        if name in ("esc", "escape"):
+            self._attachment_path = None
+            self.status_line = "Image attach cancelled"
+            return
+        if name == "enter":
+            path_text = self._attachment_path.strip()
+            self._attachment_path = None
+            if not path_text:
+                self.status_line = "Image attach cancelled: no path entered"
+                return
+            self._attach_image_paths(self._attachment_paths(path_text))
+            return
+        if name == "backspace":
+            self._attachment_path = self._attachment_path[:-1]
+            return
+        if name == "delete":
+            return
+        if name == "ctrl+u":
+            self._attachment_path = ""
+            return
+        if name == "paste":
+            self._append_attachment_path(key.text)
+            return
+        if key.text and not name.startswith(("alt+", "ctrl+")):
+            self._append_attachment_path(key.text)
+
+    def _append_attachment_path(self, text: str) -> None:
+        assert self._attachment_path is not None
+        clean = text.replace("\x00", "").replace("\r", " ").replace("\n", " ")
+        if not clean:
+            return
+        if len(self._attachment_path) + len(clean) > _MAX_ATTACHMENT_PATH_CHARS:
+            self.status_line = f"Image path is too long (max {_MAX_ATTACHMENT_PATH_CHARS} characters)"
+            return
+        self._attachment_path += clean
+
+    def _attachment_paths(self, raw: str) -> tuple[str, ...]:
+        """One existing path with spaces wins; otherwise honour shell-style quoting."""
+        text = raw.strip()
+        if not text:
+            return ()
+        try:
+            if Path(text).expanduser().exists():
+                return (text,)
+        except OSError:
+            pass
+        try:
+            paths = tuple(shlex.split(text))
+        except ValueError:
+            return (text,)
+        return paths or (text,)
+
+    def _attach_image_paths(self, paths: Sequence[str]) -> None:
+        """Validate and attach explicitly named paths; every refusal is visible."""
+        attached = 0
+        for path_text in paths:
+            try:
+                image = load_image_file(path_text)
+            except AttachmentError as exc:
+                self._commit_attachment_failure(f"Image attach failed: {exc}")
+                continue
+            if self._accept_pending_image(image):
+                attached += 1
+        if attached:
+            label = f"Attached {image.label}" if attached == 1 else f"Attached {attached} images"
+            self._announce_pending_images(label)
+
+    def _attach_clipboard_image(self) -> None:
+        """Read one image off the desktop clipboard without blocking the UI thread."""
+        if len(self._pending_images) >= MAX_PENDING_IMAGES:
+            self._commit_attachment_failure(f"At most {MAX_PENDING_IMAGES} images can be attached to one prompt; remove one first")
+            return
+        self.status_line = "Reading image from clipboard…"
+
+        def worker() -> None:
+            try:
+                image = read_clipboard_image()
+            except ClipboardImageUnavailable as exc:
+                self.event_queue.put(events.ClipboardImageEvent(error=f"Clipboard image unavailable: {exc}"))
+            except AttachmentError as exc:
+                self.event_queue.put(events.ClipboardImageEvent(error=f"Clipboard image rejected: {exc}"))
+            except Exception as exc:  # noqa: BLE001 - the UI must surface every clipboard failure
+                self.event_queue.put(events.ClipboardImageEvent(error=f"Clipboard image unavailable: {exc}"))
+            else:
+                self.event_queue.put(events.ClipboardImageEvent(image=image))
+
+        self._work.submit("ClipboardImage", worker)
+
+    def _accept_pending_image(self, image: PendingImage) -> bool:
+        try:
+            self._pending_images.add(image)
+        except AttachmentError as exc:
+            self._commit_attachment_failure(f"Image attachment rejected: {exc}")
+            return False
+        return True
+
+    def _announce_pending_images(self, prefix: str) -> None:
+        total = format_bytes(self._pending_images.total_bytes)
+        self.status_line = f"{prefix} · {len(self._pending_images)}/{MAX_PENDING_IMAGES} images · {total} · Alt+R removes the last"
+
+    def _restore_attachments(self, attachments: Sequence[ImageAttachment]) -> None:
+        """Put rejected/failed prompt images back once, without overwriting newer ones."""
+        for attachment in attachments:
+            try:
+                self._pending_images.add(PendingImage.from_attachment(attachment))
+            except AttachmentError as exc:
+                self._commit_attachment_failure(f"Image attachment not restored: {exc}")
+
+    def _remove_last_image(self) -> None:
+        try:
+            removed = self._pending_images.remove_last()
+        except AttachmentError as exc:
+            self._commit_attachment_failure(str(exc))
+            return
+        remaining = len(self._pending_images)
+        self.status_line = f"Removed {removed.label} · {remaining}/{MAX_PENDING_IMAGES} images attached"
+
+    def _detach_images(self, argument: str) -> None:
+        text = argument.strip().lower()
+        if not len(self._pending_images):
+            self.status_line = "No pending images to remove"
+            return
+        if text in ("", "last"):
+            self._remove_last_image()
+            return
+        if text == "all":
+            removed = len(self._pending_images)
+            self._pending_images.clear()
+            self.status_line = f"Removed {removed} pending image(s)"
+            return
+        if text.isdigit() and int(text) > 0:
+            try:
+                removed = self._pending_images.remove_at(int(text) - 1)
+            except AttachmentError as exc:
+                self._commit_attachment_failure(str(exc))
+                return
+            remaining = len(self._pending_images)
+            self.status_line = f"Removed {removed.label} · {remaining}/{MAX_PENDING_IMAGES} images attached"
+            return
+        self.status_line = "Usage: /tui detach [index|all]"
+
+    def _commit_attachment_failure(self, message: str, *, tone: str = "error") -> None:
+        safe_message = _safe(message)
+        self.terminal.commit_rows([self.styles.fg(tone, safe_message)])
+        self.status_line = safe_message
+
+    def _dispatch_user_prompt(self, prompt: str, *, images: Sequence[PendingImage] = ()) -> None:
         # No optimistic commit: the durable core.user_message event is the one
         # and only source of the prompt row on screen.
+        attachments = tuple(image.attachment for image in images)
         if self.upgrade is not None and self.upgrade.fenced:
             # Never queue a prompt behind a fence: the user re-sends after
             # reconnect. Composer._submit already cleared the draft, so restore
@@ -1880,6 +2089,7 @@ class CoreTuiApp:
             # while this key was being handled.
             if not self.composer.value.strip():
                 self.composer.set_text(prompt)
+                self._restore_attachments(attachments)
             self.status_line = "Core is draining for an upgrade; retry after it restarts"
             return
         if self._run_active:
@@ -1887,11 +2097,15 @@ class CoreTuiApp:
 
             def followup_worker() -> None:
                 try:
-                    res = self.client.run(session_id, RunSpec(prompt))
+                    res = self.client.run(session_id, RunSpec(prompt, images=attachments))
                     if res.status == "queued":
                         self.event_queue.put(events.FollowupQueuedEvent(session_id=session_id, generation=generation))
                     elif res.status in ("failed", "interrupted") and res.error:
-                        self.event_queue.put(events.FollowupFailedEvent(prompt=prompt, error=res.error, session_id=session_id, generation=generation))
+                        self.event_queue.put(
+                            events.FollowupFailedEvent(
+                                prompt=prompt, error=res.error, images=attachments, session_id=session_id, generation=generation
+                            )
+                        )
                     else:
                         self.event_queue.put(
                             events.RunStatusEvent(
@@ -1903,7 +2117,9 @@ class CoreTuiApp:
                             )
                         )
                 except Exception as exc:
-                    self.event_queue.put(events.FollowupFailedEvent(prompt=prompt, error=str(exc), session_id=session_id, generation=generation))
+                    self.event_queue.put(
+                        events.FollowupFailedEvent(prompt=prompt, error=str(exc), images=attachments, session_id=session_id, generation=generation)
+                    )
 
             self._work.submit("CoreFollowup", followup_worker)
             return
@@ -1913,7 +2129,7 @@ class CoreTuiApp:
 
         def run_worker() -> None:
             try:
-                res = self.client.run(session_id, RunSpec(prompt))
+                res = self.client.run(session_id, RunSpec(prompt, images=attachments))
                 status = res.status
                 self.event_queue.put(
                     events.RunStatusEvent(
@@ -1933,7 +2149,7 @@ class CoreTuiApp:
                         self.event_queue.put(events.RunWaitingEvent(gate=gate, session_id=session_id, generation=generation))
             except CoreClientError as exc:
                 if exc.code == "upgrade_pending":
-                    self.event_queue.put(events.RunRejectedEvent(prompt=prompt, session_id=session_id, generation=generation))
+                    self.event_queue.put(events.RunRejectedEvent(prompt=prompt, images=attachments, session_id=session_id, generation=generation))
                     self._upgrade_pending_notice("the prompt", session_id=session_id, generation=generation)
                 else:
                     self.event_queue.put(events.RunStatusEvent(status="failed", error=str(exc), session_id=session_id, generation=generation))
@@ -2032,6 +2248,15 @@ class CoreTuiApp:
             self._cancel_active_run()
         elif name == "views":
             self._show_views(arg_str)
+        elif name == "attach":
+            if not arg_str.strip():
+                self.status_line = "Usage: /tui attach <path> [path...]"
+            else:
+                self._attach_image_paths(self._attachment_paths(arg_str))
+        elif name == "image":
+            self._attach_clipboard_image()
+        elif name == "detach":
+            self._detach_images(arg_str)
         elif name == "model":
             self._tui_model(arg_str.strip())
         elif name == "thinking":
@@ -2112,6 +2337,8 @@ class CoreTuiApp:
         self.queued_confirmations.clear()
         self.queued_asks.clear()
         self.composer.load_history(())
+        self._pending_images.clear()
+        self._attachment_path = None
         self._gates = GateState()
         self._active_tools.clear()
         self._queued_followups = ()

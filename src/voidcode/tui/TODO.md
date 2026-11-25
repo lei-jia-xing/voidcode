@@ -33,8 +33,10 @@ TUI 是服务端事件流之上的内联终端客户端：不持有业务真相�
   - TUI `InteractiveApproval` 现提供 `[a]` allow once, `[s]` allow for session, `[d]` deny, `[r]` deny with reason（带理由拒绝文字输入），并调用带 `grant_session_policy` 和 `reason` 的 `client.resume`。
 - [x] **接通模型交互式问答（`ask`）浮层。**
   - `InteractiveAsk` 浮层完整支持表单文本输入与多选项切换（Space/x 切换，Enter 提交，Esc 取消），`stream_handlers.py` 与 `terminal_app.py` 完整接通 `core.ask_requested`、`pending_ask` 以及 `answer_ask` / `cancel_ask` 客户端方法。
-- [ ] **支持在 Composer 中附加/粘贴图片（`ImageAttachment`）。**
-  - `RunSpec.images` 与 `rendering.py` 的用户消息图片徽标已就绪，但 TUI 缺少剪贴板读图与文件路径附加入口。
+- [x] **支持在 Composer 中附加/粘贴图片（`ImageAttachment`）。**
+  - `Alt+I`/`/tui attach <path> [path...]` 通过输入行或命令行附加本地图片且不触碰草稿/光标；扩展名与魔数必须一致（PNG/JPEG/GIF/WebP），单图 ≤2 MiB、合计 ≤2 MiB、最多 4 张，违规在 transcript 明示。
+  - `Alt+V`/`/tui image` 异步读取系统剪贴板：仅在 `wl-paste`/`xclip` 声明的 image target 或单一 `text/uri-list` 本地图片 URI 上读取，普通文本剪贴板绝不回退为文件路径；不可用时明示 `Clipboard image unavailable`。`Alt+R`/`/tui detach [index|all]` 移除待发图片，输入框上方逐项显示名称、类型、大小与移除入口。
+  - 待发图片随 `RunSpec.images` 进入空闲运行与排队追问（core 已用 artifact 引用溢出/回填）；发送失败/升级拒绝会在草稿为空时恢复图片。`Alt+Up` 撤回已排队追问只能恢复文本，`image_count > 0` 时明确提示图片不能在 composer 中重新编辑。
 - [x] **修复流式思考输出丢失与落盘思考 trace 折叠。**
   - `_live_stream_rows` 现将 `_stream_reasoning` 内容实时展示为 `Thinking… (N chars)`；落盘后 `render_thinking` 默认以 `💭 Thought (N chars) · <preview>` 紧凑单行折叠展示，避免输出刷屏。
 - [x] **会话列表可辨认。**

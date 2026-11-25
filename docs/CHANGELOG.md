@@ -4,6 +4,13 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Composer image attachments in the TUI
+- The composer accepts bounded image files by path (`Alt+I` typed path, `/tui attach <path> [path...]`) without clearing the draft or moving the caret. Pending images render above the composer with name, media type, byte size, and removal via `Alt+R` or `/tui detach [index|all]`.
+- Ingress validates extension against magic bytes (PNG/JPEG/GIF/WebP), requires at most 4 images, 2 MiB per image, and 2 MiB total; violations commit a visible transcript row and never enter `RunSpec.images`.
+- `Alt+V`/`/tui image` reads the desktop clipboard asynchronously through optional `wl-paste`/`xclip`, accepting only a declared image target or one `text/uri-list` local image. A text-only clipboard is never reinterpreted as a path; missing readers and missing image data surface as `Clipboard image unavailable`.
+- Images travel with both idle runs and queued follow-ups (the core already spills queued images to artifact references and rehydrates them). Failed/upgrade-rejected sends restore images when they restore the prompt; `Alt+Up` withdrawal still recalls prompt text only and says so when `image_count > 0`.
+- Tests: `tests/unit/tui/test_image_attachments.py` covers path/multi-path attach, removal, draft/caret, extension/magic/size/count/total validation, send images and badge rendering, image-only refusal, unavailable/successful clipboard, queued carry, failed-restore, withdrawal limit, and clipboard readers. Verification: `tests/unit/tui`, `tests/unit/test_core_tui.py`, `tests/unit/core/test_image_input.py`, `tests/unit/core/test_followup_image_refs.py`; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### TUI client capability declarations
 - `SessionClient` now exposes an immutable `ClientCapabilities` declaration built from typed `ClientCapability` values. `CoreLocalClient` declares `embedded`, `model_switch`, and `thinking_switch`; `CoreRpcClient` declares an empty set. Both are exported from `voidcode.sdk`/`sdk.client`.
 - The TUI no longer type-checks concrete clients or imports them inside functions: footer `~` shortening dispatches on `embedded`, `/tui model`/`/tui thinking` switching dispatches on `model_switch`/`thinking_switch`, and help marks gated controls from the same declarations. Undeclared switches still commit the existing visible "Model config lives with the server" refusal; viewing admitted model/thinking state remains available on every arm.
