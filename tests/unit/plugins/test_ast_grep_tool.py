@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.plugins.ast_grep.ast_grep_tool import AstGrepReplaceTool, AstGrepTool
+from voidcode.plugins.ast_grep.ast_grep_tool import AstGrepArgs, AstGrepReplaceArgs, AstGrepReplaceTool, AstGrepTool
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactReference, PluginServices, ProcessResult
 from voidcode.sdk.tools import TOOL_OUTPUT_BYTES, ConfirmedStop, ToolCall, ToolFailure, ToolResult, ToolSuccess
@@ -115,6 +115,21 @@ class RealAstGrepServices(PluginServices):
         self.artifacts.append(text)
         raw = text.encode()
         return ArtifactReference(hashlib.sha256(raw).hexdigest(), len(raw), media_type)
+
+
+def test_facade_reexports_the_public_tool_and_args_surface() -> None:
+    search = AstGrepArgs(mode="search", pattern="foo()", path=".")
+    replace = AstGrepReplaceArgs(
+        pattern="foo()",
+        rewrite="bar()",
+        path="sample.py",
+        apply=True,
+        expectedHash="0" * 64,
+    )
+    assert search.mode == "search"
+    assert replace.expectedHash == "0" * 64
+    assert AstGrepTool.definition.name == "ast_grep"
+    assert AstGrepReplaceTool.definition.name == "ast_grep_replace"
 
 
 def _context(tmp_path: Path) -> ToolContext:
