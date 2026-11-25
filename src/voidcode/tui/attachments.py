@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Final
 
 from voidcode.sdk.provider import ImageAttachment
-from voidcode.sdk.tools import RASTER_IMAGE_MIMES
+from voidcode.sdk.tools import RASTER_IMAGE_MIMES, sniff_raster_image_mime
 
 #: Pending images are bounded by provider-visible ingress, not terminal memory:
 #: the JSON-RPC envelope is 4 MiB, so base64 plus prompt must stay below it.
@@ -46,15 +46,7 @@ def format_bytes(size: int) -> str:
 
 def sniff_image_media_type(raw: bytes) -> str | None:
     """The raster MIME type proven by magic bytes, or ``None`` for anything else."""
-    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if raw.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if raw.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
-        return "image/webp"
-    return None
+    return sniff_raster_image_mime(raw)
 
 
 def _normalized_media_type(media_type: str) -> str:

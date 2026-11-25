@@ -24,6 +24,25 @@ TOOL_OUTPUT_BYTES: Final[int] = 50 * 1024
 #: Raster image MIME types the model attachment path renders as media. Other
 #: image formats (notably SVG) stay readable text presentations instead.
 RASTER_IMAGE_MIMES: Final[frozenset[str]] = frozenset({"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"})
+
+
+def sniff_raster_image_mime(sample: bytes) -> str | None:
+    """The raster MIME type proven by magic bytes, or ``None`` for anything else.
+
+    The returned JPEG type is always the canonical ``image/jpeg``; ``image/jpg``
+    is only accepted as an input spelling by callers that normalize it.
+    """
+    if sample.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if sample.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if sample.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(sample) >= 12 and sample[:4] == b"RIFF" and sample[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 _MAX_DIAGNOSTIC_DEPTH = DIAGNOSTIC_DEPTH
 _MAX_DIAGNOSTIC_ITEMS = DIAGNOSTIC_ITEMS
 

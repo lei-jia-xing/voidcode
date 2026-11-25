@@ -190,23 +190,26 @@ def test_reference_text_pages_only_explicit_out_of_line_empty_output(tmp_path: P
         project_tool_result(result, max_bytes=2048, artifact_reader=absent)
 
 
-def test_read_raster_streams_original_and_projection_reads_every_page(tmp_path: Path) -> None:
+@pytest.mark.parametrize("filename", ["screen.png", "screen"])
+def test_read_raster_streams_original_and_projection_reads_every_page(tmp_path: Path, filename: str) -> None:
     services = _ArtifactServices(tmp_path / "artifacts")
     png = rgb_png()
     width, height, pixels = decode_rgb_png(png)
     assert (width, height, len(pixels)) == (384, 300, 384 * 300 * 3)
     assert len(png) > MAX_PAGE_BYTES
-    (tmp_path / "screen.png").write_bytes(png)
+    (tmp_path / filename).write_bytes(png)
     result = ReadTool().invoke(
-        ToolCall("read", {"path": "screen.png"}),
+        ToolCall("read", {"path": filename}),
         context=ToolContext(workspace=tmp_path, session_id="s", run_id="r", invocation_id="i", revision_id="v", actor="model"),
         services=services,
     )
     assert isinstance(result, ToolSuccess) and isinstance(result.output, AttachmentOutput)
+    assert result.output.mime == "image/png"
     assert result.output.data_uri is None and isinstance(result.output.bounds.reference, ArtifactReference)
     result = _canonical(services, result)
     _, images, clipped = project_tool_result(result, max_bytes=2048, artifact_reader=services.page)
     assert not clipped and len(images) == 1
+    assert images[0].media_type == "image/png"
     assert base64.b64decode(images[0].data) == png
     assert decode_rgb_png(base64.b64decode(images[0].data))[:2] == (384, 300)
     assert len(services.reads) >= 2 and all(limit <= MAX_PAGE_BYTES for _, limit in services.reads)

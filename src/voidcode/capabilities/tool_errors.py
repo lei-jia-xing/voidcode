@@ -45,6 +45,7 @@ type ToolDiagnosticReason = Literal[
     "ignore_file_read_failed",
     "input_too_large",
     "invalid_arguments",
+    "invalid_image",
     "invalid_path",
     "invalid_regex",
     "invalid_workspace",

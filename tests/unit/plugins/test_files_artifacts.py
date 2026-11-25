@@ -12,6 +12,8 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactPage, ArtifactReference
 from voidcode.sdk.tools import AttachmentOutput, OpaqueToolBody, TextOutput, ToolCall, ToolFailure, ToolSuccess
 
+_JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+
 
 class FakeArtifactStore:
     """Minimal stand-in for the core store: content-addressed bytes, bounded pages."""
@@ -86,6 +88,13 @@ def _read_attachment(store: FakeArtifactStore, tmp_path: Path, **arguments: obje
     return result.body.as_payload(), result.output
 
 
+def _read_failure(store: FakeArtifactStore, tmp_path: Path, **arguments: object) -> ToolFailure:
+    tool = next(tool for tool in create_plugin({}).tools if tool.definition.name == "read")
+    result = tool.invoke(ToolCall(tool_name="read", arguments=arguments), context=_context(tmp_path), services=cast(Any, store))
+    assert isinstance(result, ToolFailure)
+    return result
+
+
 def test_spill_then_read_line_page_round_trips(tmp_path: Path) -> None:
     store = FakeArtifactStore()
     text = "".join(f"artifact-line-{index}\n" for index in range(1, 6))
@@ -157,6 +166,82 @@ def test_invalid_artifact_id_is_refused(tmp_path: Path) -> None:
         assert result.diagnostics.kind == "tool_input_mismatch"
         assert result.diagnostics.details["reason"] == "invalid_arguments"
         assert fragment in result.error
+
+
+def test_extensionless_raster_files_use_magic_mime(tmp_path: Path) -> None:
+    store = FakeArtifactStore()
+    png = rgb_png(16, 16)
+    (tmp_path / "screen").write_bytes(png)
+    body, output = _read_attachment(store, tmp_path, path="screen")
+    assert output.mime == "image/png"
+    assert output.data_uri is None
+    assert output.bounds.reference is not None
+    assert output.bounds.reference.sha256 == hashlib.sha256(png).hexdigest()
+    assert body["type"] == "attachment"
+    assert body["artifact"]["bytes"] == len(png)
+    assert store.spills == ["image/png"]
+
+    (tmp_path / "photo").write_bytes(_JPEG_BYTES)
+    _, jpeg = _read_attachment(store, tmp_path, path="photo")
+    assert jpeg.mime == "image/jpeg"
+    assert store.spills == ["image/png", "image/jpeg"]
+
+
+def test_non_raster_suffix_with_raster_magic_uses_proven_mime(tmp_path: Path) -> None:
+    store = FakeArtifactStore()
+    png = rgb_png(8, 8)
+    (tmp_path / "chart.txt").write_bytes(png)
+    body, output = _read_attachment(store, tmp_path, path="chart.txt")
+    assert output.mime == "image/png"
+    assert body["artifact"]["sha256"] == hashlib.sha256(png).hexdigest()
+    assert store.spills == ["image/png"]
+
+
+def test_png_suffix_still_attaches_matching_png(tmp_path: Path) -> None:
+    store = FakeArtifactStore()
+    png = rgb_png(8, 8)
+    (tmp_path / "screen.png").write_bytes(png)
+    _, output = _read_attachment(store, tmp_path, path="screen.png")
+    assert output.mime == "image/png"
+    assert store.spills == ["image/png"]
+
+
+def test_raster_suffix_must_match_magic(tmp_path: Path) -> None:
+    store = FakeArtifactStore()
+    (tmp_path / "wrong.png").write_bytes(_JPEG_BYTES)
+    failure = _read_failure(store, tmp_path, path="wrong.png")
+    assert failure.diagnostics is not None
+    assert failure.diagnostics.kind == "tool_input_mismatch"
+    assert failure.diagnostics.details["reason"] == "invalid_image"
+    assert "declared image/png but bytes are image/jpeg" in failure.error
+    assert store.spills == []
+
+    (tmp_path / "wrong.jpg").write_bytes(rgb_png(4, 4))
+    failure = _read_failure(store, tmp_path, path="wrong.jpg")
+    assert failure.diagnostics is not None
+    assert failure.diagnostics.details["reason"] == "invalid_image"
+    assert "declared image/jpeg but bytes are image/png" in failure.error
+    assert store.spills == []
+
+
+def test_empty_truncated_or_nonimage_raster_is_typed_failure(tmp_path: Path) -> None:
+    store = FakeArtifactStore()
+    cases = {
+        "empty.png": b"",
+        "text.png": b"not an image",
+        "truncated.png": b"\x89PNG\r\n\x1a",
+        "signature_only.png": b"\x89PNG\r\n\x1a\n",
+        "truncated.jpg": b"\xff\xd8\xff",
+    }
+    for name, payload in cases.items():
+        (tmp_path / name).write_bytes(payload)
+        failure = _read_failure(store, tmp_path, path=name)
+        assert failure.diagnostics is not None
+        assert failure.diagnostics.kind == "tool_input_mismatch"
+        assert failure.diagnostics.details["reason"] == "invalid_image"
+        assert "read cannot use" in failure.error
+        assert failure.diagnostics.details["path"] == name
+    assert store.spills == []
 
 
 def test_image_artifact_renders_as_attachment(tmp_path: Path) -> None:

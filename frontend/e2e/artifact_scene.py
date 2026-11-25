@@ -45,7 +45,7 @@ def prepare(workspace: Path, state: Path) -> dict[str, object]:
     (source / "__init__.py").write_text(_PLUGIN, encoding="utf-8")
     png = rgb_png()
     assert len(png) > 256 * 1024 and decode_rgb_png(png)[:2] == (384, 300)
-    (workspace / "screen.png").write_bytes(png)
+    (workspace / "screen").write_bytes(png)
     corrupt = bytearray(png)
     # Break the IDAT zlib header, not merely a CRC some browsers tolerate.
     corrupt[41:43] = b"\x00\x00"
@@ -68,7 +68,7 @@ def prepare(workspace: Path, state: Path) -> dict[str, object]:
         if any(message["role"] == "tool" for message in messages) or sum(1 for message in messages if message["role"] == "user") > 1:
             return openai_response(message={"role": "assistant", "content": "scene recorded"}, finish="stop")
         image = prompt == "PNG_SCENE_REQUEST"
-        name, arguments = ("read", {"path": "screen.png"}) if image else ("artifact_scene", {})
+        name, arguments = ("read", {"path": "screen"}) if image else ("artifact_scene", {})
         call = {"id": "image" if image else "text", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
         return openai_response(message={"role": "assistant", "content": None, "tool_calls": [call]}, finish="tool_calls")
 

@@ -35,6 +35,7 @@ from voidcode.sdk.tools import (
     ToolOutput,
     ToolResult,
     ToolSuccess,
+    sniff_raster_image_mime,
 )
 
 from ..tool_errors import expected_failures, raise_tool_diagnostic
@@ -552,6 +553,34 @@ def _read_failure(tool_name: str, path: str, exc: OSError) -> NoReturn:
     )
 
 
+def _invalid_image(relative_path: str, detail: str, *, details: dict[str, object] | None = None) -> NoReturn:
+    """Refuse a file that declares or proves a raster type but cannot be one."""
+    raise_tool_diagnostic(
+        message=f"read cannot use {relative_path} as a raster image: {detail}",
+        error_kind="tool_input_mismatch",
+        reason="invalid_image",
+        retry_guidance=(
+            "Retry with a non-empty PNG, JPEG, GIF, or WebP file whose extension and magic bytes agree, "
+            "or remove the misleading raster extension so the file is read as text or binary."
+        ),
+        details={"path": relative_path, **(details or {})},
+    )
+
+
+def _raster_image_truncated(mime: str, sample: bytes) -> bool:
+    """Whether the sample ends inside a raster container's required initial structure."""
+    match mime:
+        case "image/png":
+            return len(sample) < 24 or sample[12:16] != b"IHDR"
+        case "image/jpeg":
+            return len(sample) < 4 or sample[3] < 0xC0
+        case "image/gif":
+            return len(sample) < 13
+        case "image/webp":
+            return len(sample) < 20 or sample[12:16] not in {b"VP8 ", b"VP8L", b"VP8X"}
+    return True
+
+
 def _is_binary_content(path: Path, sample: bytes) -> bool:
     suffix = path.suffix.lower()
     if suffix in {
@@ -685,14 +714,39 @@ def _render_file(
     candidate: Path, *, relative_path: str, offset: int, limit: int, services: ArtifactServices, context: ToolContext
 ) -> _ReadOutcome | ToolFailure:
     mime, _ = mimetypes.guess_type(candidate.name)
-    is_svg = candidate.suffix.lower() == ".svg" or mime == "image/svg+xml"
-    attachment = not is_svg and mime in RASTER_IMAGE_MIMES
+    declared_mime = "image/jpeg" if mime == "image/jpg" else mime
+    is_svg = candidate.suffix.lower() == ".svg" or declared_mime == "image/svg+xml"
+    declared_raster = not is_svg and declared_mime in RASTER_IMAGE_MIMES
 
     with candidate.open("rb") as source:
         sample = source.read(BINARY_SNIFF_BYTES)
         source.seek(0)
-        if attachment or (not is_svg and _is_binary_content(candidate, sample)):
+        sniffed_mime = sniff_raster_image_mime(sample)
+        attachment = False
+        if declared_raster:
+            if not sample:
+                _invalid_image(relative_path, "file is empty", details={"declared": declared_mime})
+            if sniffed_mime is None:
+                _invalid_image(relative_path, "bytes do not carry a supported raster signature", details={"declared": declared_mime})
+            if sniffed_mime != declared_mime:
+                _invalid_image(
+                    relative_path,
+                    f"declared {declared_mime} but bytes are {sniffed_mime}",
+                    details={"declared": declared_mime, "detected": sniffed_mime},
+                )
+            if _raster_image_truncated(sniffed_mime, sample):
+                _invalid_image(relative_path, f"bytes end inside the {sniffed_mime} header", details={"detected": sniffed_mime})
+            attachment = True
+            effective_mime = sniffed_mime
+        elif sniffed_mime is not None:
+            if _raster_image_truncated(sniffed_mime, sample):
+                _invalid_image(relative_path, f"bytes end inside the {sniffed_mime} header", details={"detected": sniffed_mime})
+            attachment = True
+            effective_mime = sniffed_mime
+        else:
             effective_mime = mime or "application/octet-stream"
+
+        if attachment or (not is_svg and _is_binary_content(candidate, sample)):
             artifact = services.spill_artifact_stream(iter(lambda: source.read(DEFAULT_BUFFER_SIZE), b""), media_type=effective_mime)
             uri = artifact.uri
             bounds = OutputBounds(reference=artifact, source=relative_path)
