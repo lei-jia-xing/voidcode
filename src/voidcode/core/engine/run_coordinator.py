@@ -658,7 +658,11 @@ class RunCoordinator:
                 return
 
     def drive_pending_activations(self) -> None:
-        """Finish committed command-tool work and staged continuations left across restart."""
+        """Finish resume intents, child drivers, and child messages left across restart.
+
+        Pending model continuations (for example a goal pursuit) are deliberately not
+        claimed here: they stay durable until a user run or explicit drain.
+        """
         try:
             for session in self._host.store_sessions(str(self._host.workspace)):
                 if self._host.closed:

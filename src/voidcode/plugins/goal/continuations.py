@@ -6,11 +6,12 @@ from voidcode.sdk.services import PluginServices
 
 
 def _enqueue_pursuit(services: PluginServices, *, goal_id: str, trigger: str) -> None:
-    """Queue at most one automatic pursue message for this goal.
+    """Replace this goal owner's pursuit queue with exactly one pursue message.
 
     Create/resume and a completed run can all ask for the next pursuit in the same run.
-    Replacing this owner's pending queue in the same core transaction keeps exactly one
-    message claimable; the trigger names the message for durable traceability.
+    The blanket cancel removes both pending and claimed rows (a replacement/resume may
+    abort a claimed old pursuit); the following enqueue leaves one claimable message.
+    The trigger names the message for durable traceability.
     """
     services.cancel_continuations()
     services.enqueue_continuation(

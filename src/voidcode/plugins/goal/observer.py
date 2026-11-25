@@ -9,6 +9,7 @@ from voidcode.sdk.hooks import (
     InvocationFinishedFact,
     PluginFact,
     RunFinishedFact,
+    RunRequestedFact,
     UsageFact,
 )
 from voidcode.sdk.invocation import ToolContext
@@ -17,7 +18,7 @@ from voidcode.sdk.services import PluginServices
 
 from .budget import _accum_float, _accum_int, _apply_budget, _fact_total_tokens, _get_closed_window_spend
 from .continuations import _enqueue_pursuit
-from .state import _store
+from .state import _store, unbound_run_id
 
 
 def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) -> None:
@@ -29,10 +30,25 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
 
     now = int(time.time() * 1000)
 
+    if isinstance(fact, RunRequestedFact):
+        # Bind the goal to the run that is actually pursuing it. A run request that
+        # predates the current active window (an old run after replace/resume) is not
+        # this goal's run and must never become a terminal-fact authority.
+        if goal.is_active and fact.run_id != goal.retired_run_id and any(window.contains(fact.event_sequence) for window in goal.active_windows):
+            if goal.active_run_id != fact.run_id:
+                updated = replace(goal, active_run_id=fact.run_id, updated_at=now)
+                _store(services).save(updated, version)
+        return
+
     if isinstance(fact, UsageFact):
         window = next((w for w in goal.active_windows if w.contains(fact.dispatch_sequence)), None)
         if window is None:
             return
+        # A continuation run does not emit a separate run-request fact; its first
+        # provider dispatch is the authoritative evidence of the pursuing run. An old
+        # run retired by replace/resume is excluded above and cannot re-bind here.
+        if goal.is_active and fact.run_id != goal.retired_run_id and fact.run_id != goal.active_run_id:
+            goal = replace(goal, active_run_id=fact.run_id)
         # An absent usage report means every token metric is unknown.
         usage = fact.usage if fact.usage is not None else ProviderTokenUsage()
         tokens = _fact_total_tokens(usage)
@@ -107,6 +123,13 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
         # into a fabricated 0 when absent, so the accumulated value is preserved as-is.
         stop_cause = fact.stop_cause
 
+        # A terminal fact is authoritative only while its run has not been retired by a
+        # goal replacement/resume. Production writers record the immediately replaced
+        # run id, so a late old-run limit/user-stop cannot touch a newer goal. A None
+        # retired id is the legacy/unbound form used by direct unit fixtures.
+        if goal.retired_run_id is not None and fact.run_id == goal.retired_run_id:
+            return
+
         new_blocked_count = goal.blocked_turns_count
         new_last_turn = goal.last_blocked_logical_turn
         if fact.status == "completed" and stop_cause in {"completed", None} and goal.last_blocked_logical_turn != fact.logical_turn:
@@ -122,11 +145,17 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
             stop_seq = fact.event_sequence
             updated_windows = tuple(replace(w, end_sequence=stop_seq) if w.end_sequence is None else w for w in goal.active_windows)
 
+        new_active_run_id = goal.active_run_id if new_status == "active" else None
+        if new_status == "active":
+            # A terminal fact ends the bound run; keep an unbound sentinel rather than
+            # null on the active goal so a late old-run fact cannot claim it.
+            new_active_run_id = unbound_run_id(goal.goal_id)
         state_changed = (
             new_status != goal.status
             or updated_windows != goal.active_windows
             or new_blocked_count != goal.blocked_turns_count
             or new_last_turn != goal.last_blocked_logical_turn
+            or new_active_run_id != goal.active_run_id
         )
         if state_changed:
             updated = replace(
@@ -135,6 +164,7 @@ def goal_observer(fact: PluginFact, ctx: ToolContext, services: PluginServices) 
                 active_windows=updated_windows,
                 blocked_turns_count=new_blocked_count,
                 last_blocked_logical_turn=new_last_turn,
+                active_run_id=new_active_run_id,
                 updated_at=now,
             )
             if paused_by_user_stop:

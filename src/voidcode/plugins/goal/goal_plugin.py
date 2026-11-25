@@ -64,6 +64,7 @@ from .state import (
     _parse_goal_windows,
     _store,
     _unknown_state_field,
+    unbound_run_id,
 )
 from .tool import (
     CreateGoalTool,
@@ -97,6 +98,7 @@ __all__ = [
     "GoalStatus",
     "GoalStatusView",
     "UpdateGoalTool",
+    "unbound_run_id",
     "goal_context",
     "goal_observer",
     "prepare_goal_deactivation",

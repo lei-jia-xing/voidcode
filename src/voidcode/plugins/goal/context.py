@@ -43,7 +43,7 @@ def render_context_prompt(goal: GoalState) -> str:
     # Whole seconds; never invent 0 for unknown.
     time_str = f"{int(goal.time_used_seconds)} seconds" if goal.time_used_seconds is not None else "unknown"
     context_block = _prompt_objective_block(_CONTEXT_HEADLINE, safe_objective)
-    pursue_block = _prompt_objective_block(_PURSUE_HEADLINE, safe_objective)
+    pursue_block = _prompt_objective_block(_PURSUE_HEADLINE, safe_objective, untrusted=goal.objective_edited)
     spent_budget = _prompt_budget_section([("Time spent pursuing goal", time_str), ("Tokens used", used_str), ("Token budget", token_budget_str)])
     remaining_budget = _prompt_budget_section([("Tokens used", used_str), ("Token budget", token_budget_str), ("Tokens remaining", remaining)])
 
@@ -86,7 +86,7 @@ Wrap up this turn, report the blocker to the user, and do not call update_goal u
         # repeated notice is the deliberate safe ceiling (no lost update, no race).
         objective_edited_notice = (
             "The active thread goal objective was edited by the user.\n\n"
-            f"{_prompt_objective_block(_EDITED_HEADLINE, safe_objective, untrusted=True)}\n\n"
+            f"{_EDITED_HEADLINE}\n\n"
             f"{remaining_budget}\n\n"
             "Adjust the current turn to pursue the updated objective. Avoid continuing work that only served the previous objective\n"
             "unless it also helps the updated objective.\n\n"

@@ -34,7 +34,7 @@ from ...sdk.services import (
     StructuredModelResult,
 )
 from ...sdk.tools import ToolCall
-from ..activation import Admission, ExecutionConfig
+from ..activation import Admission, ExecutionConfig, validate_state_payload
 from ..activation_coordinator import ActivationCoordinator, ActivationFenced
 from ..artifacts import ArtifactStore
 from ..background_actions import BackgroundActionRegistry
@@ -146,16 +146,18 @@ class CoreLifecycle(ABC):
         return spool
 
     def _assert_state_schema_compatible(self) -> None:
-        """Refuse to reinterpret stored owner state under a different declared schema."""
+        """Refuse stored owner state that does not match the declared version and schema."""
         states = self._snapshot.plugin_runtime.state_metadata()
         scopes: list[tuple[StateScope, str]] = [("workspace", str(self.workspace))]
         scopes.extend(("session", record.session_id) for record in self.store.sessions(workspace=str(self.workspace)))
         for scope, scope_key in scopes:
             for row in self.store.plugin_state_rows(scope, scope_key):
                 state = states.get(row.owner)
-                if state is None or state.version == row.schema_version:
+                if state is None:
                     continue
-                raise ValueError(f"plugin {row.owner} state schema mismatch: stored v{row.schema_version}, declared v{state.version}")
+                if state.version != row.schema_version:
+                    raise ValueError(f"plugin {row.owner} state schema mismatch: stored v{row.schema_version}, declared v{state.version}")
+                validate_state_payload(row.payload, state)
 
     def _start_background_work(self) -> None:
         """Start the continuation driver, the wakeup ticker, and the background loop, exactly once."""

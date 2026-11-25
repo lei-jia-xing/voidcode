@@ -9,7 +9,7 @@ from typing import Literal
 from voidcode.capabilities.plugin_state import PluginStateStore
 from voidcode.sdk.services import StateServices
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 GoalStatus = Literal["active", "paused", "blocked", "usage-limited", "budget-limited", "complete"]
 VALID_GOAL_STATUSES: frozenset[GoalStatus] = frozenset({"active", "paused", "blocked", "usage-limited", "budget-limited", "complete"})
@@ -18,10 +18,20 @@ VALID_GOAL_STATUSES: frozenset[GoalStatus] = frozenset({"active", "paused", "blo
 #: `complete` is a terminal user-visible fact and is never rewritten by a deactivation.
 DEACTIVATABLE_GOAL_STATUSES: frozenset[GoalStatus] = frozenset({"active", "blocked", "usage-limited", "budget-limited"})
 
+UNBOUND_RUN_PREFIX = "unbound:"
+
+
+def unbound_run_id(goal_id: str) -> str:
+    """A non-run sentinel that cannot match a real Core run id (UUID hex)."""
+    return f"{UNBOUND_RUN_PREFIX}{goal_id}"
+
+
 KNOWN_GOAL_STATE_FIELDS: frozenset[str] = frozenset(
     {
         "schema_version",
         "goal_id",
+        "active_run_id",
+        "retired_run_id",
         "status",
         "objective",
         "objective_file_ref",
@@ -55,6 +65,8 @@ GOAL_STATE_SCHEMA: Mapping[str, object] = {
             "properties": {
                 "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
                 "goal_id": {"type": "string", "minLength": 1},
+                "active_run_id": {"type": ["string", "null"]},
+                "retired_run_id": {"type": ["string", "null"]},
                 "status": {"type": "string", "enum": sorted(VALID_GOAL_STATUSES)},
                 "objective": {"type": "string", "minLength": 1},
                 "objective_file_ref": {"type": ["string", "null"], "pattern": "^artifact://"},
@@ -207,6 +219,8 @@ class GoalState:
     objective: str
     created_at: int
     updated_at: int
+    active_run_id: str | None = None
+    retired_run_id: str | None = None
     objective_file_ref: str | None = None
     objective_file_sha256: str | None = None
     token_budget: int | None = None
@@ -230,6 +244,10 @@ class GoalState:
         if self.token_budget is not None:
             if not isinstance(self.token_budget, int) or isinstance(self.token_budget, bool) or self.token_budget <= 0:
                 raise ValueError(f"Goal token_budget must be a positive integer: {self.token_budget!r}")
+        if self.active_run_id is not None and (not isinstance(self.active_run_id, str) or not self.active_run_id):
+            raise ValueError("Goal active_run_id must be a non-empty string or null")
+        if self.retired_run_id is not None and (not isinstance(self.retired_run_id, str) or not self.retired_run_id):
+            raise ValueError("Goal retired_run_id must be a non-empty string or null")
 
     @property
     def is_active(self) -> bool:
@@ -245,6 +263,8 @@ class GoalState:
         return {
             "schema_version": self.schema_version,
             "goal_id": self.goal_id,
+            "active_run_id": self.active_run_id,
+            "retired_run_id": self.retired_run_id,
             "status": self.status,
             "objective": self.objective,
             "objective_file_ref": self.objective_file_ref,
@@ -298,6 +318,17 @@ class GoalState:
         goal_id = data.get("goal_id")
         if not isinstance(goal_id, str) or not goal_id:
             raise ValueError("GoalState requires non-empty string goal_id")
+
+        if "active_run_id" not in data:
+            raise ValueError("GoalState requires active_run_id key (null when no run is bound)")
+        raw_active_run = data["active_run_id"]
+        if raw_active_run is not None and (not isinstance(raw_active_run, str) or not raw_active_run):
+            raise ValueError("GoalState active_run_id must be a non-empty string or null")
+        if "retired_run_id" not in data:
+            raise ValueError("GoalState requires retired_run_id key (null when none)")
+        raw_retired_run = data["retired_run_id"]
+        if raw_retired_run is not None and (not isinstance(raw_retired_run, str) or not raw_retired_run):
+            raise ValueError("GoalState retired_run_id must be a non-empty string or null")
 
         raw_status = data.get("status")
         if not isinstance(raw_status, str) or raw_status not in VALID_GOAL_STATUSES:
@@ -356,6 +387,8 @@ class GoalState:
 
         return cls(
             goal_id=goal_id,
+            active_run_id=raw_active_run,
+            retired_run_id=raw_retired_run,
             status=raw_status,
             objective=raw_obj,
             created_at=raw_created,

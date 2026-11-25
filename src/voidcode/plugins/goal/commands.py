@@ -19,11 +19,60 @@ from voidcode.sdk.tools import ToolEffect
 from .budget import _apply_budget, _get_closed_window_spend
 from .continuations import _enqueue_pursuit
 from .objective import read_full_objective, spill_objective_if_needed
-from .state import ActiveWindow, GoalState, _store
+from .state import VALID_GOAL_STATUSES, ActiveWindow, GoalState, _store, unbound_run_id
 from .views import GoalFormView
 
 
-def _goal_presentation(goal: GoalState) -> CommandPresentation:
+def _action_arguments(goal: GoalState, state_version: int) -> dict[str, object]:
+    return {
+        "expected_goal_id": goal.goal_id,
+        "expected_goal_status": goal.status,
+        "expected_state_version": state_version,
+    }
+
+
+def _retired_run_id(goal: GoalState | None) -> str | None:
+    """The actual pursuing run to retire on replace/resume, never the unbound sentinel."""
+    if goal is None or goal.active_run_id is None:
+        return None
+    return None if goal.active_run_id == unbound_run_id(goal.goal_id) else goal.active_run_id
+
+
+def _action_argument_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "expected_goal_id": {"type": "string", "minLength": 1},
+            "expected_goal_status": {"type": "string", "enum": sorted(VALID_GOAL_STATUSES)},
+            "expected_state_version": {"type": "integer", "minimum": 0},
+        },
+        "additionalProperties": False,
+    }
+
+
+def _action_guard(invocation: CommandInvocation, goal: GoalState | None, state_version: int) -> str | None:
+    """Reject a view action rendered against a different goal generation/state."""
+    expected_id = invocation.arguments.get("expected_goal_id")
+    expected_status = invocation.arguments.get("expected_goal_status")
+    expected_version = invocation.arguments.get("expected_state_version")
+    if expected_id is None and expected_status is None and expected_version is None:
+        return None
+    if not isinstance(expected_id, str) or not expected_id or not isinstance(expected_status, str) or not expected_status:
+        return "goal action identity is malformed; refresh the goal view"
+    if expected_version is not None and (not isinstance(expected_version, int) or isinstance(expected_version, bool) or expected_version < 0):
+        return "goal action state version is malformed; refresh the goal view"
+    if goal is None:
+        return "goal no longer exists; refresh the goal view"
+    if goal.goal_id != expected_id:
+        return "goal changed since this action was rendered; refresh the goal view"
+    if goal.status != expected_status:
+        return "goal status changed since this action was rendered; refresh the goal view"
+    if expected_version is not None and expected_version != state_version:
+        return "goal state changed since this action was rendered; refresh the goal view"
+    return None
+
+
+def _goal_presentation(goal: GoalState, state_version: int) -> CommandPresentation:
     objective = goal.objective[:1800]
     if len(goal.objective) > len(objective) or goal.objective_file_ref is not None:
         objective += "\n\nObjective preview; open Edit goal to load the full objective."
@@ -40,12 +89,13 @@ def _goal_presentation(goal: GoalState) -> CommandPresentation:
         f"Tokens used: {goal.tokens_used if goal.tokens_used is not None else 'Unknown'}",
         f"Remaining tokens: {remaining}",
     ]
+    action_args = _action_arguments(goal, state_version)
     actions: list[dict[str, object]] = [{"label": "Edit goal", "action": "goal.edit", "prepare_input": True}]
     if goal.status in {"active", "blocked", "usage-limited", "budget-limited"}:
-        actions.append({"label": "Pause goal", "action": "goal.pause"})
+        actions.append({"label": "Pause goal", "action": "goal.pause", "arguments": action_args})
     if goal.status in {"paused", "blocked", "usage-limited", "budget-limited"}:
-        actions.append({"label": "Resume goal", "action": "goal.resume"})
-    actions.append({"label": "Clear goal", "action": "goal.clear"})
+        actions.append({"label": "Resume goal", "action": "goal.resume", "arguments": action_args})
+    actions.append({"label": "Clear goal", "action": "goal.clear", "arguments": action_args})
     return CommandPresentation(title="Current goal", view_type="markdown", data={"content": "\n\n".join(lines), "actions": actions})
 
 
@@ -61,7 +111,7 @@ class GoalCommand:
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
-        goal, _ = _store(services).load()
+        goal, version = _store(services).load()
         if goal is None:
             form = GoalFormView().render(invocation.context.session_id, services)
             presentation = CommandPresentation(title=form.title, view_type="form", data=form.data)
@@ -75,7 +125,7 @@ class GoalCommand:
             status="ok",
             output=f"Goal ({goal.status}): {goal.objective}",
             data={"goal": goal.to_dict(), "remaining_tokens": goal.remaining_tokens},
-            presentation=_goal_presentation(goal),
+            presentation=_goal_presentation(goal, version),
         )
 
 
@@ -91,6 +141,8 @@ class GoalSetCommand:
             "properties": {
                 "objective": {"type": "string", "description": "The goal objective text."},
                 "token_budget": {"type": "integer", "description": "Optional positive integer token budget."},
+                "expected_goal_id": {"type": "string", "minLength": 1},
+                "expected_goal_status": {"type": "string", "enum": sorted(VALID_GOAL_STATUSES)},
             },
             "required": ["objective"],
             "additionalProperties": False,
@@ -126,15 +178,36 @@ class GoalSetCommand:
                         request_id=req_id,
                         owner="goal",
                         command_name=self.definition.name,
-                        arguments=invocation.arguments,
+                        arguments={
+                            **invocation.arguments,
+                            "expected_goal_id": existing.goal_id,
+                            "expected_goal_status": existing.status,
+                        },
                         ui_type="confirmation",
                         ui_data={
                             "request_id": req_id,
                             "message": "An unfinished goal is in progress. Replace it with the new goal?",
                             "actions": ["allow", "deny"],
                         },
-                        expected_state_version=version,
+                        expected_state_version=None,
                     ),
+                )
+
+        expected_id = invocation.arguments.get("expected_goal_id")
+        expected_status = invocation.arguments.get("expected_goal_status")
+        if expected_id is not None or expected_status is not None:
+            if (
+                not isinstance(expected_id, str)
+                or not expected_id
+                or not isinstance(expected_status, str)
+                or not expected_status
+                or existing is None
+                or existing.goal_id != expected_id
+                or existing.status != expected_status
+            ):
+                return CommandResult(
+                    status="error",
+                    error="goal identity or status changed since confirmation; reissue /goal set",
                 )
 
         raw_obj = invocation.arguments.get("objective")
@@ -154,6 +227,7 @@ class GoalSetCommand:
         start_seq = usage_report.through_sequence
         now = int(time.time() * 1000)
         goal_id = uuid4().hex
+        retired_run_id = _retired_run_id(existing) or invocation.context.run_id
 
         new_goal = GoalState(
             goal_id=goal_id,
@@ -161,6 +235,8 @@ class GoalSetCommand:
             objective=prompt_obj,
             created_at=now,
             updated_at=now,
+            active_run_id=unbound_run_id(goal_id),
+            retired_run_id=retired_run_id,
             objective_file_ref=file_ref,
             objective_file_sha256=sha256,
             token_budget=token_budget,
@@ -177,12 +253,12 @@ class GoalSetCommand:
             "goal_created",
             {"goal_id": goal_id, "objective": prompt_obj, "token_budget": token_budget},
         )
-        _store(services).save(new_goal, version)
+        new_version = _store(services).save(new_goal, version)
         return CommandResult(
             status="ok",
             output=f"Goal created: {new_goal.objective}",
             data={"goal": new_goal.to_dict(), "remaining_tokens": new_goal.remaining_tokens},
-            presentation=_goal_presentation(new_goal),
+            presentation=_goal_presentation(new_goal, new_version),
         )
 
 
@@ -325,7 +401,7 @@ class GoalEditCommand:
             updated_at=now,
         )
 
-        _store(services).save(updated_goal, version)
+        updated_version = _store(services).save(updated_goal, version)
         services.stage_event(
             "goal_edited",
             {"goal_id": goal.goal_id, "objective": prompt_obj, "token_budget": new_budget},
@@ -334,7 +410,7 @@ class GoalEditCommand:
             status="ok",
             output=f"Goal edited: {updated_goal.objective}",
             data={"goal": updated_goal.to_dict(), "remaining_tokens": updated_goal.remaining_tokens},
-            presentation=_goal_presentation(updated_goal),
+            presentation=_goal_presentation(updated_goal, updated_version),
         )
 
 
@@ -344,14 +420,16 @@ class GoalPauseCommand:
     definition = CommandDefinition(
         name="goal.pause",
         description="Pause the active goal.",
-        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        argument_schema=_action_argument_schema(),
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
-        _ = invocation
         goal, version = _store(services).load()
+        stale = _action_guard(invocation, goal, version)
+        if stale is not None:
+            return CommandResult(status="error", error=stale)
         if goal is None:
             return CommandResult(status="error", error="No goal exists to pause")
         valid_pause_states = {"active", "blocked", "usage-limited", "budget-limited"}
@@ -366,18 +444,19 @@ class GoalPauseCommand:
             goal,
             status="paused",
             active_windows=updated_windows,
+            active_run_id=None,
             updated_at=now,
         )
 
         services.clear_budget()
         services.cancel_continuations()
-        _store(services).save(paused_goal, version)
+        paused_version = _store(services).save(paused_goal, version)
         services.stage_event("goal_paused", {"goal_id": goal.goal_id})
         return CommandResult(
             status="ok",
             output="Goal paused",
             data={"goal": paused_goal.to_dict(), "remaining_tokens": paused_goal.remaining_tokens},
-            presentation=_goal_presentation(paused_goal),
+            presentation=_goal_presentation(paused_goal, paused_version),
         )
 
 
@@ -387,14 +466,16 @@ class GoalResumeCommand:
     definition = CommandDefinition(
         name="goal.resume",
         description="Resume paused, blocked, or limited goal.",
-        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        argument_schema=_action_argument_schema(),
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
-        _ = invocation
         goal, version = _store(services).load()
+        stale = _action_guard(invocation, goal, version)
+        if stale is not None:
+            return CommandResult(status="error", error=stale)
         if goal is None:
             return CommandResult(status="error", error="No goal exists to resume")
         if goal.status not in {"paused", "blocked", "usage-limited", "budget-limited"}:
@@ -437,19 +518,20 @@ class GoalResumeCommand:
             active_windows=closed_windows + (ActiveWindow(start_sequence=close_seq),),
             window_tokens_used=0,
             window_allowance=remaining_limit,
+            active_run_id=unbound_run_id(goal.goal_id),
             blocked_turns_count=0,
             last_blocked_logical_turn=None,
             updated_at=now,
         )
 
         _enqueue_pursuit(services, goal_id=goal.goal_id, trigger=f"resume:{invocation.context.invocation_id}")
-        _store(services).save(resumed_goal, version)
+        resumed_version = _store(services).save(resumed_goal, version)
         services.stage_event("goal_resumed", {"goal_id": goal.goal_id})
         return CommandResult(
             status="ok",
             output=f"Goal resumed: {resumed_goal.objective}",
             data={"goal": resumed_goal.to_dict(), "remaining_tokens": resumed_goal.remaining_tokens},
-            presentation=_goal_presentation(resumed_goal),
+            presentation=_goal_presentation(resumed_goal, resumed_version),
         )
 
 
@@ -459,14 +541,16 @@ class GoalClearCommand:
     definition = CommandDefinition(
         name="goal.clear",
         description="Clear current goal.",
-        argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        argument_schema=_action_argument_schema(),
         effects=frozenset({ToolEffect.SESSION}),
         busy_gate=False,
     )
 
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
-        _ = invocation
         goal, version = _store(services).load()
+        stale = _action_guard(invocation, goal, version)
+        if stale is not None:
+            return CommandResult(status="error", error=stale)
         # A missing goal can still own a stale constraint or queued pursuit; clear both.
         services.clear_budget()
         services.cancel_continuations()

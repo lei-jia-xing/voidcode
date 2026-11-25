@@ -20,6 +20,7 @@ from voidcode.plugins.goal.goal_plugin import (
     CreateGoalTool,
     GetGoalTool,
     GoalClearCommand,
+    GoalCommand,
     GoalDetailsView,
     GoalEditCommand,
     GoalLoadObjectiveCommand,
@@ -32,14 +33,16 @@ from voidcode.plugins.goal.goal_plugin import (
     goal_observer,
     prepare_goal_deactivation,
     read_full_objective,
+    render_context_prompt,
     spill_objective_if_needed,
 )
 from voidcode.sdk.commands import CommandInvocation, ConfirmationRequest
-from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact, UsageFact
+from voidcode.sdk.hooks import InvocationFinishedFact, RunFinishedFact, RunRequestedFact, UsageFact
 from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.provider import ProviderTokenUsage
 from voidcode.sdk.services import BudgetExhaustion, SessionUsageReport
 from voidcode.sdk.tools import ToolCall, ToolFailure, ToolSuccess
+from voidcode.sdk.views import MarkdownViewData
 
 
 def _loaded(payload: dict[str, object] | None) -> GoalState | None:
@@ -138,6 +141,14 @@ def test_models_state_transitions() -> None:
     assert unrep_restored.tokens_used is None
     assert unrep_restored.time_used_seconds is None
     assert unrep_restored.remaining_tokens is None
+
+
+def test_goal_state_refuses_previous_schema_version() -> None:
+    now = int(time.time() * 1000)
+    payload = GoalState(goal_id="g1", status="active", objective="Task", created_at=now, updated_at=now).to_dict()
+    payload["schema_version"] = SCHEMA_VERSION - 1
+    with pytest.raises(ValueError, match="Unsupported goal schema_version"):
+        GoalState.from_dict(payload)
 
 
 # --- 2. Long Objective Spilling & Verification ---
@@ -2054,8 +2065,16 @@ def test_goal_plugin_rejects_unknown_config_but_accepts_injected_providers() -> 
             remaining=0,
             continue_with="extend_root_actions",
         ),
+        BudgetExhaustion(
+            dimension="owner_tokens",
+            source="max_total_tokens",
+            limit=100,
+            consumed=100,
+            remaining=0,
+            continue_with="raise_owner_budget",
+        ),
     ],
-    ids=["provider-turns", "root-actions"],
+    ids=["provider-turns", "root-actions", "owner-tokens"],
 )
 def test_limit_reached_pauses_active_goal_with_typed_exhaustion(tmp_path: Path, exhaustion: BudgetExhaustion) -> None:
     services = _QueueServices(through_sequence=35)
@@ -2218,3 +2237,305 @@ def test_limit_reached_does_not_rewrite_non_active_goal(tmp_path: Path, status: 
     assert services.budget.max_total_tokens == 1000
     assert not services.cancelled_continuations
     assert not services.staged_events
+
+
+# --- 8. Hardening: confirmation identity, run binding, action identity, prompts ---
+
+
+def test_replacement_confirmation_survives_usage_but_refuses_identity_or_status_change(tmp_path: Path) -> None:
+    services = FakeServices(through_sequence=5)
+    client = _make_context(tmp_path, actor="client")
+    user = _make_context(tmp_path, actor="user")
+    set_cmd = GoalSetCommand()
+
+    assert set_cmd.invoke(CommandInvocation(context=client, name="goal.set", arguments={"objective": "first"}), services).status == "ok"
+    goal, _ = goal_plugin._store(services).load()
+    assert goal is not None and goal.active_run_id is not None
+    pending = set_cmd.invoke(CommandInvocation(context=client, name="goal.set", arguments={"objective": "second"}), services)
+    assert pending.status == "pending_confirmation" and pending.confirmation is not None
+    confirmation = pending.confirmation
+    assert confirmation.expected_state_version is None
+    assert confirmation.arguments["expected_goal_id"] == goal.goal_id
+    assert confirmation.arguments["expected_goal_status"] == "active"
+
+    # Usage-only state churn must not stale the replacement.
+    goal_observer(
+        UsageFact(
+            session_id="session-1",
+            run_id="run-new",
+            revision_id="rev-1",
+            logical_turn="turn-1",
+            event_sequence=6,
+            dispatch_sequence=6,
+            provider_name="test",
+            model_name="m1",
+            usage=ProviderTokenUsage(input_tokens=10, output_tokens=5),
+        ),
+        client,
+        services,
+    )
+    changed, _ = services.get_state("session")
+    assert changed is not None and changed["tokens_used"] == 15
+    replaced = set_cmd.invoke(CommandInvocation(context=user, name="goal.set", arguments=confirmation.arguments), services)
+    assert replaced.status == "ok", replaced.error
+    current, _ = services.get_state("session")
+    assert current is not None and current["objective"] == "second"
+
+    # Status change is a different intended transition and refuses.
+    status_services = FakeServices(through_sequence=5)
+    assert set_cmd.invoke(CommandInvocation(context=client, name="goal.set", arguments={"objective": "first"}), status_services).status == "ok"
+    pending_status = set_cmd.invoke(CommandInvocation(context=client, name="goal.set", arguments={"objective": "second"}), status_services)
+    assert pending_status.confirmation is not None
+    assert GoalPauseCommand().invoke(CommandInvocation(context=client, name="goal.pause"), status_services).status == "ok"
+    refused_status = set_cmd.invoke(
+        CommandInvocation(context=user, name="goal.set", arguments=pending_status.confirmation.arguments), status_services
+    )
+    assert refused_status.status == "error" and "identity or status changed" in (refused_status.error or "")
+    paused, _ = status_services.get_state("session")
+    assert paused is not None and paused["status"] == "paused" and paused["objective"] == "first"
+
+    # A different goal identity refuses.
+    identity_services = FakeServices(through_sequence=5)
+    assert set_cmd.invoke(CommandInvocation(context=client, name="goal.set", arguments={"objective": "first"}), identity_services).status == "ok"
+    pending_identity = set_cmd.invoke(CommandInvocation(context=client, name="goal.set", arguments={"objective": "second"}), identity_services)
+    assert pending_identity.confirmation is not None
+    current_goal, version = goal_plugin._store(identity_services).load()
+    assert current_goal is not None
+    replacement = replace(current_goal, goal_id="different-goal")
+    identity_services.replace_state(replacement.to_dict(), expected_version=version)
+    refused_identity = set_cmd.invoke(
+        CommandInvocation(context=user, name="goal.set", arguments=pending_identity.confirmation.arguments), identity_services
+    )
+    assert refused_identity.status == "error" and "identity or status changed" in (refused_identity.error or "")
+
+
+def test_replacement_retires_the_previous_pursuing_run(tmp_path: Path) -> None:
+    services = FakeServices(through_sequence=5)
+    client = _make_context(tmp_path, actor="client")
+    user = _make_context(tmp_path, actor="user")
+    set_cmd = GoalSetCommand()
+    assert set_cmd.invoke(CommandInvocation(context=client, name="goal.set", arguments={"objective": "first"}), services).status == "ok"
+    goal, version = goal_plugin._store(services).load()
+    assert goal is not None
+    services.replace_state(replace(goal, active_run_id="old-pursuit-run").to_dict(), expected_version=version)
+    replaced = set_cmd.invoke(CommandInvocation(context=user, name="goal.set", arguments={"objective": "second"}), services)
+    assert replaced.status == "ok", replaced.error
+    new_goal, _ = goal_plugin._store(services).load()
+    assert new_goal is not None and new_goal.retired_run_id == "old-pursuit-run"
+
+
+def test_objective_edited_prompt_contains_objective_once_and_preserves_other_prompts() -> None:
+    now = int(time.time() * 1000)
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="UNIQUE-OBJECTIVE-MARKER",
+        created_at=now,
+        updated_at=now,
+        token_budget=1000,
+        tokens_used=10,
+        window_tokens_used=10,
+        window_allowance=1000,
+        active_run_id="run-1",
+        active_windows=(ActiveWindow(0),),
+        objective_edited=True,
+    )
+    edited = render_context_prompt(goal)
+    assert edited.count("UNIQUE-OBJECTIVE-MARKER") == 1
+    assert "untrusted_objective" in edited
+
+    normal = render_context_prompt(replace(goal, objective_edited=False))
+    assert normal.count("UNIQUE-OBJECTIVE-MARKER") == 1
+    assert "untrusted_objective" not in normal
+    for status in ("blocked", "usage-limited", "budget-limited"):
+        prompt = render_context_prompt(replace(goal, status=status))
+        assert prompt.count("UNIQUE-OBJECTIVE-MARKER") == 1
+        assert "untrusted_objective" not in prompt
+
+
+def test_view_actions_pin_identity_status_and_state_version(tmp_path: Path) -> None:
+    def actions_for(services: FakeServices) -> dict[str, Mapping[str, object]]:
+        result = GoalCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal"), services)
+        assert result.presentation is not None
+        markdown = MarkdownViewData.from_payload(result.presentation.data)
+        return {action.action: action.arguments for action in markdown.actions}
+
+    services = FakeServices(through_sequence=5)
+    assert (
+        GoalSetCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal.set", arguments={"objective": "Task"}), services).status
+        == "ok"
+    )
+    goal, version = goal_plugin._store(services).load()
+    assert goal is not None
+    pause_args = actions_for(services)["goal.pause"]
+    assert pause_args == {"expected_goal_id": goal.goal_id, "expected_goal_status": "active", "expected_state_version": version}
+    services.replace_state(replace(goal, tokens_used=7).to_dict(), expected_version=version)
+    stale_pause = GoalPauseCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal.pause", arguments=pause_args), services)
+    assert stale_pause.status == "error" and "state changed" in (stale_pause.error or "")
+    assert GoalPauseCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal.pause"), services).status == "ok"
+
+    paused, paused_version = goal_plugin._store(services).load()
+    assert paused is not None and paused.status == "paused"
+    resume_args = actions_for(services)["goal.resume"]
+    services.replace_state(replace(paused, tokens_used=9).to_dict(), expected_version=paused_version)
+    stale_resume = GoalResumeCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal.resume", arguments=resume_args), services)
+    assert stale_resume.status == "error" and "state changed" in (stale_resume.error or "")
+    assert GoalResumeCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal.resume"), services).status == "ok"
+
+    active, active_version = goal_plugin._store(services).load()
+    assert active is not None and active.status == "active"
+    clear_args = actions_for(services)["goal.clear"]
+    services.replace_state(replace(active, tokens_used=11).to_dict(), expected_version=active_version)
+    stale_clear = GoalClearCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal.clear", arguments=clear_args), services)
+    assert stale_clear.status == "error" and "state changed" in (stale_clear.error or "")
+    assert goal_plugin._store(services).load()[0] is not None
+    assert GoalClearCommand().invoke(CommandInvocation(context=_make_context(tmp_path), name="goal.clear"), services).status == "ok"
+
+
+@pytest.mark.parametrize(
+    ("stop_cause", "exhaustion"),
+    [
+        ("limit_reached", BudgetExhaustion("provider_turns", "max_steps", 5, 5, 0, "resume_with_max_steps")),
+        ("user_stop", None),
+    ],
+    ids=["limit", "user-stop"],
+)
+def test_run_requested_binds_and_stale_terminal_fact_is_ignored(tmp_path: Path, stop_cause: str, exhaustion: BudgetExhaustion | None) -> None:
+    services = FakeServices(through_sequence=10)
+    services.set_budget(since_sequence=0, max_total_tokens=1000)
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        token_budget=1000,
+        window_allowance=1000,
+        active_run_id=goal_plugin.unbound_run_id("g1"),
+        retired_run_id="run-old",
+        active_windows=(ActiveWindow(10),),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    ctx = _make_context(tmp_path)
+    goal_observer(
+        RunRequestedFact(
+            session_id="session-1",
+            run_id="run-new",
+            revision_id="rev-1",
+            logical_turn="turn-new",
+            event_sequence=12,
+            resumed=False,
+            trigger="user",
+        ),
+        ctx,
+        services,
+    )
+    bound, _ = services.get_state("session")
+    assert bound is not None and bound["active_run_id"] == "run-new"
+
+    before = services.get_state()
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="run-old",
+            revision_id="rev-1",
+            logical_turn="turn-old",
+            event_sequence=20,
+            status="interrupted",
+            stop_cause=stop_cause,  # type: ignore[arg-type]
+            budget_exhaustion=exhaustion,
+        ),
+        ctx,
+        services,
+    )
+    assert services.get_state() == before
+    assert not services.cancelled_continuations
+    assert not services.staged_events
+
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="run-new",
+            revision_id="rev-1",
+            logical_turn="turn-new",
+            event_sequence=30,
+            status="interrupted",
+            stop_cause=stop_cause,  # type: ignore[arg-type]
+            budget_exhaustion=exhaustion,
+        ),
+        ctx,
+        services,
+    )
+    current, _ = services.get_state("session")
+    assert current is not None and current["status"] == "paused"
+    assert current["active_run_id"] is None
+    assert services.cancelled_continuations
+    assert [event[0] for event in services.staged_events] == ["goal_paused"]
+    if stop_cause == "limit_reached":
+        assert services.budget is not None
+    else:
+        assert services.budget is None
+
+
+def test_retired_run_model_query_spend_counts_but_terminal_fact_is_ignored(tmp_path: Path) -> None:
+    services = FakeServices(through_sequence=10)
+    goal = GoalState(
+        goal_id="g1",
+        status="active",
+        objective="Task",
+        created_at=1,
+        updated_at=1,
+        token_budget=100,
+        window_allowance=100,
+        active_run_id=goal_plugin.unbound_run_id("g1"),
+        retired_run_id="old-run",
+        active_windows=(ActiveWindow(10),),
+    )
+    services.replace_state(goal.to_dict(), expected_version=0)
+    ctx = _make_context(tmp_path)
+    goal_observer(
+        UsageFact(
+            session_id="session-1",
+            run_id="old-run",
+            revision_id="rev-1",
+            logical_turn="old-turn",
+            event_sequence=12,
+            dispatch_sequence=12,
+            provider_name="test",
+            model_name="judge",
+            usage=ProviderTokenUsage(input_tokens=20, output_tokens=5),
+            source="model_query",
+        ),
+        ctx,
+        services,
+    )
+    state, _ = services.get_state("session")
+    assert state is not None and state["tokens_used"] == 25
+    assert state["active_run_id"] == goal_plugin.unbound_run_id("g1")
+
+    before = services.get_state()
+    goal_observer(
+        RunFinishedFact(
+            session_id="session-1",
+            run_id="old-run",
+            revision_id="rev-1",
+            logical_turn="old-turn",
+            event_sequence=30,
+            status="interrupted",
+            stop_cause="user_stop",
+        ),
+        ctx,
+        services,
+    )
+    assert services.get_state() == before
+
+
+def test_enqueue_pursuit_replaces_owned_queue_and_yields_one_pending(tmp_path: Path) -> None:
+    services = _QueueServices(through_sequence=5)
+    services.enqueue_continuation({"action": "old"}, idempotency_key="old")
+    assert len(services.pending_pursuits) == 1
+    goal_plugin._enqueue_pursuit(services, goal_id="g1", trigger="test")
+    assert services.cancelled_continuations[-1] is None
+    assert len(services.pending_pursuits) == 1
+    payload, _role = next(iter(services.pending_pursuits.values()))
+    assert payload["action"] == "pursue_goal" and payload["goal_id"] == "g1"

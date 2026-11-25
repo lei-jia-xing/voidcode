@@ -7,19 +7,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
+
+import pytest
 
 from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
 from voidcode.core.engine import Core
+from voidcode.core.storage.store import StagedStateUpdate
+from voidcode.plugins.goal.goal_plugin import SCHEMA_VERSION
 from voidcode.sdk.commands import CommandResult
+from voidcode.sdk.invocation import ToolContext
+from voidcode.sdk.json_values import json_wire_object
+from voidcode.sdk.resources import ResourceReadRequest, ResourceUnavailable
 
 _GOAL_PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "voidcode" / "plugins" / "goal"
 
 
-def _core_with_loopback(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
+def _core_with_loopback(tmp_path: Path, server: OpenAILoopbackServer, *, files_enabled: bool = True) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir = tmp_path / "state"
@@ -38,7 +46,8 @@ def _core_with_loopback(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
         "plugins": {
             "goal": {
                 "path": str(_GOAL_PLUGIN_ROOT),
-            }
+            },
+            "files": {"enabled": files_enabled},
         },
     }
     (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
@@ -347,3 +356,177 @@ def test_completed_automatic_pursuit_run_queues_exactly_one_next_pursuit(tmp_pat
         pending = core.store.pending_continuations(session_id, limit=10)
         assert len(pending) == 1
         assert pending[0].payload["action"] == "pursue_goal"
+
+
+def test_replacement_confirmation_survives_usage_state_churn(tmp_path: Path) -> None:
+    reply = openai_response(
+        message={"role": "assistant", "content": "usage-only turn"},
+        finish="stop",
+        usage={"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50},
+    )
+    with loopback_server([reply]) as server:
+        core = _core_with_loopback(tmp_path, server)
+        core.auto_drain = False
+        session = core.create_session().session_id
+        assert _invoke(core, session, "goal.set", {"objective": "first"}).status == "ok"
+        pending = _invoke(core, session, "goal.set", {"objective": "second"})
+        assert pending.status == "pending_confirmation" and pending.confirmation is not None
+        assert pending.confirmation.expected_state_version is None
+        before = _invoke(core, session, "goal", {}).data["goal"]["tokens_used"]
+
+        # A real provider turn writes a usage fact and bumps the volatile state version.
+        assert core.run("usage-only turn", session_id=session).status == "completed"
+        after = _invoke(core, session, "goal", {}).data["goal"]
+        assert after["tokens_used"] is not None and after["tokens_used"] > before
+
+        allowed = core.confirm_action(
+            session,
+            pending.confirmation.request_id,
+            "allow",
+            expected_revision=core.command_catalog().revision_id,
+        )
+        assert allowed.status == "ok", allowed.error
+        current = _invoke(core, session, "goal", {}).data["goal"]
+        assert current["objective"] == "second"
+
+
+@pytest.mark.parametrize("mutation", ["extra", "missing"], ids=["extra-field", "missing-field"])
+def test_cold_start_refuses_schema_invalid_goal_state(tmp_path: Path, mutation: str) -> None:
+    with loopback_server([]) as server:
+        core = _core_with_loopback(tmp_path, server)
+        core.auto_drain = False
+        session = core.create_session().session_id
+        assert _invoke(core, session, "goal.set", {"objective": "cold-state"}).status == "ok"
+        payload = json_wire_object(_invoke(core, session, "goal", {}).data["goal"])
+        malformed = dict(payload)
+        if mutation == "extra":
+            malformed["unexpected_field"] = True
+        else:
+            del malformed["goal_id"]
+        core.close()
+        discard_core(core)
+
+        with sqlite3.connect(tmp_path / "state" / "voidcode.db") as connection:
+            connection.execute(
+                "UPDATE plugin_state SET payload_json = ? WHERE scope = 'session' AND scope_key = ? AND owner = 'goal'",
+                (json.dumps(malformed), session),
+            )
+
+        with pytest.raises(ValueError, match="declared state schema"):
+            open_core(tmp_path / "workspace", state_dir=tmp_path / "state")
+
+
+@pytest.mark.parametrize("mutation", ["extra", "missing"], ids=["extra-field", "missing-field"])
+def test_hot_reload_refuses_schema_invalid_goal_state(tmp_path: Path, mutation: str) -> None:
+    with loopback_server([]) as server:
+        core = _core_with_loopback(tmp_path, server)
+        core.auto_drain = False
+        session = core.create_session().session_id
+        assert _invoke(core, session, "goal.set", {"objective": "hot-state"}).status == "ok"
+        payload = json_wire_object(_invoke(core, session, "goal", {}).data["goal"])
+        _stored, version = core.store.plugin_state("goal", "session", session)
+        malformed = dict(payload)
+        if mutation == "extra":
+            malformed["unexpected_field"] = True
+        else:
+            del malformed["goal_id"]
+        record = core.store.session(session)
+        core.store.commit_staged(
+            session,
+            expected_sequence=record.last_event_sequence,
+            expected_run_id=record.run_id,
+            run_id=record.run_id or "hot-state-run",
+            revision_id=core.revision_id,
+            events=(),
+            status=record.status,
+            staged_state=(StagedStateUpdate("goal", "session", session, malformed, version, SCHEMA_VERSION, core.revision_id),),
+        )
+        reloaded = _invoke(core, session, "core.reload", {})
+        assert reloaded.status == "error"
+        assert "declared state schema" in (reloaded.error or "")
+
+
+def test_long_objective_model_read_requires_files_plugin(tmp_path: Path) -> None:
+    objective = "🎯 long objective\n" * 500
+    assert len(objective) > 4000
+    with loopback_server([]) as server:
+        core = _core_with_loopback(tmp_path, server, files_enabled=False)
+        core.auto_drain = False
+        session = core.create_session().session_id
+        created = _invoke(core, session, "goal.set", {"objective": objective})
+        assert created.status == "ok", created.error
+        state = _invoke(core, session, "goal", {}).data["goal"]
+        ref = state["objective_file_ref"]
+        assert isinstance(ref, str) and ref.startswith("artifact://")
+        assert "read" not in core.plugin_runtime.tool_definitions
+        context = ToolContext(
+            workspace=core.workspace,
+            session_id=session,
+            run_id="resource-check",
+            invocation_id="resource-check-invocation",
+            revision_id=core.revision_id,
+            actor="model",
+        )
+        with pytest.raises(ResourceUnavailable, match="artifact"):
+            core.plugin_runtime.read_resource(ResourceReadRequest(uri=ref), context=context)
+
+        # The user-facing exact loader remains available without files.
+        loaded = _invoke(core, session, "goal.load_objective", {})
+        assert loaded.status == "ok", loaded.error
+        assert loaded.data["objective"] == objective
+
+
+def test_pending_pursuit_after_restart_requires_user_run_or_explicit_drain(tmp_path: Path) -> None:
+    pursuit_reply = openai_response(
+        message={"role": "assistant", "content": "pursuit completed"},
+        finish="stop",
+        usage={"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+    )
+    with loopback_server([pursuit_reply]) as server:
+        core = _core_with_loopback(tmp_path, server)
+        core.auto_drain = False
+        session = core.create_session().session_id
+        assert _invoke(core, session, "goal.set", {"objective": "durable pursuit"}).status == "ok"
+        assert len(core.store.pending_continuations(session, limit=10)) == 1
+        core.close()
+        discard_core(core)
+
+        reopened = _core_with_loopback(tmp_path, server)
+        reopened.auto_drain = False
+        assert len(reopened.store.pending_continuations(session, limit=10)) == 1
+        assert server.requests == []
+        assert _invoke(reopened, session, "goal", {}).status == "ok"
+        assert len(reopened.store.pending_continuations(session, limit=10)) == 1
+        assert server.requests == []
+
+        drained = reopened.drain_continuations(session, limit=1)
+        assert len(drained) == 1 and drained[0].run_status == "completed"
+        pending = reopened.store.pending_continuations(session, limit=10)
+        assert len(pending) == 1
+        assert pending[0].payload["action"] == "pursue_goal"
+
+
+def test_child_spend_does_not_change_parent_goal_counters(tmp_path: Path) -> None:
+    child_reply = openai_response(
+        message={"role": "assistant", "content": "child completed"},
+        finish="stop",
+        usage={"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50},
+    )
+    with loopback_server([child_reply]) as server:
+        core = _core_with_loopback(tmp_path, server)
+        core.auto_drain = False
+        parent = core.create_session().session_id
+        assert _invoke(core, parent, "goal.set", {"objective": "parent goal", "token_budget": 1000}).status == "ok"
+        before = _invoke(core, parent, "goal", {}).data["goal"]["tokens_used"]
+        assert before == 0
+
+        child = core.spawn_child(parent, "child work", notify_on_completion=False)
+        outcome = core.join_child(parent, child, timeout_seconds=30)
+        assert outcome.status == "completed", outcome.error
+        child_usage = core.usage(child)
+        assert child_usage.input_tokens == 40 and child_usage.output_tokens == 10
+
+        after = _invoke(core, parent, "goal", {}).data["goal"]["tokens_used"]
+        assert after == before == 0
+        parent_usage = core.usage(parent)
+        assert parent_usage.input_tokens == 0 and parent_usage.output_tokens == 0

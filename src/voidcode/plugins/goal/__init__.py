@@ -57,7 +57,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
         providers=(),
         context=goal_context,
         observer=goal_observer,
-        observed_facts=("usage", "invocation_finished", "run_finished"),
+        observed_facts=("usage", "run_requested", "invocation_finished", "run_finished"),
         state=StateSchema(version=SCHEMA_VERSION, schema=GOAL_STATE_SCHEMA),
         prepare_deactivate=prepare_goal_deactivation,
         close=None,
