@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Files ignore stack honors nested `.gitignore` and repository excludes
+- `GitIgnoreMatcher` now loads the search root's `.git/info/exclude` (lowest precedence), root `.gitignore`, and nested `.gitignore` files lazily as traversal reaches each directory. Every file is relative to its own directory, so anchored patterns anchor there and floating patterns stay below it; `**`, directory-only patterns, and `!` negation follow Git, deeper files override ancestors, and the last matching rule wins. Ignored subtrees are never scanned for ignore files. `glob`, `grep`, path completion, and `find` (through its grep query) all use this one matcher; hidden inclusion and the `respect_gitignore` opt-in are unchanged, and global excludes remain out of scope.
+- A line pathspec rejects (a bare `!`, invalid character range, or trailing escape) is escaped into a literal pattern instead of aborting the search or being silently dropped. An unreadable ignore file is still a typed failure.
+- Tests: root/nested/exclude sources, precedence and negation, anchored vs floating, directory-only and `**`, malformed literals without a crash, hidden defaults, lazy recursion, path completion with and without a root `.gitignore`, find's pass-through, and unreadable files.
+- Verification: `tests/unit/plugins/test_gitignore.py`, `test_files.py`, `test_find_plugin.py`, `tests/unit/capabilities/test_path_queries.py`; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Recursive fuzzy `@path` completion in the TUI
 - `@path` now exposes the query contract's recursion and fuzzy matching without changing normal prefix behavior. A `**` segment (`@src/**`, `@src/**/frag`, `@**/frag`) requests depth 6; no marker keeps depth 1. Prefix matches always win; only an empty prefix round triggers one fuzzy pass, and fuzzy matches the path below the requested directory so recursive searches can select nested files.
 - The TUI sends the translated `query`/`depth`/`mode` through the same `workspace.complete_paths` RPC or direct core query, retaining the single in-flight round, newest-prefix queue, draft/caret checks, token aborts, and 50-result bound. Recursive failures remain typed and visible.

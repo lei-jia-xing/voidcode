@@ -11,7 +11,7 @@
 - [ ] **把现有子 Agent 生命周期做成持续交互、可寻址结果的闭环。**
   - [x] `subagents` 提供可供客户端渲染的实时子任务状态投影（`SubagentStatusView`，含运行/审批/排队/失败状态、最近活动、已用时间 `elapsed_ms` 及 `Alt+A monitor` 入口）。
 - [x] **提供工作区路径补全查询。**
-  - files 能力经 `workspace.path_completion` 回答路径前缀/模糊匹配，支持递归深度、默认/`.gitignore` 忽略、隐藏项显式请求、确定排序与 64 KiB 结果上限；模糊模式匹配请求目录下的相对路径，便于递归命中嵌套文件；路径始终相对服务端工作区，越界符号链接不返回。插件禁用即 `QueryUnavailable`，客户端不再直接读本地文件系统。
+  - files 能力经 `workspace.path_completion` 回答路径前缀/模糊匹配，支持递归深度、默认/嵌套 `.gitignore` 与根 `.git/info/exclude` 忽略、隐藏项显式请求、确定排序与 64 KiB 结果上限；模糊模式匹配请求目录下的相对路径，便于递归命中嵌套文件；路径始终相对服务端工作区，越界符号链接不返回。插件禁用即 `QueryUnavailable`，客户端不再直接读本地文件系统。
 - [ ] **统一有限命令、后台任务与长期服务的使用和收尾体验。**
 - [ ] **增加模型可调用的结构化问答，而不滥用确认门。**
 - [ ] **扩展统一读取入口，覆盖常见工作材料而不是一律退回 shell。**
@@ -25,8 +25,8 @@
   - `compaction_observer` 现从 `UsageFact` 接收 `context_window` 并传入 `resolve_compaction_budget`，保证默认配置下能正确算出压缩触发门限。
 - [x] **为 `web_fetch` 补齐 SSRF 防护，消除 `web_search` 静默降级。**
   - `plugins/web/web_fetch.py` 的 `_validated_url` 现校验回环地址、私有网段、云元数据（`169.254.169.254`）与重定向目标内网，重定向目标同样经过严格 SSRF 验证。
-- [ ] **完善 `files` 的忽略规则。**
-  - `GitIgnoreMatcher`（`capabilities/files/gitignore.py`）仅读根目录 `.gitignore`（忽略嵌套 `.gitignore` 与 `.git/info/exclude`），`glob`/`grep` 共享同一默认策略（hidden 默认包含、`respect_gitignore` 默认 false）并有测试覆盖。
+- [x] **完善 `files` 的忽略规则。**
+  - `GitIgnoreMatcher`（`capabilities/files/gitignore.py`）现按目录惰性加载搜索根 `.git/info/exclude`、根 `.gitignore` 与嵌套 `.gitignore`；每条规则相对其所在目录解释（锚定/浮动/`**`/目录专属/`!` 取反），深层文件覆盖祖先、最后匹配规则获胜，被忽略子树不再扫描。pathspec 拒绝的行按字面量模式应用而非中止搜索；不可读的忽略文件仍是类型化失败。`glob`/`grep`/路径补全与 `find`（经 grep 查询）共用该匹配器；hidden 默认包含、`respect_gitignore` 默认 false 的既有策略不变，全局 excludes 不读取。
   - `write`/`edit` 共用 64 KiB mutation-content 上限（按 UTF-8 字节计：`write.content`、文本模式 `newString` 之和、range 模式 `newText` 之和），覆盖写按流式哈希复核，仅对不超过 64 KiB 的旧文件回传 unified `diff`/`additions`/`deletions`。
 - [x] **补齐 `mcp` 分页与资源/提示词发现，消除 `hooks`/`rules` 静默吞错。**
   - `ManagedMcpManager._list_tools_pages_owned` 已支持 `nextCursor` 分页和上限防护。

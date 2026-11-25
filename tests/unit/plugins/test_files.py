@@ -1716,6 +1716,77 @@ def test_searches_respect_gitignore_double_star_and_negation(tmp_path: Path, too
 
 
 @pytest.mark.parametrize("tool_name", ["glob", "grep"])
+def test_searches_honor_nested_gitignore_and_root_excludes(tmp_path: Path, tool_name: str) -> None:
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("excluded.txt\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / ".gitignore").write_text("!keep.log\nlocal.tmp\ncache/\n", encoding="utf-8")
+    for name in (
+        "sub/drop.log",
+        "sub/keep.log",
+        "sub/local.tmp",
+        "sub/deep/local.tmp",
+        "sub/cache/out.txt",
+        "other/local.tmp",
+        "excluded.txt",
+        "visible.txt",
+    ):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("needle\n", encoding="utf-8")
+    tool = next(t for t in create_plugin({}).tools if t.definition.name == tool_name)
+    pattern = "**/*" if tool_name == "glob" else "needle"
+    result = tool.invoke(
+        ToolCall(tool_name=tool_name, arguments={"pattern": pattern, "path": ".", "respect_gitignore": True}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert "sub/keep.log" in result.output.text
+    assert "other/local.tmp" in result.output.text
+    assert "visible.txt" in result.output.text
+    assert "sub/drop.log" not in result.output.text
+    assert "sub/local.tmp" not in result.output.text
+    assert "sub/deep/local.tmp" not in result.output.text
+    assert "sub/cache/out.txt" not in result.output.text
+    assert "excluded.txt" not in result.output.text
+
+
+@pytest.mark.parametrize("tool_name", ["glob", "grep"])
+def test_searches_can_reinclude_direct_children_of_trailing_double_star(tmp_path: Path, tool_name: str) -> None:
+    (tmp_path / ".gitignore").write_text("generated/**\n!generated/keep.txt\n", encoding="utf-8")
+    (tmp_path / "generated").mkdir()
+    (tmp_path / "generated" / "keep.txt").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "generated" / "drop.txt").write_text("needle\n", encoding="utf-8")
+    tool = next(t for t in create_plugin({}).tools if t.definition.name == tool_name)
+    pattern = "**/*" if tool_name == "glob" else "needle"
+    result = tool.invoke(
+        ToolCall(tool_name=tool_name, arguments={"pattern": pattern, "path": ".", "respect_gitignore": True}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert "generated/keep.txt" in result.output.text
+    assert "generated/drop.txt" not in result.output.text
+
+
+@pytest.mark.parametrize("tool_name", ["glob", "grep"])
+def test_searches_treat_malformed_gitignore_lines_as_literals(tmp_path: Path, tool_name: str) -> None:
+    (tmp_path / ".gitignore").write_text("!\na[z-a]\n", encoding="utf-8")
+    for name in ("!", "a[z-a]", "visible.txt"):
+        (tmp_path / name).write_text("needle\n", encoding="utf-8")
+    tool = next(t for t in create_plugin({}).tools if t.definition.name == tool_name)
+    pattern = "**/*" if tool_name == "glob" else "needle"
+    result = tool.invoke(
+        ToolCall(tool_name=tool_name, arguments={"pattern": pattern, "path": ".", "respect_gitignore": True}),
+        context=_context(tmp_path),
+    )
+    assert isinstance(result, ToolSuccess)
+    assert "visible.txt" in result.output.text
+    assert not any(line == "!" or line.startswith("!:") for line in result.output.text.splitlines())
+    assert "a[z-a]" not in result.output.text
+
+
+@pytest.mark.parametrize("tool_name", ["glob", "grep"])
 def test_searches_do_not_prematurely_truncate_on_output_bytes(tmp_path: Path, tool_name: str) -> None:
     tool = next(t for t in create_plugin({}).tools if t.definition.name == tool_name)
     if tool_name == "grep":

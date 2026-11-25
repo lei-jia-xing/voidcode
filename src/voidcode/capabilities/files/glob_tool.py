@@ -94,8 +94,9 @@ class GlobTool:
                 "respect_gitignore": {
                     "type": "boolean",
                     "description": (
-                        "Also skip paths matched by the search root's .gitignore; defaults to false. "
-                        "The matcher only reads the root .gitignore (no nested/global excludes)."
+                        "Also skip paths matched by the search root's ignore stack: .git/info/exclude, the root "
+                        ".gitignore, and nested .gitignore files, with deeper files and later rules overriding earlier ones; "
+                        "defaults to false. Global excludes are not read."
                     ),
                 },
                 "limit": {

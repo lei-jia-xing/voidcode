@@ -102,6 +102,62 @@ def test_ignore_rules_and_hidden_entries(tmp_path: Path) -> None:
     assert _paths(tmp_path, PathCompletionRequest(query="secret")) == []
 
 
+def test_nested_ignore_files_and_info_exclude_apply_to_completion(tmp_path: Path) -> None:
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("excluded.txt\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("*.log\n!nested/keep.log\n", encoding="utf-8")
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / ".gitignore").write_text("local.tmp\ncache/\n", encoding="utf-8")
+    for name in (
+        "nested/keep.log",
+        "nested/drop.log",
+        "nested/local.tmp",
+        "nested/deep/local.tmp",
+        "nested/deep/kept.txt",
+        "nested/cache/out.txt",
+        "other/local.tmp",
+        "excluded.txt",
+        "visible.txt",
+    ):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+
+    assert _paths(tmp_path, PathCompletionRequest(query="")) == ["nested/", "other/", "visible.txt"]
+    assert _paths(tmp_path, PathCompletionRequest(query="nested/", depth=3)) == [
+        "nested/deep/",
+        "nested/deep/kept.txt",
+        "nested/keep.log",
+    ]
+    assert _paths(tmp_path, PathCompletionRequest(query="nested/local")) == []
+    assert _paths(tmp_path, PathCompletionRequest(query="nested/deep/local")) == []
+    assert _paths(tmp_path, PathCompletionRequest(query="other/")) == ["other/local.tmp"]
+    assert _paths(tmp_path, PathCompletionRequest(query="excluded")) == []
+    assert _paths(tmp_path, PathCompletionRequest(query="", respect_gitignore=False)) == [
+        "nested/",
+        "other/",
+        "excluded.txt",
+        "visible.txt",
+    ]
+
+
+def test_nested_ignore_file_applies_without_a_root_gitignore(tmp_path: Path) -> None:
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (tmp_path / "sub" / "drop.log").write_text("x", encoding="utf-8")
+    (tmp_path / "sub" / "visible.txt").write_text("x", encoding="utf-8")
+
+    assert _paths(tmp_path, PathCompletionRequest(query="sub/")) == ["sub/visible.txt"]
+
+
+def test_malformed_ignore_line_is_visible_as_a_literal_and_does_not_break_completion(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text("!\na[z-a]\n", encoding="utf-8")
+    for name in ("!", "a[z-a]", "visible.txt"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+
+    assert _paths(tmp_path, PathCompletionRequest(query="")) == ["visible.txt"]
+
+
 def test_unicode_prefix_is_casefolded(tmp_path: Path) -> None:
     (tmp_path / "Ärger.txt").write_text("x", encoding="utf-8")
     (tmp_path / "ärger.md").write_text("x", encoding="utf-8")

@@ -278,6 +278,36 @@ def test_gitignore_is_honored_by_default_with_explicit_escape_hatch(tmp_path: Pa
     assert set(escaped_body.coverage.screened_files) == {"a_visible.py", "z_generated.py"}
 
 
+def test_nested_gitignore_and_repository_exclude_are_honored_by_default(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / ".git" / "info").mkdir(parents=True)
+    (root / ".git" / "info" / "exclude").write_text("excluded.py\n", encoding="utf-8")
+    (root / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (root / "sub").mkdir()
+    (root / "sub" / ".gitignore").write_text("!keep.log\nlocal.tmp\n", encoding="utf-8")
+    for name in ("sub/drop.log", "sub/keep.log", "sub/local.tmp", "sub/deep/local.tmp", "excluded.py", "visible.py"):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("nestedignoremarker = 1\n", encoding="utf-8")
+
+    body = _invoke(root, FakeServices(), {"query": "nestedignoremarker", "mode": "literal"})
+    assert body.status == "ok"
+    assert {location.path for location in body.locations} == {"sub/keep.log", "visible.py"}
+    assert set(body.coverage.screened_files) == {"sub/keep.log", "visible.py"}
+
+    escaped_body = _invoke(root, FakeServices(), {"query": "nestedignoremarker", "mode": "literal", "respect_gitignore": False})
+    assert escaped_body.status == "ok"
+    assert {location.path for location in escaped_body.locations} == {
+        "sub/drop.log",
+        "sub/keep.log",
+        "sub/local.tmp",
+        "sub/deep/local.tmp",
+        "excluded.py",
+        "visible.py",
+    }
+
+
 def test_auto_locates_behavior_with_read_verified_evidence(tmp_path: Path) -> None:
     root = _tree(tmp_path / "workspace")
     services = FakeServices(

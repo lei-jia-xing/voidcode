@@ -79,11 +79,13 @@ Takes no plugin config; `create_plugin` ignores it. See
   rather than claiming both searches were empty.
 - `respect_gitignore` defaults to true and is passed to every files-plugin grep
   query used by prescreen, literal, and fallback. Set it to false to include
-  ignored files deliberately. The shared matcher loads only the search root's
-  `.gitignore`; nested ignore files, `.git/info/exclude`, and global excludes
-  are not read. An explicitly named file `path` is yielded by grep before its
-  ignore filter, so find inherits that exception. Standard ignored directories
-  (`.git`, `node_modules`, `__pycache__`, build outputs, …) are still skipped.
+  ignored files deliberately. The shared matcher reads the search root's
+  `.git/info/exclude`, the root `.gitignore`, and nested `.gitignore` files;
+  each nested file is relative to its directory, deeper files override
+  ancestors, and the last matching rule wins. Global excludes are not read. An
+  explicitly named file `path` is yielded by grep before its ignore filter, so
+  find inherits that exception. Standard ignored directories (`.git`,
+  `node_modules`, `__pycache__`, build outputs, …) are still skipped.
   `read`, `grep`, and therefore `find` keep external read access under the
   files capability's documented path policy.
 - No vector DB, no daemon index, no background threads; model access goes only
