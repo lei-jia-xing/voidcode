@@ -249,11 +249,19 @@ class _DelegationWait(_DelegationCancellation):
                     raise StoreConflict(f"child session has an unknown wait status: {child.status.value!r}")
             if not pending:
                 for child_id, message_ids in captured_messages.items():
+                    child = self.core.store.session(child_id)
+                    # A recoverably interrupted child cannot claim a follow-up until an
+                    # explicit resume. Its durable message remains visible through the
+                    # descendant projection, but it is not waitable current work; counting
+                    # it would block every later wait with no legal boundary to claim it.
+                    nonclaimable = child.status is SessionStatus.INTERRUPTED and not self.core.admits_fresh_work(child)
                     for message_id in message_ids:
                         if (child_id, message_id) in started_messages:
                             continue
                         status = self.core.store.continuation_status(message_id)
                         if status in (ContinuationStatus.PENDING, ContinuationStatus.CLAIMED):
+                            if nonclaimable:
+                                continue
                             pending = True
                             break
                         if status not in (

@@ -11,9 +11,11 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import threading
+    from collections.abc import Mapping
     from concurrent.futures import ThreadPoolExecutor
 
     from ..engine import Core
+    from ..storage.store import SessionRecord
 
 #: A parent may nest children at most this deep. A child inherits the parent's policy
 #: unchanged, so delegation never widens it; the chain-wide child count is governed by
@@ -67,3 +69,13 @@ class DelegationBase:
         with self._child_finished_lock:
             self._child_finished_generation += 1
             self._child_finished_lock.notify_all()
+
+    def _fail_unstarted_child(
+        self,
+        parent: SessionRecord,
+        child: SessionRecord,
+        birth: Mapping[str, object] | None,
+        reason: str,
+    ) -> tuple[str, str] | None:
+        """Recovery mixin hook: claim one unstartable reservation as a visible failed run."""
+        ...

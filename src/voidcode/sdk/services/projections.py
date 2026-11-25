@@ -12,6 +12,10 @@ from .budgets import BudgetExhaustion, PluginBudget
 if TYPE_CHECKING:
     from ..hooks import StopCause
 
+#: Closed descendant-session lifecycle vocabulary. It deliberately excludes the run outcome
+#: ``cancelled``: a session is interrupted and its run stop cause carries cancellation.
+type ChildStatus = Literal["idle", "running", "waiting", "completed", "failed", "interrupted"]
+
 
 @dataclass(frozen=True, slots=True)
 class EventView:
@@ -133,7 +137,7 @@ class DescendantNode:
     session_id: str
     parent_session_id: str | None
     depth: int
-    status: str
+    status: ChildStatus
     run_id: str | None = None
     stop_cause: str | None = None
     label: str | None = None

@@ -11,6 +11,7 @@ from ...sdk.child_schema import CHILD_PROMPT_MAX_BYTES, canonical_result_schema,
 from ...sdk.json_values import json_wire_object
 from ...sdk.services import (
     BudgetExhaustion,
+    ChildSpawnIncomplete,
 )
 from ..events import EventType
 from ..storage.store import (
@@ -212,7 +213,10 @@ class _DelegationSpawn(_DelegationPublication):
         if readonly:
             # Core-owned stance record: the child stays restricted even if the parent's
             # own overlay is later cleared, and no plugin can revoke it.
-            self.core.store.set_session_overlay(child_id, "core")
+            try:
+                self.core.store.set_session_overlay(child_id, "core")
+            except Exception as exc:
+                raise ChildSpawnIncomplete(child_id) from exc
         spawned_payload: dict[str, object] = {
             "child_session_id": child_id,
             "root_id": root_id,
@@ -235,10 +239,15 @@ class _DelegationSpawn(_DelegationPublication):
                 root_action_id=root_id,
                 initial_root_budget=root_cap,
             )
-        except StoreConflict:
+        except StoreConflict as exc:
             if self._spawned_fact(parent.session_id, child_id) is None:
-                raise
-        self._start_child_run(parent.session_id, child_id, effective_prompt, max_steps, label, notify_on_completion)
+                raise ChildSpawnIncomplete(child_id) from exc
+        except Exception as exc:
+            raise ChildSpawnIncomplete(child_id) from exc
+        try:
+            self._start_child_run(parent.session_id, child_id, effective_prompt, max_steps, label, notify_on_completion)
+        except Exception as exc:
+            raise ChildSpawnIncomplete(child_id) from exc
         return child_id
 
     @staticmethod
@@ -497,6 +506,22 @@ class _DelegationSpawn(_DelegationPublication):
             except Exception:
                 run_id = ""
             if not run_id:
+                # The reservation is durable but no run ever committed. Publish the normal
+                # failed child outcome instead of leaving an idle child that wait treats as
+                # pending forever. Startup recovery handles the crash/publish half.
+                try:
+                    parent = self.core.store.session(parent_session_id)
+                    child = self.core.store.session(child_id)
+                    notice = self._fail_unstarted_child(
+                        parent,
+                        child,
+                        self._birth_record(child_id),
+                        f"child driver failed before a run identity: {type(exc).__name__}: {exc}",
+                    )
+                except Exception:
+                    return
+                if notice is not None:
+                    self._deliver_child_notice(notice[0], notice[1])
                 return
             status, output, error, stop_cause = "failed", None, f"{type(exc).__name__}: {exc}", "error"
             terminal = True

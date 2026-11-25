@@ -6,12 +6,15 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.core.activation import plan_state_copies, validate_state_payload
 from voidcode.core.cancellation import Cancellation
-from voidcode.plugins.subagents import subagents_plugin
+from voidcode.core.storage.store import PluginStateRow
+from voidcode.plugins.subagents import create_plugin, subagents_plugin
 from voidcode.plugins.subagents.agent_reader import read_agent_resource
 from voidcode.plugins.subagents.profiles.registry import load_agent_registry
 from voidcode.plugins.subagents.subagents_plugin import (
@@ -31,6 +34,7 @@ from voidcode.sdk.services import (
     ChildOutcome,
     ChildSendReceipt,
     ChildSessionSnapshot,
+    ChildSpawnIncomplete,
     DescendantNode,
     EventView,
     TerminalRunCapture,
@@ -196,6 +200,64 @@ def test_store_rejects_unknown_and_missing_top_level_keys() -> None:
         _loaded({"schema_version": SCHEMA_VERSION, "children": {}, "groups": {}, "unknown": 1})
     with pytest.raises(ValueError, match="missing field"):
         _loaded({"schema_version": SCHEMA_VERSION})
+
+
+def test_declared_state_schema_accepts_current_shape_and_refuses_old_rows() -> None:
+    """Admission validates the current v1 shape and rejects pre-result_schema rows visibly."""
+    plugin = create_plugin({})
+    assert plugin.state.version == SCHEMA_VERSION
+    assert plugin.state.schema is not None
+    current = DelegationState(
+        children={
+            "child-1": ChildRecord(label="explore", group_id="g1", subagent_type="explore", result_schema=_RESULT_SCHEMA),
+            "child-2": ChildRecord(),
+        },
+        groups={"g1": ("child-1",)},
+    ).to_payload()
+    assert validate_state_payload(current, plugin.state) == current
+
+    old = {
+        "schema_version": SCHEMA_VERSION,
+        "children": {"child-1": {"label": "explore", "group_id": None, "subagent_type": None}},
+        "groups": {},
+    }
+    with pytest.raises(ValueError, match="declared state schema"):
+        validate_state_payload(old, plugin.state)
+
+
+def test_activation_plan_refuses_a_pre_result_schema_row() -> None:
+    plugin = create_plugin({})
+    row = PluginStateRow(
+        owner="subagents",
+        scope="session",
+        scope_key="session-1",
+        payload={
+            "schema_version": SCHEMA_VERSION,
+            "children": {"child-1": {"label": "explore", "group_id": None, "subagent_type": None}},
+            "groups": {},
+        },
+        version=1,
+        schema_version=SCHEMA_VERSION,
+        revision_id="rev-1",
+    )
+
+    class _Source:
+        def plugin_state_rows(self, scope: str, scope_key: str) -> tuple[PluginStateRow, ...]:
+            return (row,) if (scope, scope_key) == ("session", "session-1") else ()
+
+        def session(self, session_id: str) -> SimpleNamespace:
+            _ = session_id
+            return SimpleNamespace(last_event_sequence=10)
+
+    with pytest.raises(ValueError, match="declared state schema"):
+        plan_state_copies(
+            store=_Source(),
+            workspace="/workspace",
+            session_ids=("session-1",),
+            old_states={"subagents": plugin.state},
+            candidate_states={"subagents": plugin.state},
+            deactivate=lambda owner, payload, scope, scope_key, tip: payload,
+        )
 
 
 # --- task: spawning ---
@@ -487,6 +549,39 @@ def test_spawn_store_failure_reports_the_created_child(tmp_path: Path, monkeypat
     assert _payload(result)["task_id"] == "child-1"
     assert len(services.spawn_calls) == 1
     assert services.staged_events == []
+
+
+def test_spawn_incomplete_records_the_durable_child_mapping(tmp_path: Path) -> None:
+    services = FakeServices()
+    services.spawn_failures[1] = ChildSpawnIncomplete("child-incomplete")
+
+    result = _task(services, tmp_path, {"prompt": "partially started", "label": "partial"})
+
+    assert isinstance(result, ToolFailure)
+    assert "did not complete" in result.error
+    payload = _payload(result)
+    assert payload["task_id"] == "child-incomplete"
+    assert payload["agent_uri"] == "agent://child-incomplete"
+    assert _stored(services).children == {"child-incomplete": ChildRecord(label="partial")}
+    assert services.staged_events == [("task_spawned", {"task_id": "child-incomplete", "label": "partial", "group_id": None})]
+
+
+def test_batch_spawn_incomplete_still_records_group_mapping(tmp_path: Path) -> None:
+    services = FakeServices()
+    services.spawn_failures[2] = ChildSpawnIncomplete("child-incomplete")
+
+    result = _batch(services, tmp_path, {"tasks": [{"prompt": "one"}, {"prompt": "two"}]})
+
+    assert isinstance(result, ToolSuccess)
+    payload = _payload(result)
+    group_id = str(payload["parallel_group_id"])
+    assert payload["partial"] is True
+    assert payload["task_ids"] == ["child-1", "child-incomplete"]
+    assert payload["failed"] == [{"index": 1, "error": "child reservation 'child-incomplete' was created but its spawn did not complete"}]
+    state = _stored(services)
+    assert set(state.children) == {"child-1", "child-incomplete"}
+    assert state.groups == {group_id: ("child-1", "child-incomplete")}
+    assert services.staged_events == [("task_batch_spawned", {"parallel_group_id": group_id, "task_ids": ["child-1", "child-incomplete"]})]
 
 
 # --- task: control ---
@@ -1638,3 +1733,31 @@ def test_batch_shared_context_is_never_inherited_by_later_calls(tmp_path: Path) 
         "Shared context:\nbackground\n\nTask:\none",
         "two",
     ]
+
+
+def test_pending_text_marks_a_parked_followup_but_keeps_an_ordinary_queue_waitable() -> None:
+    state = DelegationState(children={"parked": ChildRecord(), "running": ChildRecord()})
+    descendants = (
+        DescendantNode(
+            session_id="parked",
+            parent_session_id="session-1",
+            depth=1,
+            status="interrupted",
+            stop_cause="limit_reached",
+            has_queued_followup=True,
+        ),
+        DescendantNode(
+            session_id="running",
+            parent_session_id="session-1",
+            depth=1,
+            status="running",
+            has_queued_followup=True,
+        ),
+    )
+    entries = subagents_plugin._pending_entries(state, descendants, {"parked", "running"})
+    lines = subagents_plugin._pending_text(entries)
+
+    assert entries[0]["parked_followup"] is True
+    assert "parked follow-up; resume or cancel the child" in lines[0]
+    assert "parked_followup" not in entries[1]
+    assert "parked follow-up" not in lines[1]

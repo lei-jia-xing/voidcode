@@ -21,7 +21,7 @@ from voidcode.sdk.commands import (
     CommandResult,
     ConfirmationRequest,
 )
-from voidcode.sdk.services import DescendantNode, PluginServices
+from voidcode.sdk.services import ChildStatus, DescendantNode, PluginServices
 from voidcode.sdk.tools import ToolEffect
 from voidcode.sdk.views import MAX_VIEW_DATA_BYTES, PluginViewDescriptor, ViewAction
 
@@ -30,6 +30,8 @@ MONITOR_CANCEL_COMMAND = "subagents.monitor.cancel"
 MONITOR_REFRESH_MS = 1000
 DETAIL_PAGE_BYTES = 8 * 1024
 MAX_DETAIL_EVENTS = 50
+_ACTIVE_STATUSES: frozenset[ChildStatus] = frozenset({"idle", "running", "waiting"})
+_VISIBLE_STATUSES: frozenset[ChildStatus] = frozenset({"idle", "running", "waiting", "failed", "interrupted"})
 
 
 def _short(session_id: str) -> str:
@@ -549,14 +551,10 @@ class SubagentStatusView:
                 live=False,
             )
         ordered = _ordered_descendants(nodes)
-        active = [(node, level) for node, level in ordered if node.status in ("running", "waiting", "idle") or node.has_queued_followup]
+        active = [(node, level) for node, level in ordered if node.status in _ACTIVE_STATUSES or node.has_queued_followup]
         has_live = bool(active)
         if has_live:
-            selected = [
-                (node, level)
-                for node, level in ordered
-                if node.status in ("running", "waiting", "idle", "failed", "interrupted") or node.has_queued_followup
-            ]
+            selected = [(node, level) for node, level in ordered if node.status in _VISIBLE_STATUSES or node.has_queued_followup]
         else:
             selected = ordered
         rows: list[list[str]] = []

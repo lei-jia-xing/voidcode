@@ -11,6 +11,39 @@ from voidcode.sdk.services import StateServices
 
 from .constants import _CHILD_KEYS, SCHEMA_VERSION
 
+#: Declared admission schema for the single session-state object this plugin owns. It is the
+#: current v1 shape, including ``result_schema``; there is no migration for older rows, which
+#: fail visibly at admission instead of being guessed into the current shape.
+SUBAGENTS_STATE_SCHEMA: Mapping[str, object] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["schema_version", "children", "groups"],
+    "properties": {
+        "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
+        "children": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["label", "group_id", "subagent_type", "result_schema"],
+                "properties": {
+                    "label": {"type": "string"},
+                    "group_id": {"type": ["string", "null"], "minLength": 1},
+                    "subagent_type": {"type": ["string", "null"], "minLength": 1},
+                    "result_schema": {"type": ["object", "null"]},
+                },
+            },
+        },
+        "groups": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+        },
+    },
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ChildRecord:

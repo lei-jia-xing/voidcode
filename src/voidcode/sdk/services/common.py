@@ -18,6 +18,20 @@ class StateConflict(RuntimeError):
     """
 
 
+class ChildSpawnIncomplete(RuntimeError):
+    """The child reservation is durable, but the spawn call could not finish starting it.
+
+    The named child session exists and must not be forgotten by the caller. It is either
+    already recoverable by startup driver recovery or will be published as a visible failed
+    child; a caller records the mapping and reports the failure instead of treating the spawn
+    as nonexistent.
+    """
+
+    def __init__(self, child_id: str) -> None:
+        super().__init__(f"child reservation {child_id!r} was created but its spawn did not complete")
+        self.child_id = child_id
+
+
 class QueryUnavailable(ValueError):
     """No admitted plugin in this runtime generation answers the named query."""
 

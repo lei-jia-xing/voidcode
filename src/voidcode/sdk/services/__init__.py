@@ -22,7 +22,7 @@ from .budgets import (
     PluginBudget,
     SessionUsageReport,
 )
-from .common import PAGE_BYTES, QueryContractError, QueryUnavailable, StateConflict
+from .common import PAGE_BYTES, ChildSpawnIncomplete, QueryContractError, QueryUnavailable, StateConflict
 from .model_query import (
     ContextContributionFailed,
     ModelQueryBudgetExhausted,
@@ -52,6 +52,7 @@ from .projections import (
     ChildOutcome,
     ChildSendReceipt,
     ChildSessionSnapshot,
+    ChildStatus,
     DescendantNode,
     EventView,
     SessionInfo,
@@ -80,6 +81,7 @@ __all__ = [
     "StructuredModelResult",
     "StructuredChildResult",
     "StateConflict",
+    "ChildSpawnIncomplete",
     "QueryUnavailable",
     "QueryContractError",
     "ContextContributionFailed",
@@ -102,6 +104,7 @@ __all__ = [
     "EventView",
     "ChildOutcome",
     "ChildSendReceipt",
+    "ChildStatus",
     "DescendantNode",
     "TerminalCaptureKind",
     "TerminalRunCapture",

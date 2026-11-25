@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from voidcode.capabilities.agent_queries import AgentDefinition
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
-from voidcode.sdk.services import ChildOutcome, ChildServices, HistoryServices, PluginServices
+from voidcode.sdk.services import ChildOutcome, ChildServices, ChildSpawnIncomplete, HistoryServices, PluginServices
 from voidcode.sdk.tools import (
     TextOutput,
     ToolCall,
@@ -113,8 +113,9 @@ TASK_BATCH_DESCRIPTION = (
     'merged into every item\'s prompt under fixed "Shared context" and "Task" labels; an '
     "absent or blank context leaves item prompts byte-identical. Context applies to a spawn "
     "only and is never stored or inherited by later calls.\n"
-    "- Every item is validated before anything is created; when all items are valid they all start "
-    "in the background under one fresh group id.\n"
+    "- Every item is validated before anything is created; each valid item is then admitted, subject "
+    "to core spawn limits (depth, chain quota, and scope), under one fresh group id. Core limits can "
+    "produce a partial group.\n"
     "- A result with partial=true lists the created and the failed items. Created children stay "
     "recorded and are never retried or cancelled automatically.\n"
     "- Items must be independent: nested delegation, dependencies, keep-alive, and automatic "
@@ -188,7 +189,8 @@ class TaskTool:
                     "type": "string",
                     "enum": list(_TASK_OPERATIONS),
                     "description": (
-                        "output joins the current child run; send adds a same-session follow-up; history pages the transcript; cancel stops it."
+                        "output joins the current child run; send adds a same-session follow-up; "
+                        "history pages the transcript; cancel requests cancellation and reports whether it was accepted."
                     ),
                 },
                 "task_id": {"type": "string", "minLength": 1, "description": "Child session id returned by a spawn."},
@@ -267,6 +269,8 @@ class TaskTool:
                 origin_readonly=context.origin_readonly,
                 result_schema=args.result_schema,
             )
+        except ChildSpawnIncomplete as exc:
+            return self._spawn_incomplete(exc, args, state, version, context, services)
         except (ValueError, PermissionError, RuntimeError) as exc:
             return _failure(self.definition.name, str(exc))
         record = ChildRecord(label=args.label, subagent_type=args.subagent_type, result_schema=args.result_schema)
@@ -389,6 +393,35 @@ class TaskTool:
                 history_sha256=outcome.history_sha256,
             ),
         )
+
+    def _spawn_incomplete(
+        self,
+        exc: ChildSpawnIncomplete,
+        args: TaskArgsModel,
+        state: DelegationState,
+        version: int,
+        context: ToolContext,
+        services: PluginServices,
+    ) -> ToolResult:
+        """Record a durable child reservation whose spawn call failed after creation."""
+        child_id = exc.child_id
+        message = f"{_header(child_id, args.label, args.subagent_type)} child session was created, but its spawn did not complete: {exc}"
+        body = _spawn_body(args, child_id, error=message)
+        record = ChildRecord(label=args.label, subagent_type=args.subagent_type, result_schema=args.result_schema)
+        try:
+            _store(services).save(_with_children(state, ((child_id, record),), group_id=None), version)
+        except Exception as save_exc:
+            message += f"; its mapping could not be saved: {type(save_exc).__name__}: {save_exc}"
+            body = _spawn_body(args, child_id, error=message)
+        else:
+            try:
+                stage_task_spawned(services, child_id=child_id, label=args.label)
+            except Exception as stage_exc:
+                message += f"; its mapping was saved but its roster event could not be staged: {type(stage_exc).__name__}: {stage_exc}"
+                body = _spawn_body(args, child_id, error=message)
+        if _parent_stopped(context):
+            return _stopped_failure(self.definition.name, message, body=body)
+        return ToolFailure(tool_name=self.definition.name, error=message, output=TextOutput(text=message), body=body)
 
     def _control(self, args: TaskArgsModel, state: DelegationState, context: ToolContext, services: PluginServices) -> ToolResult:
         task_id = args.task_id or ""
@@ -753,6 +786,10 @@ class TaskBatchTool:
                     origin_readonly=context.origin_readonly,
                     result_schema=item.result_schema,
                 )
+            except ChildSpawnIncomplete as exc:
+                created.append(_BatchChild(index=index, task_id=exc.child_id, subagent_type=item.subagent_type))
+                failed.append((index, str(exc)))
+                continue
             except (ValueError, PermissionError, RuntimeError) as exc:
                 failed.append((index, str(exc)))
                 continue

@@ -40,7 +40,7 @@ from voidcode.core.engine import Core
 from voidcode.core.events import CHILD_OUTCOME_RECEIPT_OWNER, EventType, child_completion_notice_id
 from voidcode.core.storage.store import EventDraft, SessionStatus, StoreConflict
 from voidcode.sdk.codec import decode_tool_result
-from voidcode.sdk.services import ChildOutcome, ChildSendReceipt
+from voidcode.sdk.services import ChildOutcome, ChildSendReceipt, ChildSpawnIncomplete
 
 PLUGIN_ID = "collaboration-fixture"
 ACK_TOOL = "collaboration_ack"
@@ -1616,8 +1616,11 @@ def test_child_spawn_fact_commit_failure_is_visible(tmp_path: Path, monkeypatch:
             return original(session_id, **kwargs)
 
         monkeypatch.setattr(core.store, "commit_staged", fail_spawn)
-        with pytest.raises(StoreConflict, match="forced spawn fact conflict"):
+        with pytest.raises(ChildSpawnIncomplete) as raised:
             core.spawn_child(parent, "child prompt")
+        assert isinstance(raised.value.__cause__, StoreConflict)
+        assert "forced spawn fact conflict" in str(raised.value.__cause__)
+        assert core.session(raised.value.child_id).parent_session_id == parent
         assert not [event for event in core.store.events(parent) if event.event_type == EventType.CHILD_SPAWNED]
 
         def fail_diagnostic(session_id: str, **kwargs: object):
@@ -2580,6 +2583,118 @@ def test_send_receipt_is_parked_for_a_recoverably_interrupted_child(tmp_path: Pa
         assert len(pending) == 1, "the message stays durable while the child is parked"
         assert core.session(child).run_id == paused.run_id, "the parked run was not replaced"
         assert len(server.requests) == 1, "a parked child consumed no follow-up work"
+
+
+def test_wait_does_not_block_on_a_parked_followup(tmp_path: Path) -> None:
+    """A durable message that needs an explicit resume is not waitable current work."""
+    child_holder: dict[str, str] = {}
+
+    def reply(request: dict[str, object], _index: int) -> dict[str, object] | None:
+        if request.get("method") == "GET":
+            return {"data": [{"id": "exact-model"}]}
+        prompt = _last_user_text(request)
+        if prompt == "parked child":
+            return _turn(_call("parked-probe", PROBE_TOOL))
+        if prompt in ("wait once", "wait twice"):
+            if _last_message_role(request) == "tool":
+                return _turn(output="parent complete")
+            call_id = "wait-once" if prompt == "wait once" else "wait-twice"
+            return _turn(_call(call_id, WAIT_TOOL, action="wait", child_id=child_holder["child"]))
+        return _turn(output=f"unexpected request: {prompt!r}")
+
+    with loopback_server([]) as server:
+        server.before_reply = reply
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        try:
+            parent = core.create_session("parent").session_id
+            child = core.spawn_child(parent, "parked child", max_steps=1, notify_on_completion=False)
+            child_holder["child"] = child
+            paused = core.join_child(parent, child, timeout_seconds=30)
+            assert paused.status == "interrupted" and paused.run_id is not None
+            receipt = core.send_child(parent, child, "durable but unclaimable", notify_on_completion=False)
+            assert receipt.delivery == "parked", receipt
+
+            first = core.run("wait once", session_id=parent)
+            assert first.status == "completed", first.error
+            first_outcomes = _tool_result_body(core, server.requests[-1], "wait-once")["outcomes"]
+            assert isinstance(first_outcomes, list)
+            assert [outcome["run_id"] for outcome in first_outcomes] == [paused.run_id]
+
+            second_results: list[object] = []
+            second_errors: list[BaseException] = []
+
+            def run_second_wait() -> None:
+                try:
+                    second_results.append(core.run("wait twice", session_id=parent))
+                except BaseException as exc:  # noqa: BLE001 - preserve the real failure for the assertion
+                    second_errors.append(exc)
+
+            thread = threading.Thread(target=run_second_wait, daemon=True)
+            thread.start()
+            try:
+                thread.join(timeout=5)
+                assert not thread.is_alive(), "wait blocked on a parked follow-up instead of returning"
+            finally:
+                if thread.is_alive():
+                    core.close()
+                thread.join(timeout=5)
+            assert not second_errors, second_errors
+            assert second_results
+            assert getattr(second_results[0], "status", None) == "completed"
+            second_outcomes = _tool_result_body(core, server.requests[-1], "wait-twice")["outcomes"]
+            assert second_outcomes == []
+        finally:
+            core.close()
+
+
+def test_child_driver_failure_before_run_identity_publishes_a_failed_fact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An accepted spawn that dies before its first run must not stay an idle reservation."""
+    with loopback_server([]) as server:
+        core = _open(tmp_path, server)
+        core.auto_drain = False
+        try:
+            parent = core.create_session("parent").session_id
+
+            def fail_run(*args: object, **kwargs: object) -> object:
+                raise RuntimeError("driver exploded before the run committed")
+
+            monkeypatch.setattr(core, "_run", fail_run)
+            child = core.spawn_child(parent, "never starts", notify_on_completion=True)
+
+            _wait_for(lambda: bool(_child_facts(core, parent)), what="the failed child fact")
+            [fact] = _child_facts(core, parent)
+            assert fact["status"] == "failed"
+            run_id = str(fact["run_id"])
+            assert run_id.startswith("unstarted:")
+            assert "driver exploded" in str(fact.get("error"))
+            now = core.session(child)
+            assert now.status is SessionStatus.FAILED and now.run_id == run_id
+            notice_id = child_completion_notice_id(parent, child, run_id)
+            assert core.store.continuation_status(notice_id) == "pending"
+        finally:
+            core.close()
+
+
+def test_spawn_submit_failure_names_the_durable_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A driver-submit failure after reservation must surface the child identity, not drop it."""
+    with loopback_server([]) as server:
+        core = _open(tmp_path, server)
+        try:
+            parent = core.create_session("parent").session_id
+
+            def fail_submit(*args: object, **kwargs: object) -> object:
+                raise RuntimeError("driver executor is closed")
+
+            monkeypatch.setattr(core._delegation._driver_executor, "submit", fail_submit)
+            with pytest.raises(ChildSpawnIncomplete) as raised:
+                core.spawn_child(parent, "reserved child", notify_on_completion=False)
+            child = raised.value.child_id
+            record = core.session(child)
+            assert record.parent_session_id == parent
+            assert record.status is SessionStatus.IDLE and record.run_id is None
+        finally:
+            core.close()
 
 
 def test_send_receipt_starts_when_the_child_has_no_outstanding_work(tmp_path: Path) -> None:

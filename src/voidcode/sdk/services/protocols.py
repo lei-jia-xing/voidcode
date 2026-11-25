@@ -190,7 +190,12 @@ class ChildServices(Protocol):
         idempotency_key: str | None = None,
         result_schema: Mapping[str, object] | None = None,
     ) -> str:
-        """Start a delegated child session under this parent session and return its id."""
+        """Start a delegated child session under this parent session and return its id.
+
+        A failure after the durable reservation raises ``ChildSpawnIncomplete`` carrying the
+        child id: the caller must record that child and report the failure instead of treating
+        the spawn as nonexistent. The reservation is recoverable by startup driver recovery.
+        """
         ...
 
     def send_child(

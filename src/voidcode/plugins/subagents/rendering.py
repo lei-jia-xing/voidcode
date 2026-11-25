@@ -5,13 +5,15 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from voidcode.sdk.resources import ResourceReadCaller
-from voidcode.sdk.services import ArtifactServices, ChildOutcome, DescendantNode
+from voidcode.sdk.services import ArtifactServices, ChildOutcome, ChildStatus, DescendantNode
 
 from .bodies import TaskBody, _BatchChild
 from .constants import OUTPUT_PAGE_BYTES
 from .output import _output_facts, _OutputFacts, _structured_facts, _StructuredFacts
 from .state import ChildRecord, DelegationState
 from .uris import _agent_uri, _artifact_uri, _transcript_uri
+
+_KNOWN_CHILD_STATUSES: frozenset[ChildStatus] = frozenset({"idle", "running", "waiting", "interrupted", "completed", "failed"})
 
 
 def _header(task_id: str, label: str, subagent_type: str | None = None) -> str:
@@ -167,7 +169,6 @@ def _pending_entries(
     selected_task_ids: set[str],
 ) -> tuple[dict[str, object], ...]:
     pending: list[dict[str, object]] = []
-    known_statuses = {"idle", "pending", "running", "waiting", "interrupted", "completed", "failed"}
     for descendant in descendants:
         task_id = descendant.session_id
         if task_id not in selected_task_ids:
@@ -175,13 +176,16 @@ def _pending_entries(
         record = state.children.get(task_id)
         if record is None:
             continue
-        if descendant.status not in known_statuses:
+        if descendant.status not in _KNOWN_CHILD_STATUSES:
             raise RuntimeError(f"descendant returned an unknown wait status: {descendant.status!r}")
-        current_work = descendant.status in ("idle", "pending", "running", "waiting") or (
+        current_work = descendant.status in ("idle", "running", "waiting") or (
             descendant.status == "interrupted" and descendant.stop_cause not in ("owner_cancel", "user_stop")
         )
         if not current_work and not descendant.has_queued_followup:
             continue
+        parked_followup = (
+            descendant.has_queued_followup and descendant.status == "interrupted" and descendant.stop_cause not in ("owner_cancel", "user_stop")
+        )
         entry: dict[str, object] = {
             "task_id": task_id,
             "label": record.label,
@@ -198,6 +202,8 @@ def _pending_entries(
             entry["activity"] = descendant.activity
         if descendant.has_queued_followup:
             entry["has_queued_followup"] = True
+        if parked_followup:
+            entry["parked_followup"] = True
         if descendant.awaiting_approval:
             entry["awaiting_approval"] = True
         pending.append(entry)
@@ -205,7 +211,13 @@ def _pending_entries(
 
 
 def _pending_text(entries: Sequence[Mapping[str, object]]) -> list[str]:
-    return [f"- pending {entry['task_id']} status={entry['status']} run_id={entry.get('run_id') or 'none'}" for entry in entries]
+    lines: list[str] = []
+    for entry in entries:
+        line = f"- pending {entry['task_id']} status={entry['status']} run_id={entry.get('run_id') or 'none'}"
+        if entry.get("parked_followup") is True:
+            line += " (parked follow-up; resume or cancel the child before it can be consumed)"
+        lines.append(line)
+    return lines
 
 
 def _budget_exhaustion_payload(outcome: ChildOutcome) -> dict[str, object] | None:
