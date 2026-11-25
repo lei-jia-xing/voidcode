@@ -1,182 +1,75 @@
-"""LSP connection manager: manages session-scoped language server processes and document state."""
+"""LSP manager facade: disabled/managed selection and the request boundary.
+
+Protocol framing lives in ``protocol.py``, server sharing in ``server_registry.py``,
+document synchronization in ``documents.py``, and process lifecycle in
+``server_lifecycle.py``. This module keeps the stable manager API and the
+single-owner request routing that callers and tests address.
+"""
 
 from __future__ import annotations
 
-import concurrent.futures
-import hashlib
-import json
-import logging
-import os
-import queue
 import threading
 import time
-import uuid
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, Literal, ParamSpec, Protocol, TypeVar
-from urllib.parse import unquote, urlparse
-from urllib.request import url2pathname
+from typing import Final, Protocol
 
-from lsprotocol import converters as lsp_converters
-from lsprotocol import types as lsp_types
-
-from voidcode.capabilities.workspace_queries import PositionEncoding, is_position_encoding
+from voidcode.capabilities.workspace_queries import PositionEncoding
 from voidcode.sdk.provider import ProviderAbortSignal
 from voidcode.sdk.services import PluginServices, ProcessServices
 
+from . import documents as _documents
+from . import owner as _owner
+from . import protocol as _protocol
+from . import server_lifecycle as _server_lifecycle
 from .contracts import ResolvedLspServerConfig
-from .lsp_types import LspDocumentState, LspManagerMode, LspRequestError, LspServerStatus, RuntimeLspConfig
-from .registry import (
-    derive_workspace_lsp_defaults,
-    match_lsp_servers_for_path,
-    resolve_lsp_server_configs,
+from .lsp_types import LspDocumentState, RuntimeLspConfig
+from .manager_state import LspConfigState, LspManagerState, LspServerState
+from .registry import derive_workspace_lsp_defaults
+from .server_registry import (
+    LocalServerKey,
+    LspRegistryKey,
+    LspServerLease,
+    OpenedLspDocument,
+    RunningLspServer,
+    SessionScopedLspRegistry,
 )
-from .roots import discover_workspace_root
 
-logger = logging.getLogger(__name__)
+# Stable names tests and callers import from the facade.
+MAX_LSP_HEADER_BYTES = _protocol.MAX_LSP_HEADER_BYTES
+MAX_LSP_MESSAGE_BYTES = _protocol.MAX_LSP_MESSAGE_BYTES
+LspMessageBoundsError = _protocol.LspMessageBoundsError
+LspProtocolError = _protocol.LspProtocolError
+LspRuntimeError = _protocol.LspRuntimeError
+_encode_lsp_message = _protocol.encode_lsp_message
+_read_lsp_frame = _protocol.read_lsp_frame
+_language_id_for_path = _documents.language_id_for_path
+_LspOwner = _owner.LspOwner
+_LspRegistryKey = LspRegistryKey
+_LspServerLease = LspServerLease
+_OpenedLspDocument = OpenedLspDocument
+_RunningLspServer = RunningLspServer
+_SessionScopedLspRegistry = SessionScopedLspRegistry
 
-MAX_LSP_HEADER_BYTES = 8192
-MAX_LSP_MESSAGE_BYTES = 1024 * 1024
+__all__ = [
+    "DisabledLspManager",
+    "LSP_REQUEST_TIMEOUT_SECONDS",
+    "LspConfigState",
+    "LspManager",
+    "LspManagerState",
+    "LspMessageBoundsError",
+    "LspProtocolError",
+    "LspRequest",
+    "LspRequestResult",
+    "LspRuntimeError",
+    "LspServerState",
+    "ManagedLspManager",
+    "MAX_LSP_HEADER_BYTES",
+    "MAX_LSP_MESSAGE_BYTES",
+    "build_lsp_manager",
+]
+
 LSP_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
-
-#: Preferred LSP language ids per document extension. A server's configured
-#: languages decide which candidate wins; the first configured language is only
-#: the fallback when none of the document's candidates are configured.
-_LANGUAGE_IDS_BY_EXTENSION: dict[str, tuple[str, ...]] = {
-    ".py": ("python",),
-    ".pyi": ("python",),
-    ".js": ("javascript",),
-    ".mjs": ("javascript",),
-    ".cjs": ("javascript",),
-    ".jsx": ("javascriptreact", "javascript"),
-    ".ts": ("typescript",),
-    ".mts": ("typescript",),
-    ".cts": ("typescript",),
-    ".tsx": ("typescriptreact", "typescript"),
-    ".go": ("go",),
-    ".rs": ("rust",),
-    ".zig": ("zig",),
-    ".zon": ("zig",),
-    ".java": ("java",),
-    ".kt": ("kotlin",),
-    ".kts": ("kotlin",),
-    ".cs": ("csharp",),
-    ".csx": ("csharp",),
-    ".rb": ("ruby",),
-    ".php": ("php",),
-    ".phtml": ("php",),
-    ".lua": ("lua",),
-    ".toml": ("toml",),
-    ".c": ("c",),
-    ".cc": ("cpp",),
-    ".cpp": ("cpp",),
-    ".cxx": ("cpp",),
-    ".h": ("cpp", "c"),
-    ".hh": ("cpp",),
-    ".hpp": ("cpp",),
-    ".hxx": ("cpp",),
-    ".css": ("css",),
-    ".scss": ("scss",),
-    ".less": ("less",),
-    ".html": ("html",),
-    ".htm": ("html",),
-    ".vue": ("vue",),
-    ".svelte": ("svelte",),
-    ".astro": ("astro",),
-    ".md": ("markdown",),
-    ".markdown": ("markdown",),
-    ".mdx": ("mdx", "markdown"),
-    ".json": ("json",),
-    ".jsonc": ("jsonc", "json"),
-    ".yaml": ("yaml", "dockercompose"),
-    ".yml": ("yaml", "dockercompose"),
-    ".sh": ("shell", "bash"),
-    ".bash": ("bash", "shell"),
-    ".zsh": ("zsh", "shell"),
-    ".xml": ("xml",),
-    ".xsd": ("xsd", "xml"),
-    ".xsl": ("xsl", "xml"),
-    ".xslt": ("xslt", "xml"),
-    ".svg": ("svg", "xml"),
-    ".tex": ("tex",),
-    ".bib": ("bibtex",),
-    ".cmake": ("cmake",),
-    ".dockerfile": ("dockerfile",),
-}
-
-
-def _language_id_for_path(path: Path, config: ResolvedLspServerConfig) -> str:
-    suffix = path.suffix.lower()
-    candidates = _LANGUAGE_IDS_BY_EXTENSION.get(suffix, ())
-    for language in candidates:
-        if language in config.languages:
-            return language
-    if len(config.languages) == 1:
-        return config.languages[0]
-    bare_suffix = suffix.removeprefix(".")
-    if bare_suffix in config.languages:
-        return bare_suffix
-    if config.languages:
-        return config.languages[0]
-    return bare_suffix or "plaintext"
-
-
-class LspRuntimeError(LspRequestError):
-    """Base class for runtime-managed LSP failures."""
-
-
-class LspProtocolError(LspRuntimeError):
-    """Raised when an LSP server violates JSON-RPC/LSP framing or payload rules."""
-
-
-class LspMessageBoundsError(LspRuntimeError):
-    """Raised when an LSP message exceeds configured runtime bounds."""
-
-
-@dataclass(frozen=True, slots=True)
-class LspConfigState:
-    configured_enabled: bool = False
-    servers: dict[str, ResolvedLspServerConfig] = field(default_factory=dict)
-
-    @classmethod
-    def from_runtime_config(cls, config: RuntimeLspConfig | None) -> LspConfigState:
-        if config is None:
-            return cls()
-        resolved_servers = resolve_lsp_server_configs(config.servers)
-        return cls(
-            configured_enabled=config.enabled,
-            servers=resolved_servers,
-        )
-
-    def resolve(self, server_name: str) -> ResolvedLspServerConfig | None:
-        return self.servers.get(server_name)
-
-    def matching_servers(self, file_path: Path) -> tuple[str, ...]:
-        return match_lsp_servers_for_path(self.servers, file_path)
-
-    def default_server_name(self, file_path: Path | None = None) -> str | None:
-        if file_path is not None:
-            matching_servers = self.matching_servers(file_path)
-            if matching_servers:
-                return matching_servers[0]
-        if not self.servers:
-            return None
-        return next(iter(self.servers))
-
-
-@dataclass(frozen=True, slots=True)
-class LspServerState:
-    name: str
-    status: LspServerStatus = "stopped"
-    last_error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class LspManagerState:
-    mode: LspManagerMode = "disabled"
-    configuration: LspConfigState = field(default_factory=LspConfigState)
-    servers: dict[str, LspServerState] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,12 +88,6 @@ class LspRequestResult:
     response: dict[str, object]
     document_state: LspDocumentState | None = None
     position_encoding: PositionEncoding = "utf-16"
-
-
-@dataclass(frozen=True, slots=True)
-class _OpenedLspDocument:
-    version: int
-    content_hash: str
 
 
 class LspManager(Protocol):
@@ -249,291 +136,6 @@ class DisabledLspManager:
         return None
 
 
-_P = ParamSpec("_P")
-_T = TypeVar("_T")
-
-
-_OWNER_CLOSE_JOIN_SECONDS: Final[float] = 5.0
-
-
-class _LspOwner:
-    """One manager's owner thread for LSP runtime objects.
-
-    ``call`` runs ``func`` on that thread and returns its result (or raises
-    its exception). Calls issued from the owner thread itself run inline, so
-    owned code can freely use the routing entry points without self-deadlock.
-    The thread starts lazily and ``close`` stops it after queued work so a
-    manager owns the whole lifecycle; one manager's shutdown never affects
-    another manager.
-    """
-
-    def __init__(self) -> None:
-        self._work: queue.Queue[tuple[Callable[[], Any], concurrent.futures.Future[Any]] | None] = queue.Queue()
-        self._ident: int | None = None
-        self._thread: threading.Thread | None = None
-        self._closed = False
-        self._lock = threading.RLock()
-
-    def call(self, func: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs) -> _T:
-        with self._lock:
-            self._ensure_started_locked()
-            if threading.get_ident() == self._ident:
-                return func(*args, **kwargs)
-            future: concurrent.futures.Future[Any] = concurrent.futures.Future()
-            self._work.put((lambda: func(*args, **kwargs), future))
-        return future.result()
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            thread = self._thread
-            if thread is None:
-                return
-            if threading.get_ident() == self._ident:
-                raise RuntimeError("the LSP owner thread cannot join itself")
-            self._work.put(None)
-        thread.join(timeout=_OWNER_CLOSE_JOIN_SECONDS)
-        if thread.is_alive():
-            raise RuntimeError("the LSP owner thread did not stop")
-
-    def _ensure_started_locked(self) -> None:
-        if self._closed:
-            raise RuntimeError("the LSP manager is shut down")
-        if self._thread is None:
-            self._thread = threading.Thread(target=self._serve, name="lsp-owner", daemon=True)
-            self._thread.start()
-
-    def _serve(self) -> None:
-        self._ident = threading.get_ident()
-        while True:
-            item = self._work.get()
-            if item is None:
-                return
-            func, future = item
-            try:
-                future.set_result(func())
-            except BaseException as exc:  # noqa: B036 - delivered to the caller; the owner itself never exits
-                future.set_exception(exc)
-
-
-# The one LSP wire header name. ``lsprotocol`` ships only converters and
-# types (no stdio transport), and the host exposes supervised processes only
-# through paged log reads, so this module keeps the single minimal
-# framed-reader below instead of a third-party transport.
-_CONTENT_LENGTH_HEADER = "Content-Length"
-_CONTENT_LENGTH_PREFIX = _CONTENT_LENGTH_HEADER.lower() + ":"
-
-# The host offers no blocking read on a service process's log, only paged
-# polling reads (see ProcessServices.read_process_output). The framed reader
-# therefore parks on this never-set event between empty pages: a bounded
-# blocking wait with backoff, starting below the old fixed sleep so quick
-# servers answer sooner and idle waits cost fewer wakeups.
-_LSP_POLL_PARK = threading.Event()
-_LSP_POLL_MIN_SECONDS = 0.001
-_LSP_POLL_MAX_SECONDS = 0.05
-
-
-def _encode_lsp_message(message: dict[str, object]) -> bytes:
-    """Encode one LSP stdio frame; every write path goes through here."""
-    body = json.dumps(message).encode("utf-8")
-    return f"{_CONTENT_LENGTH_HEADER}: {len(body)}\r\n\r\n".encode("ascii") + body
-
-
-def _park_before_retry(idle_polls: int) -> None:
-    _LSP_POLL_PARK.wait(min(_LSP_POLL_MAX_SECONDS, _LSP_POLL_MIN_SECONDS * (2 ** min(idle_polls, 6))))
-
-
-def _read_lsp_frame(
-    services: ProcessServices,
-    running_server: _RunningLspServer,
-    *,
-    server_name: str,
-    abort_signal: ProviderAbortSignal | None,
-    timeout: float = 30.0,
-) -> dict[str, object] | None:
-    """Read one LSP stdio frame; the single framed-reader for every request."""
-    process_id = running_server.process_id
-    deadline = time.monotonic() + timeout
-    buffer = bytearray()
-    idle_polls = 0
-
-    def _page(needed: int) -> bool:
-        nonlocal idle_polls
-        if abort_signal is not None and abort_signal.cancelled:
-            raise TimeoutError(f"LSP request to {server_name} was cancelled")
-        if time.monotonic() >= deadline:
-            raise TimeoutError(f"LSP server did not respond within {timeout}s")
-        page = services.read_process_output(
-            process_id,
-            stream="stdout",
-            offset=running_server.stdout_cursor + len(buffer),
-            limit=max(1, min(65536, needed)),
-        )
-        if page.data:
-            buffer.extend(page.data)
-            idle_polls = 0
-            return True
-        if not page.running:
-            return False
-        _park_before_retry(idle_polls)
-        idle_polls += 1
-        return True
-
-    while bytes(buffer).find(b"\r\n\r\n") < 0:
-        if len(buffer) > MAX_LSP_HEADER_BYTES:
-            raise LspMessageBoundsError(f"LSP header exceeded {MAX_LSP_HEADER_BYTES} bytes")
-        if not _page(MAX_LSP_HEADER_BYTES + 4 - len(buffer)):
-            return None
-
-    header_end = bytes(buffer).find(b"\r\n\r\n")
-    header_bytes = bytes(buffer[:header_end])
-    if len(header_bytes) > MAX_LSP_HEADER_BYTES:
-        raise LspMessageBoundsError(f"LSP header exceeded {MAX_LSP_HEADER_BYTES} bytes")
-    try:
-        header_text = header_bytes.decode("ascii")
-    except UnicodeDecodeError as exc:
-        raise LspProtocolError("invalid ASCII header from LSP server") from exc
-    content_length = None
-    for line in header_text.split("\r\n"):
-        if line.lower().startswith(_CONTENT_LENGTH_PREFIX):
-            raw_length = line.split(":", 1)[1].strip()
-            try:
-                content_length = int(raw_length)
-            except ValueError as exc:
-                raise LspProtocolError(f"invalid Content-Length from LSP server: {raw_length}") from exc
-            break
-    if content_length is None:
-        raise LspProtocolError("missing Content-Length in LSP response header")
-    if content_length < 0:
-        raise LspProtocolError("invalid negative Content-Length from LSP server")
-    if content_length > MAX_LSP_MESSAGE_BYTES:
-        raise LspMessageBoundsError(f"LSP Content-Length {content_length} exceeds {MAX_LSP_MESSAGE_BYTES} bytes")
-
-    body_start = header_end + 4
-    while len(buffer) - body_start < content_length:
-        if len(buffer) - body_start > MAX_LSP_MESSAGE_BYTES:
-            raise LspMessageBoundsError(f"LSP Content-Length {content_length} exceeds {MAX_LSP_MESSAGE_BYTES} bytes")
-        if not _page(content_length - (len(buffer) - body_start)):
-            return None
-
-    running_server.stdout_cursor += body_start + content_length
-    body = bytes(buffer[body_start : body_start + content_length])
-    try:
-        decoded_body = body.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise LspProtocolError("invalid UTF-8 payload from LSP server") from exc
-    try:
-        payload = json.loads(decoded_body)
-    except json.JSONDecodeError as exc:
-        raise LspProtocolError("invalid JSON payload from LSP server") from exc
-    if not isinstance(payload, dict):
-        raise LspProtocolError("expected JSON-RPC object payload from LSP server")
-    return payload
-
-
-@dataclass(slots=True)
-class _RunningLspServer:
-    config: ResolvedLspServerConfig
-    process_id: str
-    workspace_root: Path
-    stdout_cursor: int = 0
-    initialized: bool = False
-    next_request_id: int = 1
-    position_encoding: PositionEncoding = "utf-16"
-    document_sync_enabled: bool = False
-    documents: dict[str, _OpenedLspDocument] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class _SharedLspServerEntry:
-    server: _RunningLspServer
-    generation: int
-    ref_count: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class _LspRegistryKey:
-    session_id: str
-    server_name: str
-    workspace_root: Path
-
-
-@dataclass(frozen=True, slots=True)
-class _LspServerLease:
-    key: _LspRegistryKey
-    generation: int
-
-
-class _SessionScopedLspRegistry:
-    """Session-scoped server sharing; the manager's owner thread serializes manager calls."""
-
-    def __init__(self) -> None:
-        self._entries: dict[_LspRegistryKey, _SharedLspServerEntry] = {}
-        self._next_generation = 1
-        self._lock = threading.Lock()
-
-    def _allocate_generation(self) -> int:
-        generation = self._next_generation
-        self._next_generation += 1
-        return generation
-
-    def acquire(
-        self,
-        *,
-        key: _LspRegistryKey,
-        config: ResolvedLspServerConfig,
-        start: Callable[[str], _RunningLspServer],
-    ) -> tuple[_RunningLspServer, _LspServerLease, Literal["started", "reused"]]:
-        with self._lock:
-            entry = self._entries.get(key)
-            if entry is not None:
-                if entry.server.config != config:
-                    raise ValueError(
-                        "session-scoped LSP reuse rejected because the existing "
-                        f"{key.server_name} server for {key.workspace_root} was started with "
-                        "a different resolved configuration"
-                    )
-                entry.ref_count += 1
-                return (
-                    entry.server,
-                    _LspServerLease(key=key, generation=entry.generation),
-                    "reused",
-                )
-
-            server = start(f"lsp-{uuid.uuid4().hex[:12]}")
-            generation = self._allocate_generation()
-            self._entries[key] = _SharedLspServerEntry(
-                server=server,
-                generation=generation,
-                ref_count=1,
-            )
-            return server, _LspServerLease(key=key, generation=generation), "started"
-
-    def release(self, *, lease: _LspServerLease) -> _RunningLspServer | None:
-        with self._lock:
-            entry = self._entries.get(lease.key)
-            if entry is None:
-                return None
-            if entry.generation != lease.generation:
-                return None
-            if entry.ref_count > 1:
-                entry.ref_count -= 1
-                return None
-            self._entries.pop(lease.key, None)
-            return entry.server
-
-    def invalidate(self, *, key: _LspRegistryKey, process_id: str) -> _RunningLspServer | None:
-        """Drop one entry only when it still holds this process id; never touches the host."""
-        with self._lock:
-            entry = self._entries.get(key)
-            if entry is None or entry.server.process_id != process_id:
-                return None
-            self._entries.pop(key, None)
-            return entry.server
-
-
 _SESSION_SCOPED_LSP_REGISTRY = _SessionScopedLspRegistry()
 
 
@@ -542,13 +144,13 @@ class ManagedLspManager:
 
     def __init__(self, config: RuntimeLspConfig) -> None:
         self._configuration = LspConfigState.from_runtime_config(config)
-        self._server_states: dict[str, LspServerState] = {name: LspServerState(name=name) for name in self._configuration.servers}
-        self._running_servers: dict[tuple[str, str, Path], _RunningLspServer] = {}
-        self._leased_servers: dict[tuple[str, str, Path], _LspServerLease] = {}
-        self._owner = _LspOwner()
+        self._lifecycle = _server_lifecycle.ServerLifecycle(_SESSION_SCOPED_LSP_REGISTRY, self._configuration.servers)
+        self._server_states = self._lifecycle.server_states
+        self._running_servers = self._lifecycle.running_servers
+        self._leased_servers = self._lifecycle.leased_servers
+        self._owner = _owner.LspOwner()
         self._shutdown_lock = threading.Lock()
         self._shutdown = False
-        self._converter = lsp_converters.get_converter()
         # An explicit plugin config owns the server set; without one the manager
         # derives workspace-safe defaults per workspace, like the runtime did.
         self._derive_servers = not config.servers
@@ -567,7 +169,7 @@ class ManagedLspManager:
             derived = LspConfigState.from_runtime_config(RuntimeLspConfig(enabled=True, servers=derive_workspace_lsp_defaults(resolved_workspace)))
             self._derived_configurations[resolved_workspace] = derived
             for server_name in derived.servers:
-                self._server_states.setdefault(server_name, LspServerState(name=server_name))
+                self._lifecycle.register_server(server_name)
         return derived
 
     @property
@@ -638,46 +240,11 @@ class ManagedLspManager:
         return self._owner.call(self._document_state_owned, session_id=session_id, file_path=file_path, workspace=workspace)
 
     def _document_state_owned(self, *, session_id: str, file_path: Path, workspace: Path) -> LspDocumentState | None:
-        path = file_path.resolve()
-        uri = path.as_uri()
-        expected_workspace = workspace.resolve()
-        matches: list[LspDocumentState] = []
-        for key, running_server in tuple(self._running_servers.items()):
-            if key[0] != session_id:
-                continue
-            if not running_server.config.matches_path(path):
-                continue
-            resolved_root = discover_workspace_root(
-                file_path=path,
-                workspace_root=expected_workspace,
-                root_markers=running_server.config.root_markers,
-            )
-            if running_server.workspace_root != resolved_root:
-                continue
-            document = running_server.documents.get(uri)
-            if document is None:
-                continue
-            try:
-                actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-            except OSError:
-                continue
-            if actual_hash != document.content_hash:
-                continue
-            matches.append(
-                LspDocumentState(
-                    version=document.version,
-                    content_hash=document.content_hash,
-                    position_encoding=running_server.position_encoding,
-                )
-            )
-        return matches[0] if len(matches) == 1 else None
+        return _documents.document_state(self._running_servers, session_id=session_id, file_path=file_path, workspace=workspace)
 
     @staticmethod
     def _text_document_path(params: dict[str, object]) -> Path | None:
-        document = params.get("textDocument")
-        if not isinstance(document, dict) or not isinstance(document.get("uri"), str):
-            return None
-        return ManagedLspManager._path_from_file_uri(document["uri"])
+        return _documents.text_document_path(params)
 
     def _synchronize_document_owned(
         self,
@@ -685,61 +252,7 @@ class ManagedLspManager:
         running_server: _RunningLspServer,
         file_path: Path,
     ) -> LspDocumentState | None:
-        if not running_server.document_sync_enabled:
-            return None
-        path = file_path.resolve()
-        if not path.is_relative_to(running_server.workspace_root) or not running_server.config.matches_path(path):
-            raise ValueError(f"LSP document is outside the configured server workspace: {path}")
-        try:
-            content_bytes = path.read_bytes()
-            content = content_bytes.decode("utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            raise ValueError(f"LSP document is unavailable as UTF-8 text: {path}") from exc
-
-        content_hash = hashlib.sha256(content_bytes).hexdigest()
-        uri = path.as_uri()
-        opened = running_server.documents.get(uri)
-        if opened is not None and opened.content_hash == content_hash:
-            return LspDocumentState(
-                version=opened.version,
-                content_hash=opened.content_hash,
-                position_encoding=running_server.position_encoding,
-            )
-
-        version = opened.version + 1 if opened is not None else 1
-        if opened is None:
-            language_id = _language_id_for_path(path, running_server.config)
-            self._send_notification(
-                services,
-                running_server,
-                method="textDocument/didOpen",
-                params={
-                    "textDocument": {
-                        "uri": uri,
-                        "languageId": language_id,
-                        "version": version,
-                        "text": content,
-                    }
-                },
-                abort_signal=None,
-            )
-        else:
-            self._send_notification(
-                services,
-                running_server,
-                method="textDocument/didChange",
-                params={
-                    "textDocument": {"uri": uri, "version": version},
-                    "contentChanges": [{"text": content}],
-                },
-                abort_signal=None,
-            )
-        running_server.documents[uri] = _OpenedLspDocument(version, content_hash)
-        return LspDocumentState(
-            version=version,
-            content_hash=content_hash,
-            position_encoding=running_server.position_encoding,
-        )
+        return _documents.synchronize_document(services, running_server, file_path, notify=self._send_notification)
 
     def shutdown(self) -> None:
         with self._shutdown_lock:
@@ -752,13 +265,7 @@ class ManagedLspManager:
             self._owner.close()
 
     def _shutdown_owned(self) -> None:
-        # Host retirement already stopped every service process in this generation;
-        # shutdown here only forgets local entries, never touches the host.
-        for key in tuple(self._running_servers):
-            self._running_servers.pop(key, None)
-            lease = self._leased_servers.pop(key, None)
-            if lease is not None:
-                _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
+        self._lifecycle.shutdown_owned()
 
     def _ensure_running(
         self,
@@ -792,113 +299,32 @@ class ManagedLspManager:
         session_id: str,
         abort_signal: ProviderAbortSignal | None,
     ) -> tuple[_RunningLspServer, _LspRegistryKey]:
-        lease_key = _LspRegistryKey(session_id=session_id, server_name=server_name, workspace_root=workspace_root)
-        local_key = (session_id, server_name, workspace_root)
-        running_server = self._running_servers.get(local_key)
-        if running_server is not None:
-            if running_server.workspace_root != workspace_root:
-                if not self._stop_abandoned_server(services, local_key, lease_key, running_server):
-                    raise ValueError(
-                        f"LSP server {server_name} for {running_server.workspace_root} could not be confirmed stopped; not starting another"
-                    )
-            elif self._service_answers(services, running_server):
-                return running_server, lease_key
-            else:
-                self._forget_dead_entry(local_key, lease_key, running_server.process_id)
-
-        self._server_states[server_name] = LspServerState(
-            name=server_name,
-            status="starting",
+        return self._lifecycle.ensure_running_owned(
+            services,
+            server_name=server_name,
+            server_config=server_config,
+            workspace_root=workspace_root,
+            session_id=session_id,
+            abort_signal=abort_signal,
+            start=self._start_running_server,
+            answers=self._service_answers,
         )
-        try:
-            running_server, lease, outcome = _SESSION_SCOPED_LSP_REGISTRY.acquire(
-                key=lease_key,
-                config=server_config,
-                start=lambda process_id: self._start_running_server(
-                    services,
-                    process_id=process_id,
-                    server_name=server_name,
-                    server_config=server_config,
-                    workspace_root=workspace_root,
-                    abort_signal=abort_signal,
-                ),
-            )
-        except ValueError as exc:
-            message = str(exc)
-            self._mark_failed(server_name=server_name, error=message)
-            raise
-
-        self._running_servers[local_key] = running_server
-        self._leased_servers[local_key] = lease
-        if outcome == "reused" and not self._service_answers(services, running_server):
-            self._forget_dead_entry(local_key, lease_key, running_server.process_id)
-            return self._ensure_running_owned(
-                services,
-                server_name=server_name,
-                server_config=server_config,
-                workspace_root=workspace_root,
-                session_id=session_id,
-                abort_signal=abort_signal,
-            )
-        self._server_states[server_name] = LspServerState(
-            name=server_name,
-            status="running",
-        )
-        return running_server, lease_key
 
     @staticmethod
     def _service_answers(services: ProcessServices, running_server: _RunningLspServer) -> bool:
-        try:
-            page = services.read_process_output(running_server.process_id, stream="stdout", offset=running_server.stdout_cursor, limit=1)
-        except ValueError:
-            return False
-        return page.running
+        return _server_lifecycle.ServerLifecycle.service_answers(services, running_server)
 
     def _stop_abandoned_server(
         self,
         services: ProcessServices,
-        local_key: tuple[str, str, Path],
+        local_key: LocalServerKey,
         lease_key: _LspRegistryKey,
         running_server: _RunningLspServer,
     ) -> bool:
-        """Stop a mismatched-root server and report an unconfirmed stop instead of dropping it."""
-        process_id = running_server.process_id
-        old_key = _LspRegistryKey(session_id=lease_key.session_id, server_name=lease_key.server_name, workspace_root=running_server.workspace_root)
-        error: str | None = None
-        try:
-            stopped = services.cancel_process(process_id)
-        except ValueError as exc:
-            stopped = False
-            error = str(exc)
-        running_server.documents.clear()
-        running_server.initialized = False
-        running_server.stdout_cursor = 0
-        self._running_servers.pop(local_key, None)
-        lease = self._leased_servers.pop(local_key, None)
-        _SESSION_SCOPED_LSP_REGISTRY.invalidate(key=old_key, process_id=process_id)
-        if lease is not None:
-            _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
-        if stopped:
-            self._server_states[lease_key.server_name] = LspServerState(name=lease_key.server_name, status="stopped")
-        else:
-            detail = f": {error}" if error else ""
-            self._server_states[lease_key.server_name] = LspServerState(
-                name=lease_key.server_name,
-                status="failed",
-                last_error=f"LSP server {lease_key.server_name} could not be confirmed stopped{detail}",
-            )
-        return stopped
+        return self._lifecycle.stop_abandoned_server(services, local_key, lease_key, running_server)
 
-    def _forget_dead_entry(self, local_key: tuple[str, str, Path], lease_key: _LspRegistryKey, process_id: str) -> None:
-        """Drop a local entry whose service id the host no longer supervises for this session."""
-        current = self._running_servers.get(local_key)
-        if current is None or current.process_id != process_id:
-            return
-        self._running_servers.pop(local_key, None)
-        lease = self._leased_servers.pop(local_key, None)
-        _SESSION_SCOPED_LSP_REGISTRY.invalidate(key=lease_key, process_id=process_id)
-        if lease is not None:
-            _SESSION_SCOPED_LSP_REGISTRY.release(lease=lease)
+    def _forget_dead_entry(self, local_key: LocalServerKey, lease_key: _LspRegistryKey, process_id: str) -> None:
+        self._lifecycle.forget_dead_entry(local_key, lease_key, process_id)
 
     def _cancel_own_server(self, services: ProcessServices, lease_key: _LspRegistryKey, running_server: _RunningLspServer, *, error: str) -> bool:
         return self._owner.call(self._cancel_own_server_owned, services, lease_key, running_server, error=error)
@@ -906,25 +332,7 @@ class ManagedLspManager:
     def _cancel_own_server_owned(
         self, services: ProcessServices, lease_key: _LspRegistryKey, running_server: _RunningLspServer, *, error: str
     ) -> bool:
-        """Stop a failing/cancelled server's tree and forget it; races surface as the next error."""
-        process_id = running_server.process_id
-        try:
-            stopped = services.cancel_process(process_id)
-        except ValueError:
-            stopped = False
-        running_server.documents.clear()
-        running_server.initialized = False
-        running_server.stdout_cursor = 0
-        local_key = (lease_key.session_id, lease_key.server_name, lease_key.workspace_root)
-        if self._running_servers.get(local_key) is not running_server:
-            return stopped
-        self._forget_dead_entry(local_key, lease_key, process_id)
-        self._server_states[lease_key.server_name] = LspServerState(
-            name=lease_key.server_name,
-            status="failed",
-            last_error=error if stopped else f"{error}; LSP server {lease_key.server_name} could not be confirmed stopped",
-        )
-        return stopped
+        return self._lifecycle.cancel_own_server_owned(services, lease_key, running_server, error=error)
 
     def _start_running_server(
         self,
@@ -936,47 +344,15 @@ class ManagedLspManager:
         workspace_root: Path,
         abort_signal: ProviderAbortSignal | None,
     ) -> _RunningLspServer:
-        try:
-            services.spawn_service_process(
-                list(server_config.command),
-                cwd=workspace_root,
-                process_id=process_id,
-            )
-        except (ValueError, PermissionError, OSError) as exc:
-            message = self._startup_failure_message(
-                server_name=server_name,
-                server_config=server_config,
-                details=str(exc),
-            )
-            logger.error(
-                "%s (workspace=%s, command=%s)",
-                message,
-                workspace_root,
-                list(server_config.command),
-            )
-            raise ValueError(message) from exc
-
-        running_server = _RunningLspServer(
-            config=server_config,
+        return self._lifecycle.start_running_server(
+            services,
             process_id=process_id,
+            server_name=server_name,
+            server_config=server_config,
             workspace_root=workspace_root,
+            abort_signal=abort_signal,
+            initialize=self._initialize_server,
         )
-        try:
-            self._initialize_server(services, running_server, server_name=server_name, abort_signal=abort_signal)
-        except Exception:
-            try:
-                stopped = services.cancel_process(process_id)
-            except ValueError:
-                stopped = False
-            if not stopped:
-                current = self._server_states.get(server_name)
-                detail = current.last_error if current is not None and current.last_error else f"LSP initialize failed for {server_name}"
-                self._mark_failed(
-                    server_name=server_name,
-                    error=f"{detail}; LSP server {server_name} could not be confirmed stopped",
-                )
-            raise
-        return running_server
 
     def _initialize_server(
         self,
@@ -986,87 +362,17 @@ class ManagedLspManager:
         server_name: str,
         abort_signal: ProviderAbortSignal | None,
     ) -> None:
-        init_params = lsp_types.InitializeParams(
-            process_id=os.getpid(),
-            client_info=lsp_types.ClientInfo(name="voidcode", version="0.1.0"),
-            locale="zh-CN",
-            root_uri=running_server.workspace_root.as_uri(),
-            workspace_folders=[
-                lsp_types.WorkspaceFolder(
-                    uri=running_server.workspace_root.as_uri(),
-                    name=running_server.workspace_root.name or str(running_server.workspace_root),
-                )
-            ],
-            capabilities=lsp_types.ClientCapabilities(
-                general=lsp_types.GeneralClientCapabilities(position_encodings=["utf-16", "utf-8", "utf-32"]),
-            ),
-            initialization_options=(dict(running_server.config.init_options) if running_server.config.init_options else None),
-        )
-        try:
-            response = self._send_request_owned(
-                services,
-                running_server,
-                method="initialize",
-                params=self._converter.unstructure(
-                    init_params,
-                    unstructure_as=lsp_types.InitializeParams,
-                ),
-                server_name=server_name,
-                abort_signal=abort_signal,
-            )
-        except (ValueError, TimeoutError) as exc:
-            message = f"LSP initialize failed for {server_name}: {exc}"
-            self._mark_failed(server_name=server_name, error=message)
-            raise
-
-        init_error = response.get("error")
-        if init_error is not None:
-            message = f"LSP initialize failed for {server_name}: {init_error}"
-            self._mark_failed(server_name=server_name, error=message)
-            raise ValueError(message)
-        init_result = response.get("result")
-        server_capabilities = init_result.get("capabilities") if isinstance(init_result, dict) else None
-        if not isinstance(server_capabilities, dict):
-            raise LspProtocolError(f"LSP initialize response from {server_name} requires a capabilities object")
-        raw_position_encoding = server_capabilities.get("positionEncoding")
-        if raw_position_encoding is None:
-            position_encoding: PositionEncoding = "utf-16"
-        elif is_position_encoding(raw_position_encoding):
-            position_encoding = raw_position_encoding
-        else:
-            raise ValueError(f"LSP server {server_name} selected unsupported position encoding: {raw_position_encoding}")
-        running_server.position_encoding = position_encoding
-
-        text_sync = server_capabilities.get("textDocumentSync")
-        if isinstance(text_sync, dict):
-            change = text_sync.get("change")
-            running_server.document_sync_enabled = (
-                text_sync.get("openClose") is True and isinstance(change, int) and not isinstance(change, bool) and change in (1, 2)
-            )
-        else:
-            running_server.document_sync_enabled = isinstance(text_sync, int) and not isinstance(text_sync, bool) and text_sync in (1, 2)
-        self._send_notification(services, running_server, method="initialized", params={}, abort_signal=abort_signal)
-
-        if running_server.config.settings:
-            self._send_notification(
-                services,
-                running_server,
-                method="workspace/didChangeConfiguration",
-                params={"settings": dict(running_server.config.settings)},
-                abort_signal=abort_signal,
-            )
-        running_server.initialized = True
-        self._server_states[server_name] = LspServerState(
-            name=server_name,
-            status="running",
+        self._lifecycle.initialize_server(
+            services,
+            running_server,
+            server_name=server_name,
+            abort_signal=abort_signal,
+            send_request=self._send_request_owned,
+            send_notification=self._send_notification,
         )
 
     def _mark_failed(self, *, server_name: str, error: str) -> None:
-        self._server_states[server_name] = LspServerState(
-            name=server_name,
-            status="failed",
-            last_error=error,
-        )
+        self._lifecycle.mark_failed(server_name=server_name, error=error)
 
     @staticmethod
     def _startup_failure_message(
@@ -1075,13 +381,7 @@ class ManagedLspManager:
         server_config: ResolvedLspServerConfig,
         details: str,
     ) -> str:
-        binary_name = server_config.command[0] if server_config.command else server_name
-        config_path = f"plugins.lsp.config.servers.{server_name}.command"
-        return (
-            f"failed to start LSP server {server_name}: {details}. "
-            f"Ensure '{binary_name}' is installed and available on PATH, "
-            f"or override '{config_path}' in the product configuration with a custom command."
-        )
+        return _server_lifecycle.ServerLifecycle.startup_failure_message(server_name=server_name, server_config=server_config, details=details)
 
     def _workspace_root_for_request(
         self,
@@ -1090,48 +390,20 @@ class ManagedLspManager:
         server_config: ResolvedLspServerConfig,
         request_path: Path | None,
     ) -> Path:
-        workspace_root = request.workspace.resolve()
-        if request_path is None:
-            return workspace_root
-        return discover_workspace_root(
-            file_path=request_path,
-            workspace_root=workspace_root,
-            root_markers=server_config.root_markers,
-        )
+        return _documents.workspace_root_for_request(workspace=request.workspace, request_path=request_path, server_config=server_config)
 
     @classmethod
     def _request_file_path(cls, request: LspRequest) -> Path | None:
-        for uri in cls._candidate_uris(request.params):
-            candidate = cls._path_from_file_uri(uri)
-            if candidate is not None:
-                return candidate.resolve()
-        return None
+        _ = cls
+        return _documents.request_file_path(request.params)
 
     @staticmethod
     def _candidate_uris(params: dict[str, object]) -> tuple[str, ...]:
-        uris: list[str] = []
-        for container_key in ("textDocument", "item"):
-            raw_container = params.get(container_key)
-            if not isinstance(raw_container, dict):
-                continue
-            uri = raw_container.get("uri")
-            if isinstance(uri, str):
-                uris.append(uri)
-        return tuple(uris)
+        return _documents.candidate_uris(params)
 
     @staticmethod
     def _path_from_file_uri(uri: str) -> Path | None:
-        parsed = urlparse(uri)
-        if parsed.scheme != "file":
-            return None
-        raw_path = parsed.path
-        if parsed.netloc and parsed.netloc != "localhost":
-            raw_path = f"//{parsed.netloc}{parsed.path}"
-            # Python 3.14 rejects remote file authorities on POSIX. Preserve the
-            # UNC-style path expected by LSP clients while still decoding escapes.
-            if os.name != "nt":
-                return Path(unquote(raw_path))
-        return Path(url2pathname(raw_path))
+        return _documents.path_from_file_uri(uri)
 
     def _send_request_owned(
         self,
