@@ -86,7 +86,11 @@ def _create(
     )
     schedules = dict(state.schedules)
     schedules[schedule_id] = entry
-    _store(services).save(replace(state, schedules=schedules), version)
+    # The first schedule in a session starts its catch-up at the current tip, not at
+    # zero: a long-lived session may already hold thousands of unrelated facts, and
+    # none of them can name a schedule that did not exist yet.
+    facts_cursor = services.session_info().last_event_sequence if not state.schedules else state.facts_cursor
+    _store(services).save(replace(state, schedules=schedules, facts_cursor=facts_cursor), version)
     services.stage_event("schedule_created", _created_event(schedule_id=schedule_id, entry=entry, expr=expr, next_fire_ms=due_at_ms))
     return schedule_id, entry
 

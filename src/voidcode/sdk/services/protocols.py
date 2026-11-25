@@ -294,8 +294,10 @@ class ScheduledWorkServices(Protocol):
 
         The row is inserted in the same transaction that commits the callback's
         staged work, so a rejected/aborted commit leaves no orphan wakeup. With an
-        idempotency key the identity is deterministic and an already-committed
-        row is named instead of duplicated.
+        idempotency key the identity is deterministic: an already-committed pending
+        or claimed row is named instead of duplicated, while a terminal
+        (completed/failed/cancelled) row raises a conflict rather than being silently
+        reused for a future turn.
         """
         ...
 

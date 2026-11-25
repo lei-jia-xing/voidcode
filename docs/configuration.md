@@ -276,6 +276,16 @@ recurring schedule whose next fire is at/after its expiry is refused or retired.
 not dispatch slash commands). Cancel a schedule with `/loop delete <id>` (or the
 `cron_delete` tool); a run already in flight is not interrupted.
 
+Cron state is at schema v2. A stored v1 row makes startup fail visibly
+(`plugin cron state schema mismatch: stored v1, declared v2`); there is no
+migration. Stop the workspace's core processes, back up the database, and delete
+only `plugin_state.owner = 'cron'` from
+`$XDG_STATE_HOME/voidcode/<sha256-of-workspace>/voidcode.db` (or the directory
+passed to `--state-dir`). The exact command is in the
+[cron README](../src/voidcode/plugins/cron/README.md#resetting-v1-cron-state).
+That removes all cron schedules in the workspace and leaves sessions, events,
+and other owners untouched.
+
 ## API Environment Variables
 
 Export API credentials in the environment of the process that starts VoidCode; no `.env` file is required.

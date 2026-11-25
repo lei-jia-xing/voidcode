@@ -274,14 +274,22 @@ class FakeServices(PluginServices):
         )[:limit]
 
     def session_info(self) -> SessionInfo:
+        last_event_sequence = self.through_sequence
+        for item in (*self.facts, *self.events):
+            sequence = getattr(item, "event_sequence", getattr(item, "sequence", 0))
+            if type(sequence) is int and sequence > last_event_sequence:
+                last_event_sequence = sequence
         return SessionInfo(
             session_id=self.session_id,
             status="active",
             run_id="run-1",
             revision_id="rev-1",
-            lineage=(),
-            approval_policy="lenient",
-            action_budget_remaining=100,
+            parent_session_id=None,
+            root_session_id=self.session_id,
+            depth=0,
+            turn=0,
+            last_event_sequence=last_event_sequence,
+            tool_allowlist=None,
         )
 
     # --- Child Sessions ---

@@ -4,6 +4,13 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Cron and wakeup failure boundaries
+- Cron's first schedule in a long-lived session now seeds its facts cursor at the current session tip, so unrelated pre-schedule facts are not paged. A fully matched owned firing whose immutable payload disagrees with the schedule, or a second firing while one settlement is pending, disables that schedule with a bounded `schedule_error` event instead of advancing the cursor and stranding it enabled.
+- Keyed staged wakeups now reject terminal identities instead of silently naming a cancelled/completed row, and recurring-cron re-arm conflicts park the schedule visibly rather than aborting the observer.
+- A wakeup driver or fact-delivery exception now appends exactly one `run_interrupted` at the last committed boundary, settles the claim, and replays the terminal fact. A waiting park keeps its claim. The asynchronous ticker bounds concurrent wakeup workers to 8 and drains the due backlog as they finish.
+- Cron state activation now declares `maxProperties: 50` for schedules. The v1 reset recipe is documented; state v1 still fails startup visibly rather than being reinterpreted.
+- Verification: cron unit/integration, wakeup claim/runtime, activation tests; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Turn execution split behind the `TurnDriver` facade
 - `core/engine/turn_execution.py` is now a ~30-line facade re-exporting `CoreResult`, `TurnDriver`, the host protocols, `MODEL_CONFIGURATION_GUIDANCE`, and the existing private tool-call decoders. Provider streaming/decode/retry, turn policy (budgets, aborts, deferred calls, readonly batches), the governed drive loop, terminal stop/fail/result, and host contracts live in `_provider_turn.py`, `_turn_policy.py`, `_turn_drive.py`, `_turn_terminal.py`, and `_turn_contracts.py` (largest 445 lines).
 - Method bodies, signatures, events, approvals, budgets, cancellation, and concurrency are unchanged; `TurnDriver` remains the single monkeypatch surface (`driver.stop`, `driver.fail`, `stream_provider_turn`, `budget_admission`, `drive`).

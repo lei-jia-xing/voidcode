@@ -37,6 +37,31 @@ def _stage_state_error(services: PluginServices, error: BaseException | str) -> 
     services.stage_event("schedule_error", {"error": message[:500]})
 
 
+def _disabled_firing(
+    state: CronState,
+    entry: ScheduleEntry,
+    fact: WakeupFiredFact,
+    *,
+    schedule_id: str,
+    reason: str,
+    error: str | None = None,
+) -> tuple[CronState, dict[str, object]]:
+    """Park one malformed/stale owned firing visibly, never as an observer exception."""
+    schedules = dict(state.schedules)
+    schedules[schedule_id] = replace(entry, enabled=False, wakeup_id=None, next_fire_at=None, pending=None)
+    event: dict[str, object] = {
+        "id": schedule_id,
+        "wakeup_id": fact.wakeup_id,
+        "fired_sequence": fact.event_sequence,
+        "outcome": "disabled",
+        "reason": reason,
+        "run_status": None,
+    }
+    if error is not None:
+        event["error"] = error[:300]
+    return replace(state, schedules=schedules), event
+
+
 def _apply_fired(
     state: CronState,
     fact: WakeupFiredFact,
@@ -58,25 +83,25 @@ def _apply_fired(
     if entry.pending is not None:
         if entry.pending.wakeup_id == fact.wakeup_id and entry.pending.fired_sequence == fact.event_sequence:
             return state, None
-        raise ValueError("cron received a second firing while a settlement was already pending")
-    pending = _pending_from_fact(fact, schedule_id=schedule_id, prompt=entry.prompt)
+        return _disabled_firing(
+            state,
+            entry,
+            fact,
+            schedule_id=schedule_id,
+            reason="schedule_error",
+            error="cron received a second firing while a settlement was already pending",
+        )
     if fact.event_sequence <= state.last_finished_sequence:
         # A late replay after its run already finished cannot be joined to that run. Pause
         # visibly rather than leave an enabled schedule with no armed successor.
-        disabled = replace(entry, enabled=False, wakeup_id=None, next_fire_at=None, pending=None)
-        schedules = dict(state.schedules)
-        schedules[schedule_id] = disabled
-        return (
-            replace(state, schedules=schedules),
-            {
-                "id": schedule_id,
-                "wakeup_id": fact.wakeup_id,
-                "fired_sequence": fact.event_sequence,
-                "outcome": "disabled",
-                "reason": "settlement_missed",
-                "run_status": None,
-            },
-        )
+        return _disabled_firing(state, entry, fact, schedule_id=schedule_id, reason="settlement_missed")
+    try:
+        pending = _pending_from_fact(fact, schedule_id=schedule_id, prompt=entry.prompt)
+    except ValueError as exc:
+        # The owned wakeup id matches, but its immutable payload is not the settlement
+        # this schedule recorded. Disable it with the error instead of advancing the
+        # cursor past an enabled schedule that can never re-arm.
+        return _disabled_firing(state, entry, fact, schedule_id=schedule_id, reason="schedule_error", error=str(exc))
     running = replace(entry, next_fire_at=None, pending=pending)
     schedules = dict(state.schedules)
     schedules[schedule_id] = running
@@ -138,7 +163,10 @@ def _settle(
             return "expired", None, None, event
         _validate_recurring_policy(expr, expires_at=entry.expires_at, next_fire_at=None)
         wakeup_id = _arm(services, schedule_id=schedule_id, prompt=entry.prompt, due_at_ms=next_fire_ms)
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
+        # A terminal identity (for example a cancelled row created by an older retry)
+        # must not abort the observer and strand the settlement. Park the schedule with
+        # a bounded error event instead; the fired claim still settles normally.
         event["reason"] = "schedule_error"
         event["error"] = str(exc)[:300]
         return "disabled", None, replace(entry, enabled=False, wakeup_id=None, next_fire_at=None, pending=None), event

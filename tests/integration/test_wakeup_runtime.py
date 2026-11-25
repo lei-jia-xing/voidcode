@@ -225,7 +225,10 @@ def test_parked_wakeup_keeps_its_claim_and_resume_lets_the_observer_settle(tmp_p
         assert settled_payload["status"] == "completed"
 
 
-def test_open_core_recovers_a_claimed_wakeup_run_exactly_once(tmp_path: Path) -> None:
+def test_open_core_recovers_a_claimed_wakeup_run_exactly_once(tmp_path: Path, monkeypatch) -> None:
+    # The test takes the claim manually; a started ticker could race it between
+    # scheduling and the explicit claim.
+    monkeypatch.setattr(Core, "_start_background_work", lambda _self: None)
     with loopback_server([]) as server:
         _configure(tmp_path, server)
         with open_core(tmp_path / "workspace", state_dir=tmp_path / "state") as first:
@@ -372,3 +375,123 @@ def test_staged_wakeup_service_commits_and_rolls_back_with_the_command(tmp_path:
         with core.store._lock:
             count = core.store._connection.execute("SELECT COUNT(*) FROM wakeups WHERE wakeup_id = ?", (staged_id,)).fetchone()
         assert count is not None and count[0] == 1
+
+        cancelled = core.invoke_command(
+            session_id, "probe.stage", {"due": future_due, "key": "first", "cancel": staged_id}, expected_revision=revision
+        )
+        assert cancelled.status == "ok", cancelled.error
+        assert _wakeup(core, staged_id).status == "cancelled"
+        terminal_retry = core.invoke_command(session_id, "probe.stage", {"due": future_due, "key": "first"}, expected_revision=revision)
+        assert terminal_retry.status == "error"
+        assert "terminal status" in terminal_retry.error
+
+
+def test_driver_failure_abandons_the_claim_and_records_one_interruption(tmp_path: Path, monkeypatch) -> None:
+    with loopback_server([]) as server:
+        _configure(tmp_path, server)
+        core = open_core_for_test(tmp_path)
+        _pin_ticker(core)
+        session_id = core.create_session("sess").session_id
+        core.store.schedule_wakeup("wake-fail", "owner", str(core.workspace), session_id, {"text": "fail"}, 0, role="user")
+        claim = core.store.claim_and_start_wakeup(
+            str(core.workspace),
+            0,
+            run_id="run-fail",
+            logical_turn="turn-fail",
+            revision_id=core.revision_id,
+            eligible_owners=(),
+        )
+        assert claim is not None
+        wakeup, session = claim
+
+        def _boom(_execution) -> None:
+            raise RuntimeError("driver exploded")
+
+        monkeypatch.setattr(core._turn_driver, "drive", _boom)
+        core._drive_claimed_wakeup_safely(wakeup, session)
+
+        assert core.store.session(session_id).status is SessionStatus.INTERRUPTED
+        assert _wakeup(core, "wake-fail").status == "failed"
+        interrupted = _events(core, session_id, "core.run_interrupted")
+        assert len(interrupted) == 1
+        assert interrupted[0].run_id == "run-fail"
+        assert interrupted[0].payload["stop_cause"] == "error"
+        assert "driver exploded" in str(interrupted[0].payload["reason"])
+
+
+def test_fact_delivery_failure_abandons_the_claim_and_leaves_no_running_session(tmp_path: Path, monkeypatch) -> None:
+    with loopback_server([]) as server:
+        _configure(tmp_path, server)
+        core = open_core_for_test(tmp_path)
+        _pin_ticker(core)
+        session_id = core.create_session("sess").session_id
+        core.store.schedule_wakeup("wake-delivery", "owner", str(core.workspace), session_id, {"text": "deliver"}, 0, role="user")
+        claim = core.store.claim_and_start_wakeup(
+            str(core.workspace),
+            0,
+            run_id="run-delivery",
+            logical_turn="turn-delivery",
+            revision_id=core.revision_id,
+            eligible_owners=(),
+        )
+        assert claim is not None
+        wakeup, session = claim
+
+        def _boom(*_args, **_kwargs) -> None:
+            raise RuntimeError("fact delivery exploded")
+
+        monkeypatch.setattr(core._fact_delivery, "deliver", _boom)
+        core._drive_claimed_wakeup_safely(wakeup, session)
+
+        assert core.store.session(session_id).status is SessionStatus.INTERRUPTED
+        assert _wakeup(core, "wake-delivery").status == "failed"
+        interrupted = _events(core, session_id, "core.run_interrupted")
+        assert len(interrupted) == 1
+        assert "fact delivery exploded" in str(interrupted[0].payload["reason"])
+
+
+def test_async_wakeup_dispatch_is_bounded_and_eventually_drains(tmp_path: Path, monkeypatch) -> None:
+    from voidcode.core.engine._wakeups import MAX_ACTIVE_WAKEUP_RUNS
+
+    # This test drives the ticker explicitly; never let the core's own ticker race
+    # the setup by starting before the schedules exist.
+    monkeypatch.setattr(Core, "_start_background_work", lambda _self: None)
+    total = MAX_ACTIVE_WAKEUP_RUNS + 3
+    with loopback_server([]) as server:
+        _configure(tmp_path, server)
+        core = open_core_for_test(tmp_path)
+        real_tick = core.tick
+        session_ids = [core.create_session(f"sess-{index}").session_id for index in range(total)]
+        for index, session_id in enumerate(session_ids):
+            core.store.schedule_wakeup(f"wake-{index}", "owner", str(core.workspace), session_id, {"text": "work"}, 0)
+
+        started: list[str] = []
+        release = threading.Event()
+
+        def _fake_launch(wakeup, _session) -> None:
+            started.append(wakeup.wakeup_id)
+            worker = threading.Thread(target=lambda: release.wait(10.0), daemon=True)
+            worker.start()
+            with core._session_locks_guard:
+                core._wakeup_workers.append(worker)
+
+        core._launch_claimed_wakeup = _fake_launch  # type: ignore[method-assign]
+        core._wakeup_tick_mode.async_dispatch = True
+        try:
+            first = real_tick()
+            assert len(first["fired_ids"]) == MAX_ACTIVE_WAKEUP_RUNS  # type: ignore[arg-type]
+            assert len(started) == MAX_ACTIVE_WAKEUP_RUNS
+
+            second = real_tick()
+            assert second["fired"] is None
+            assert len(started) == MAX_ACTIVE_WAKEUP_RUNS
+
+            release.set()
+            deadline = time.monotonic() + 5.0
+            while len(started) < total and time.monotonic() < deadline:
+                real_tick()
+                time.sleep(0.02)
+            assert len(started) == total
+        finally:
+            release.set()
+            core._wakeup_tick_mode.async_dispatch = False

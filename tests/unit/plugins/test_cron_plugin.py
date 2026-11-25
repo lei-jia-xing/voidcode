@@ -11,6 +11,7 @@ from typing import Literal
 import pytest
 
 from tests.fixtures.fake_services import FakeServices
+from voidcode.core.activation import validate_state_payload
 from voidcode.plugins.cron import create_plugin, cron_plugin
 from voidcode.plugins.cron.cron_plugin import (
     DEFAULT_RECURRING_EXPIRY_SECONDS,
@@ -441,6 +442,52 @@ def test_wakeup_fired_records_pending_even_for_a_long_session(services: FakeServ
     assert _stored(services).facts_cursor == 10_000
 
 
+def test_first_schedule_seeds_the_cursor_at_the_current_session_tip(services: FakeServices, tmp_path: Path) -> None:
+    # A long-lived session may hold thousands of facts that predate its first schedule.
+    services.facts = [_run_requested(sequence) for sequence in range(1, 351)]
+    schedule_id = _create(services, tmp_path, "every 10m")
+    assert _stored(services).facts_cursor == 350
+
+    entry = _entry(services, schedule_id)
+    fire = _fired_event(sequence=351, schedule_id=schedule_id, wakeup_id=str(entry.wakeup_id))
+    finish = _run_finished("completed", sequence=352)
+    _trigger(services, tmp_path, *services.facts, fire, finish)
+
+    stored = _stored(services)
+    assert stored.facts_cursor == 352
+    assert stored.schedules[schedule_id].pending is None
+    assert stored.schedules[schedule_id].next_fire_at == NOW_MS + 600_000
+    assert [event["outcome"] for name, event in services.staged_events if name == "schedule_fired"] == ["rearmed"]
+
+
+def test_malformed_owned_firing_disables_the_schedule_visibly(services: FakeServices, tmp_path: Path) -> None:
+    schedule_id = _create(services, tmp_path, "every 10m", "keep building")
+    entry = _entry(services, schedule_id)
+
+    _trigger(
+        services,
+        tmp_path,
+        _fired_event(
+            sequence=8,
+            schedule_id=schedule_id,
+            wakeup_id=str(entry.wakeup_id),
+            payload={"kind": "cron", "text": "different prompt", "schedule_id": schedule_id},
+        ),
+    )
+
+    stopped = _entry(services, schedule_id)
+    assert stopped.enabled is False
+    assert stopped.wakeup_id is None
+    assert stopped.next_fire_at is None
+    assert stopped.pending is None
+    assert _stored(services).facts_cursor == 8
+    events = [payload for name, payload in services.staged_events if name == "schedule_fired"]
+    assert len(events) == 1
+    assert events[0]["outcome"] == "disabled"
+    assert events[0]["reason"] == "schedule_error"
+    assert "text does not match" in str(events[0]["error"])
+
+
 def test_duplicate_wakeup_delivery_is_idempotent(services: FakeServices, tmp_path: Path) -> None:
     schedule_id = _create(services, tmp_path, "every 10m")
     entry = _entry(services, schedule_id)
@@ -678,6 +725,28 @@ def test_run_finished_without_pending_only_advances_the_finish_sequence(services
     assert stored.schedules["sched-1"].next_fire_at == NOW_MS + 600_000
     assert services.staged_events == []
     assert services.staged_wakeups == []
+
+
+def test_rearm_conflict_disables_a_recurring_schedule_visibly(services: FakeServices, tmp_path: Path) -> None:
+    services.seed_state(_schedule_payload(schedule_id="sched-1", pending=_pending("sched-1", sequence=7)))
+
+    def _terminal_identity(*_args, **_kwargs):
+        raise RuntimeError("keyed wakeup already exists with terminal status 'cancelled'")
+
+    services.stage_wakeup = _terminal_identity  # type: ignore[method-assign]
+    _trigger(services, tmp_path, _run_finished("completed", sequence=9))
+
+    stopped = _entry(services, "sched-1")
+    assert stopped.enabled is False
+    assert stopped.wakeup_id is None
+    assert stopped.next_fire_at is None
+    assert stopped.pending is None
+    assert services.staged_wakeups == []
+    events = [payload for name, payload in services.staged_events if name == "schedule_fired"]
+    assert len(events) == 1
+    assert events[0]["outcome"] == "disabled"
+    assert events[0]["reason"] == "schedule_error"
+    assert "terminal status" in str(events[0]["error"])
 
 
 def test_late_wakeup_replay_pauses_visibly_instead_of_sticking_enabled(services: FakeServices, tmp_path: Path) -> None:
@@ -1120,6 +1189,22 @@ def test_malformed_state_tools_fail_visibly(services: FakeServices, tmp_path: Pa
 
 
 # --- state document, registration ---
+
+
+def test_state_schema_rejects_more_than_the_session_cap_at_activation() -> None:
+    plugin = create_plugin(None)
+    schedules_schema = plugin.state.schema["properties"]["schedules"]  # type: ignore[index]
+    assert schedules_schema["maxProperties"] == MAX_SCHEDULES_PER_SESSION
+    entry = _schedule_payload(schedule_id="sched-0")["schedules"]["sched-0"]  # type: ignore[index]
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "schedules": {f"sched-{index}": dict(entry) for index in range(MAX_SCHEDULES_PER_SESSION + 1)},
+        "last_finished_sequence": 0,
+        "facts_cursor": 0,
+    }
+
+    with pytest.raises(ValueError, match="state copy failed its declared state schema"):
+        validate_state_payload(payload, plugin.state)
 
 
 def test_state_document_is_strict() -> None:

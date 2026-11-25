@@ -91,6 +91,12 @@ A wakeup claim atomically records its run identity and eligible observer owners.
 The core delivers `wakeup_fired` before driving that run. If it stops after the
 claim and before delivery, startup replays the same source fact. A committed
 per-owner receipt prevents duplicate callback effects on subsequent restarts.
+If driving or delivering a claimed run raises before its terminal event, the
+runtime appends exactly one `run_interrupted` at the session's last committed
+boundary, settles the wakeup failed, and replays the new terminal fact; a parked
+`waiting` run keeps its claim. The asynchronous ticker bounds concurrent wakeup
+workers and keeps claiming as they finish, so a due backlog drains without one
+thread per pending row; explicit synchronous ticks remain unbounded.
 
 `WakeupFiredFact.payload` is the owner's scheduled message data, recursively
 immutable; it is not an inferred tool argument or output. A subscriber may observe

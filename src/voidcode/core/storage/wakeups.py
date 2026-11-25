@@ -446,11 +446,179 @@ class _WakeupsMixin(_ConnectionStore):
                 (status, int(time.time() * 1000), wakeup_id),
             )
 
-    def wakeup_exists(self, wakeup_id: str) -> bool:
-        """Whether one durable wakeup row already holds this identity (any status)."""
+    def wakeup_status(self, wakeup_id: str) -> str | None:
+        """Return one wakeup row's durable status, or None when the identity is unused."""
         with self._lock:
             self._check_open()
-            return self._connection.execute("SELECT 1 FROM wakeups WHERE wakeup_id = ?", (wakeup_id,)).fetchone() is not None
+            row = self._connection.execute("SELECT status FROM wakeups WHERE wakeup_id = ?", (wakeup_id,)).fetchone()
+            return None if row is None else str(row[0])
+
+    def abandon_claimed_wakeup(
+        self,
+        wakeup_id: str,
+        *,
+        reason: str,
+        eligible_owners: Sequence[str] = (),
+    ) -> str | None:
+        """Settle a claimed wakeup whose run failed outside the turn terminal path.
+
+        The runtime calls this when driving or delivering a claimed wakeup raises before
+        a terminal event commits. It appends exactly one ``run_interrupted`` at the
+        session's last committed boundary and settles the claim, so the next ticker or
+        startup replay cannot leave a session running with a forgotten claim. A parked
+        (waiting) run keeps its claim; a claim owned by another run is left alone.
+        Returns the settled wakeup status, or None when this call did not own the claim.
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must be non-empty text")
+        reason_text = reason[:1000]
+        owners = tuple(dict.fromkeys(str(owner) for owner in eligible_owners))
+        with self._lock:
+            self._check_open()
+            in_transaction = False
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                in_transaction = True
+                wakeup_row = self._connection.execute(
+                    "SELECT session_id, status, claim_run_id FROM wakeups WHERE wakeup_id = ?",
+                    (wakeup_id,),
+                ).fetchone()
+                if wakeup_row is None:
+                    self._connection.execute("COMMIT")
+                    in_transaction = False
+                    return None
+                session_id, wakeup_status_value, claim_run_id = wakeup_row
+                if wakeup_status_value != "claimed":
+                    self._connection.execute("COMMIT")
+                    in_transaction = False
+                    return None
+                session_row = self._connection.execute(
+                    "SELECT status, run_id, last_event_sequence, active_revision_id FROM sessions WHERE session_id = ?",
+                    (str(session_id),),
+                ).fetchone()
+                if session_row is None:
+                    raise StoreConflict(f"claimed wakeup {wakeup_id!r} names unknown session {session_id!r}")
+                raw_status, run_id, last_sequence, revision_id = session_row
+                session_status = _decode_closed_enum(SessionStatus, str(raw_status), field="status", record=f"session {session_id!r}")
+                if session_status is SessionStatus.WAITING:
+                    self._connection.execute("COMMIT")
+                    in_transaction = False
+                    return None
+                if claim_run_id is None or run_id is None or str(claim_run_id) != str(run_id):
+                    # A newer run owns the session; this claim is not this caller's to settle.
+                    self._connection.execute("COMMIT")
+                    in_transaction = False
+                    return None
+                now = int(time.time() * 1000)
+                latest = self._connection.execute(
+                    "SELECT event_type, run_id FROM session_events WHERE session_id = ? AND sequence = ?",
+                    (str(session_id), int(last_sequence)),
+                ).fetchone()
+                terminal_status: Literal["completed", "failed", "cancelled"] | None = None
+                checkpoint_kind: CheckpointKind | None = None
+                if latest is not None and str(latest[1]) == str(run_id):
+                    if latest[0] == EventType.RUN_COMPLETED:
+                        terminal_status, checkpoint_kind = "completed", CheckpointKind.TERMINAL
+                    elif latest[0] == EventType.RUN_FAILED:
+                        terminal_status, checkpoint_kind = "failed", CheckpointKind.TERMINAL
+                    elif latest[0] == EventType.RUN_INTERRUPTED:
+                        terminal_status = (
+                            "cancelled" if self._event_stop_cause(str(session_id), int(last_sequence)) in ("user_stop", "owner_cancel") else "failed"
+                        )
+                        checkpoint_kind = CheckpointKind.TERMINAL if terminal_status == "cancelled" else CheckpointKind.INTERRUPTED
+                if terminal_status is not None:
+                    # The run's own terminal event committed; only the claim/session row lagged.
+                    settled_status = terminal_status
+                    session_status_after = (
+                        SessionStatus.COMPLETED
+                        if terminal_status == "completed"
+                        else SessionStatus.FAILED
+                        if terminal_status == "failed"
+                        else SessionStatus.INTERRUPTED
+                    )
+                    self._connection.execute(
+                        "UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?",
+                        (session_status_after.value, now, str(session_id)),
+                    )
+                    if checkpoint_kind is not None:
+                        self._connection.execute(
+                            "UPDATE checkpoints SET kind = ?, updated_at = ? WHERE session_id = ?",
+                            (checkpoint_kind.value, now, str(session_id)),
+                        )
+                elif session_status is SessionStatus.RUNNING:
+                    logical_turn = ""
+                    checkpoint = self._connection.execute(
+                        "SELECT payload_json FROM checkpoints WHERE session_id = ?",
+                        (str(session_id),),
+                    ).fetchone()
+                    if checkpoint is not None:
+                        try:
+                            checkpoint_payload = json.loads(checkpoint[0])
+                        except TypeError, ValueError:
+                            checkpoint_payload = None
+                        if isinstance(checkpoint_payload, Mapping) and isinstance(checkpoint_payload.get("logical_turn"), str):
+                            logical_turn = checkpoint_payload["logical_turn"]
+                    sequence = int(last_sequence) + 1
+                    interrupted_payload = canonical_json(
+                        {
+                            "reason": reason_text,
+                            "stop_cause": "error",
+                            "logical_turn": logical_turn,
+                            "eligible_owners": list(owners),
+                        }
+                    )
+                    self._connection.execute(
+                        """
+                        INSERT INTO session_events (
+                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
+                        ) VALUES (?, ?, ?, ?, 'core', 'core', ?, ?, ?)
+                        """,
+                        (
+                            str(session_id),
+                            sequence,
+                            str(run_id),
+                            EventType.RUN_INTERRUPTED,
+                            str(revision_id),
+                            interrupted_payload,
+                            len(interrupted_payload.encode("utf-8")),
+                        ),
+                    )
+                    self._connection.execute(
+                        "UPDATE sessions SET status = 'interrupted', last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
+                        (sequence, now, str(session_id)),
+                    )
+                    self._connection.execute(
+                        "UPDATE checkpoints SET kind = 'interrupted', last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
+                        (sequence, now, str(session_id)),
+                    )
+                    settled_status = "failed"
+                else:
+                    settled_status = "completed" if session_status is SessionStatus.COMPLETED else "failed"
+                self._connection.execute(
+                    "UPDATE wakeups SET status = ?, updated_at = ? WHERE wakeup_id = ? AND status = 'claimed'",
+                    (settled_status, now, wakeup_id),
+                )
+                self._connection.execute("COMMIT")
+                in_transaction = False
+                return settled_status
+            except Exception:
+                if in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
+
+    def _event_stop_cause(self, session_id: str, sequence: int) -> object:
+        """The recorded stop cause for one interrupted event inside the caller's transaction."""
+        row = self._connection.execute(
+            "SELECT payload_json FROM session_events WHERE session_id = ? AND sequence = ?",
+            (session_id, sequence),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row[0])
+        except TypeError, ValueError:
+            return None
+        return payload.get("stop_cause") if isinstance(payload, Mapping) else None
 
     def settle_claimed_wakeups(self, session_id: str, status: Literal["completed", "failed", "cancelled"]) -> int:
         """Settle every claimed wakeup of one session whose run just finished."""

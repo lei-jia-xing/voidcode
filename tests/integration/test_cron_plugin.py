@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.core_factory import loopback_server, register_core
+from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.fixtures.s5_plugin import PLUGIN_ID as S5_PLUGIN_ID
 from tests.fixtures.s5_plugin import WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
@@ -436,3 +436,31 @@ def test_loop_command_returns_usage_without_side_effects(tmp_path: Path) -> None
         assert result.output == USAGE_MESSAGE
         assert _pending(core) == []
         assert _schedules(core, session_id) == {}
+
+
+def test_stored_v1_state_refuses_startup_until_the_cron_row_is_reset(tmp_path: Path) -> None:
+    with loopback_server([]) as server:
+        core = _core(tmp_path, server)
+        session_id = core.create_session("legacy").session_id
+        old_payload = json.dumps(
+            {
+                "schema_version": 1,
+                "schedules": {},
+                "last_finished_sequence": 0,
+                "cursor_sequence": 0,
+            }
+        )
+        with core.store._lock:
+            core.store._connection.execute(
+                """
+                INSERT INTO plugin_state (
+                    scope, scope_key, owner, version, schema_version, revision_id, payload_json, updated_at
+                ) VALUES ('session', ?, 'cron', 1, 1, ?, ?, ?)
+                """,
+                (session_id, core.revision_id, old_payload, int(time.time() * 1000)),
+            )
+        core.close()
+        discard_core(core)
+
+        with pytest.raises(ValueError, match="plugin cron state schema mismatch: stored v1, declared v2"):
+            open_core(tmp_path / "workspace", state_dir=tmp_path / "state")

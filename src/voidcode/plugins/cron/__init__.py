@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from voidcode.sdk.plugin import Plugin, StateSchema
 
 from .cron_plugin import (
+    MAX_SCHEDULES_PER_SESSION,
     SCHEMA_VERSION,
     CronCreateTool,
     CronDeleteCommand,
@@ -38,6 +39,7 @@ def create_plugin(config: Mapping[str, object] | None = None) -> Plugin:
                     "facts_cursor": {"type": "integer", "minimum": 0},
                     "schedules": {
                         "type": "object",
+                        "maxProperties": MAX_SCHEDULES_PER_SESSION,
                         "additionalProperties": {
                             "type": "object",
                             "required": [

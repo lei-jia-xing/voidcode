@@ -73,7 +73,7 @@ class WakeupServices(ServiceLease):
         role: Literal["system", "user"] = "system",
     ) -> str:
         """Stage a wakeup whose row commits atomically with this callback's state/events."""
-        from ..storage.store import MAX_WAKEUP_PAYLOAD_BYTES, StagedWakeup, canonical_json
+        from ..storage.store import MAX_WAKEUP_PAYLOAD_BYTES, StagedWakeup, StoreConflict, canonical_json
 
         lease = self._active_lease()
         self._check_hook("stage_wakeup")
@@ -100,9 +100,14 @@ class WakeupServices(ServiceLease):
                 raise PermissionError("Service lease was revoked")
             if any(item.wakeup_id == wakeup_id for item in lease.staging.wakeups):
                 return wakeup_id
-            if self._runtime.require_store().wakeup_exists(wakeup_id):
-                # A keyed retry names its already-committed row instead of staging a duplicate.
-                return wakeup_id
+            status = self._runtime.require_store().wakeup_status(wakeup_id)
+            if status is not None:
+                # A keyed retry names its already-committed pending/claimed row. A terminal
+                # row (cancelled/completed/failed) must fail loudly instead of naming a
+                # dead identity that the commit's ON CONFLICT would silently reuse.
+                if status in ("pending", "claimed"):
+                    return wakeup_id
+                raise StoreConflict(f"keyed wakeup {wakeup_id!r} already exists with terminal status {status!r}")
             lease.staging.wakeups.append(
                 StagedWakeup(
                     wakeup_id=wakeup_id,

@@ -253,6 +253,65 @@ def test_recovery_settles_a_dead_claimed_run_exactly_once(tmp_path: Path) -> Non
         assert len(store.events("sess")) == events_before + 1
 
 
+def test_abandon_claimed_wakeup_interrupts_and_settles_exactly_once(tmp_path: Path) -> None:
+    with _store(tmp_path) as store:
+        _session(store, "sess")
+        _schedule(store, "wake", "sess")
+        claims, _skipped = _claim(store)
+        assert len(claims) == 1
+        wakeup, claimed_session = claims[0]
+        before_checkpoint = store.checkpoint("sess")
+        assert before_checkpoint is not None
+        events_before = len(store.events("sess"))
+
+        settled = store.abandon_claimed_wakeup("wake", reason="driver failed", eligible_owners=("owner",))
+
+        assert settled == "failed"
+        assert store.session("sess").status is SessionStatus.INTERRUPTED
+        assert store.session("sess").last_event_sequence == claimed_session.last_event_sequence + 1
+        assert _wakeup_row(store, "wake")[0] == "failed"
+        checkpoint = store.checkpoint("sess")
+        assert checkpoint is not None
+        assert checkpoint.kind is CheckpointKind.INTERRUPTED
+        assert checkpoint.payload == before_checkpoint.payload
+        events = store.events("sess")
+        assert len(events) == events_before + 1
+        interrupted = events[-1]
+        assert interrupted.event_type == EventType.RUN_INTERRUPTED
+        assert interrupted.run_id == wakeup.claim_run_id
+        assert interrupted.payload["stop_cause"] == "error"
+        assert tuple(interrupted.payload["eligible_owners"]) == ("owner",)
+
+        assert store.abandon_claimed_wakeup("wake", reason="driver failed", eligible_owners=("owner",)) is None
+        assert len(store.events("sess")) == events_before + 1
+
+
+def test_abandon_claimed_wakeup_preserves_a_parked_claim(tmp_path: Path) -> None:
+    with _store(tmp_path) as store:
+        revision = _session(store, "sess")
+        _schedule(store, "wake", "sess")
+        claims, _skipped = _claim(store)
+        claimed_session = claims[0][1]
+        store.commit_staged(
+            "sess",
+            expected_sequence=claimed_session.last_event_sequence,
+            expected_run_id=claimed_session.run_id,
+            run_id=claimed_session.run_id or "run-parked",
+            revision_id=revision,
+            events=(EventDraft(EventType.APPROVAL_REQUESTED, "core", "model", {"request_id": "req"}),),
+            status=SessionStatus.WAITING,
+            checkpoint_kind=CheckpointKind.APPROVAL_WAIT,
+            checkpoint_payload={"root_id": ROOT},
+        )
+        events_before = len(store.events("sess"))
+
+        assert store.abandon_claimed_wakeup("wake", reason="delivery failed", eligible_owners=("owner",)) is None
+
+        assert store.session("sess").status is SessionStatus.WAITING
+        assert _wakeup_row(store, "wake")[0] == "claimed"
+        assert len(store.events("sess")) == events_before
+
+
 def test_recovery_keeps_a_parked_claim_and_settles_finished_work_without_replay(tmp_path: Path) -> None:
     with _store(tmp_path) as store:
         revision = _session(store, "parked")

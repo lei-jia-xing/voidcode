@@ -21,6 +21,10 @@ from .turn_execution import CoreResult
 
 logger = logging.getLogger(__name__)
 
+#: Bound asynchronous wakeup workers so a due backlog cannot create one thread per row.
+#: Explicit `tick()` calls remain synchronous and are not subject to this budget.
+MAX_ACTIVE_WAKEUP_RUNS = 8
+
 
 class CoreWakeups(CoreLifecycle):
     """Owner-scheduled wakeup claiming, driving, and the core-owned ticker."""
@@ -70,11 +74,21 @@ class CoreWakeups(CoreLifecycle):
         if type(now) is not int or now < 0:
             raise ValueError("now_ms must be a non-negative integer")
         async_dispatch = bool(getattr(self._wakeup_tick_mode, "async_dispatch", False))
+        claim_limit: int | None = None
+        if async_dispatch:
+            with self._session_locks_guard:
+                self._wakeup_workers = [worker for worker in self._wakeup_workers if worker.is_alive()]
+                active_workers = len(self._wakeup_workers)
+            claim_limit = MAX_ACTIVE_WAKEUP_RUNS - active_workers
+            if claim_limit <= 0:
+                self._record_wakeup_tick(claimed=(), skipped=(), error=None)
+                return {"fired": None}
         claims, skipped = self.store.claim_due_wakeups(
             str(self.workspace),
             now,
             revision_id=self.revision_id,
             eligible_owners=self.plugin_runtime.observer_owners.get("wakeup_fired", ()),
+            limit=claim_limit,
         )
         skipped_payload = self._skip_payload(skipped)
         self._record_wakeup_tick(claimed=[wakeup.wakeup_id for wakeup, _session in claims], skipped=skipped_payload, error=None)
@@ -121,6 +135,20 @@ class CoreWakeups(CoreLifecycle):
             self._drive_claimed_wakeup(wakeup, session)
         except Exception as exc:
             message = f"wakeup {wakeup.wakeup_id} run failed: {type(exc).__name__}: {exc}"
+            try:
+                self.store.abandon_claimed_wakeup(
+                    wakeup.wakeup_id,
+                    reason=message,
+                    eligible_owners=self.plugin_runtime.observer_owners.get("run_finished", ()),
+                )
+            except Exception as recovery_exc:
+                logger.error("wakeup %s claim cleanup failed: %s: %s", wakeup.wakeup_id, type(recovery_exc).__name__, recovery_exc)
+            # The newly committed terminal event still needs its fact delivery; leaving it
+            # only for startup replay would delay the owner's settlement indefinitely.
+            try:
+                self._fact_delivery.replay_pending()
+            except Exception as delivery_exc:
+                logger.warning("wakeup %s finish replay failed: %s: %s", wakeup.wakeup_id, type(delivery_exc).__name__, delivery_exc)
             self._record_wakeup_tick(claimed=(), skipped=(), error=message)
             logger.warning("%s", message)
 
