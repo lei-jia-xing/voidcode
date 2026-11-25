@@ -360,13 +360,13 @@ def test_copy_oversize_clipboard_explicit() -> None:
 
 
 def test_copy_success_reports_bytes(monkeypatch: Any) -> None:
-    import voidcode.tui.terminal_app as terminal_app_module
+    import voidcode.tui.input_actions as input_actions_module
 
     app, _, _ = _app()
     trace = _stack_trace(20)
     app._handle_composer_key(Key("paste", text=trace))
     seen: list[str] = []
-    monkeypatch.setattr(terminal_app_module, "copy_to_clipboard", lambda text: seen.append(text))
+    monkeypatch.setattr(input_actions_module, "copy_to_clipboard", lambda text: seen.append(text))
     app._handle_composer_key(Key("alt+c"))
     assert seen == [trace]
     assert "Copied" in app.status_line

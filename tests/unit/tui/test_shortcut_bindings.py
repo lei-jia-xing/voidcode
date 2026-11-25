@@ -8,8 +8,9 @@ from typing import Any
 from voidcode.sdk.client import ClientCapabilities, CommandCatalog
 from voidcode.sdk.commands import CommandDescriptor
 from voidcode.tui import catalog
+from voidcode.tui.formatting import shortcut_bindings as _shortcut_bindings
 from voidcode.tui.keys import Key
-from voidcode.tui.terminal_app import CoreTuiApp, _shortcut_bindings
+from voidcode.tui.terminal_app import CoreTuiApp
 
 
 class _StubTerminal:

@@ -228,7 +228,7 @@ def test_image_only_prompt_is_refused_with_attachments_kept(tmp_path: Path) -> N
 
 
 def test_clipboard_unavailable_is_visible_and_draft_is_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
-    import voidcode.tui.terminal_app as terminal_app_module
+    import voidcode.tui.input_actions as input_actions_module
 
     app, terminal, client = _app()
     app.composer.set_text("keep drafting")
@@ -237,7 +237,7 @@ def test_clipboard_unavailable_is_visible_and_draft_is_preserved(monkeypatch: py
     def unavailable() -> PendingImage:
         raise ClipboardImageUnavailable("no supported clipboard reader found (wl-paste or xclip)")
 
-    monkeypatch.setattr(terminal_app_module, "read_clipboard_image", unavailable)
+    monkeypatch.setattr(input_actions_module, "read_clipboard_image", unavailable)
     app._handle_composer_key(Key("alt+v"))
     _settle(app)
 
@@ -249,11 +249,11 @@ def test_clipboard_unavailable_is_visible_and_draft_is_preserved(monkeypatch: py
 
 
 def test_clipboard_image_success_attaches_and_announces(monkeypatch: pytest.MonkeyPatch) -> None:
-    import voidcode.tui.terminal_app as terminal_app_module
+    import voidcode.tui.input_actions as input_actions_module
 
     app, _, _ = _app()
     image = PendingImage(ImageAttachment("image/png", base64.b64encode(_PNG).decode("ascii")), "clipboard image", len(_PNG))
-    monkeypatch.setattr(terminal_app_module, "read_clipboard_image", lambda: image)
+    monkeypatch.setattr(input_actions_module, "read_clipboard_image", lambda: image)
     app._handle_composer_key(Key("alt+v"))
     _settle(app)
 

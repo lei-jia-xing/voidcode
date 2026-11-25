@@ -456,7 +456,7 @@ def test_live_command_presentation_mounts_under_its_revision_only() -> None:
 
 def test_history_receipt_renders_passive_presentation_without_opening_interaction() -> None:
     from voidcode.sdk.commands import CommandPresentation, CommandResult
-    from voidcode.tui.terminal_app import _command_result_rows
+    from voidcode.tui.formatting import command_result_rows as _command_result_rows
 
     result = CommandResult(
         status="ok",

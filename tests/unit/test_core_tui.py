@@ -2232,9 +2232,9 @@ def test_welcome_rows_clip_center_and_sample_colors() -> None:
     from rich.text import Text
 
     from voidcode.config import BannerConfig
+    from voidcode.tui.rendering import banner_rows as _banner_rows
     from voidcode.tui.styles import Styles
     from voidcode.tui.term import visible_width
-    from voidcode.tui.terminal_app import _banner_rows
 
     styles = Styles(None)
     rows = _banner_rows(BannerConfig(text="◆\n  界\x07", colors=("red",)), styles, width=20)
