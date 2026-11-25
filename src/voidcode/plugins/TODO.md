@@ -23,8 +23,9 @@
 
 - [x] **修复 `compaction` 默认配置下自动压缩失效。**
   - `compaction_observer` 现从 `UsageFact` 接收 `context_window` 并传入 `resolve_compaction_budget`，保证默认配置下能正确算出压缩触发门限。
-- [x] **为 `web_fetch` 补齐 SSRF 防护，消除 `web_search` 静默降级。**
-  - `plugins/web/web_fetch.py` 的 `_validated_url` 现校验回环地址、私有网段、云元数据（`169.254.169.254`）与重定向目标内网，重定向目标同样经过严格 SSRF 验证。
+- [ ] **为 `web_fetch` 补齐 SSRF 防护，消除 `web_search` 静默降级（部分完成）。**
+  - `_validated_url` 现按 `not is_global or is_multicast` 拒绝回环/私有/链路本地/CGNAT/保留/组播/云元数据，并解包 IPv4-mapped IPv6；重定向目标同样校验；DNS 解析失败 fail closed；fetch/search 客户端设置 `trust_env=False`。`VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH=1` 仅为危险的测试/开发覆盖。
+  - 残留：校验与连接之间的 DNS rebinding TOCTOU（未做连接期 IP 固定）；解压后的字节上限不是硬内存界。`web_search` 已消除 DeepSeek 静默截断并标注 keyless Jina。
 - [x] **完善 `files` 的忽略规则。**
   - `GitIgnoreMatcher`（`capabilities/files/gitignore.py`）现按目录惰性加载搜索根 `.git/info/exclude`、根 `.gitignore` 与嵌套 `.gitignore`；每条规则相对其所在目录解释（锚定/浮动/`**`/目录专属/`!` 取反），深层文件覆盖祖先、最后匹配规则获胜，被忽略子树不再扫描。pathspec 拒绝的行按字面量模式应用而非中止搜索；不可读的忽略文件仍是类型化失败。`glob`/`grep`/路径补全与 `find`（经 grep 查询）共用该匹配器；hidden 默认包含、`respect_gitignore` 默认 false 的既有策略不变，全局 excludes 不读取。
   - `write`/`edit` 共用 64 KiB mutation-content 上限（按 UTF-8 字节计：`write.content`、文本模式 `newString` 之和、range 模式 `newText` 之和），覆盖写按流式哈希复核，仅对不超过 64 KiB 的旧文件回传 unified `diff`/`additions`/`deletions`。

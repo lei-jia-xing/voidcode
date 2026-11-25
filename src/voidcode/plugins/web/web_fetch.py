@@ -55,52 +55,45 @@ _FETCH_HEADERS = {
 }
 
 
-_RESTRICTED_IPV4_NETWORKS = (
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("0.0.0.0/8"),
-)
-
-_RESTRICTED_IPV6_NETWORKS = (
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("::/128"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-)
+class _RestrictedNetworkError(ValueError):
+    """The destination is not a globally routable unicast address."""
 
 
 def _is_restricted_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if isinstance(ip, ipaddress.IPv4Address):
-        return any(ip in net for net in _RESTRICTED_IPV4_NETWORKS)
-    return any(ip in net for net in _RESTRICTED_IPV6_NETWORKS)
+    if isinstance(ip, ipaddress.IPv6Address) and (mapped := ip.ipv4_mapped) is not None:
+        ip = mapped
+    # ``is_global`` is false for loopback, RFC1918, link-local, shared/CGNAT,
+    # benchmarking, documentation, and reserved ranges. CPython reports multicast
+    # as globally routable, so refuse it explicitly.
+    return not ip.is_global or ip.is_multicast
 
 
 def _validate_host_not_restricted(host: str) -> None:
+    # Deliberately dangerous test/dev escape hatch; never set this in normal operation.
     if os.environ.get("VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH") == "1":
         return
     stripped_host = host.strip("[]").lower()
     if stripped_host in {"localhost", "localhost.localdomain"}:
-        raise ValueError("url points to a restricted/private network address")
+        raise _RestrictedNetworkError("url points to a restricted/private network address")
     try:
         ip = ipaddress.ip_address(stripped_host)
     except ValueError:
         pass
     else:
         if _is_restricted_ip(ip):
-            raise ValueError("url points to a restricted/private network address")
+            raise _RestrictedNetworkError("url points to a restricted/private network address")
         return
     try:
         addr_info = socket.getaddrinfo(stripped_host, None)
-        for _, _, _, _, sockaddr in addr_info:
-            ip_str = sockaddr[0]
-            resolved_ip = ipaddress.ip_address(ip_str)
-            if _is_restricted_ip(resolved_ip):
-                raise ValueError("url resolves to a restricted/private network address")
-    except socket.gaierror:
-        pass
+    except OSError:
+        raise ValueError("url host could not be resolved") from None
+    if not addr_info:
+        raise ValueError("url host could not be resolved")
+    for _, _, _, _, sockaddr in addr_info:
+        ip_str = sockaddr[0]
+        resolved_ip = ipaddress.ip_address(ip_str)
+        if _is_restricted_ip(resolved_ip):
+            raise _RestrictedNetworkError("url resolves to a restricted/private network address")
 
 
 def _validated_url(value: str) -> str:
@@ -292,7 +285,7 @@ class WebFetchTool:
             return _cancelled(tool_name, requested_url)
         deadline = time.monotonic() + TOTAL_FETCH_SECONDS
         current_url = requested_url
-        with httpx.Client(timeout=TIMEOUT_SECONDS, follow_redirects=False) as client:
+        with httpx.Client(timeout=TIMEOUT_SECONDS, follow_redirects=False, trust_env=False) as client:
             for _ in range(MAX_REDIRECTS + 1):
                 if _is_cancelled(context):
                     return _cancelled(tool_name, current_url)
@@ -310,8 +303,12 @@ class WebFetchTool:
                                 return _fail(tool_name, message, source=current_url)
                             try:
                                 current_url = _validated_url(urljoin(current_url, location))
+                            except _RestrictedNetworkError:
+                                message = "web_fetch redirect target points to a restricted/private network address."
+                                return _fail(tool_name, message, source=current_url)
                             except ValueError:
-                                return _fail(tool_name, "web_fetch redirect target must be an http(s) URL without credentials.", source=current_url)
+                                message = "web_fetch redirect target must be an http(s) URL without credentials or a resolvable host."
+                                return _fail(tool_name, message, source=current_url)
                             continue
                         if response.status_code < 200 or response.status_code >= 300:
                             message = f"web_fetch failed with HTTP {response.status_code}."

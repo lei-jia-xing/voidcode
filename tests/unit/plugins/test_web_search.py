@@ -667,6 +667,59 @@ def test_websearch_tool_cancelled_after_provider_call_discards_results(tool_cont
     assert result.execution.cancellation_signalled is True
 
 
+class _CancelAfterFirstChunk(httpx.SyncByteStream):
+    def __init__(self, signal: _AbortSignal) -> None:
+        self._signal = signal
+
+    def __iter__(self):
+        yield b'{"results": ['
+        self._signal.set_cancelled(True)
+        yield b'{"title": "late", "url": "https://late.example"}]}'
+
+
+def test_websearch_tool_cancelled_between_stream_chunks(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXA_API_KEY", "test-key")
+    signal = _AbortSignal()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_CancelAfterFirstChunk(signal), request=request)
+
+    _mock_transport(monkeypatch, handle)
+    context = ToolContext(
+        workspace=tool_context.workspace,
+        session_id="s",
+        run_id="r",
+        invocation_id="i",
+        revision_id="rev",
+        actor="model",
+        abort_signal=cast(Any, signal),
+    )
+    result = _run_search(context, {"query": "test"})
+
+    assert isinstance(result, ToolFailure)
+    assert "cancelled" in result.error
+    assert isinstance(result.execution, ConfirmedStop)
+    assert result.execution.cancellation_signalled is True
+
+
+def test_websearch_disables_proxy_environment(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXA_API_KEY", "test-key")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    seen: dict[str, object] = {}
+    original = httpx.Client
+    transport = httpx.MockTransport(lambda request: _json_response({"results": []}, request))
+
+    def factory(*args: object, **kwargs: object) -> httpx.Client:
+        seen["trust_env"] = kwargs.get("trust_env")
+        return original(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr("voidcode.plugins.web.web_search.httpx.Client", factory)
+    result = _run_search(tool_context, {"query": "test"})
+
+    assert isinstance(result, ToolSuccess)
+    assert seen["trust_env"] is False
+
+
 def test_websearch_tool_filters_until_requested_valid_results(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXA_API_KEY", "test-key")
 

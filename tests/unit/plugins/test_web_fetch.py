@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import socket
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -25,6 +26,16 @@ from voidcode.sdk.tools import EmptyOutput, OpaqueToolBody, ToolCall, ToolFailur
 _HTML = (
     '<html><head><title>Smoke</title></head><body><h1>Hello fetch</h1><p>Local <a href="/other">link</a>.</p><script>alert(1)</script></body></html>'
 )
+
+
+@pytest.fixture(autouse=True)
+def _public_test_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep fetch validation off the host resolver: sandboxes may return benchmark ranges."""
+
+    def resolver(host: str, port: object, *args: object, **kwargs: object) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr("voidcode.plugins.web.web_fetch.socket.getaddrinfo", resolver)
 
 
 @pytest.fixture
@@ -493,21 +504,69 @@ def test_web_reader_returns_none_for_unknown_digest(tool_context: ToolContext, m
         "http://192.168.1.1/router",
         "http://172.16.0.1/",
         "http://169.254.169.254/latest/meta-data/",
+        "http://[::ffff:127.0.0.1]/",
+        "http://[::ffff:169.254.169.254]/",
+        "http://100.100.100.200/",
+        "http://100.64.0.1/",
+        "http://198.18.0.1/",
+        "http://240.0.0.1/",
+        "http://224.0.0.1/",
     ],
 )
 def test_webfetch_rejects_ssrf_restricted_targets(tool_context: ToolContext, restricted_url: str) -> None:
     services = FakeServices()
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(ValueError) as excinfo:
         _run(tool_context, services, {"url": restricted_url})
     assert "restricted/private network address" in str(excinfo.value)
 
 
-def test_webfetch_rejects_ssrf_redirect_target(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_webfetch_fails_closed_when_dns_resolution_fails(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(host: str, port: object, *args: object, **kwargs: object) -> None:
+        raise socket.gaierror("unresolvable")
+
+    monkeypatch.setattr("voidcode.plugins.web.web_fetch.socket.getaddrinfo", fail)
+    with pytest.raises(ValueError, match="could not be resolved"):
+        _run(tool_context, FakeServices(), {"url": "http://unresolvable.example/page"})
+
+
+@pytest.mark.parametrize("location", ["http://169.254.169.254/latest/meta-data/", "http://[::ffff:169.254.169.254]/"])
+def test_webfetch_rejects_ssrf_redirect_target(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch, location: str) -> None:
     def handle(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data/"}, request=request)
+        return httpx.Response(302, headers={"location": location}, request=request)
 
     _mock_transport(monkeypatch, handle)
     services = FakeServices()
     result = _run(tool_context, services, {"url": "http://example.com/redirect"})
     assert isinstance(result, ToolFailure)
-    assert "redirect target must be an http(s) URL without credentials" in result.error
+    assert "restricted/private network address" in result.error
+
+
+def test_webfetch_test_override_allows_local_network(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH", "1")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"local", headers={"content-type": "text/plain"}, request=request)
+
+    _mock_transport(monkeypatch, handle)
+    services = FakeServices()
+    result = _ok(tool_context, services, "http://127.0.0.1:8080/page")
+
+    assert services.artifacts[result.body.artifact.sha256] == b"local"
+
+
+def test_webfetch_disables_proxy_environment(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    seen: dict[str, object] = {}
+    original = httpx.Client
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"direct", headers={"content-type": "text/plain"}, request=request))
+
+    def factory(*args: object, **kwargs: object) -> httpx.Client:
+        seen["trust_env"] = kwargs.get("trust_env")
+        return original(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr("voidcode.plugins.web.web_fetch.httpx.Client", factory)
+    services = FakeServices()
+    result = _ok(tool_context, services, "http://example.com/page")
+
+    assert seen["trust_env"] is False
+    assert services.artifacts[result.body.artifact.sha256] == b"direct"

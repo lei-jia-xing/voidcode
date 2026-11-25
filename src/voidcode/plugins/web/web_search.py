@@ -97,6 +97,10 @@ def _render_search_results(results: list[WebSearchItem]) -> str:
     return "\n".join(output_lines)
 
 
+class _SearchCancelled(Exception):
+    """The caller cancelled while a search response body was streaming."""
+
+
 class _SearchFailure(str):
     """A bounded failure sentence that also records whether the fault was a timeout."""
 
@@ -124,37 +128,57 @@ def _bounded_http_error(label: str, exc: httpx.HTTPError) -> _SearchFailure:
     return _SearchFailure(f"{label} search request failed.")
 
 
-def _post_json(url: str, payload: Mapping[str, object], headers: Mapping[str, str], label: str) -> tuple[object, str | None]:
+def _post_json(
+    url: str,
+    payload: Mapping[str, object],
+    headers: Mapping[str, str],
+    label: str,
+    is_cancelled: Callable[[], bool],
+) -> tuple[object, str | None]:
+    if is_cancelled():
+        raise _SearchCancelled
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
+        with httpx.Client(timeout=TIMEOUT_SECONDS, trust_env=False) as client:
             with client.stream("POST", url, json=dict(payload), headers=dict(headers)) as response:
                 response.raise_for_status()
-                return _decode_json(response, label)
+                return _decode_json(response, label, is_cancelled)
     except httpx.InvalidURL:
         return None, f"{label} search endpoint is not a valid URL."
     except httpx.HTTPError as exc:
         return None, _bounded_http_error(label, exc)
 
 
-def _get_json(url: str, params: Mapping[str, str | int], headers: Mapping[str, str], label: str) -> tuple[object, str | None]:
+def _get_json(
+    url: str,
+    params: Mapping[str, str | int],
+    headers: Mapping[str, str],
+    label: str,
+    is_cancelled: Callable[[], bool],
+) -> tuple[object, str | None]:
+    if is_cancelled():
+        raise _SearchCancelled
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
+        with httpx.Client(timeout=TIMEOUT_SECONDS, trust_env=False) as client:
             with client.stream("GET", url, params=dict(params), headers=dict(headers)) as response:
                 response.raise_for_status()
-                return _decode_json(response, label)
+                return _decode_json(response, label, is_cancelled)
     except httpx.InvalidURL:
         return None, f"{label} search endpoint is not a valid URL."
     except httpx.HTTPError as exc:
         return None, _bounded_http_error(label, exc)
 
 
-def _decode_json(response: httpx.Response, label: str) -> tuple[object, str | None]:
+def _decode_json(response: httpx.Response, label: str, is_cancelled: Callable[[], bool]) -> tuple[object, str | None]:
     """Parse one bounded JSON body; the cap counts decompressed bytes."""
     raw = bytearray()
     for chunk in response.iter_bytes():
+        if is_cancelled():
+            raise _SearchCancelled
         if len(raw) + len(chunk) > MAX_SEARCH_RESPONSE_BYTES:
             return None, f"{label} search response exceeds {MAX_SEARCH_RESPONSE_BYTES}-byte limit."
         raw.extend(chunk)
+    if is_cancelled():
+        raise _SearchCancelled
     try:
         return json.loads(raw), None
     except ValueError, RecursionError:
@@ -193,13 +217,14 @@ def _collect(
     return results, None
 
 
-def _search_exa(query: str, num_results: int) -> tuple[list[WebSearchItem], str | None]:
+def _search_exa(query: str, num_results: int, is_cancelled: Callable[[], bool]) -> tuple[list[WebSearchItem], str | None]:
     api_key = os.environ.get("EXA_API_KEY", "")
     data, error = _post_json(
         "https://api.exa.ai/search",
         {"query": query, "numResults": num_results, "type": "auto", "contents": {"highlights": True}},
         {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         "Exa",
+        is_cancelled,
     )
     if error is not None:
         return [], error
@@ -224,13 +249,14 @@ def _search_exa(query: str, num_results: int) -> tuple[list[WebSearchItem], str 
     return results, None
 
 
-def _search_tavily(query: str, num_results: int) -> tuple[list[WebSearchItem], str | None]:
+def _search_tavily(query: str, num_results: int, is_cancelled: Callable[[], bool]) -> tuple[list[WebSearchItem], str | None]:
     api_key = os.environ.get("TAVILY_API_KEY", "")
     data, error = _post_json(
         "https://api.tavily.com/search",
         {"query": query, "max_results": num_results},
         {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         "Tavily",
+        is_cancelled,
     )
     if error is not None:
         return [], error
@@ -239,13 +265,14 @@ def _search_tavily(query: str, num_results: int) -> tuple[list[WebSearchItem], s
     return _collect(data.get("results"), num_results, label="Tavily", snippet_keys=("content",))
 
 
-def _search_brave(query: str, num_results: int) -> tuple[list[WebSearchItem], str | None]:
+def _search_brave(query: str, num_results: int, is_cancelled: Callable[[], bool]) -> tuple[list[WebSearchItem], str | None]:
     api_key = os.environ.get("BRAVE_API_KEY", "")
     data, error = _get_json(
         "https://api.search.brave.com/res/v1/web/search",
         {"q": query, "count": num_results},
         {"Accept": "application/json", "X-Subscription-Token": api_key},
         "Brave",
+        is_cancelled,
     )
     if error is not None:
         return [], error
@@ -257,13 +284,14 @@ def _search_brave(query: str, num_results: int) -> tuple[list[WebSearchItem], st
     return _collect(web_data.get("results"), num_results, label="Brave", snippet_keys=("description",))
 
 
-def _search_deepseek(query: str, num_results: int) -> tuple[list[WebSearchItem], str | None]:
+def _search_deepseek(query: str, num_results: int, is_cancelled: Callable[[], bool]) -> tuple[list[WebSearchItem], str | None]:
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     data, error = _post_json(
         "https://api.deepseek.com/v1/tools/search",
         {"query": query, "count": num_results},
         {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         "DeepSeek",
+        is_cancelled,
     )
     if error is not None:
         return [], error
@@ -272,13 +300,14 @@ def _search_deepseek(query: str, num_results: int) -> tuple[list[WebSearchItem],
     return _collect(data.get("results"), num_results, label="DeepSeek", snippet_keys=("snippet",))
 
 
-def _search_tinyfish(query: str, num_results: int) -> tuple[list[WebSearchItem], str | None]:
+def _search_tinyfish(query: str, num_results: int, is_cancelled: Callable[[], bool]) -> tuple[list[WebSearchItem], str | None]:
     api_key = os.environ.get("TINYFISH_API_KEY", "")
     data, error = _get_json(
         "https://api.search.tinyfish.ai",
         {"query": query},
         {"Accept": "application/json", "X-API-Key": api_key},
         "TinyFish",
+        is_cancelled,
     )
     if error is not None:
         return [], error
@@ -287,12 +316,12 @@ def _search_tinyfish(query: str, num_results: int) -> tuple[list[WebSearchItem],
     return _collect(data.get("results"), num_results, label="TinyFish", title_keys=("title", "site_name"), snippet_keys=("snippet",))
 
 
-def _search_jina(query: str, num_results: int) -> tuple[list[WebSearchItem], str | None]:
+def _search_jina(query: str, num_results: int, is_cancelled: Callable[[], bool]) -> tuple[list[WebSearchItem], str | None]:
     api_key = os.environ.get("JINA_API_KEY", "")
     headers = {"Accept": "application/json", "X-Respond-With": "no-content", "X-Retain-Images": "none"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    data, error = _get_json(f"https://s.jina.ai/{quote(query, safe='')}", {"count": num_results}, headers, "Jina")
+    data, error = _get_json(f"https://s.jina.ai/{quote(query, safe='')}", {"count": num_results}, headers, "Jina", is_cancelled)
     if error is not None:
         return [], error
     if isinstance(data, list):
@@ -307,13 +336,14 @@ def _search_jina(query: str, num_results: int) -> tuple[list[WebSearchItem], str
     return _collect(raw_results, num_results, label="Jina", snippet_keys=("description", "content"))
 
 
-def _search_kagi(query: str, num_results: int) -> tuple[list[WebSearchItem], str | None]:
+def _search_kagi(query: str, num_results: int, is_cancelled: Callable[[], bool]) -> tuple[list[WebSearchItem], str | None]:
     api_key = os.environ.get("KAGI_API_KEY", "")
     data, error = _post_json(
         "https://kagi.com/api/v1/search",
         {"query": query, "workflow": "search", "limit": num_results},
         {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "application/json"},
         "Kagi",
+        is_cancelled,
     )
     if error is not None:
         return [], error
@@ -350,7 +380,7 @@ def _is_firecrawl_available() -> bool:
     return bool(os.environ.get("FIRECRAWL_API_KEY") or os.environ.get("FIRECRAWL_BASE_URL") or os.environ.get("FIRECRAWL_API_URL"))
 
 
-def _search_firecrawl(query: str, num_results: int) -> tuple[list[WebSearchItem], str | None]:
+def _search_firecrawl(query: str, num_results: int, is_cancelled: Callable[[], bool]) -> tuple[list[WebSearchItem], str | None]:
     api_key = os.environ.get("FIRECRAWL_API_KEY", "")
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -360,6 +390,7 @@ def _search_firecrawl(query: str, num_results: int) -> tuple[list[WebSearchItem]
         {"query": query, "limit": num_results, "sources": [{"type": "web"}]},
         headers,
         "Firecrawl",
+        is_cancelled,
     )
     if error is not None:
         return [], error
@@ -379,7 +410,7 @@ def _search_firecrawl(query: str, num_results: int) -> tuple[list[WebSearchItem]
     return _collect(raw_results, num_results, label="Firecrawl", snippet_keys=("description", "snippet", "markdown"))
 
 
-def _search_searxng(query: str, num_results: int) -> tuple[list[WebSearchItem], str | None]:
+def _search_searxng(query: str, num_results: int, is_cancelled: Callable[[], bool]) -> tuple[list[WebSearchItem], str | None]:
     endpoint = os.environ.get("SEARXNG_ENDPOINT", "").rstrip("/")
     headers = {"Accept": "application/json"}
     basic_user = os.environ.get("SEARXNG_BASIC_USERNAME")
@@ -388,7 +419,7 @@ def _search_searxng(query: str, num_results: int) -> tuple[list[WebSearchItem], 
         headers["Authorization"] = f"Basic {base64.b64encode(f'{basic_user}:{basic_pass}'.encode()).decode()}"
     elif token := os.environ.get("SEARXNG_TOKEN"):
         headers["Authorization"] = f"Bearer {token}"
-    data, error = _get_json(f"{endpoint}/search", {"q": query, "format": "json"}, headers, "SearXNG")
+    data, error = _get_json(f"{endpoint}/search", {"q": query, "format": "json"}, headers, "SearXNG", is_cancelled)
     if error is not None:
         return [], error
     if not isinstance(data, Mapping):
@@ -400,7 +431,7 @@ def _search_searxng(query: str, num_results: int) -> tuple[list[WebSearchItem], 
 class SearchProvider:
     id: str
     is_available: Callable[[], bool]
-    search: Callable[[str, int], tuple[list[WebSearchItem], str | None]]
+    search: Callable[[str, int, Callable[[], bool]], tuple[list[WebSearchItem], str | None]]
 
 
 def _has_env(name: str) -> bool:
@@ -492,10 +523,17 @@ class WebSearchTool:
         source = _source_label(provider.id)
         effective_query = _provider_query(provider.id, args.query)
         query_truncated = effective_query != args.query
-        if _is_cancelled(context):
+
+        def is_cancelled() -> bool:
+            return _is_cancelled(context)
+
+        if is_cancelled():
             return _cancelled(tool_name, source)
-        results, error = provider.search(effective_query, args.numResults)
-        if _is_cancelled(context):
+        try:
+            results, error = provider.search(effective_query, args.numResults, is_cancelled)
+        except _SearchCancelled:
+            return _cancelled(tool_name, source)
+        if is_cancelled():
             return _cancelled(tool_name, source)
         note = _truncation_note(query_truncated, effective_query)
         if error is not None:

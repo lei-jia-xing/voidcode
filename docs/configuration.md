@@ -146,8 +146,14 @@ is out of threat model.
 
 The bundled `web` tools run in the Core process, not as registry children: their egress
 is not covered by `sandbox.network`, `NETWORK` is not approval-gated, and they remain
-available under `read_only`/plan mode. Disable the `web` plugin (or install a pre-tool
-gate) when that egress is not wanted.
+available under `read_only`/plan mode. `web_fetch` rejects non-global-unicast and
+multicast destinations (loopback, RFC1918, link-local, shared/CGNAT, reserved, multicast,
+cloud metadata, and IPv4-mapped IPv6) before connecting and on every redirect.
+`VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH=1` is a dangerous test/dev-only override that
+disables those checks. Fetch and search clients ignore proxy environment variables
+(`trust_env=False`). Residuals: DNS rebinding between validation and connect is still
+possible; the decompression caps are byte counts, not hard memory bounds. Disable the
+`web` plugin (or install a pre-tool gate) when that egress is not wanted.
 
 ### `providers`
 
