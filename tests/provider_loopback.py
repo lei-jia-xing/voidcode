@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
@@ -20,6 +21,10 @@ class OpenAILoopbackServer(ThreadingHTTPServer):
         #: Optional test hook run after each request is recorded, before its reply
         #: is chosen. Returning a reply overrides the queued one for that request.
         self.before_reply: Callable[[dict[str, object], int], dict[str, object] | None] | None = None
+        #: Seconds to sleep between SSE frames so a TUI test can observe live output.
+        self.stream_delay = 0.0
+        #: Split streamed assistant content into deltas of at most this many chars.
+        self.stream_chunk_chars = 0
 
 
 class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
@@ -55,11 +60,16 @@ class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
         streaming = payload.get("stream") is True
         stream_options = payload.get("stream_options")
         include_usage = isinstance(stream_options, dict) and stream_options.get("include_usage") is True
+        frames: list[bytes] = []
         if server.chat_status != 200 or "choices" not in response:
             encoded = json.dumps(response).encode()
             content_type = "application/json"
         else:
-            encoded = _stream_response_body(response, include_usage=include_usage) if streaming else json.dumps(response).encode()
+            if streaming:
+                frames = _stream_response_frames(response, include_usage=include_usage, chunk_chars=server.stream_chunk_chars)
+                encoded = b"".join(frames)
+            else:
+                encoded = json.dumps(response).encode()
             content_type = "text/event-stream" if streaming else "application/json"
         server.response_bodies.append(encoded)
         server.response_content_types.append(content_type)
@@ -67,19 +77,37 @@ class _OpenAILoopbackHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
-        self.wfile.write(encoded)
+        if frames and server.stream_delay > 0:
+            for frame in frames:
+                self.wfile.write(frame)
+                self.wfile.flush()
+                time.sleep(server.stream_delay)
+        else:
+            self.wfile.write(encoded)
 
     def log_message(self, format: str, *args: object) -> None:
         _ = format, args
 
 
 def _stream_response_body(response: dict[str, object], *, include_usage: bool) -> bytes:
+    return b"".join(_stream_response_frames(response, include_usage=include_usage))
+
+
+def _stream_response_frames(response: dict[str, object], *, include_usage: bool, chunk_chars: int = 0) -> list[bytes]:
     choice = cast(dict[str, object], cast(list[object], response["choices"])[0])
     message = cast(dict[str, object], choice["message"])
     head: dict[str, object] = {"role": "assistant"}
-    for key in ("content", "reasoning_content", "reasoning"):
-        if key in message and message[key] is not None:
-            head[key] = message[key]
+    trailing: list[dict[str, object]] = []
+    content = message.get("content")
+    if chunk_chars > 0 and isinstance(content, str) and len(content) > chunk_chars:
+        # Progressive content deltas let a live TUI render partial text and a
+        # reader observe it before the turn settles.
+        trailing = [{"content": content[start : start + chunk_chars]} for start in range(0, len(content), chunk_chars)]
+        head["content"] = ""
+    else:
+        for key in ("content", "reasoning_content", "reasoning"):
+            if key in message and message[key] is not None:
+                head[key] = message[key]
     raw_calls = message.get("tool_calls")
     calls = [cast(dict[str, object], call) for call in raw_calls] if isinstance(raw_calls, list) else []
     # Faithful wire shape: one indexed tool-call entry per delta chunk, never
@@ -93,6 +121,16 @@ def _stream_response_body(response: dict[str, object], *, include_usage: bool) -
             "model": response["model"],
             "choices": [{"index": 0, "delta": head, "finish_reason": None}],
         },
+        *(
+            {
+                "id": response["id"],
+                "object": "chat.completion.chunk",
+                "created": response["created"],
+                "model": response["model"],
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            }
+            for delta in trailing
+        ),
         *(
             {
                 "id": response["id"],
@@ -134,8 +172,10 @@ def _stream_response_body(response: dict[str, object], *, include_usage: bool) -
                 "usage": usage,
             }
         )
-    frames = (f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n".encode() for chunk in chunks)
-    return b"".join((*frames, b"data: [DONE]\n\n"))
+    return [
+        *(f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n".encode() for chunk in chunks),
+        b"data: [DONE]\n\n",
+    ]
 
 
 _DEFAULT_USAGE: dict[str, object] = {"prompt_tokens": 120, "completion_tokens": 45, "prompt_tokens_details": {"cached_tokens": 30}}

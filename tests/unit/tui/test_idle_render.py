@@ -20,6 +20,7 @@ class _IdleTerminal:
     """Non-blocking stub: never has input, never EOF; records painted frames."""
 
     width = 100
+    content_width = 100
     height = 24
     eof = False
     color_system = None

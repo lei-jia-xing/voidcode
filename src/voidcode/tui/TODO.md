@@ -50,8 +50,9 @@ TUI 是服务端事件流之上的内联终端客户端：不持有业务真相�
 
 ## P2：终端鲁棒性
 
-- [ ] **以真实终端验证 resize、滚动历史和光标重锚定。**
-  - 对流式输出、多行输入、浮层及图片验证宽高变化后的重定位。
+- [x] **以真实终端验证 resize、滚动历史和光标重锚定。**
+  - `tests/integration/test_tui_resize.py` 在真实 PTY（`tests/fixtures/tui_pty.py`）中覆盖流式输出、多行草稿/光标、审批浮层、图片路径/徽标及长滚动历史下的宽高变化：提交行各出现一次且顺序不变、底部页脚保持锚定、草稿与光标按新宽度重绘后仍落在原逻辑位置。
+  - 同步修复 `render_frame`：以 `terminal.content_width` 布局。无法确认 autowrap 状态的终端会预留末列，此前按物理宽度排版会截掉页脚最后一个字符。
 - [x] **修复客户端参数透传、`session.ack` 容错、Diff 展示与 `NO_COLOR` 判定。**
   - `CoreRpcClient.run`/`CoreLocalClient.run` 现转发 `RunSpec.interaction`（`resume` 原本已转发）；`session.ack` 仅忽略 `ConnectionClosed` 连接关闭竞态，其他发送失败继续上抛。
   - `_detect_color_system` 以变量存在与否判定 `NO_COLOR`，空串同样禁用颜色；Diff 卡片与 `DiffViewData` 预览显示有界双列旧/新行号，`write` 覆盖 diff（旧文件 ≤64 KiB）与 `edit` 共用同一形状分发渲染。

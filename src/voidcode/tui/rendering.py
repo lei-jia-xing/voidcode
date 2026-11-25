@@ -376,7 +376,10 @@ def border_status(app: CoreTuiApp) -> str:
 
 
 def render_frame(app: CoreTuiApp) -> None:
-    width = app.terminal.width
+    # Layout to the widest row paint_frame accepts, not the physical width:
+    # when the terminal's autowrap state is unknown the writer reserves the
+    # last cell, and a row laid out to the physical width would lose its tail.
+    width = app.terminal.content_width
     if app._run_active or app._stream_dispatch is not None:
         app._spinner_tick += 1
     context = footer_context(app, width)

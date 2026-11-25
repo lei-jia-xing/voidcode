@@ -25,6 +25,10 @@ class _StubTerminal:
         self.frames: list[list[str]] = []
         self.committed: list[str] = []
 
+    @property
+    def content_width(self) -> int:
+        return self.width
+
     def query_default_background_rgb(self) -> None:
         return None
 
