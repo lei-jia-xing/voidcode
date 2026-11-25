@@ -334,18 +334,16 @@ def _handle_live_input_ready(app: CoreTuiApp, frame: LiveInputReadyEvent, rows: 
     live = app._live_input
     if live is None or not isinstance(app.active_overlay, (InteractiveChoices, InteractiveMarkdown)):
         return
-    if live.get("source") is not app.active_overlay:
+    if live.source is not app.active_overlay:
         return
-    same_action = frame.action == str(live.get("name", ""))
-    same_args = dict(frame.arguments) == dict(live.get("arguments") or {})
+    same_action = frame.action == live.name
+    same_args = dict(frame.arguments) == dict(live.arguments)
     if not (same_action and same_args):
         return
-    if frame.revision_id != app.catalog_revision or frame.revision_id != str(live.get("revision", "")):
+    if frame.revision_id != app.catalog_revision or frame.revision_id != live.revision:
         return
     refresh_after_ms = frame.refresh_after_ms
-    cadence = live.get("refresh_after_ms")
-    if not isinstance(cadence, int):
-        cadence = refresh_after_ms
+    cadence = live.refresh_after_ms if live.refresh_after_ms is not None else refresh_after_ms
     view = frame.view
     if frame.error or not isinstance(view, PluginViewDescriptor):
         app.status_line = f"Refresh failed: {safe(frame.error or 'unavailable')} · reopen to retry"
@@ -379,8 +377,8 @@ def _handle_live_input_ready(app: CoreTuiApp, frame: LiveInputReadyEvent, rows: 
         app._close_live_input()
         return
     app._arm_live_input(
-        name=str(live.get("name", "")),
-        arguments=dict(live.get("arguments") or {}),
+        name=live.name,
+        arguments=live.arguments,
         revision=frame.revision_id,
         refresh_after_ms=refresh_after_ms if refresh_after_ms is not None else cadence,
         source=app.active_overlay,

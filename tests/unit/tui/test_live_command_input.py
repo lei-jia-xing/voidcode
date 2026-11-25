@@ -122,8 +122,8 @@ def test_shortcut_mounts_live_view_and_refresh_updates_in_place() -> None:
     assert app.composer.value == "abcd"
     first = app.active_overlay
     assert app._live_input is not None
-    assert app._live_input["arguments"] == {}
-    assert app._live_input["source"] is first
+    assert app._live_input.arguments == {}
+    assert app._live_input.source is first
     app.active_overlay.handle_key(Key("down"))
     assert app.active_overlay.selected_id == "b"
     app._live_refresh_at = time.monotonic() - 0.01
@@ -152,8 +152,8 @@ def test_prepare_selection_threads_arguments_and_stays_live() -> None:
     assert client.calls[1] == ("s1", "monitor", {"target": "a"}, "rev-1")
     assert isinstance(app.active_overlay, InteractiveChoices)
     assert app._live_input is not None
-    assert app._live_input["arguments"] == {"target": "a"}
-    assert app._live_input["source"] is app.active_overlay
+    assert app._live_input.arguments == {"target": "a"}
+    assert app._live_input.source is app.active_overlay
     # The next poll reuses the detail args, never resets to {}.
     app._live_refresh_at = time.monotonic() - 0.01
     app._poll_live_input()

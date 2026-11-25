@@ -14,7 +14,7 @@ import webbrowser
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal, TypedDict
 
 from voidcode.capabilities.files.path_queries import PathCompletionRequest, PathCompletionResult
 from voidcode.config import BannerConfig
@@ -67,8 +67,16 @@ from voidcode.tui.gates import (
 )
 
 from . import catalog, events, operations
-from .artifact_viewer import ArtifactSource, InteractiveArtifactViewer, artifact_sources, png_dimensions, read_artifact_bytes
-from .composer import SHELL_ESCAPE_PREFIX, Composer, ComposerAction
+from .artifact_viewer import (
+    ArtifactOpenRequested,
+    ArtifactPageRequested,
+    ArtifactSource,
+    InteractiveArtifactViewer,
+    artifact_sources,
+    png_dimensions,
+    read_artifact_bytes,
+)
+from .composer import SHELL_ESCAPE_PREFIX, Composer, ComposerAction, ComposerOutcome
 from .event_pump import drain_events
 from .formatting import (
     NoticeTone,
@@ -101,18 +109,23 @@ from .formatting import (
 )
 from .help_view import TUI_CONTROLS, TUI_CONTROLS_BY_NAME, render_help
 from .keys import Key, KeyDecoder
-from .rendering import ActiveToolProgress, render_frame, run_notice_rows
+from .rendering import QUIT_ARM_SECONDS, ActiveToolProgress, render_frame, run_notice_rows
 from .rendering import banner_rows as _banner_rows
 from .session_follower import SessionFollower
 from .styles import Styles
-from .term import Terminal, TerminalCapabilityError, copy_to_clipboard
+from .term import Terminal, TerminalCapabilityError, TerminalKittyReply, copy_to_clipboard
 from .views import (
+    AskAnswered,
+    AskCancelled,
+    ConfirmationDecided,
     InteractiveApproval,
     InteractiveAsk,
     InteractiveChoices,
     InteractiveConfirmation,
     InteractiveForm,
     InteractiveMarkdown,
+    OverlayActionSelected,
+    OverlayCancelled,
     render_assistant_markdown,
     render_plugin_view,
 )
@@ -129,8 +142,9 @@ logger = logging.getLogger(__name__)
 #: Matches the 50 ms window the pre-cutover client used.
 _ESCAPE_FLUSH_SECONDS = 0.05
 
-#: Second Ctrl+C inside this window quits; help text uses the same value.
-_QUIT_ARM_SECONDS = 1.5
+#: Fallback live-view cadence when a reply carries no explicit refresh interval;
+#: only a reply rearms, so this never stacks workers.
+_LIVE_REFRESH_FALLBACK_SECONDS = 60.0
 
 #: Spinner/live cadence while animations run; matches the pre-cutover 30 fps render loop.
 _SPINNER_TICK_SECONDS = 1 / 30
@@ -145,16 +159,6 @@ _INPUT_READ_SLICE_SECONDS = 0.05
 #: one-second ceiling bounds flag-only wakeups (SIGWINCH sets a flag the next
 #: render consumes) without rendering while idle.
 _MAX_IDLE_BLOCK_SECONDS = 1.0
-
-_BUILTIN_BANNER = (
-    "███╗      ███╗",
-    "╚███╗    ███╔╝",
-    " ╚███╗  ███╔╝",
-    "  ╚███╗███╔╝",
-    "   ╚█████╔╝",
-    "    ╚███╔╝",
-    "     ╚═╝",
-)
 
 #: Immutable ctor/entry default: None at the boundary always means disabled.
 _DEFAULT_BANNER = BannerConfig()
@@ -176,6 +180,22 @@ class _PathCompletionRound:
     draft: str
     cursor: int
     token: events.AbortToken
+    session_id: str
+    generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class _SuspendedLive:
+    """A live choices/markdown overlay paused under its own confirmation."""
+
+    overlay: InteractiveChoices | InteractiveMarkdown
+    live_input: events.LiveInput
+
+
+class _ArtifactContext(TypedDict):
+    """Correlation fields every artifact worker frame carries."""
+
+    viewer: str
     session_id: str
     generation: int
 
@@ -253,24 +273,22 @@ class CoreTuiApp:
         #: a held Enter/click while one is outstanding is ignored, never a
         #: second thread. Cleared on response, decided fact, or error.
         self._in_flight: set[str] = set()
-        self.active_overlay: (
-            InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveMarkdown | InteractiveArtifactViewer | InteractiveAsk | None
-        ) = None
+        self.active_overlay: events.InteractiveOverlay | None = None
         #: Chord -> descriptor for this catalog revision, rebuilt on every catalog load.
         self._shortcut_bindings: dict[str, CommandDescriptor] = {}
         #: Chord -> claimant names when 2+ descriptors claim one chord (binds nobody).
         self._shortcut_conflicts: dict[str, tuple[str, ...]] = {}
         #: Live read-only input source while a refreshable view is open; only this
-        #: explicit metadata enables polling: {name, arguments, revision, source}.
-        self._live_input: dict[str, Any] | None = None
+        #: explicit metadata enables polling.
+        self._live_input: events.LiveInput | None = None
         #: Next monotonic deadline for the live-input refresh worker.
         self._live_refresh_at: float = 0.0
         #: Active plugin live views (`live=True`) projected above the composer.
         self._live_views: tuple[PluginViewDescriptor, ...] = ()
         self._live_views_inflight: bool = False
         self._live_views_refresh_at: float = 0.0
-        #: Retained live view while a confirmation overlays it: (overlay, live_input).
-        self._suspended_live: tuple[Any, dict[str, Any] | None] | None = None
+        #: Retained live view while a confirmation overlays it.
+        self._suspended_live: _SuspendedLive | None = None
         # Native tool approval (core permission gate) is not a plugin Action
         # confirmation: it resumes the parked run with its own request id.
         self.pending_approval: InteractiveApproval | None = None
@@ -519,7 +537,7 @@ class CoreTuiApp:
             return False
         if self.pending_approval is not None or not isinstance(self.active_overlay, (InteractiveChoices, InteractiveMarkdown)):
             return False
-        return getattr(self.active_overlay, "revision_id", "") == str(live.get("revision", ""))
+        return getattr(self.active_overlay, "revision_id", "") == live.revision
 
     def _idle_timeout(self) -> float:
         """Seconds until the next timer fire; fully idle parks on the liveness snooze."""
@@ -540,7 +558,7 @@ class CoreTuiApp:
         if self._artifact_ack_deadline is not None:
             consider(self._artifact_ack_deadline[2])
         if self._quit_armed_at != float("-inf"):
-            consider(self._quit_armed_at + _QUIT_ARM_SECONDS)
+            consider(self._quit_armed_at + QUIT_ARM_SECONDS)
         if self._animations_live():
             consider(now + _SPINNER_TICK_SECONDS)
         # Fully idle: a long liveness snooze, not a spin. Real events, input,
@@ -559,7 +577,7 @@ class CoreTuiApp:
         if self.terminal.resize_pending():
             # A native resize arrived mid-park: force the render that consumes it.
             fired = True
-        if self._quit_armed_at != float("-inf") and now >= self._quit_armed_at + _QUIT_ARM_SECONDS:
+        if self._quit_armed_at != float("-inf") and now >= self._quit_armed_at + QUIT_ARM_SECONDS:
             self._quit_armed_at = float("-inf")
             fired = True
         deadline = self._artifact_ack_deadline
@@ -576,11 +594,11 @@ class CoreTuiApp:
             return
         if self.pending_approval is not None or not isinstance(self.active_overlay, (InteractiveChoices, InteractiveMarkdown)):
             return  # gate/editor owns focus: pause, keep the deadline so resume fires at once
-        if getattr(self.active_overlay, "revision_id", "") != str(live.get("revision", "")):
+        if getattr(self.active_overlay, "revision_id", "") != live.revision:
             self._live_input = None
             self._live_refresh_at = 0.0
             return
-        self._live_refresh_at = time.monotonic() + 60.0  # rearmed by the reply; never stacks workers
+        self._live_refresh_at = time.monotonic() + _LIVE_REFRESH_FALLBACK_SECONDS  # rearmed by the reply; never stacks workers
         self._refresh_live_input_async()
 
     def _live_views_armed(self) -> bool:
@@ -591,7 +609,7 @@ class CoreTuiApp:
             return
         if time.monotonic() < self._live_views_refresh_at:
             return
-        self._live_views_refresh_at = time.monotonic() + 60.0
+        self._live_views_refresh_at = time.monotonic() + _LIVE_REFRESH_FALLBACK_SECONDS
         self._refresh_live_views()
 
     def _refresh_live_views(self) -> None:
@@ -694,7 +712,7 @@ class CoreTuiApp:
         self.active_overlay = viewer
         self._load_artifact_page(viewer, 0)
 
-    def _artifact_context(self, viewer: InteractiveArtifactViewer) -> dict[str, Any]:
+    def _artifact_context(self, viewer: InteractiveArtifactViewer) -> _ArtifactContext:
         return {"viewer": viewer.identity, "session_id": self.session_id, "generation": self._generation}
 
     def _artifact_cancelled(self, viewer: InteractiveArtifactViewer, sha256: str) -> bool:
@@ -860,7 +878,7 @@ class CoreTuiApp:
                 del self.queued_confirmations[queued_id]
             for queued_id in [i for i, q in self.queued_asks.items() if q.revision_id != change.to_revision_id]:
                 del self.queued_asks[queued_id]
-            if self._suspended_live is not None and getattr(self._suspended_live[0], "revision_id", "") != change.to_revision_id:
+            if self._suspended_live is not None and self._suspended_live.overlay.revision_id != change.to_revision_id:
                 self._suspended_live = None
                 self._live_input = None
                 self._live_refresh_at = 0.0
@@ -919,16 +937,14 @@ class CoreTuiApp:
         self._suspended_live = None
         if suspended is None:
             return
-        overlay, live = suspended
         if self.active_overlay is not None or self.pending_approval is not None:
             return
-        revision = getattr(overlay, "revision_id", "")
+        revision = suspended.overlay.revision_id
         if not revision or revision != self.catalog_revision:
             return
-        self.active_overlay = overlay
-        self._live_input = live
-        if live is not None:
-            self._live_refresh_at = time.monotonic()
+        self.active_overlay = suspended.overlay
+        self._live_input = suspended.live_input
+        self._live_refresh_at = time.monotonic()
         self.status_line = ""
 
     def _show_or_queue_confirmation(self, overlay: InteractiveConfirmation) -> None:
@@ -952,7 +968,7 @@ class CoreTuiApp:
             # A live view yields to its own cancel confirmation: the instance
             # (filter/selection/scroll) is retained, polling pauses, and only a
             # direct decision restores it — never a historical replay.
-            self._suspended_live = (current, self._live_input)
+            self._suspended_live = _SuspendedLive(overlay=current, live_input=self._live_input)
             self._live_refresh_at = 0.0
             self._follower.abort_live()
             self.active_overlay = overlay
@@ -997,7 +1013,7 @@ class CoreTuiApp:
         if self._suspended_live is not None:
             self._restore_suspended_live()
 
-    def _apply_kitty_reply(self, reply: Any) -> None:
+    def _apply_kitty_reply(self, reply: TerminalKittyReply) -> None:
         viewer = self.active_overlay
         if isinstance(viewer, InteractiveArtifactViewer) and viewer.source.sha256 == reply.sha256:
             if reply.message != "OK":
@@ -1049,7 +1065,7 @@ class CoreTuiApp:
                 key = Key("esc")
             if key.name == "ctrl+c":
                 now = time.monotonic()
-                if now - self._quit_armed_at < _QUIT_ARM_SECONDS:
+                if now - self._quit_armed_at < QUIT_ARM_SECONDS:
                     self.running = False
                     return True
                 self._quit_armed_at = now
@@ -1085,23 +1101,14 @@ class CoreTuiApp:
 
         self._work.submit("CoreCancel", worker)
 
-    def _handle_approval_key(self, key: Any) -> None:
+    def _handle_approval_key(self, key: Key) -> None:
         """Native approval gate: scroll the preview, a=allow, d/Esc=deny; both hit /resume."""
-        assert self.pending_approval is not None
-        outcome = self.pending_approval.handle_key(key)
+        approval = self.pending_approval
+        assert approval is not None
+        outcome = approval.handle_key(key)
         if outcome is None:
             return
-        decision_raw = str(outcome.get("decision", "deny"))
-        if decision_raw not in ("allow", "deny"):
-            self.status_line = f"Unknown approval decision: {_safe(decision_raw)}"
-            return
-        reason = outcome.get("reason")
-        grant_session_policy = bool(outcome.get("grant_session_policy", False))
-        self._resolve_approval(
-            decision_raw,
-            reason=reason if isinstance(reason, str) else None,
-            grant_session_policy=grant_session_policy,
-        )
+        self._resolve_approval(outcome.decision, reason=outcome.reason, grant_session_policy=outcome.grant_session_policy)
 
     def _resolve_approval(
         self,
@@ -1154,13 +1161,13 @@ class CoreTuiApp:
 
         self._work.submit("CoreApproval", worker)
 
-    def _handle_overlay_key(self, key: Any) -> None:
-        assert self.active_overlay is not None
-        outcome = self.active_overlay.handle_key(key)
+    def _handle_overlay_key(self, key: Key) -> None:
+        overlay = self.active_overlay
+        assert overlay is not None
+        outcome = overlay.handle_key(key)
         if outcome is None:
             return
-
-        if outcome.get("cancel"):
+        if isinstance(outcome, OverlayCancelled):
             self._follower.abort_interaction()
             self._close_live_input()
             self.active_overlay = None
@@ -1168,61 +1175,67 @@ class CoreTuiApp:
             self.status_line = ""
             self._present_queued_confirmation()
             return
-        if isinstance(self.active_overlay, InteractiveArtifactViewer):
-            if outcome.get("action") == "page":
-                self._load_artifact_page(self.active_overlay, int(outcome["offset"]))
-            elif outcome.get("action") == "open":
-                self._open_artifact(self.active_overlay)
+        if isinstance(outcome, ArtifactPageRequested):
+            if isinstance(overlay, InteractiveArtifactViewer):
+                self._load_artifact_page(overlay, outcome.offset)
             return
+        if isinstance(outcome, ArtifactOpenRequested):
+            if isinstance(overlay, InteractiveArtifactViewer):
+                self._open_artifact(overlay)
+            return
+        if isinstance(outcome, ConfirmationDecided) and isinstance(overlay, InteractiveConfirmation):
+            if outcome.decision not in ("allow", "deny"):
+                self.status_line = f"Unknown confirmation decision: {_safe(outcome.decision)}"
+                return
+            self._resolve_confirmation(outcome.decision)
+            return
+        if isinstance(outcome, AskAnswered) and isinstance(overlay, InteractiveAsk):
+            self._resolve_ask(outcome.values)
+            return
+        if isinstance(outcome, AskCancelled) and isinstance(overlay, InteractiveAsk):
+            self._cancel_ask()
+            return
+        if isinstance(outcome, OverlayActionSelected) and isinstance(overlay, (InteractiveChoices, InteractiveForm, InteractiveMarkdown)):
+            self._handle_overlay_action(overlay, outcome)
 
-        if isinstance(self.active_overlay, InteractiveConfirmation):
-            decision_raw = str(outcome.get("decision", "deny"))
-            if decision_raw not in ("allow", "deny"):
-                self.status_line = f"Unknown confirmation decision: {_safe(decision_raw)}"
-                return
-            self._resolve_confirmation(decision_raw)
-        elif isinstance(self.active_overlay, InteractiveAsk):
-            action = str(outcome.get("action", ""))
-            if action == "answer":
-                values = outcome.get("values", {})
-                self._resolve_ask(values if isinstance(values, Mapping) else {})
-            elif action == "cancel":
-                self._cancel_ask()
+    def _handle_overlay_action(
+        self,
+        overlay: InteractiveChoices | InteractiveForm | InteractiveMarkdown,
+        outcome: OverlayActionSelected,
+    ) -> None:
+        """Dispatch one command action selected in a choices/form/markdown overlay."""
+        action = outcome.action
+        arguments = outcome.arguments
+        if isinstance(overlay, InteractiveChoices) and action == "tui.switch_session":
+            self.active_overlay = None
+            target_id = str(arguments.get("session_id", ""))
+            if target_id and target_id != self.session_id:
+                self._switch_session(target_id)
             return
-        elif isinstance(self.active_overlay, (InteractiveChoices, InteractiveForm, InteractiveMarkdown)):
-            action = str(outcome.get("action", ""))
-            arguments = outcome.get("arguments", {})
-            if isinstance(self.active_overlay, InteractiveChoices) and action == "tui.switch_session":
-                self.active_overlay = None
-                target_id = str(arguments.get("session_id", "")) if isinstance(arguments, dict) else ""
-                if target_id and target_id != self.session_id:
-                    self._switch_session(target_id)
+        revision = overlay.revision_id
+        if outcome.prepare_input:
+            descriptors = catalog.get(self, retry=True)
+            if not self.catalog_revision:
+                catalog.unavailable(self)
                 return
-            revision = self.active_overlay.revision_id
-            if outcome.get("prepare_input"):
-                descriptors = catalog.get(self, retry=True)
-                if not self.catalog_revision:
-                    catalog.unavailable(self)
-                    return
-                descriptor = next((item for item in descriptors if item.name == action), None)
-                if revision != self.catalog_revision or descriptor is None or not descriptor.has_input:
-                    self.status_line = "Command input unavailable; refresh the catalog"
-                    return
-                live_arguments = arguments if isinstance(arguments, dict) else {}
-                if self._live_input is not None:
-                    self._live_input = {"name": action, "arguments": dict(live_arguments), "revision": revision, "source": self.active_overlay}
-                self.active_overlay = None
-                self._prepare_command_input_async(descriptor, arguments=live_arguments)
+            descriptor = next((item for item in descriptors if item.name == action), None)
+            if revision != self.catalog_revision or descriptor is None or not descriptor.has_input:
+                self.status_line = "Command input unavailable; refresh the catalog"
                 return
-            # The overlay (with its typed inputs) stays mounted until the
-            # server accepts: a late 503 must not lose the user's draft. The
-            # in-flight marker stops a held Enter from spawning a second call.
-            submit_key = f"invoke:{action}@{revision}"
-            if submit_key in self._in_flight:
-                return
-            self._in_flight.add(submit_key)
-            self.status_line = f"Dispatching /{_slash_display(action)}..."
-            self._invoke_async(action, arguments if isinstance(arguments, dict) else {}, revision, submit_key=submit_key)
+            if self._live_input is not None:
+                self._live_input = events.LiveInput(name=action, arguments=arguments, revision=revision, source=overlay)
+            self.active_overlay = None
+            self._prepare_command_input_async(descriptor, arguments=arguments)
+            return
+        # The overlay (with its typed inputs) stays mounted until the
+        # server accepts: a late 503 must not lose the user's draft. The
+        # in-flight marker stops a held Enter from spawning a second call.
+        submit_key = f"invoke:{action}@{revision}"
+        if submit_key in self._in_flight:
+            return
+        self._in_flight.add(submit_key)
+        self.status_line = f"Dispatching /{_slash_display(action)}..."
+        self._invoke_async(action, arguments, revision, submit_key=submit_key)
 
     def _resolve_confirmation(self, decision: Literal["allow", "deny"]) -> None:
         """Submit the stored request id's decision; the overlay never lies about it."""
@@ -1346,7 +1359,7 @@ class CoreTuiApp:
     def _invoke_async(
         self,
         name: str,
-        arguments: dict[str, Any],
+        arguments: Mapping[str, object],
         revision: str,
         *,
         submit_key: str | None = None,
@@ -1495,7 +1508,7 @@ class CoreTuiApp:
         """
         self._follower.reconcile_connection(self.session_id)
 
-    def _handle_composer_key(self, key: Any) -> None:
+    def _handle_composer_key(self, key: Key) -> None:
         self.clear_loading_status()
         self._follower.abort_interaction()
         name = key.name
@@ -1556,7 +1569,7 @@ class CoreTuiApp:
         self._sync_slash_completion()
         return self._outcome(outcome)
 
-    def _outcome(self, outcome: Any) -> None:
+    def _outcome(self, outcome: ComposerOutcome) -> None:
         if outcome.action == ComposerAction.CANCEL_TURN:
             self._cancel_active_run()
         elif outcome.action == ComposerAction.INTERRUPT:
@@ -2026,7 +2039,7 @@ class CoreTuiApp:
             self.running = False
         return True
 
-    def _action_schema(self, name: str) -> Mapping[str, Any] | None:
+    def _action_schema(self, name: str) -> Mapping[str, object] | None:
         """The target command's declared argument schema, the form's field authority."""
         for descriptor in catalog.get(self, retry=True):
             if descriptor.name == name:
@@ -2146,7 +2159,7 @@ class CoreTuiApp:
             styles=self.styles,
             bindings=bindings,
             conflicts=conflicts,
-            quit_arm_seconds=_QUIT_ARM_SECONDS,
+            quit_arm_seconds=QUIT_ARM_SECONDS,
         )
 
     def _show_help(self) -> None:
@@ -2163,7 +2176,7 @@ class CoreTuiApp:
                 styles=self.styles,
                 bindings=self._shortcut_bindings,
                 conflicts=self._shortcut_conflicts,
-                quit_arm_seconds=_QUIT_ARM_SECONDS,
+                quit_arm_seconds=QUIT_ARM_SECONDS,
                 catalog_error=catalog_error,
             )
         )
@@ -2386,7 +2399,7 @@ class CoreTuiApp:
 
         self._work.submit("CoreFormLoad", worker)
 
-    def _prepare_command_input_async(self, descriptor: CommandDescriptor, *, arguments: Mapping[str, Any] | None = None) -> None:
+    def _prepare_command_input_async(self, descriptor: CommandDescriptor, *, arguments: Mapping[str, object] | None = None) -> None:
         """Read optional plugin input off the UI thread without invoking its action."""
         token = self._follower.begin_interaction()
         session_id, generation, revision = self.session_id, self._generation, self.catalog_revision
@@ -2419,18 +2432,15 @@ class CoreTuiApp:
             return
         token = self._follower.begin_live()
         session_id, generation = self.session_id, self._generation
-        action = str(live.get("name", ""))
-        revision = str(live.get("revision", ""))
-        owned_arguments = dict(live.get("arguments") or {})
 
         self._work.submit(
             "CoreLiveInput",
             lambda: self.event_queue.put(
                 operations.live_input(
                     self.client,
-                    action=action,
-                    revision=revision,
-                    arguments=owned_arguments,
+                    action=live.name,
+                    revision=live.revision,
+                    arguments=dict(live.arguments),
                     token=token,
                     session_id=session_id,
                     generation=generation,
@@ -2438,23 +2448,25 @@ class CoreTuiApp:
             ),
         )
 
-    def _arm_live_input(self, *, name: str, arguments: Mapping[str, Any], revision: str, refresh_after_ms: int | None, source: Any) -> None:
+    def _arm_live_input(
+        self,
+        *,
+        name: str,
+        arguments: Mapping[str, object],
+        revision: str,
+        refresh_after_ms: int | None,
+        source: events.InteractiveOverlay | None,
+    ) -> None:
         """Enable polling only from explicit refresh metadata on the open view."""
         if refresh_after_ms is None:
             self._live_input = None
             self._live_refresh_at = 0.0
             return
-        self._live_input = {
-            "name": name,
-            "arguments": dict(arguments),
-            "revision": revision,
-            "source": source,
-            "refresh_after_ms": refresh_after_ms,
-        }
+        self._live_input = events.LiveInput(name=name, arguments=arguments, revision=revision, source=source, refresh_after_ms=refresh_after_ms)
         self._live_refresh_at = time.monotonic() + refresh_after_ms / 1000.0
 
     def _mount_live_view(
-        self, view: PluginViewDescriptor, revision: str, *, name: str, arguments: Mapping[str, Any], refresh_after_ms: int | None
+        self, view: PluginViewDescriptor, revision: str, *, name: str, arguments: Mapping[str, object], refresh_after_ms: int | None
     ) -> bool:
         """Mount one live view and arm its refresh; empty choices stay open."""
         if not self._mount_interactive_view(view, revision):
@@ -2497,7 +2509,7 @@ class CoreTuiApp:
         required = tuple(name for name in raw_required if isinstance(name, str)) if isinstance(raw_required, (list, tuple)) else ()
         single_required = properties.get(required[0]) if len(required) == 1 else None
 
-        arguments: dict[str, Any]
+        arguments: dict[str, object]
         if not arg_str and required and properties:
             from voidcode.sdk.views import FormField, FormFieldType, FormViewData
 

@@ -6,7 +6,10 @@ import difflib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
+from types import MappingProxyType
+from typing import Literal
 
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -64,6 +67,91 @@ def _styles_arg(styles: Styles | None) -> Styles:
 
 class UnsupportedViewError(ValueError):
     """Raised when a plugin attempts to render an unrecognised view type."""
+
+
+#: Row step for one overlay page key and the default row budget both scrollable
+#: overlay kinds (markdown and artifact) share.
+_PAGE_SCROLL_ROWS = 8
+OVERLAY_MAX_ROWS = 22
+
+#: One form draft value. Plugin prefill and load replies arrive as JSON, so a
+#: draft is a bounded JSON value; ``validate_form_submission`` stays the only
+#: place field types, omission and numeric coercion are enforced.
+type FormValue = str | int | float | bool | None | tuple[FormValue, ...] | Mapping[str, FormValue]
+
+#: One ask draft answer. Text and numeric answers stay raw strings until the
+#: shared server validator coerces them; booleans and multi-select id lists
+#: are already typed.
+type AskValue = str | bool | list[str] | None
+
+
+def _draft_json_value(value: object) -> FormValue:
+    """Snapshot one plugin-provided draft value, rejecting non-JSON objects."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        owned: dict[str, FormValue] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("form draft object keys must be strings")
+            owned[key] = _draft_json_value(item)
+        return MappingProxyType(owned)
+    if isinstance(value, (list, tuple)):
+        return tuple(_draft_json_value(item) for item in value)
+    raise ValueError(f"form draft value is not JSON: {type(value).__name__}")
+
+
+@dataclass(frozen=True, slots=True)
+class OverlayCancelled:
+    """The overlay closed itself without dispatching anything."""
+
+
+@dataclass(frozen=True, slots=True)
+class OverlayActionSelected:
+    """One revision-bound command action selected in an overlay."""
+
+    action: str
+    arguments: Mapping[str, object] = dataclass_field(default_factory=dict)
+    prepare_input: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", MappingProxyType(dict(self.arguments)))
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmationDecided:
+    """A plugin confirmation decision; the action label stays verbatim."""
+
+    request_id: str
+    decision: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalDecided:
+    """A native tool-approval decision (allow/deny, optional reason/policy)."""
+
+    request_id: str
+    decision: Literal["allow", "deny"]
+    grant_session_policy: bool = False
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AskAnswered:
+    """One typed ask answer payload for the durable request."""
+
+    request_id: str
+    values: Mapping[str, AskValue]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
+
+
+@dataclass(frozen=True, slots=True)
+class AskCancelled:
+    """The ask overlay asked to cancel its durable request."""
+
+    request_id: str
 
 
 def render_notice(data: NoticeViewData, width: int, styles: Styles | None = None) -> list[str]:
@@ -549,20 +637,27 @@ class InteractiveMarkdown:
     def action(self) -> str:
         return self.view.actions[self.selected_index].action
 
-    def handle_key(self, key: Key) -> dict[str, Any] | None:
+    def handle_key(self, key: Key) -> OverlayCancelled | OverlayActionSelected | None:
         if key.name == "esc":
-            return {"cancel": True}
+            return OverlayCancelled()
         if key.name in ("up", "down", "pageUp", "pageDown", "home", "end"):
-            delta = {"up": -1, "down": 1, "pageUp": -8, "pageDown": 8, "home": -self._max_scroll, "end": self._max_scroll}[key.name]
+            delta = {
+                "up": -1,
+                "down": 1,
+                "pageUp": -_PAGE_SCROLL_ROWS,
+                "pageDown": _PAGE_SCROLL_ROWS,
+                "home": -self._max_scroll,
+                "end": self._max_scroll,
+            }[key.name]
             self.scroll = min(self._max_scroll, max(0, self.scroll + delta))
         elif self.view.actions and key.name in ("tab", "right", "shift+tab", "left"):
             self.selected_index = (self.selected_index + (-1 if key.name in ("shift+tab", "left") else 1)) % len(self.view.actions)
         elif self.view.actions and key.name == "enter":
             action = self.view.actions[self.selected_index]
-            return {"action": action.action, "arguments": dict(action.arguments), "prepare_input": action.prepare_input}
+            return OverlayActionSelected(action=action.action, arguments=action.arguments, prepare_input=action.prepare_input)
         return None
 
-    def render_rows(self, width: int, styles: Styles | None = None, *, max_rows: int = 22) -> list[str]:
+    def render_rows(self, width: int, styles: Styles | None = None, *, max_rows: int = OVERLAY_MAX_ROWS) -> list[str]:
         resolved = _styles_arg(styles)
         body = render_markdown(self.view, max(1, width - 4), resolved)
         action_rows = min(3, max(1, max_rows - 5))
@@ -645,13 +740,13 @@ class InteractiveChoices:
         self.view = data
         self._restore_selection(option_id)
 
-    def handle_key(self, key: Key) -> dict[str, Any] | None:
+    def handle_key(self, key: Key) -> OverlayCancelled | OverlayActionSelected | None:
         if key.name == "esc":
             if self.filter:
                 self.filter = ""
                 self.selected_index = 0
                 return None
-            return {"cancel": True}
+            return OverlayCancelled()
         filtered = self.filtered_options
         if key.name == "up":
             if filtered:
@@ -668,7 +763,7 @@ class InteractiveChoices:
                 elif key.name == "end":
                     self.selected_index = len(filtered) - 1
                 else:
-                    delta = -8 if key.name == "pageUp" else 8
+                    delta = -_PAGE_SCROLL_ROWS if key.name == "pageUp" else _PAGE_SCROLL_ROWS
                     self.selected_index = min(max(0, self.selected_index + delta), len(filtered) - 1)
             return None
         if key.name in ("ctrl+u",):
@@ -687,7 +782,7 @@ class InteractiveChoices:
             if not filtered:
                 return None
             action, arguments = choices_dispatch(self.view, filtered[self.selected_index].id)
-            return {"action": action, "arguments": arguments, "prepare_input": self.view.prepare_input}
+            return OverlayActionSelected(action=action, arguments=arguments, prepare_input=self.view.prepare_input)
         if key.text and not key.name.startswith("ctrl+") and not key.name.startswith("alt+"):
             option_id = self.selected_id
             self.filter += key.text
@@ -795,7 +890,7 @@ class InteractiveConfirmation:
     def actions(self) -> tuple[str, ...]:
         return self.view.actions
 
-    def handle_key(self, key: Key) -> dict[str, Any] | None:
+    def handle_key(self, key: Key) -> ConfirmationDecided | None:
         if key.name in ("left", "h", "up", "k"):
             self.selected_index = (self.selected_index - 1) % len(self.view.actions)
             return None
@@ -803,9 +898,9 @@ class InteractiveConfirmation:
             self.selected_index = (self.selected_index + 1) % len(self.view.actions)
             return None
         if key.name == "enter":
-            return {"request_id": self.view.request_id, "decision": self.view.actions[self.selected_index]}
+            return ConfirmationDecided(request_id=self.view.request_id, decision=self.view.actions[self.selected_index])
         if key.name == "esc":
-            return {"request_id": self.view.request_id, "decision": "deny"}
+            return ConfirmationDecided(request_id=self.view.request_id, decision="deny")
         return None
 
     def render_rows(self, width: int, styles: Styles | None = None) -> list[str]:
@@ -842,12 +937,12 @@ class InteractiveApproval:
         self.icon = icon
         self.request_id = gate.request_id
         self.tool_name = gate.tool_name
-        self.arguments: Mapping[str, Any] = gate.call.arguments
+        self.arguments: Mapping[str, object] = gate.call.arguments
         self.scroll = 0
         self.reason_mode: bool = False
         self.reason_input: str = ""
 
-    def handle_key(self, key: Key) -> dict[str, Any] | None:
+    def handle_key(self, key: Key) -> ApprovalDecided | None:
         if self.reason_mode:
             if key.name == "escape":
                 self.reason_mode = False
@@ -855,7 +950,7 @@ class InteractiveApproval:
                 return None
             if key.name in ("enter", "return"):
                 reason = self.reason_input.strip() or "denied by user"
-                return {"request_id": self.request_id, "decision": "deny", "reason": reason}
+                return ApprovalDecided(request_id=self.request_id, decision="deny", reason=reason)
             if key.name == "backspace":
                 self.reason_input = self.reason_input[:-1]
                 return None
@@ -871,15 +966,15 @@ class InteractiveApproval:
             self.scroll += 1
             return None
         if key.name == "s":
-            return {"request_id": self.request_id, "decision": "allow", "grant_session_policy": True}
+            return ApprovalDecided(request_id=self.request_id, decision="allow", grant_session_policy=True)
         if key.name == "r":
             self.reason_mode = True
             self.reason_input = ""
             return None
         if key.name in ("a", "enter"):
-            return {"request_id": self.request_id, "decision": "allow", "grant_session_policy": False}
+            return ApprovalDecided(request_id=self.request_id, decision="allow")
         if key.name in ("d", "esc"):
-            return {"request_id": self.request_id, "decision": "deny"}
+            return ApprovalDecided(request_id=self.request_id, decision="deny")
         return None
 
     def _edit_preview(self) -> tuple[str, str, str] | None:
@@ -950,7 +1045,7 @@ class InteractiveForm:
     """Interactive Form View supporting text, multiline, integer, number, boolean."""
 
     def __init__(
-        self, data: FormViewData, *, action_schema: Mapping[str, Any] | None = None, revision_id: str = "", title: str = "Command input"
+        self, data: FormViewData, *, action_schema: Mapping[str, object] | None = None, revision_id: str = "", title: str = "Command input"
     ) -> None:
         self.title = title
         self.view = data
@@ -961,11 +1056,11 @@ class InteractiveForm:
         self._action_schema = action_schema
         self._field_names = frozenset(field.name for field in data.fields)
 
-        self.values: dict[str, Any] = {}
+        self.values: dict[str, FormValue] = {}
         if isinstance(data.initial_values, Mapping):
             for key, value in data.initial_values.items():
                 if key in self._field_names:
-                    self.values[key] = value
+                    self.values[key] = _draft_json_value(value)
 
         # No field is materialised: a missing optional value stays missing so it
         # can be omitted, cleared (null) or explicitly set at submit time.
@@ -982,13 +1077,13 @@ class InteractiveForm:
     def load_action(self) -> str | None:
         return self.view.load_action
 
-    def populate_from_load_action(self, loaded_data: Mapping[str, Any]) -> None:
+    def populate_from_load_action(self, loaded_data: Mapping[str, object]) -> None:
         """Prefill from load_action; fields the user already edited keep their draft."""
         for key, value in loaded_data.items():
             if key in self._field_names and key not in self.dirty_fields:
-                self.values[key] = value
+                self.values[key] = _draft_json_value(value)
 
-    def handle_key(self, key: Key) -> dict[str, Any] | None:
+    def handle_key(self, key: Key) -> OverlayCancelled | OverlayActionSelected | None:
         self.validation_error = None
         if key.name in ("tab", "down"):
             if self.view.fields:
@@ -999,7 +1094,7 @@ class InteractiveForm:
                 self.active_index = (self.active_index - 1) % len(self.view.fields)
             return None
         if key.name == "esc":
-            return {"cancel": True}
+            return OverlayCancelled()
         if key.name in ("ctrl+s", "ctrl+enter"):
             return self._submit()
 
@@ -1014,7 +1109,7 @@ class InteractiveForm:
         if current_field.options is not None:
             options = [option.id for option in current_field.options]
             if options and key.name in ("left", "right", "space"):
-                index = options.index(val) if val in options else (-1 if key.name != "left" else 0)
+                index = options.index(val) if isinstance(val, str) and val in options else (-1 if key.name != "left" else 0)
                 self.values[name] = options[(index + (-1 if key.name == "left" else 1)) % len(options)]
                 self.dirty_fields.add(name)
                 return None
@@ -1063,13 +1158,13 @@ class InteractiveForm:
 
         return None
 
-    def _submit(self) -> dict[str, Any] | None:
+    def _submit(self) -> OverlayActionSelected | None:
         try:
             arguments = validate_form_submission(self.view, self.values, action_schema=self._action_schema)
         except ValueError as exc:
             self.validation_error = str(exc)
             return None
-        return {"action": self.view.action, "arguments": arguments}
+        return OverlayActionSelected(action=self.view.action, arguments=arguments)
 
     def render_rows(self, width: int, styles: Styles | None = None) -> list[str]:
         resolved = _styles_arg(styles)
@@ -1149,7 +1244,7 @@ class InteractiveAsk:
         self.title = request.title
         self.questions = request.questions
         self.active_index = 0
-        self.values: dict[str, Any] = {}
+        self.values: dict[str, AskValue] = {}
         self.multiselect_focused_opt: dict[str, int] = {}
         self.validation_error: str | None = None
 
@@ -1158,7 +1253,12 @@ class InteractiveAsk:
                 self.values[q.name] = []
                 self.multiselect_focused_opt[q.name] = 0
 
-    def handle_key(self, key: Key) -> dict[str, Any] | None:
+    def _selections(self, name: str) -> list[str]:
+        """The current multi-select ids; a malformed draft degrades to none."""
+        value = self.values.get(name)
+        return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+    def handle_key(self, key: Key) -> AskAnswered | AskCancelled | None:
         self.validation_error = None
         if key.name in ("tab", "down"):
             if self.questions:
@@ -1169,7 +1269,7 @@ class InteractiveAsk:
                 self.active_index = (self.active_index - 1) % len(self.questions)
             return None
         if key.name == "esc":
-            return {"request_id": self.request_id, "action": "cancel"}
+            return AskCancelled(request_id=self.request_id)
         if key.name in ("ctrl+s", "ctrl+enter"):
             return self._submit()
 
@@ -1188,7 +1288,7 @@ class InteractiveAsk:
                 self.multiselect_focused_opt[name] = (opt_idx + 1) % len(current.options)
                 return None
             if key.name == "space":
-                chosen = list(self.values.get(name, []))
+                chosen = self._selections(name)
                 opt_id = current.options[opt_idx].id
                 if opt_id in chosen:
                     chosen.remove(opt_id)
@@ -1208,7 +1308,7 @@ class InteractiveAsk:
         if current.options is not None:
             options = [option.id for option in current.options]
             if options and key.name in ("left", "right", "space"):
-                index = options.index(val) if val in options else (-1 if key.name != "left" else 0)
+                index = options.index(val) if isinstance(val, str) and val in options else (-1 if key.name != "left" else 0)
                 self.values[name] = options[(index + (-1 if key.name == "left" else 1)) % len(options)]
                 return None
             if key.name != "enter":
@@ -1240,10 +1340,10 @@ class InteractiveAsk:
 
         return None
 
-    def _submit(self) -> dict[str, Any] | None:
+    def _submit(self) -> AskAnswered | None:
         for q in self.questions:
             if isinstance(q, AskMultiSelect):
-                chosen = self.values.get(q.name, [])
+                chosen = self._selections(q.name)
                 if q.required and not chosen:
                     self.validation_error = f"'{q.label}' requires at least 1 selection"
                     return None
@@ -1258,7 +1358,7 @@ class InteractiveAsk:
                 if q.required and (val is None or val == ""):
                     self.validation_error = f"'{q.label}' is required"
                     return None
-        return {"request_id": self.request_id, "action": "answer", "values": dict(self.values)}
+        return AskAnswered(request_id=self.request_id, values=self.values)
 
     def render_rows(self, width: int, styles: Styles | None = None) -> list[str]:
         resolved = _styles_arg(styles)
@@ -1278,7 +1378,7 @@ class InteractiveAsk:
             text.append(": ")
 
             if isinstance(q, AskMultiSelect):
-                chosen = set(self.values.get(q.name, []))
+                chosen = set(self._selections(q.name))
                 f_idx = self.multiselect_focused_opt.get(q.name, 0)
                 text.append("\n")
                 for o_idx, opt in enumerate(q.options):

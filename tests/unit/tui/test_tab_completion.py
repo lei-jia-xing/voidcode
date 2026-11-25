@@ -17,6 +17,7 @@ from voidcode.tui.help_view import TUI_CONTROLS
 from voidcode.tui.keys import Key
 from voidcode.tui.styles import Styles, symbol
 from voidcode.tui.terminal_app import CoreTuiApp
+from voidcode.tui.views import OverlayActionSelected
 
 
 class _StubTerminal:
@@ -414,13 +415,13 @@ def test_required_arguments_open_revision_bound_form_without_invocation() -> Non
     assert app.active_overlay.handle_key(Key("ctrl+s")) is None
     assert app.active_overlay.validation_error
     app.active_overlay.handle_key(Key("paste", text="Ship the feature"))
-    assert app.active_overlay.handle_key(Key("ctrl+s")) == {"action": "goal.set", "arguments": {"objective": "Ship the feature"}}
+    assert app.active_overlay.handle_key(Key("ctrl+s")) == OverlayActionSelected(action="goal.set", arguments={"objective": "Ship the feature"})
     app.active_overlay.handle_key(Key("tab"))
     app.active_overlay.handle_key(Key("paste", text="2000"))
-    assert app.active_overlay.handle_key(Key("ctrl+s")) == {
-        "action": "goal.set",
-        "arguments": {"objective": "Ship the feature", "token_budget": 2000},
-    }
+    assert app.active_overlay.handle_key(Key("ctrl+s")) == OverlayActionSelected(
+        action="goal.set",
+        arguments={"objective": "Ship the feature", "token_budget": 2000},
+    )
 
 
 def test_completion_rows_include_catalog_description() -> None:
@@ -450,7 +451,7 @@ def test_live_command_presentation_mounts_under_its_revision_only() -> None:
     app._drain_events()
     assert isinstance(app.active_overlay, InteractiveChoices)
     assert app.active_overlay.revision_id == "rev-1"
-    assert app.active_overlay.handle_key(Key("enter")) == {"action": "test.show", "arguments": {"name": "explore"}, "prepare_input": False}
+    assert app.active_overlay.handle_key(Key("enter")) == OverlayActionSelected(action="test.show", arguments={"name": "explore"})
 
 
 def test_history_receipt_renders_passive_presentation_without_opening_interaction() -> None:

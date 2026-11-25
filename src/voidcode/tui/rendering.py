@@ -40,6 +40,10 @@ from .views import (
 if TYPE_CHECKING:
     from .terminal_app import CoreTuiApp
 
+#: Second Ctrl+C inside this window quits; the footer hint, the quit check and
+#: the help text all read this one value.
+QUIT_ARM_SECONDS = 1.5
+
 _BUILTIN_BANNER = (
     "███╗      ███╗",
     "╚███╗    ███╔╝",
@@ -337,7 +341,7 @@ def render_frame(app: CoreTuiApp) -> None:
     context = footer_context(app, width)
     context_row = (app.styles.fg("text", context) if context else "",)
     notice = app.styles.fg("dim", app.status_line) if app.status_line else ""
-    quit_hint = app.styles.fg("dim", "Press Ctrl+C again to exit") if time.monotonic() - app._quit_armed_at < 1.5 else ""
+    quit_hint = app.styles.fg("dim", "Press Ctrl+C again to exit") if time.monotonic() - app._quit_armed_at < QUIT_ARM_SECONDS else ""
     footer_rows = tuple(row for row in (*context_row, notice, quit_hint) if row)
     if app.pending_approval is not None:
         rows = app.pending_approval.render_rows(width, app.styles)

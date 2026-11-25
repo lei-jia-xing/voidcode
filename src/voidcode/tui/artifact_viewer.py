@@ -12,7 +12,6 @@ import hashlib
 import struct
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
 from uuid import uuid4
 
 from rich.text import Text
@@ -25,6 +24,7 @@ from .keys import Key
 from .region import KittyImagePlacement
 from .styles import Styles, markdown_theme
 from .term import escape_terminal_controls, render_lines
+from .views import OVERLAY_MAX_ROWS, OverlayCancelled
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +159,18 @@ def png_dimensions(data: bytes) -> tuple[int, int] | None:
 
 def _styles_arg(styles: Styles | None) -> Styles:
     return styles if styles is not None else Styles()
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactPageRequested:
+    """Load one byte page at the viewer-selected offset."""
+
+    offset: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactOpenRequested:
+    """Export/open the immutable source through the host handler."""
 
 
 class InteractiveArtifactViewer:
@@ -408,31 +420,31 @@ class InteractiveArtifactViewer:
             placement_id=placement_id,
         )
 
-    def handle_key(self, key: Key) -> dict[str, Any] | None:
+    def handle_key(self, key: Key) -> OverlayCancelled | ArtifactPageRequested | ArtifactOpenRequested | None:
         if key.name == "esc":
             self.request_id += 1
             self.image_request_id += 1
             self.open_request_id += 1
-            return {"cancel": True}
+            return OverlayCancelled()
         if key.name in ("up", "down"):
             self.scroll = max(0, min(self._max_scroll, self.scroll + (-1 if key.name == "up" else 1)))
         elif key.name in ("pageUp", "left", "p"):
             offset = self.previous_offset()
             if offset is not None:
-                return {"action": "page", "offset": offset}
+                return ArtifactPageRequested(offset=offset)
         elif key.name in ("pageDown", "right", "n"):
             offset = self.next_offset()
             if offset is not None:
-                return {"action": "page", "offset": offset}
+                return ArtifactPageRequested(offset=offset)
         elif key.name == "tab":
             offset = self.select_source(1)
             if offset is not None:
-                return {"action": "page", "offset": offset}
+                return ArtifactPageRequested(offset=offset)
         elif key.name == "o":
-            return {"action": "open"}
+            return ArtifactOpenRequested()
         return None
 
-    def render_rows(self, width: int, styles: Styles | None = None, *, max_rows: int = 22) -> list[str]:
+    def render_rows(self, width: int, styles: Styles | None = None, *, max_rows: int = OVERLAY_MAX_ROWS) -> list[str]:
         resolved = _styles_arg(styles)
         row_width = max(1, width)
         source_label = f"{self.source.label} ({self.source_index + 1}/{len(self.sources)})"

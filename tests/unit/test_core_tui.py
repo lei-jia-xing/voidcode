@@ -49,10 +49,14 @@ from voidcode.tui.gates import ApprovalGate
 from voidcode.tui.keys import Key
 from voidcode.tui.stream_handlers import handle_stream_event
 from voidcode.tui.views import (
+    ApprovalDecided,
+    ConfirmationDecided,
     InteractiveApproval,
     InteractiveChoices,
     InteractiveConfirmation,
     InteractiveForm,
+    OverlayActionSelected,
+    OverlayCancelled,
     render_plugin_view,
 )
 
@@ -184,7 +188,7 @@ def test_choices_backspace_deletes_grapheme_and_esc_clears_first() -> None:
     assert choices.filter == "e"
     assert choices.handle_key(Key("esc")) is None
     assert choices.filter == ""
-    assert choices.handle_key(Key("esc")) == {"cancel": True}
+    assert choices.handle_key(Key("esc")) == OverlayCancelled()
 
 
 def test_choices_enter_on_empty_matches_does_nothing_and_reports_prepare_flag() -> None:
@@ -195,7 +199,7 @@ def test_choices_enter_on_empty_matches_does_nothing_and_reports_prepare_flag() 
     assert choices.handle_key(Key("enter")) is None
     choices.handle_key(Key("esc"))
     outcome = choices.handle_key(Key("enter"))
-    assert outcome == {"action": "monitor.open", "arguments": {"target": "child-00"}, "prepare_input": True}
+    assert outcome == OverlayActionSelected(action="monitor.open", arguments={"target": "child-00"}, prepare_input=True)
 
 
 def test_choices_viewport_keeps_selected_visible_at_40x18() -> None:
@@ -254,24 +258,24 @@ def test_interactive_choices_navigation_and_selection() -> None:
 
     # Enter selects Option B
     outcome = choices.handle_key(Key("enter"))
-    assert outcome == {"action": "select_target", "arguments": {"target_id": "b"}, "prepare_input": False}
+    assert outcome == OverlayActionSelected(action="select_target", arguments={"target_id": "b"})
 
     # Esc cancels
-    assert choices.handle_key(Key("esc")) == {"cancel": True}
+    assert choices.handle_key(Key("esc")) == OverlayCancelled()
 
     conf = InteractiveConfirmation(ConfirmationViewData(request_id="req-abc", message="Are you sure?", actions=("allow", "deny")))
     assert conf.selected_index == 0
 
     # Enter on first action allows
-    assert conf.handle_key(Key("enter")) == {"request_id": "req-abc", "decision": "allow"}
+    assert conf.handle_key(Key("enter")) == ConfirmationDecided(request_id="req-abc", decision="allow")
 
     # Navigate right to deny
     conf.handle_key(Key("right"))
     assert conf.selected_index == 1
-    assert conf.handle_key(Key("enter")) == {"request_id": "req-abc", "decision": "deny"}
+    assert conf.handle_key(Key("enter")) == ConfirmationDecided(request_id="req-abc", decision="deny")
 
     # Esc automatically denies
-    assert conf.handle_key(Key("esc")) == {"request_id": "req-abc", "decision": "deny"}
+    assert conf.handle_key(Key("esc")) == ConfirmationDecided(request_id="req-abc", decision="deny")
 
 
 def test_interactive_form_field_editing_and_submission() -> None:
@@ -311,14 +315,14 @@ def test_interactive_form_field_editing_and_submission() -> None:
 
     # Submit coerces at the boundary: integer text becomes an int, boolean stays bool.
     outcome = form.handle_key(Key("ctrl+s"))
-    assert outcome == {
-        "action": "save_config",
-        "arguments": {
+    assert outcome == OverlayActionSelected(
+        action="save_config",
+        arguments={
             "title": "Init!",
             "count": 53,
             "enabled": True,
         },
-    }
+    )
 
     form = InteractiveForm(
         FormViewData(
@@ -331,7 +335,7 @@ def test_interactive_form_field_editing_and_submission() -> None:
     )
 
     # Absent optionals submit as omitted keys, never as 0 or null.
-    assert form.handle_key(Key("ctrl+s")) == {"action": "set_limits", "arguments": {}}
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(action="set_limits", arguments={})
 
     # "1e3" must not silently become 1: visible error, nothing submitted.
     form.active_index = 0
@@ -343,17 +347,17 @@ def test_interactive_form_field_editing_and_submission() -> None:
     # A real integer and a real float are submitted verbatim.
     form.values["budget"] = "-12"
     form.values["ratio"] = "2.5e-2"
-    assert form.handle_key(Key("ctrl+s")) == {
-        "action": "set_limits",
-        "arguments": {"budget": -12, "ratio": 0.025},
-    }
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(
+        action="set_limits",
+        arguments={"budget": -12, "ratio": 0.025},
+    )
 
     # Numeric candidates are trimmed for parsing, text stays verbatim.
     form.values["budget"] = " 12 "
-    assert form.handle_key(Key("ctrl+s")) == {
-        "action": "set_limits",
-        "arguments": {"budget": 12, "ratio": 0.025},
-    }
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(
+        action="set_limits",
+        arguments={"budget": 12, "ratio": 0.025},
+    )
 
     form = InteractiveForm(
         FormViewData(
@@ -404,7 +408,7 @@ def test_form_nullable_field_clears_instead_of_omitting() -> None:
         },
     )
     form.values["budget"] = ""
-    assert form.handle_key(Key("ctrl+s")) == {"action": "set_nullable", "arguments": {"budget": None}}
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(action="set_nullable", arguments={"budget": None})
 
 
 def test_form_boolean_missing_optional_nullable_and_explicit_values_stay_distinct() -> None:
@@ -428,28 +432,28 @@ def test_form_boolean_missing_optional_nullable_and_explicit_values_stay_distinc
     )
 
     # Absent fields are omitted: an untouched form never clears a nullable value.
-    assert form.handle_key(Key("ctrl+s")) == {"action": "set_flags", "arguments": {}}
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(action="set_flags", arguments={})
 
     # A present, deliberate blank on a nullable field is an explicit clear.
     form.values["maybe"] = ""
-    assert form.handle_key(Key("ctrl+s")) == {
-        "action": "set_flags",
-        "arguments": {"maybe": None},
-    }
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(
+        action="set_flags",
+        arguments={"maybe": None},
+    )
 
     # An explicit false is submitted as false, not dropped.
     form.values["flag"] = False
-    assert form.handle_key(Key("ctrl+s")) == {
-        "action": "set_flags",
-        "arguments": {"flag": False, "maybe": None},
-    }
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(
+        action="set_flags",
+        arguments={"flag": False, "maybe": None},
+    )
 
     # An explicit true is submitted as true.
     form.values["flag"] = True
-    assert form.handle_key(Key("ctrl+s")) == {
-        "action": "set_flags",
-        "arguments": {"flag": True, "maybe": None},
-    }
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(
+        action="set_flags",
+        arguments={"flag": True, "maybe": None},
+    )
 
 
 def test_form_missing_required_nullable_is_refused_until_provided() -> None:
@@ -473,7 +477,7 @@ def test_form_missing_required_nullable_is_refused_until_provided() -> None:
     form.handle_key(Key("7", text="7"))
     form.handle_key(Key("5", text="5"))
     assert form.values["budget"] == "75"
-    assert form.handle_key(Key("ctrl+s")) == {"action": "set_budget", "arguments": {"budget": 75}}
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(action="set_budget", arguments={"budget": 75})
 
 
 def test_form_required_boolean_missing_is_a_validation_error() -> None:
@@ -495,7 +499,7 @@ def test_form_optional_non_nullable_blank_is_omitted() -> None:
         ),
         action_schema={"type": "object", "properties": {"ratio": {"type": "number"}}},
     )
-    assert form.handle_key(Key("ctrl+s")) == {"action": "set_limits", "arguments": {}}
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(action="set_limits", arguments={})
 
 
 def test_form_preserves_typed_text_verbatim() -> None:
@@ -508,7 +512,7 @@ def test_form_preserves_typed_text_verbatim() -> None:
     )
     form.values["summary"] = "  keep my spacing  \n"
     outcome = form.handle_key(Key("ctrl+s"))
-    assert outcome == {"action": "submit_form", "arguments": {"summary": "  keep my spacing  \n"}}
+    assert outcome == OverlayActionSelected(action="submit_form", arguments={"summary": "  keep my spacing  \n"})
 
 
 class _StubTerminal:
@@ -1378,11 +1382,11 @@ def test_approval_gate_shows_full_args_with_diff_and_scrolls() -> None:
 def test_approval_keys_decide_without_truncation_path() -> None:
     gate = ApprovalGate(call=ToolCall(tool_name="exec", arguments={"cmd": "ls"}), request_id="r1", run_id="run-1", revision_id="rev-1")
     approval = InteractiveApproval(gate)
-    assert approval.handle_key(Key("a")) == {"request_id": "r1", "decision": "allow", "grant_session_policy": False}
-    assert approval.handle_key(Key("enter")) == {"request_id": "r1", "decision": "allow", "grant_session_policy": False}
-    assert approval.handle_key(Key("s")) == {"request_id": "r1", "decision": "allow", "grant_session_policy": True}
-    assert approval.handle_key(Key("d")) == {"request_id": "r1", "decision": "deny"}
-    assert approval.handle_key(Key("esc")) == {"request_id": "r1", "decision": "deny"}
+    assert approval.handle_key(Key("a")) == ApprovalDecided(request_id="r1", decision="allow")
+    assert approval.handle_key(Key("enter")) == ApprovalDecided(request_id="r1", decision="allow")
+    assert approval.handle_key(Key("s")) == ApprovalDecided(request_id="r1", decision="allow", grant_session_policy=True)
+    assert approval.handle_key(Key("d")) == ApprovalDecided(request_id="r1", decision="deny")
+    assert approval.handle_key(Key("esc")) == ApprovalDecided(request_id="r1", decision="deny")
     assert approval.handle_key(Key("down")) is None
     assert approval.scroll == 1
 
@@ -2379,10 +2383,12 @@ def test_markdown_detail_scrolls_with_decoded_keys_and_bounds_action_rows() -> N
     assert overlay.scroll > 0
     overlay.handle_key(Key("home"))
     assert overlay.scroll == 0
-    assert overlay.handle_key(Key("enter")) == {"action": "skills.show", "arguments": {"name": "guide", "offset": 100}, "prepare_input": False}
+    assert overlay.handle_key(Key("enter")) == OverlayActionSelected(
+        action="skills.show", arguments={"name": "guide", "offset": 100}, prepare_input=False
+    )
     overlay.handle_key(Key("tab"))
-    assert overlay.handle_key(Key("enter")) == {"action": "skills.show", "arguments": {}, "prepare_input": True}
-    assert overlay.handle_key(Key("esc")) == {"cancel": True}
+    assert overlay.handle_key(Key("enter")) == OverlayActionSelected(action="skills.show", prepare_input=True)
+    assert overlay.handle_key(Key("esc")) == OverlayCancelled()
 
 
 def test_markdown_action_history_is_passive_but_explicit_presentation_opens_detail() -> None:

@@ -155,7 +155,7 @@ def test_read_only_load_requires_exactly_read_effect() -> None:
 def test_numeric_prefill_submits_unchanged_and_nullable_blank_clears() -> None:
     """Native numeric prefill (initial_values + load_action) submits as-is; blank clears nullable."""
     from voidcode.tui.keys import Key
-    from voidcode.tui.views import InteractiveForm
+    from voidcode.tui.views import InteractiveForm, OverlayActionSelected
 
     view = FormViewData.from_payload(
         {
@@ -172,15 +172,15 @@ def test_numeric_prefill_submits_unchanged_and_nullable_blank_clears() -> None:
     nullable = {"type": "object", "properties": {"budget": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}
     form = InteractiveForm(view, action_schema=nullable)
     form.populate_from_load_action({"ratio": 0.5, "budget": 7, "unrelated_meta": "ignored"})
-    assert form.handle_key(Key("ctrl+s")) == {
-        "action": "set_limits",
-        "arguments": {"count": 3, "ratio": 0.5, "budget": 7},
-    }
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(
+        action="set_limits",
+        arguments={"count": 3, "ratio": 0.5, "budget": 7},
+    )
     form.values["budget"] = ""
-    assert form.handle_key(Key("ctrl+s")) == {
-        "action": "set_limits",
-        "arguments": {"count": 3, "ratio": 0.5, "budget": None},
-    }
+    assert form.handle_key(Key("ctrl+s")) == OverlayActionSelected(
+        action="set_limits",
+        arguments={"count": 3, "ratio": 0.5, "budget": None},
+    )
 
 
 def test_command_presentation_is_bounded_validated_and_roundtrips() -> None:

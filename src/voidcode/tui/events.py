@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal
 
 from voidcode.capabilities.files.path_queries import PathCompletionResult
@@ -39,6 +40,25 @@ class AbortToken:
     def abort(self) -> None:
         """Supersede this round; frames carrying the token must be dropped."""
         self.aborted = True
+
+
+type InteractiveOverlay = (
+    InteractiveChoices | InteractiveConfirmation | InteractiveForm | InteractiveAsk | InteractiveMarkdown | InteractiveArtifactViewer
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LiveInput:
+    """The one read-only overlay source currently armed for live refresh."""
+
+    name: str
+    arguments: Mapping[str, object]
+    revision: str
+    source: InteractiveOverlay | None
+    refresh_after_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", MappingProxyType(dict(self.arguments)))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -60,13 +60,15 @@ TUI 是服务端事件流之上的内联终端客户端：不持有业务真相�
   - `active_overlay`、`pending_approval`、`queued_confirmations`、`_suspended_live` 合并为一个类型明确的 overlay 栈，消除互相同步的分支。
   - 斜杠/路径补全（`_completion_candidates`、`_sync_slash_completion`、`_pending_path_*`）收拢为独立补全控制器。
   - `_render_composer` 的 live 区布局抽为纯函数并单测。
-- [ ] **消除 `Any` 与宽松 dict。**
-  - `_handle_composer_key(key: Any)`、`_outcome(outcome: Any)`、`_live_input: dict[str, Any]`、`_suspended_live: tuple[Any, ...]` 改用 `Key`、`ComposerOutcome` 与冻结 dataclass；继续收敛 `views.py`/`artifact_viewer.py` 中 `handle_key -> dict[str, Any]` 及 `InteractiveForm.values: dict[str, Any]`。
+- [x] **消除 `Any` 与宽松 dict。**
+  - `_handle_composer_key`/`_outcome` 改用 `Key`/`ComposerOutcome`；`_live_input` 与 `_suspended_live` 改为冻结 `LiveInput`/`_SuspendedLive`（event pump 按字段读取）。
+  - `views.py` 与 `artifact_viewer.py` 的 `handle_key` 现返回封闭的结果类型（`OverlayCancelled`、`OverlayActionSelected`、`ConfirmationDecided`、`ApprovalDecided`、`AskAnswered`、`AskCancelled`、`ArtifactPageRequested`、`ArtifactOpenRequested`）；`InteractiveForm.values` 为有界 JSON `FormValue` 快照，`InteractiveAsk.values` 为 `AskValue`。
 - [ ] **以客户端能力声明替代 `isinstance(CoreLocalClient)`。**
   - `footer_context` 的函数内导入与类型判断、`/tui model`·`/tui thinking` 的 `embedded_only` 统一为客户端声明的能力。
   - 依赖：`sdk/TODO.md` 客户端能力声明。
-- [ ] **删除重复与魔法数字。**
-  - `_BUILTIN_BANNER` 在 `terminal_app.py` 与 `rendering.py` 各有一份；`rendering.py` 退出提示硬编码 `1.5`，应复用 `_QUIT_ARM_SECONDS`。
+- [x] **删除重复与魔法数字。**
+  - 删除 `terminal_app.py` 的重复 `_BUILTIN_BANNER`；`QUIT_ARM_SECONDS` 归入 `rendering.py`，页脚提示、退出判定与帮助文本共用该值。
+  - `views.py` 统一 `OVERLAY_MAX_ROWS`（22）与 `_PAGE_SCROLL_ROWS`（8），live 回退周期 `_LIVE_REFRESH_FALLBACK_SECONDS`（60s）取代两处重复字面量。
 
 ## 跨模块
 
