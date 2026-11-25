@@ -387,10 +387,12 @@ def test_staged_wakeup_service_commits_and_rolls_back_with_the_command(tmp_path:
 
 
 def test_driver_failure_abandons_the_claim_and_records_one_interruption(tmp_path: Path, monkeypatch) -> None:
+    # The test takes the claim manually; a started ticker could race it between
+    # scheduling and the explicit claim.
+    monkeypatch.setattr(Core, "_start_background_work", lambda _self: None)
     with loopback_server([]) as server:
         _configure(tmp_path, server)
         core = open_core_for_test(tmp_path)
-        _pin_ticker(core)
         session_id = core.create_session("sess").session_id
         core.store.schedule_wakeup("wake-fail", "owner", str(core.workspace), session_id, {"text": "fail"}, 0, role="user")
         claim = core.store.claim_and_start_wakeup(
@@ -420,10 +422,12 @@ def test_driver_failure_abandons_the_claim_and_records_one_interruption(tmp_path
 
 
 def test_fact_delivery_failure_abandons_the_claim_and_leaves_no_running_session(tmp_path: Path, monkeypatch) -> None:
+    # The test takes the claim manually; a started ticker could race it between
+    # scheduling and the explicit claim.
+    monkeypatch.setattr(Core, "_start_background_work", lambda _self: None)
     with loopback_server([]) as server:
         _configure(tmp_path, server)
         core = open_core_for_test(tmp_path)
-        _pin_ticker(core)
         session_id = core.create_session("sess").session_id
         core.store.schedule_wakeup("wake-delivery", "owner", str(core.workspace), session_id, {"text": "deliver"}, 0, role="user")
         claim = core.store.claim_and_start_wakeup(

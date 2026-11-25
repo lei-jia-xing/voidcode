@@ -23,6 +23,7 @@ from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.core.engine import Core
 from voidcode.core.events import EventType
 from voidcode.core.storage.store import EventDraft
+from voidcode.sdk.services import ChildSpawnIncomplete
 
 PLUGIN_ID = "background-fixture"
 
@@ -518,9 +519,10 @@ def test_wait_names_one_receipt_even_after_it_settled(tmp_path: Path) -> None:
 def test_crash_between_child_row_and_parent_fact_stays_recoverable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A crash after the child row but before the parent fact keeps the mapping verifiable.
 
-    The birth record commits atomically with the row, so the lookup still finds the
-    child, a differing spec is still refused, and a same-spec retry repairs exactly one
-    child instead of spawning a second.
+    The failure surfaces as ``ChildSpawnIncomplete`` carrying the durable child id. The
+    birth record commits atomically with the row, so the lookup still finds that child, a
+    differing spec is still refused, and a same-spec retry repairs exactly one child
+    instead of spawning a second.
     """
     with _server([_turn(output="repaired child done")]) as server:
         core = _open(tmp_path, server)
@@ -535,12 +537,15 @@ def test_crash_between_child_row_and_parent_fact_stays_recoverable(tmp_path: Pat
             return original_commit(session_id, event, **kwargs)
 
         monkeypatch.setattr(core, "commit_public_fact", _crash_once)
-        with pytest.raises(RuntimeError, match="injected crash"):
+        with pytest.raises(ChildSpawnIncomplete) as raised:
             core.spawn_child("parent", "crash-window work", owner=PLUGIN_ID, idempotency_key="crash-node")
+        assert isinstance(raised.value.__cause__, RuntimeError)
+        assert "injected crash" in str(raised.value.__cause__)
         monkeypatch.setattr(core, "commit_public_fact", original_commit)
         assert len(core.store.descendant_sessions("parent")) == 1
         found = core.find_keyed_child("parent", PLUGIN_ID, "crash-node")
         assert found is not None
+        assert raised.value.child_id == found
         # The birth record is core bookkeeping: no public fact, transcript, or history block.
         from voidcode.core.facts import fact_for_event
         from voidcode.core.history_renderer import render_event_block
