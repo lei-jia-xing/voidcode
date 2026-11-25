@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import codecs
 import os
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -42,6 +43,11 @@ MAX_TIMEOUT_SECONDS = 600
 SHELL_CAPTURE_BYTES: Final[int] = 128 * 1024 * 1024
 _ARTIFACT_MIME = "text/plain; charset=utf-8"
 _PROGRESS_CHUNK_CHARS = 12_000
+#: Progress is observational. Forward every chunk up to this eager prefix, then sample at
+#: a bounded rate so a slow event sink cannot backpressure the process pipe reader and
+#: truncate the captured result during the host's post-exit drain.
+_PROGRESS_EAGER_CHARS: Final[int] = 64 * 1024
+_PROGRESS_INTERVAL_SECONDS: Final[float] = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,9 +138,12 @@ def _spill_stream(services: ArtifactServices, text: str) -> ArtifactReference:
 
 
 def _progress_sink(context: ToolContext) -> Callable[[ProcessStream, bytes], None] | None:
-    """One observational hook: every chunk the lease reads is forwarded to the context's sink.
+    """Forward bounded, rate-limited observational chunks to the context's progress sink.
 
-    The lease already swallows sink failures, so a broken sink can never alter the command result.
+    The lease swallows sink failures, so a broken sink never changes the command result. The
+    rate limit is equally load-bearing: the callback runs on the pipe reader thread, and a slow
+    event commit must not stop that reader before the host's post-exit drain finishes. Dropped
+    progress is observational only; the complete captured stream is unaffected.
     """
     emit = context.emit_tool_progress
     if emit is None:
@@ -145,9 +154,16 @@ def _progress_sink(context: ToolContext) -> Callable[[ProcessStream, bytes], Non
         "stdout": codecs.getincrementaldecoder("utf-8")(errors="replace"),
         "stderr": codecs.getincrementaldecoder("utf-8")(errors="replace"),
     }
+    last_emit: dict[ProcessStream, float] = {"stdout": float("-inf"), "stderr": float("-inf")}
+    seen_chars: dict[ProcessStream, int] = {"stdout": 0, "stderr": 0}
 
     def on_output(stream_name: ProcessStream, chunk: bytes) -> None:
         text = decoders[stream_name].decode(chunk).replace("\r\n", "\n")
+        seen_chars[stream_name] += len(text)
+        now = time.monotonic()
+        if seen_chars[stream_name] > _PROGRESS_EAGER_CHARS and now - last_emit[stream_name] < _PROGRESS_INTERVAL_SECONDS:
+            return
+        last_emit[stream_name] = now
         for start in range(0, len(text), _PROGRESS_CHUNK_CHARS):
             payload: dict[str, object] = {"stream": stream_name, "text": text[start : start + _PROGRESS_CHUNK_CHARS]}
             if run_id:
