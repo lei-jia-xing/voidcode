@@ -15,9 +15,15 @@ def test_sdk_cannot_depend_on_implementation_layers() -> None:
         for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
             targets: tuple[str, ...] = ()
             if isinstance(node, ast.ImportFrom):
-                if node.level > 1:
-                    violations.append(f"{source.name}:{node.lineno}: escaped relative import")
-                elif node.level == 0 and node.module:
+                if node.level:
+                    base = source.parent
+                    for _ in range(node.level - 1):
+                        base = base.parent
+                    try:
+                        base.relative_to(root)
+                    except ValueError:
+                        violations.append(f"{source.name}:{node.lineno}: escaped relative import")
+                elif node.module:
                     targets = (node.module,)
             elif isinstance(node, ast.Import):
                 targets = tuple(alias.name for alias in node.names)

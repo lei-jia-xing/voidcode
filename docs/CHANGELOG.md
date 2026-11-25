@@ -4,6 +4,11 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### SDK service vocabulary split behind the stable facade
+- `src/voidcode/sdk/services.py` is now the `src/voidcode/sdk/services/` package grouped by common errors/constants, model-query results, budgets/usage, processes, artifacts/receipts, child/session projections, and Protocols. The facade preserves every existing public name and the historical `voidcode.sdk.services` import path; frozen dataclasses, Protocol signatures, typed errors, and wire payloads are unchanged, and private TypeAdapters stay internal.
+- The SDK direction guard now resolves relative imports against the SDK root, so nested contract modules cannot escape `voidcode.sdk` or depend on core/plugins.
+- Tests: service-importing SDK, plugin, capability, and core suites plus `test_sdk_direction`; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Partial post-exit process capture is explicit
 - After the child exits, the process host still joins its pipe readers inside the documented 2-second drain budget. A reader that is still alive at expiry now marks the result `truncated=True` with `ProcessResult.capture_issue == "reader_drain_timeout"`; stdout/stderr are the consistent prefix read so far, never a complete-looking capture.
 - Normal exits, process-group cleanup, timeouts, cancellation, capture bounds, and sandboxed runs keep their existing paths. The capture snapshot is locked so a stalled reader cannot race the returned prefix.

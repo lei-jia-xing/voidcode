@@ -7,7 +7,7 @@ of the code.
 
 - Registration: `src/voidcode/sdk/plugin.py` (`Plugin`, `StateSchema`)
 - Tool/command/services/views contracts: `src/voidcode/sdk/tools.py`,
-  `src/voidcode/sdk/commands.py`, `src/voidcode/sdk/services.py`,
+  `src/voidcode/sdk/commands.py`, `src/voidcode/sdk/services/`,
   `src/voidcode/sdk/views.py`, `src/voidcode/sdk/invocation.py`
 - Admission/activation: `src/voidcode/core/activation.py`,
   `src/voidcode/bootstrap.py`, `docs/contracts/hot-activation.md`

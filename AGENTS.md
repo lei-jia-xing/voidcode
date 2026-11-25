@@ -24,7 +24,7 @@ graph LR
 ```
 
 - **SDK (`src/voidcode/sdk/`)**:
-  The contract surface shared by core and plugins: plugin registration (`plugin.py`, including `resource_readers`), tools (`tools.py`), commands (`commands.py`), invocation context (`invocation.py`), provider contracts (`provider.py`), hook/observer contracts (`hooks.py`), declarative views (`views.py`), resource readers (`resources.py`: typed `scheme://` handlers with `ResourceUnavailable`/`ResourceContractError`), scoped services (`services.py`, including the optional-query transport and its `QueryUnavailable`/`QueryContractError` errors), plus JSON helpers (`json_values.py`, `codec.py`). No configuration schema, no workspace query contracts, no state migration hook.
+  The contract surface shared by core and plugins: plugin registration (`plugin.py`, including `resource_readers`), tools (`tools.py`), commands (`commands.py`), invocation context (`invocation.py`), provider contracts (`provider.py`), hook/observer contracts (`hooks.py`), declarative views (`views.py`), resource readers (`resources.py`: typed `scheme://` handlers with `ResourceUnavailable`/`ResourceContractError`), scoped services (`services/`, including the optional-query transport and its `QueryUnavailable`/`QueryContractError` errors), plus JSON helpers (`json_values.py`, `codec.py`). No configuration schema, no workspace query contracts, no state migration hook.
 - **Core (`src/voidcode/core/`)**:
   The minimal engine: `engine/` (`Core`) runs governed turns over append-only SQLite events with native tool batches, approvals, and confirmation gates; `activation.py` defines neutral execution configurations and state copies; `plugins.py` is the in-process plugin runtime that loads plugins and dispatches invocations synchronously; `services.py` binds scoped services to invocation leases; `processes.py` owns child processes and background jobs; `storage/` owns the append-only SQLite store and v6 schema; `coverage.py` projects tool results for the model and resolves resource paths; `history_renderer.py` renders the readable event projection the history services share. Core has zero product configuration or provider credential concepts and imports no outer adapters, no capabilities, and no concrete plugin.
 - **Outer product layer (`src/voidcode/`)**:
@@ -57,7 +57,7 @@ scope. See `docs/contracts/optional-queries.md`.
 | CLI entry point and subcommands | `src/voidcode/` | `cli.py` (`main`) |
 | WebSocket RPC transport and web client bundle | `src/voidcode/transport/` | `http.py`, `server.py`, `static.py` |
 | Inline TUI client | `src/voidcode/tui/` | `terminal_app.py`, `client.py` |
-| SDK contracts (contracts only) | `src/voidcode/sdk/` | `plugin.py`, `tools.py`, `commands.py`, `services.py` |
+| SDK contracts (contracts only) | `src/voidcode/sdk/` | `plugin.py`, `tools.py`, `commands.py`, `services/` |
 | Capabilities (files, exec, providers, queries) | `src/voidcode/capabilities/` | `files/`, `exec/`, `providers/`, `workspace_queries.py` |
 | Bundled plugins | `src/voidcode/plugins/<plugin_id>/` | `__init__.py` exporting `create_plugin` |
 | Web client | `frontend/src/core/` | `CoreApp.tsx`, `views/` |
