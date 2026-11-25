@@ -50,9 +50,9 @@ TUI 是服务端事件流之上的内联终端客户端：不持有业务真相�
 
 - [ ] **以真实终端验证 resize、滚动历史和光标重锚定。**
   - 对流式输出、多行输入、浮层及图片验证宽高变化后的重定位。
-- [ ] **修复客户端参数透传、`session.ack` 容错、Diff 展示与 `NO_COLOR` 判定。**
-  - `CoreRpcClient.run`/`resume` 与 `CoreLocalClient.run`/`resume` 均未转发 `spec.interaction`；`CoreRpcClient.events_stream` 发送 `session.ack` 未捕获连接关闭竞态异常。
-  - `_detect_color_system` 对 `NO_COLOR=""` 空值也禁用颜色；Diff 卡片缺少行号，且 `write` 覆盖文件无 Diff（依赖 `plugins/TODO.md` `WriteResultBody` 返回 diff）。
+- [x] **修复客户端参数透传、`session.ack` 容错、Diff 展示与 `NO_COLOR` 判定。**
+  - `CoreRpcClient.run`/`CoreLocalClient.run` 现转发 `RunSpec.interaction`（`resume` 原本已转发）；`session.ack` 仅忽略 `ConnectionClosed` 连接关闭竞态，其他发送失败继续上抛。
+  - `_detect_color_system` 以变量存在与否判定 `NO_COLOR`，空串同样禁用颜色；Diff 卡片与 `DiffViewData` 预览显示有界双列旧/新行号，`write` 覆盖 diff（旧文件 ≤64 KiB）与 `edit` 共用同一形状分发渲染。
 
 ## P2：结构与类型收敛
 

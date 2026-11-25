@@ -31,6 +31,26 @@ from voidcode.tui.local_client import CoreLocalClient
 
 _EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "tally-counter"
 
+_DISABLED_PLUGINS = (
+    "ast_grep",
+    "btw",
+    "compaction",
+    "cron",
+    "subagents",
+    "exec",
+    "files",
+    "goal",
+    "hooks",
+    "lsp",
+    "mcp",
+    "plan",
+    "review",
+    "skills",
+    "todo",
+    "user_shell",
+    "web",
+)
+
 
 def _call(identity: str, name: str, **arguments: object) -> dict[str, object]:
     return {"id": identity, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
@@ -50,9 +70,31 @@ def _replies() -> list[dict[str, object]]:
     ]
 
 
+def _write_replies() -> list[dict[str, object]]:
+    return [
+        openai_response(
+            message={"role": "assistant", "content": None, "tool_calls": [_call("write-1", "write", path="notes.txt", content="one\n")]},
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
+        openai_response(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    _call("write-2", "write", path="first.txt", content="first\n"),
+                    _call("write-3", "write", path="second.txt", content="second\n"),
+                ],
+            },
+            finish="tool_calls",
+        ),
+        openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
+    ]
+
+
 @contextmanager
-def _provider() -> Iterator[OpenAILoopbackServer]:
-    server = OpenAILoopbackServer(_replies())
+def _provider(script: list[dict[str, object]] | None = None) -> Iterator[OpenAILoopbackServer]:
+    server = OpenAILoopbackServer(_replies() if script is None else script)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
@@ -63,36 +105,22 @@ def _provider() -> Iterator[OpenAILoopbackServer]:
         server.server_close()
 
 
-def _configure(workspace: Path, server: OpenAILoopbackServer, plugin: Path) -> None:
+def _configure(
+    workspace: Path,
+    server: OpenAILoopbackServer,
+    plugin: Path,
+    *,
+    approval_mode: str = "yolo",
+    enable_files: bool = False,
+) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    disabled = {
-        name: {"enabled": False}
-        for name in (
-            "ast_grep",
-            "btw",
-            "compaction",
-            "cron",
-            "subagents",
-            "exec",
-            "files",
-            "goal",
-            "hooks",
-            "lsp",
-            "mcp",
-            "plan",
-            "review",
-            "skills",
-            "todo",
-            "user_shell",
-            "web",
-        )
-    }
+    disabled = {name: {"enabled": False} for name in _DISABLED_PLUGINS if not (enable_files and name == "files")}
     (workspace / "voidcode.json").write_text(
         json.dumps(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/test-model"},
-                "policy": {"approval_mode": "yolo"},
+                "policy": {"approval_mode": approval_mode},
                 "providers": {"endpoint": {"api_key": "loopback-test-key", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
                 "plugins": {**disabled, "tally-counter": {"path": str(plugin)}},
             }
@@ -136,6 +164,51 @@ def arm_client(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[tuple
         _configure(workspace, server, plugin)
         with _client(request.param, workspace, state) as client:
             yield request.param, client, workspace, state
+
+
+@pytest.fixture(params=["local", "remote"])
+def write_approval_client(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[SessionClient]:
+    plugin = tmp_path / "tally-counter"
+    shutil.copytree(_EXAMPLE, plugin, ignore=shutil.ignore_patterns("__pycache__"))
+    workspace, state = tmp_path / "workspace", tmp_path / "state"
+    with _provider(_write_replies()) as server:
+        _configure(workspace, server, plugin, approval_mode="ask", enable_files=True)
+        with _client(request.param, workspace, state) as client:
+            yield client
+
+
+def test_run_and_resume_forward_interaction(write_approval_client: SessionClient) -> None:
+    from voidcode.sdk.tools import ToolFailure, ToolSuccess
+    from voidcode.sdk.transcript import TranscriptTool
+
+    client = write_approval_client
+    session = client.create_session("unattended-run")
+    result = client.run(session.session_id, RunSpec(prompt="write one", interaction="unattended"))
+    assert result.status == "completed", result.error
+    assert result.pending_approval is None
+    tools = [entry.content for entry in client.transcript(session.session_id).entries if isinstance(entry.content, TranscriptTool)]
+    assert len(tools) == 1
+    assert isinstance(tools[0].result, ToolFailure)
+    assert "approval is unsupported while unattended" in tools[0].result.error
+
+    parked_session = client.create_session("resume-override")
+    parked = client.run(parked_session.session_id, RunSpec(prompt="write twice"))
+    assert parked.status == "waiting"
+    assert parked.pending_approval is not None
+    resumed = client.resume(
+        parked_session.session_id,
+        ResumeSpec(
+            approval_request_id=str(parked.pending_approval["request_id"]),
+            decision="allow",
+            interaction="unattended",
+        ),
+    )
+    assert resumed.status == "completed", resumed.error
+    tools = [entry.content for entry in client.transcript(parked_session.session_id).entries if isinstance(entry.content, TranscriptTool)]
+    assert len(tools) == 2
+    assert isinstance(tools[0].result, ToolSuccess)
+    assert isinstance(tools[1].result, ToolFailure)
+    assert "approval is unsupported while unattended" in tools[1].result.error
 
 
 def _stored_total(state: Path, session_id: str) -> int | None:

@@ -211,6 +211,7 @@ class CoreLocalClient(SessionClient):
                 max_steps=spec.max_steps,
                 root_action_budget=spec.root_action_budget,
                 images=spec.images,
+                interaction=spec.interaction,
             )
         except Exception as exc:
             raise self._refusal(exc) from None

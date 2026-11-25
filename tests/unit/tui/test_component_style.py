@@ -87,6 +87,13 @@ def test_diff_semantic_cues_survive_component_style() -> None:
     assert "95m" in joined  # heading/context carry the component tint
 
 
+def test_diff_view_numbers_both_sides() -> None:
+    rows = render_diff(DiffViewData(before="a", after="b", path="p"), 40, Styles(None))
+    text = _plain(rows)
+    assert "1   -a" in text
+    assert " 1 +b" in text
+
+
 def test_style_ingress_accepts_bare_color_and_rejects_injection() -> None:
     data = StatusViewData.from_payload({"label": "t", "value": "v", "style": {"foreground": "#12ab34"}})
     assert data.style == ComponentStyle(tone="default", foreground="#12ab34", background=None)

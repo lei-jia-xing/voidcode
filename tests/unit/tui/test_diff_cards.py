@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from voidcode.capabilities.files.write_tool import WriteResultBody
 from voidcode.sdk.services import ArtifactReference
 from voidcode.sdk.tools import (
     CompositeOutput,
@@ -59,6 +60,61 @@ def test_edit_diff_card_shows_file_stats_and_hunks() -> None:
     assert "-const a = 1;" in text
     assert "+const a = 2;" in text
     assert text.index("Edit applied successfully.") < text.index("Diff: src/foo.py")
+
+
+def test_diff_card_numbers_hunk_lines_with_old_and_new_gutters() -> None:
+    text = "\n".join(render_tool_result(_edit_result(_edit_body()), 100, Styles(None)))
+    assert "1 1  line1" in text
+    assert "2   -const a = 1;" in text
+    assert "  2 +const a = 2;" in text
+    assert "3 3  line3" in text
+
+
+def test_diff_card_aligns_multi_digit_line_numbers() -> None:
+    diff = "--- big.py\n+++ big.py\n@@ -98,3 +98,3 @@\n context\n-old 99\n+new 99\n context\n"
+    text = "\n".join(render_tool_result(_edit_result(_edit_body(path="big.py", diff=diff)), 100, Styles(None)))
+    assert " 98  98  context" in text
+    assert " 99     -old 99" in text
+    assert "     99 +new 99" in text
+    assert "100 100  context" in text
+
+
+def test_diff_card_line_number_gutter_is_bounded_for_huge_hunks() -> None:
+    huge = "9" * 40
+    diff = f"--- x\n+++ x\n@@ -{huge},1 +{huge},1 @@\n-old\n+new\n"
+    rows = render_tool_result(_edit_result(_edit_body(path="x", diff=diff)), 40, Styles(None))
+    body_rows = [row for row in rows if row.endswith(("-old", "+new"))]
+    assert len(body_rows) == 2
+    for row in body_rows:
+        gutter = row.removesuffix("-old").removesuffix("+new")
+        assert "…" in gutter and len(gutter) <= 14
+        assert len(row) <= 40
+    assert huge not in "\n".join(body_rows)
+
+
+def test_write_overwrite_diff_body_renders_numbered_card() -> None:
+    body = WriteResultBody(
+        path="notes.txt",
+        sha256="a" * 64,
+        bytes=11,
+        diff="--- notes.txt\n+++ notes.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+three\n",
+        additions=1,
+        deletions=1,
+    )
+    result = ToolSuccess("write", TextOutput(text="Wrote 11 byte(s) to notes.txt"), body=body)
+    text = "\n".join(render_tool_result(result, 100, Styles(None)))
+    assert "Diff: notes.txt (+1 -1)" in text
+    assert "1 1  one" in text
+    assert "2   -two" in text
+    assert "  2 +three" in text
+
+
+def test_write_create_body_without_diff_stays_output_only() -> None:
+    body = WriteResultBody(path="notes.txt", sha256="a" * 64, bytes=3)
+    result = ToolSuccess("write", TextOutput(text="Wrote 3 byte(s) to notes.txt"), body=body)
+    text = "\n".join(render_tool_result(result, 100, Styles(None)))
+    assert "Wrote 3 byte(s) to notes.txt" in text
+    assert "Diff:" not in text
 
 
 def test_diff_card_keeps_output_and_artifact_entry_in_order() -> None:

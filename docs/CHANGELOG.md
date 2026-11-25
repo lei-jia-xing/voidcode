@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### TUI client forwarding, ack resilience, and numbered diffs
+- `CoreRpcClient.run` and `CoreLocalClient.run` now forward `RunSpec.interaction`; `resume` already forwarded it, and the local/RPC conformance suite now proves unattended run and approval→resume behavior on both client arms.
+- `CoreRpcClient.events_stream` treats `session.ack` as best-effort: a concurrent `ConnectionClosed` is ignored while other send failures still surface. `_detect_color_system` disables color whenever `NO_COLOR` is present, including the empty string.
+- Diff result cards and `DiffViewData` previews show two-column old/new line numbers bounded to six digits; `write` overwrite diffs (previous file ≤64 KiB) render through the same shape-only card as `edit`.
+- Verification: TUI diff/style/terminal/RPC-stream tests, the local+RPC session-client conformance suite, `ruff check`, `ruff format --check`, and `ty check src` on the changed files.
+
 ### Typed model-query and process failure classification
 - Governed model-query failures now have dedicated SDK types raised at their source: budget exhaustion, context-provider failure, unavailable runtime, missing/malformed model, oversize prompt, cancellation, and unexpected native tool calls. `/btw` maps these by `isinstance` only; message text is never parsed for classification.
 - Process invocation failures now carry a stable `ProcessFailure.kind` (`start_failed`, `capture_failed`, `sandbox_failed`, `process_failed`). The `!` command and `shell_exec` map that field instead of matching exception substrings; misleading messages no longer affect the reported code.

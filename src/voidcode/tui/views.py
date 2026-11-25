@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import difflib
 import json
-from collections.abc import Mapping
+import re
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from rich.markdown import Markdown
@@ -226,6 +227,76 @@ def _content_part_has_reference(part: ContentPart) -> bool:
     return isinstance(part, (TextPart, TablePart)) and part.reference is not None
 
 
+_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+#: Bound the gutter for hostile hunk headers: valid diffs never need more.
+_MAX_DIFF_LINE_DIGITS = 6
+
+
+def _diff_line_layout(diff_lines: Sequence[str]) -> list[tuple[str, str]]:
+    """Classify each unified diff line and build its bounded ``old new`` gutter.
+
+    Returns ``(gutter, kind)`` aligned with ``diff_lines``; kinds are ``added``,
+    ``removed``, ``hunk``, and ``context``. Hunk body lines are numbered from
+    the header starts, while headers and out-of-hunk text stay unnumbered. The
+    gutter follows the widest line number actually shown, capped at six digits,
+    so untrusted diff text cannot widen a card.
+    """
+    numbers: list[tuple[int | None, int | None]] = []
+    kinds: list[str] = []
+    old = new = 0
+    in_hunk = False
+    for line in diff_lines:
+        header = _HUNK_HEADER.match(line)
+        if header is not None:
+            old, new = int(header.group(1)), int(header.group(2))
+            in_hunk = True
+            numbers.append((None, None))
+            kinds.append("hunk")
+            continue
+        if line.startswith("\\"):
+            numbers.append((None, None))
+            kinds.append("context")
+            continue
+        if not in_hunk or line.startswith(("---", "+++")):
+            in_hunk = False
+            numbers.append((None, None))
+            kinds.append("context")
+            continue
+        if line.startswith("+") and not line.startswith("+++"):
+            numbers.append((None, new))
+            kinds.append("added")
+            new += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            numbers.append((old, None))
+            kinds.append("removed")
+            old += 1
+        elif line.startswith(" "):
+            numbers.append((old, new))
+            kinds.append("context")
+            old += 1
+            new += 1
+        else:
+            in_hunk = False
+            numbers.append((None, None))
+            kinds.append("context")
+    highest = max((number for pair in numbers for number in pair if number is not None), default=0)
+    width = min(_MAX_DIFF_LINE_DIGITS, max(1, len(str(highest))))
+    gutters = [f"{_bounded_line_number(old_number, width)} {_bounded_line_number(new_number, width)} " for old_number, new_number in numbers]
+    return [
+        ("" if old_number is None and new_number is None else gutter, kind)
+        for (old_number, new_number), gutter, kind in zip(numbers, gutters, kinds, strict=True)
+    ]
+
+
+def _bounded_line_number(number: int | None, width: int) -> str:
+    if number is None:
+        return " " * width
+    text = str(number)
+    if len(text) > width:
+        text = "…" + text[-(width - 1) :] if width > 1 else "…"
+    return text.rjust(width)
+
+
 def _render_diff_body(body: ToolBody | None, width: int, styles: Styles) -> list[str] | None:
     """Single-file edit semantics as a diff card, or None without complete shape.
 
@@ -253,14 +324,17 @@ def _render_diff_body(body: ToolBody | None, width: int, styles: Styles) -> list
         return None
     card = Text()
     card.append(f"Diff: {escape_terminal_controls(path)} (+{additions} -{deletions})", style=styles.style("text", bold=True))
-    for line in diff_text.splitlines():
+    diff_lines = diff_text.splitlines()
+    for (gutter, kind), line in zip(_diff_line_layout(diff_lines), diff_lines, strict=True):
         card.append("\n")
+        if gutter:
+            card.append(gutter, style=styles.style("dim"))
         clean = escape_terminal_controls(line)
-        if line.startswith("+") and not line.startswith("+++"):
+        if kind == "added":
             card.append(clean, style=styles.style("diff_added"))
-        elif line.startswith("-") and not line.startswith("---"):
+        elif kind == "removed":
             card.append(clean, style=styles.style("diff_removed"))
-        elif line.startswith("@@"):
+        elif kind == "hunk":
             card.append(clean, style=styles.style("accent"))
         else:
             card.append(clean, style=styles.style("diff_context"))
@@ -388,14 +462,16 @@ def render_diff(data: DiffViewData, width: int, styles: Styles | None = None) ->
     diff_text = Text()
     heading = f"Diff: {escape_terminal_controls(str(data.path))}" if data.path else "Diff"
     diff_text.append(heading, style=resolved.style(tone_slot or "text", color=fg, background=bg, bold=True))
-    for line in diff_lines:
+    for (gutter, kind), line in zip(_diff_line_layout(diff_lines), diff_lines, strict=True):
         diff_text.append("\n")
+        if gutter:
+            diff_text.append(gutter, style=resolved.style("dim"))
         clean = escape_terminal_controls(line)
-        if line.startswith("+") and not line.startswith("+++"):
+        if kind == "added":
             diff_text.append(clean, style=resolved.style("diff_added"))
-        elif line.startswith("-") and not line.startswith("---"):
+        elif kind == "removed":
             diff_text.append(clean, style=resolved.style("diff_removed"))
-        elif line.startswith("@@"):
+        elif kind == "hunk":
             diff_text.append(clean, style=resolved.style("accent"))
         else:
             diff_text.append(clean, style=resolved.style(tone_slot or "diff_context", color=fg, background=bg))

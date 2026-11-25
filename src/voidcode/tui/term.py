@@ -433,7 +433,8 @@ def _detect_cell_pixel_size(fd: int | None) -> tuple[float, float] | None:
 
 
 def _detect_color_system(is_tty: bool) -> ColorSystem | None:
-    if os.environ.get("NO_COLOR") is not None:
+    # no-color.org: presence, not truthiness, disables color (empty included).
+    if "NO_COLOR" in os.environ:
         return None
     if not is_tty:
         return None

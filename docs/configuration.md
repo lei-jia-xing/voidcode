@@ -86,6 +86,8 @@ The banner uses a centered header layout inspired by [dashboard-nvim](https://gi
 
 `text` is optional; omitted or `null` uses the built-in V. Leading spaces and internal blank lines preserve the drawing's geometry. `colors` is a non-empty palette of `#RRGGBB` or the SDK's 16 ANSI color names, sampled from first to last across rows; one color is monochrome. Terminal controls are escaped, wide text is cell-clipped, and `NO_COLOR` removes color without replacing Unicode. These settings affect only the banner, not chat or composer styling.
 
+`NO_COLOR` follows [no-color.org](https://no-color.org): setting it to any value, including an empty string, disables SGR color for the whole TUI; glyphs, spacing, and layout stay unchanged.
+
 ### `model`
 
 | Field | Type | Description |

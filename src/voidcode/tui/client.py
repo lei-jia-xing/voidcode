@@ -13,6 +13,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import httpx
+from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 from websockets.typing import Origin, Subprotocol
 
@@ -247,6 +248,8 @@ class CoreRpcClient(SessionClient):
             params["max_steps"] = spec.max_steps
         if spec.root_action_budget is not None:
             params["root_action_budget"] = spec.root_action_budget
+        if spec.interaction is not None:
+            params["interaction"] = spec.interaction
         if spec.images:
             params["images"] = [img.as_payload() for img in spec.images]
         return RunResult.from_payload(self._call("session.run", params))
@@ -438,18 +441,23 @@ class CoreRpcClient(SessionClient):
                     with self._lock:
                         socket = self._socket
                         if socket is not None:
-                            socket.send(
-                                json.dumps(
-                                    {
-                                        "jsonrpc": "2.0",
-                                        "method": "session.ack",
-                                        "params": {
-                                            "subscription_id": identity,
-                                            "through_sequence": cursor,
-                                        },
-                                    }
+                            try:
+                                socket.send(
+                                    json.dumps(
+                                        {
+                                            "jsonrpc": "2.0",
+                                            "method": "session.ack",
+                                            "params": {
+                                                "subscription_id": identity,
+                                                "through_sequence": cursor,
+                                            },
+                                        }
+                                    )
                                 )
-                            )
+                            except ConnectionClosed:
+                                # Acks are best-effort: a concurrent close ends the
+                                # stream through the reader's error frame, not here.
+                                pass
                 if isinstance(frame, ErrorFrame):
                     return
         except asyncio.CancelledError:
