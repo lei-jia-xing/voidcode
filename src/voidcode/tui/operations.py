@@ -7,6 +7,7 @@ config operation and build the frame the event pump will apply.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -65,7 +66,14 @@ def complete_paths(
     failure: Literal["unavailable", "contract", "error"] | None = None
     error: str | None = None
     try:
-        result = PATH_COMPLETION.ask(_ClientQueryTransport(client, session_id), request)
+        transport = _ClientQueryTransport(client, session_id)
+        result = PATH_COMPLETION.ask(transport, request)
+        if not result.entries and request.mode == "prefix" and request.query:
+            # Fuzzy is an opt-in rescue, never a replacement: prefix matches
+            # always win, and only an empty prefix round searches by subsequence.
+            fuzzy = PATH_COMPLETION.ask(transport, replace(request, mode="fuzzy"))
+            if fuzzy.entries:
+                result = fuzzy
     except QueryUnavailable as exc:
         failure, error = "unavailable", str(exc)
     except QueryContractError as exc:

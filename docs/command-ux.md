@@ -83,6 +83,13 @@ plugin command names.
   the same contract), never to the client process. A disabled files plugin or
   malformed answer is named in the transcript; the TUI never falls back to
   reading its own file system.
+- Recursion is explicit: a `**` path segment (`@src/**`, `@src/**/frag`, or
+  `@**/frag`) searches up to six directory levels below the named base; no
+  marker keeps the existing one-directory prefix behavior. Prefix hits always
+  win; when prefix matching returns nothing, one fuzzy pass over the path below
+  the requested directory fills the popup (so `@**/srm` can find
+  `src/deep/main.py`). Both modes keep the 50-candidate and workspace-symlink
+  bounds.
 - Catalog refresh removes disabled capabilities; pending actions retain their
   displayed revision and never silently retry under another revision.
 

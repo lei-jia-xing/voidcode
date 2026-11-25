@@ -53,8 +53,10 @@ class PathCompletionRequest:
 
     ``query`` is the draft prefix after ``@`` (or a bare path token), never a
     server path. ``depth=1`` lists only the requested directory; larger values
-    search that many directory levels below it. ``mode`` selects fixed prefix
-    matching or an ordered-subsequence fuzzy match.
+    search that many directory levels below it. ``mode="prefix"`` matches the
+    entry name; ``mode="fuzzy"`` matches the ordered subsequence against the
+    path below the requested directory, so recursive fuzzy queries can select
+    nested files by their relative path.
     """
 
     query: str = ""
@@ -342,7 +344,8 @@ def _collect(
                 if gitignore is not None and gitignore.is_ignored(relative, is_directory=False):
                     continue
                 path = relative
-            rank = _match_rank(name, fragment, request.mode)
+            match_target = name if request.mode == "prefix" else "/".join(relative_parts[len(base_parts) :])
+            rank = _match_rank(match_target, fragment, request.mode)
             if rank is not None:
                 matched.append(_Matched(path=path, kind="directory" if is_directory else "file", rank=rank))
             if is_directory and level + 1 < request.depth and not entry.is_symlink():

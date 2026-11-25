@@ -147,14 +147,15 @@ def test_completion_is_async_latest_reply_wins_and_draft_is_untouched() -> None:
     assert not _plain(terminal.committed)
 
 
-def test_unavailable_query_is_visible_and_leaves_the_draft_alone() -> None:
+@pytest.mark.parametrize("token", ["@sr", "@src/**/never"])
+def test_unavailable_query_is_visible_and_leaves_the_draft_alone(token: str) -> None:
     client = _PathClient(error=QueryUnavailable("no admitted plugin answers 'workspace.path_completion'"))
     client.block = False
     app, terminal = _app(client)
-    _type(app, "@sr")
+    _type(app, token)
     _settle_all(app)
     assert app.composer.completion == ()
-    assert app.composer.value == "@sr"
+    assert app.composer.value == token
     assert _plain(terminal.committed).count("@path completion unavailable") == 1
     # A second failure with identical text does not spam the transcript.
     _type(app, "c")
@@ -162,15 +163,31 @@ def test_unavailable_query_is_visible_and_leaves_the_draft_alone() -> None:
     assert _plain(terminal.committed).count("@path completion unavailable") == 1
 
 
-def test_contract_failure_is_typed_and_visible() -> None:
+@pytest.mark.parametrize("token", ["@", "@src/**/never"])
+def test_contract_failure_is_typed_and_visible(token: str) -> None:
     client = _PathClient(error=QueryContractError("answer named another query"))
     client.block = False
     app, terminal = _app(client)
-    _type(app, "@")
+    _type(app, token)
     _settle_all(app)
     assert "contract failure" in _plain(terminal.committed).lower()
     assert app.composer.completion == ()
-    assert app.composer.value == "@"
+    assert app.composer.value == token
+
+
+@pytest.mark.parametrize(
+    ("token", "query", "depth"),
+    [
+        ("src/**", "src/", 6),
+        ("src/**/ma", "src/ma", 6),
+        ("**/srm", "srm", 6),
+        ("**", "", 6),
+        ("src/ma", "src/ma", 1),
+    ],
+)
+def test_path_completion_request_uses_the_explicit_recursive_trigger(token: str, query: str, depth: int) -> None:
+    request = CoreTuiApp._path_request(token)
+    assert (request.query, request.depth, request.limit, request.mode) == (query, depth, 50, "prefix")
 
 
 def test_dismissed_completion_drops_the_inflight_reply() -> None:

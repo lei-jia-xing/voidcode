@@ -159,6 +159,12 @@ _BUILTIN_BANNER = (
 #: Immutable ctor/entry default: None at the boundary always means disabled.
 _DEFAULT_BANNER = BannerConfig()
 
+#: `@path` popup bounds. Normal completion stays prefix/depth-1; an explicit
+#: `**` path segment requests recursive traversal up to this depth.
+_PATH_COMPLETION_LIMIT = 50
+_PATH_RECURSIVE_DEPTH = 6
+_PATH_RECURSIVE_SEGMENT = "**"
+
 
 @dataclass(frozen=True, slots=True)
 class _PathCompletionRound:
@@ -172,6 +178,29 @@ class _PathCompletionRound:
     token: events.AbortToken
     session_id: str
     generation: int
+
+
+def _recursive_path_query(query: str) -> tuple[str, str] | None:
+    """Split an explicit ``DIR/**`` or ``DIR/**/FRAGMENT`` token.
+
+    A bare ``**`` recurses from the workspace root. Only one trailing marker
+    segment is recognized; anything else stays a literal prefix query, so the
+    normal ``@path`` behavior is never reinterpreted.
+    """
+    marker = _PATH_RECURSIVE_SEGMENT
+    if query == marker:
+        base, fragment = "", ""
+    elif query.startswith(f"{marker}/"):
+        base, fragment = "", query[len(marker) + 1 :]
+    elif f"/{marker}/" in query:
+        base, fragment = query.split(f"/{marker}/", 1)
+    elif query.endswith(f"/{marker}"):
+        base, fragment = query[: -len(marker) - 1], ""
+    else:
+        return None
+    if "/" in fragment:
+        return None
+    return base.strip("/"), fragment
 
 
 class CoreTuiApp:
@@ -1624,6 +1653,19 @@ class CoreTuiApp:
             self._path_request_token.abort()
             self._path_request_token = None
 
+    @staticmethod
+    def _path_request(query: str) -> PathCompletionRequest:
+        """Translate the draft token into the typed query, including recursion."""
+        recursive = _recursive_path_query(query)
+        if recursive is None:
+            return PathCompletionRequest(query=query, limit=_PATH_COMPLETION_LIMIT)
+        base, fragment = recursive
+        if fragment:
+            joined = f"{base}/{fragment}" if base else fragment
+        else:
+            joined = f"{base}/" if base else ""
+        return PathCompletionRequest(query=joined, depth=_PATH_RECURSIVE_DEPTH, limit=_PATH_COMPLETION_LIMIT)
+
     def _request_path_completion(self, query: str, target_range: tuple[int, int]) -> None:
         """Queue the newest workspace query without touching the draft or caret."""
         self._path_request_serial += 1
@@ -1633,7 +1675,7 @@ class CoreTuiApp:
         if self._path_request_token is not None:
             self._path_request_token.abort()
         try:
-            request = PathCompletionRequest(query=query, limit=50)
+            request = self._path_request(query)
         except ValueError as exc:
             # The query string itself is user input; an overlong token simply
             # never completes, and the failure is reported once, not per key.

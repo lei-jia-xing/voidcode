@@ -639,3 +639,83 @@ def test_path_candidates_does_not_escape_workspace(tmp_path: Path) -> None:
     app.composer.set_text("")
     _type_path(app, "@sub/")
     assert app.composer.value == "@sub/"
+
+
+def test_recursive_glob_segment_completes_nested_paths(tmp_path: Path) -> None:
+    (tmp_path / "src" / "deep").mkdir(parents=True)
+    (tmp_path / "src" / "deep" / "main.py").write_text("x", encoding="utf-8")
+    (tmp_path / "src" / "utils.py").write_text("x", encoding="utf-8")
+    (tmp_path / "src" / ".secret").write_text("x", encoding="utf-8")
+    (tmp_path / "src" / "node_modules").mkdir()
+    (tmp_path / "src" / "node_modules" / "pkg.js").write_text("x", encoding="utf-8")
+    (tmp_path / "src" / "ignored.py").write_text("x", encoding="utf-8")
+    (tmp_path / "src" / "generated").mkdir()
+    (tmp_path / "src" / "generated" / "out.py").write_text("x", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("src/ignored.py\nsrc/generated/\n", encoding="utf-8")
+    (tmp_path / "src" / "Ärger.md").write_text("x", encoding="utf-8")
+
+    app, _ = _app(tmp_path)
+    _type_path(app, "@src/**")
+    assert app.composer.completion == ("src/deep/", "src/deep/main.py", "src/utils.py", "src/Ärger.md")
+    assert not any(".secret" in candidate or "node_modules" in candidate for candidate in app.composer.completion)
+    assert not any("ignored.py" in candidate or "generated" in candidate for candidate in app.composer.completion)
+
+    app.composer.set_text("")
+    _type_path(app, "@src/**/ma")
+    assert app.composer.completion == ("src/deep/main.py",)
+
+    app.composer.set_text("")
+    _type_path(app, "@src/**/är")
+    assert app.composer.completion == ("src/Ärger.md",)
+
+
+def test_recursive_glob_acceptance_replaces_the_whole_token(tmp_path: Path) -> None:
+    (tmp_path / "src" / "deep").mkdir(parents=True)
+    (tmp_path / "src" / "deep" / "main.py").write_text("x", encoding="utf-8")
+    app, _ = _app(tmp_path)
+    dispatched: list[str] = []
+    app._dispatch_user_prompt = lambda line: dispatched.append(line)  # type: ignore[method-assign]
+    _type(app, "check @src/**/ma now")
+    for _ in range(len(" now")):
+        app._handle_composer_key(Key("left"))
+    _settle(app)
+    assert app.composer.completion == ("src/deep/main.py",)
+    app._handle_composer_key(Key("tab"))
+    _settle(app)
+    assert app.composer.value == "check src/deep/main.py  now"
+    assert dispatched == []
+
+
+def test_fuzzy_fallback_only_runs_when_prefix_has_no_match(tmp_path: Path) -> None:
+    (tmp_path / "rm.md").write_text("x", encoding="utf-8")
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    app, _ = _app(tmp_path)
+
+    _type_path(app, "@rm")
+    assert app.composer.completion == ("rm.md",)
+
+    app.composer.set_text("")
+    _type_path(app, "@rMe")
+    assert app.composer.completion == ("README.md",)
+
+
+def test_recursive_fuzzy_matches_nested_relative_paths(tmp_path: Path) -> None:
+    (tmp_path / "src" / "deep").mkdir(parents=True)
+    (tmp_path / "src" / "deep" / "main.py").write_text("x", encoding="utf-8")
+    (tmp_path / "src" / "utils.py").write_text("x", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "README.md").write_text("x", encoding="utf-8")
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+
+    app, _ = _app(tmp_path)
+    _type_path(app, "@**/srm")
+    assert app.composer.completion == ("src/deep/main.py", "docs/README.md")
+
+
+def test_recursive_completion_respects_the_result_limit(tmp_path: Path) -> None:
+    (tmp_path / "many").mkdir()
+    for index in range(60):
+        (tmp_path / "many" / f"file-{index:02d}.txt").write_text("x", encoding="utf-8")
+    app, _ = _app(tmp_path)
+    _type_path(app, "@many/**")
+    assert len(app.composer.completion) == 50

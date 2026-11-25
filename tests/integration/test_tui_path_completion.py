@@ -139,7 +139,7 @@ def remote(tmp_path: Path) -> Iterator[tuple[str, Path]]:
 
 
 def test_remote_completion_is_server_workspace_relative(remote: tuple[str, Path]) -> None:
-    base, _workspace = remote
+    base, workspace = remote
     with CoreRpcClient(base, token=TOKEN) as client:
         session = client.create_session()
         terminal = _Terminal()
@@ -162,3 +162,16 @@ def test_remote_completion_is_server_workspace_relative(remote: tuple[str, Path]
         # entries may leak into a remote workspace listing.
         assert app.composer.completion == ("server-dir/", "remote-only.txt", "voidcode.json")
         assert "pyproject.toml" not in app.composer.completion
+
+        nested = workspace / "server-dir" / "deep"
+        nested.mkdir()
+        (nested / "nested.py").write_text("x", encoding="utf-8")
+        app.composer.set_text("")
+        _type(app, "@server-dir/**")
+        _settle(app, lambda: "server-dir/deep/nested.py" in app.composer.completion)
+        assert app.composer.completion == ("server-dir/deep/", "server-dir/deep/nested.py")
+
+        app.composer.set_text("")
+        _type(app, "@**/nstd")
+        _settle(app, lambda: "server-dir/deep/nested.py" in app.composer.completion)
+        assert app.composer.completion == ("server-dir/deep/nested.py",)

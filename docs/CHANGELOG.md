@@ -4,6 +4,12 @@ Notable changes to the VoidCode runtime, grouped by milestone.
 
 ## Unreleased
 
+### Recursive fuzzy `@path` completion in the TUI
+- `@path` now exposes the query contract's recursion and fuzzy matching without changing normal prefix behavior. A `**` segment (`@src/**`, `@src/**/frag`, `@**/frag`) requests depth 6; no marker keeps depth 1. Prefix matches always win; only an empty prefix round triggers one fuzzy pass, and fuzzy matches the path below the requested directory so recursive searches can select nested files.
+- The TUI sends the translated `query`/`depth`/`mode` through the same `workspace.complete_paths` RPC or direct core query, retaining the single in-flight round, newest-prefix queue, draft/caret checks, token aborts, and 50-result bound. Recursive failures remain typed and visible.
+- Tests: TUI recursive prefix/acceptance, recursive fuzzy, prefix-wins fallback, hidden/default-ignore, Unicode, result limit, recursive unavailable/contract failures, request translation, and local/RPC recursive and fuzzy completion. Docs update the explicit trigger and fuzzy fallback.
+- Verification: path-query, TUI completion, and RPC completion suites; `ruff check`, `ruff format --check`, `ty check src`.
+
 ### Workspace `@path` completion uses the files query
 - The files plugin owns `workspace.path_completion`: frozen request/result dataclasses, prefix or fuzzy matching, depth 1–16, limit 1–200, hidden opt-in, root `.gitignore` filtering, deterministic directory-first ordering, a 64 KiB answer budget, and workspace-relative paths only. Symlinks resolving outside the workspace and default-ignored directories are never offered. Disabling files makes the query unavailable.
 - The TUI no longer runs synchronous `iterdir()` on the UI thread or resolves server paths locally. It asks the query asynchronously through `SessionClient.complete_paths` on both local and RPC clients, keeps at most one request in flight plus the newest pending prefix, and applies only the reply whose serial, session/generation, draft, and caret still match. A new key or a dismissed popup aborts the old token; the draft and caret are never modified by a reply. Unavailable, contract, and ordinary query failures are typed and reported once in the transcript.

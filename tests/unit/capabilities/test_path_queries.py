@@ -48,6 +48,25 @@ def test_fuzzy_completion_prefers_tight_ordered_subsequences(tmp_path: Path) -> 
     assert candidates == ["rm.md", "readme.md", "xreadme.md"]
 
 
+def test_recursive_fuzzy_matches_the_path_below_the_base(tmp_path: Path) -> None:
+    (tmp_path / "src" / "deep").mkdir(parents=True)
+    (tmp_path / "src" / "deep" / "main.py").write_text("x", encoding="utf-8")
+    (tmp_path / "src" / "other.py").write_text("x", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "readme.md").write_text("x", encoding="utf-8")
+
+    assert _paths(tmp_path, PathCompletionRequest(query="", mode="fuzzy", depth=3)) == [
+        "src/",
+        "docs/",
+        "src/deep/",
+        "src/other.py",
+        "docs/readme.md",
+        "src/deep/main.py",
+    ]
+    assert _paths(tmp_path, PathCompletionRequest(query="srm", mode="fuzzy", depth=3)) == ["src/deep/main.py", "docs/readme.md"]
+    assert _paths(tmp_path, PathCompletionRequest(query="src/dm", mode="fuzzy", depth=3)) == ["src/deep/main.py"]
+
+
 def test_recursive_depth_and_limit_are_bounded(tmp_path: Path) -> None:
     (tmp_path / "src" / "deep" / "deeper").mkdir(parents=True)
     (tmp_path / "src" / "deep" / "needle.py").write_text("x", encoding="utf-8")
