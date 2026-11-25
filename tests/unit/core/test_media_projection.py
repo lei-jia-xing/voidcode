@@ -383,7 +383,7 @@ def test_real_native_sdks_send_valid_tool_result_image_blocks(name: str, model: 
         server.server_close()
 
 
-def test_real_core_openai_tool_image_uses_synthetic_without_silent_drop(tmp_path: Path) -> None:
+def test_real_core_openai_tool_image_preserves_tool_structure_and_feedback(tmp_path: Path) -> None:
     with loopback_server([_turn(_call("image", "read", path="screen.png")), _turn(output="image received")]) as server:
         workspace = _configure(tmp_path, provider="endpoint", base_url=f"http://127.0.0.1:{server.server_port}/v1")
         png = rgb_png()
@@ -395,19 +395,47 @@ def test_real_core_openai_tool_image_uses_synthetic_without_silent_drop(tmp_path
             assert len(server.requests) == 2
             messages = server.requests[1]["messages"]
             assert isinstance(messages, list)
-            assert all(message.get("role") != "tool" for message in messages if isinstance(message, dict))
+
+            assistant = next(
+                message for message in messages if isinstance(message, dict) and message.get("role") == "assistant" and message.get("tool_calls")
+            )
+            tool_calls = assistant["tool_calls"]
+            assert isinstance(tool_calls, list)
+            assert [(call["id"], call["function"]["name"]) for call in tool_calls] == [("image", "read")]
+
+            tool_messages = [message for message in messages if isinstance(message, dict) and message.get("role") == "tool"]
+            assert len(tool_messages) == 1
+            assert tool_messages[0]["tool_call_id"] == "image"
+            assert isinstance(tool_messages[0]["content"], str) and tool_messages[0]["content"]
+
+            feedback_messages: list[dict[str, object]] = []
             image_urls: list[str] = []
             for message in messages:
-                content = message.get("content") if isinstance(message, dict) else None
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "image_url":
-                            url = block.get("image_url", {}).get("url", "")
-                            image_urls.append(url)
+                if not isinstance(message, dict) or message.get("role") != "user":
+                    continue
+                content = message.get("content")
+                if not isinstance(content, list):
+                    continue
+                blocks = [block for block in content if isinstance(block, dict)]
+                urls = [block.get("image_url", {}).get("url", "") for block in blocks if block.get("type") == "image_url"]
+                if urls:
+                    feedback_messages.append(message)
+                    image_urls.extend(urls)
+            assert len(feedback_messages) == 1
             assert len(image_urls) == 1
+            labels = [block["text"] for block in feedback_messages[0]["content"] if isinstance(block, dict) and block.get("type") == "text"]
+            assert len(labels) == 1 and "image" in labels[0] and "read" in labels[0] and "Tool output" in labels[0]
+
             prefix, _, data = image_urls[0].partition(",")
             assert prefix == "data:image/png;base64"
             assert base64.b64decode(data) == png
+
+            # No old-style synthetic tool-result JSON messages.
+            assert not any(
+                isinstance(message.get("content"), str) and "tool_call_id" in message["content"] and "tool_name" in message["content"]
+                for message in messages
+                if isinstance(message, dict)
+            )
 
 
 def test_near_budget_whole_file_read_is_not_projection_clipped(tmp_path: Path) -> None:

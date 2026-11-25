@@ -11,7 +11,7 @@ import json
 from collections.abc import Mapping
 
 from voidcode.sdk.json_values import json_wire_object
-from voidcode.sdk.provider import ProviderExecutionError, ProviderTurnRequest
+from voidcode.sdk.provider import ImageAttachment, ProviderExecutionError, ProviderMessage, ProviderTurnRequest
 
 from ._wire_common import resolve_extra_request_headers, tool_name_maps
 from .model_catalog import static_catalog_metadata
@@ -20,14 +20,55 @@ from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_eff
 from .thinking_rules import thinking_rule_for
 
 
+def _image_url(image: ImageAttachment) -> str:
+    return f"data:{image.media_type};base64,{image.data}"
+
+
+def _image_identity(image: ImageAttachment) -> tuple[str, str]:
+    """Content identity used to emit each tool-result image at most once."""
+    return image.media_type, image.data
+
+
+def _tool_image_feedback(message: ProviderMessage, emitted: set[tuple[str, str]]) -> list[dict[str, object]]:
+    """One label plus the not-yet-emitted images from one tool result.
+
+    The label keeps the image attributable to the tool call whose result carried
+    it. Images already present in the payload are skipped rather than repeated.
+    """
+    new_images: list[ImageAttachment] = []
+    for image in message.images:
+        identity = _image_identity(image)
+        if identity in emitted:
+            continue
+        emitted.add(identity)
+        new_images.append(image)
+    if not new_images:
+        return []
+    call_id = message.tool_call_id or "unknown"
+    tool_name = message.tool_name or "unknown"
+    blocks: list[dict[str, object]] = [
+        {"type": "text", "text": f"[Tool output images for tool call {call_id} ({tool_name}); these images are tool results]"}
+    ]
+    blocks.extend({"type": "image_url", "image_url": {"url": _image_url(image)}} for image in new_images)
+    return blocks
+
+
 def build_messages(request: ProviderTurnRequest, *, provider_name: str, model_name: str) -> list[dict[str, object]]:
     original_to_provider, _ = tool_name_maps(request)
-    tool_images_present = any(message.role == "tool" and message.images for message in request.messages)
-    if tool_images_present:
-        return build_synthetic_feedback_messages(request, original_to_provider)
     requires_reasoning_content = requires_reasoning_content_with_tool_calls(provider_name=provider_name, model_name=model_name)
     messages: list[dict[str, object]] = []
+    emitted_images: set[tuple[str, str]] = set()
+    pending_feedback: list[dict[str, object]] = []
+
+    def flush_feedback() -> None:
+        if not pending_feedback:
+            return
+        messages.append({"role": "user", "content": list(pending_feedback)})
+        pending_feedback.clear()
+
     for message in request.messages:
+        if message.role != "tool":
+            flush_feedback()
         if message.role == "assistant" and message.tool_calls:
             # A reasoning-locked provider still returns tool-call turns with
             # zero reasoning tokens when its own effort ladder decides not
@@ -69,14 +110,9 @@ def build_messages(request: ProviderTurnRequest, *, provider_name: str, model_na
             )
             continue
         if message.role == "tool":
-            if message.images:
-                raise ProviderExecutionError(
-                    kind="unsupported_feature",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="OpenAI chat completions wire does not support image attachments in tool messages",
-                    retryable=False,
-                )
+            # Keep the native tool result, including its text and call identity.
+            # Chat Completions cannot carry images on a tool message, so its
+            # images are appended after the batch as one labelled user message.
             messages.append(
                 {
                     "role": "tool",
@@ -84,56 +120,21 @@ def build_messages(request: ProviderTurnRequest, *, provider_name: str, model_na
                     "content": message.content or "",
                 }
             )
+            pending_feedback.extend(_tool_image_feedback(message, emitted_images))
         else:
             if message.images:
                 content: object = [
                     {"type": "text", "text": message.content or ""},
-                    *[{"type": "image_url", "image_url": {"url": f"data:{img.media_type};base64,{img.data}"}} for img in message.images],
+                    *[{"type": "image_url", "image_url": {"url": _image_url(image)}} for image in message.images],
                 ]
+                emitted_images.update(_image_identity(image) for image in message.images)
             else:
                 content = message.content
             replayed: dict[str, object] = {"role": message.role, "content": content}
             if message.role == "assistant" and requires_reasoning_content and message.reasoning:
                 replayed["reasoning_content"] = message.reasoning
             messages.append(replayed)
-    return messages
-
-
-def build_synthetic_feedback_messages(request: ProviderTurnRequest, original_to_provider: Mapping[str, str]) -> list[dict[str, object]]:
-    """Keep conversation order while converting tool feedback for selected gateways."""
-    call_arguments: dict[str, Mapping[str, object]] = {}
-    messages: list[dict[str, object]] = []
-    for message in request.messages:
-        for call in message.tool_calls:
-            if call.tool_call_id is not None:
-                call_arguments[call.tool_call_id] = call.arguments
-        if message.role == "tool":
-            arguments = call_arguments.pop(message.tool_call_id or "", None)
-            payload = {
-                "tool_name": original_to_provider.get(message.tool_name or "", message.tool_name),
-                "tool_call_id": message.tool_call_id,
-                "arguments": json_wire_object(arguments) if arguments is not None else None,
-                "status": "error" if message.is_error else "ok",
-                "content": message.content or "",
-            }
-            if message.images:
-                synthetic_content: list[dict[str, object]] = [
-                    {"type": "text", "text": json.dumps(payload, ensure_ascii=False, sort_keys=True)},
-                ]
-                for img in message.images:
-                    synthetic_content.append({"type": "image_url", "image_url": {"url": f"data:{img.media_type};base64,{img.data}"}})
-                messages.append({"role": "user", "content": synthetic_content})
-            else:
-                messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)})
-        elif message.role != "assistant" or not message.tool_calls or message.content or message.images:
-            if message.images:
-                content = [
-                    {"type": "text", "text": message.content or ""},
-                    *[{"type": "image_url", "image_url": {"url": f"data:{img.media_type};base64,{img.data}"}} for img in message.images],
-                ]
-            else:
-                content = message.content
-            messages.append({"role": message.role, "content": content})
+    flush_feedback()
     return messages
 
 
@@ -225,4 +226,4 @@ def build_payload(
     return payload
 
 
-__all__ = ["build_messages", "build_payload", "build_synthetic_feedback_messages", "build_tools"]
+__all__ = ["build_messages", "build_payload", "build_tools"]

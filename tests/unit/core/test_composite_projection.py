@@ -221,23 +221,28 @@ def test_small_table_passes_through_without_spill(tmp_path: Path) -> None:
         assert part.rows == (("1",), ("2",))
 
 
-def test_openai_tool_images_use_synthetic_in_order_unknown_stays_unknown() -> None:
-    import pytest
-
+def test_openai_tool_images_keep_tool_structure_and_feedback_once() -> None:
     from voidcode.capabilities.providers.native.openai_native import OpenAIChatCompletionsProvider
     from voidcode.sdk.provider import ImageAttachment, ProviderMessage, ProviderTurnRequest
     from voidcode.sdk.tools import ToolCall, ToolDefinition
 
-    images = (
+    images_a = (
         ImageAttachment(media_type="image/png", data="Zmlyc3Q=", artifact_id="a" * 64),
-        ImageAttachment(media_type="image/png", data="c2Vjb25k", artifact_id="b" * 64),
+        ImageAttachment(media_type="image/gif", data="c2Vjb25k", artifact_id="b" * 64),
     )
-    call = ToolCall(tool_name="mcp", arguments={}, tool_call_id="call-1")
+    images_b = (ImageAttachment(media_type="image/webp", data="dGhpcmQ=", artifact_id="c" * 64),)
+    calls = (
+        ToolCall(tool_name="mcp", arguments={}, tool_call_id="call-1"),
+        ToolCall(tool_name="read", arguments={"path": "b"}, tool_call_id="call-2"),
+        ToolCall(tool_name="read", arguments={"path": "c"}, tool_call_id="call-3"),
+    )
     request = ProviderTurnRequest(
         messages=(
             ProviderMessage(role="user", content="go"),
-            ProviderMessage(role="assistant", content=None, tool_calls=(call,)),
-            ProviderMessage(role="tool", content='{"status":"ok"}', tool_call_id="call-1", tool_name="mcp", images=images),
+            ProviderMessage(role="assistant", content="planning", tool_calls=calls),
+            ProviderMessage(role="tool", content="first body", tool_call_id="call-1", tool_name="mcp", images=images_a),
+            ProviderMessage(role="tool", content="text only", tool_call_id="call-2", tool_name="read"),
+            ProviderMessage(role="tool", content="third body", tool_call_id="call-3", tool_name="read", images=images_b),
         ),
         available_tools=(ToolDefinition(name="mcp", description="d", input_schema={}),),
         provider_name="endpoint",
@@ -245,23 +250,98 @@ def test_openai_tool_images_use_synthetic_in_order_unknown_stays_unknown() -> No
     )
     provider = OpenAIChatCompletionsProvider()
     wire = provider._messages(request)
-    assert all(message["role"] != "tool" for message in wire)
-    synthetic = next(message for message in wire if message["role"] == "user" and isinstance(message["content"], list))
-    content = synthetic["content"]
+
+    assert [message["role"] for message in wire] == ["user", "assistant", "tool", "tool", "tool", "user"]
+    assistant = wire[1]
+    assistant_calls = assistant["tool_calls"]
+    assert isinstance(assistant_calls, list)
+    assert [(call["id"], call["function"]["name"]) for call in assistant_calls] == [
+        ("call-1", "mcp"),
+        ("call-2", "read"),
+        ("call-3", "read"),
+    ]
+
+    tool_messages = wire[2:5]
+    assert [message["tool_call_id"] for message in tool_messages] == ["call-1", "call-2", "call-3"]
+    assert [message["content"] for message in tool_messages] == ["first body", "text only", "third body"]
+    assert all("images" not in message for message in tool_messages)
+
+    feedback = wire[-1]
+    assert feedback["role"] == "user"
+    content = feedback["content"]
     assert isinstance(content, list)
-    urls = [block["image_url"]["url"] for block in content if isinstance(block, dict) and block.get("type") == "image_url"]
-    assert urls == ["data:image/png;base64,Zmlyc3Q=", "data:image/png;base64,c2Vjb25k"]
-    text_block = next(block for block in content if isinstance(block, dict) and block.get("type") == "text")
-    payload = json.loads(text_block["text"])
-    assert payload["tool_name"] == "mcp" and payload["tool_call_id"] == "call-1"
+    text_blocks = [block["text"] for block in content if block.get("type") == "text"]
+    assert len(text_blocks) == 2
+    assert "call-1" in text_blocks[0] and "mcp" in text_blocks[0] and "Tool output" in text_blocks[0]
+    assert "call-3" in text_blocks[1] and "read" in text_blocks[1] and "Tool output" in text_blocks[1]
+    urls = [block["image_url"]["url"] for block in content if block.get("type") == "image_url"]
+    assert urls == [
+        "data:image/png;base64,Zmlyc3Q=",
+        "data:image/gif;base64,c2Vjb25k",
+        "data:image/webp;base64,dGhpcmQ=",
+    ]
 
     known_text_only = ProviderTurnRequest(
-        messages=(ProviderMessage(role="tool", content="x", tool_call_id="c", tool_name="m", images=images[:1]),),
+        messages=(ProviderMessage(role="tool", content="x", tool_call_id="c", tool_name="m", images=images_a[:1]),),
         provider_name="deepseek",
         model_name="deepseek-v4-pro",
     )
+    import pytest
+
     with pytest.raises(Exception, match="does not support image input"):
         provider._payload(known_text_only, stream=False)
+
+
+def test_openai_tool_image_feedback_deduplicates_repeated_images() -> None:
+    from voidcode.capabilities.providers.native.openai_native import OpenAIChatCompletionsProvider
+    from voidcode.sdk.provider import ImageAttachment, ProviderMessage, ProviderTurnRequest
+    from voidcode.sdk.tools import ToolCall
+
+    image = ImageAttachment(media_type="image/png", data="c2FtZQ==", artifact_id="same" * 16)
+    calls = (
+        ToolCall(tool_name="read", arguments={"path": "a"}, tool_call_id="call-1"),
+        ToolCall(tool_name="read", arguments={"path": "b"}, tool_call_id="call-2"),
+    )
+    request = ProviderTurnRequest(
+        messages=(
+            ProviderMessage(role="assistant", content=None, tool_calls=calls),
+            ProviderMessage(role="tool", content="a", tool_call_id="call-1", tool_name="read", images=(image, image)),
+            ProviderMessage(role="tool", content="b", tool_call_id="call-2", tool_name="read", images=(image,)),
+        ),
+        provider_name="endpoint",
+        model_name="unknown-model",
+    )
+    feedback = OpenAIChatCompletionsProvider()._messages(request)[-1]
+
+    content = feedback["content"]
+    assert isinstance(content, list)
+    image_blocks = [block for block in content if block.get("type") == "image_url"]
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["image_url"]["url"] == "data:image/png;base64,c2FtZQ=="
+
+
+def test_openai_text_only_tool_history_is_unchanged() -> None:
+    from voidcode.capabilities.providers.native.openai_native import OpenAIChatCompletionsProvider
+    from voidcode.sdk.provider import ProviderMessage, ProviderTurnRequest
+    from voidcode.sdk.tools import ToolCall
+
+    request = ProviderTurnRequest(
+        messages=(
+            ProviderMessage(role="user", content="go"),
+            ProviderMessage(
+                role="assistant",
+                content=None,
+                tool_calls=(ToolCall(tool_name="read", arguments={"path": "a"}, tool_call_id="call-1"),),
+            ),
+            ProviderMessage(role="tool", content="body", tool_call_id="call-1", tool_name="read"),
+        ),
+        provider_name="endpoint",
+        model_name="unknown-model",
+    )
+    wire = OpenAIChatCompletionsProvider()._messages(request)
+
+    assert [message["role"] for message in wire] == ["user", "assistant", "tool"]
+    assert wire[2] == {"role": "tool", "tool_call_id": "call-1", "content": "body"}
 
 
 def test_prepare_report_compacts_oversized_composite_with_long_presentation(tmp_path: Path) -> None:

@@ -33,11 +33,10 @@ from ._wire_common import (
     abort_signal_cancelled,
     cancelled_events,
     decode_response_payload,
-    tool_name_maps,
 )
 from .config import OpenAIProviderConfig, ProviderEndpointConfig
 from .model_catalog import catalog_model_limits
-from .openai_payload import build_messages, build_payload, build_synthetic_feedback_messages
+from .openai_payload import build_messages, build_payload
 from .openai_stream import stream_turn_events
 from .openai_transport import OpenAIHttpTransport
 from .openai_wire import OpenAIWireCodec as OpenAIWireCodec
@@ -214,12 +213,9 @@ class OpenAIChatCompletionsProvider:
             return owned.value
 
     def _messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
-        provider_name = request.provider_name or self.name
-        if any(message.role == "tool" and message.images for message in request.messages):
-            return build_synthetic_feedback_messages(request, tool_name_maps(request)[0])
         return build_messages(
             request,
-            provider_name=provider_name,
+            provider_name=request.provider_name or self.name,
             model_name=self._model_name(request),
         )
 
