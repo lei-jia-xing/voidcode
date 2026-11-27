@@ -10,24 +10,24 @@
   - [x] bare CLI 交互式启动异常已改为向 stderr 打印明文错误，不再输出裸 JSON。
   - 不再在 CLI 新增 `init` / `doctor`：首次运行配置引导与完整诊断属于未来 TUI 的能力，将在 TUI 中实现。
 
-## P1：Web 前端与 CLI 完整度
+## P1：配置迁移、CLI 完整度与 Web 现状
 
-- [ ] **补齐 Web 客户端（`frontend/src/core/`）与 Core/TUI 的功能对等。**
-  - [x] `CoreApp.tsx` 已从持久 `TranscriptRun` 渲染 `failed` 运行失败态与 `interrupted` 详细原因。
-  - `CoreApp.tsx` 渲染 `turn` 时丢弃 `reasoning` 思考内容，且未接入 `provider_progress` / `tool_progress` 流式输出。
-  - `CoreApp.tsx` 在 `isRunning` 时禁用输入框与发送按钮，无法发送排队追问。
-  - 补齐 `core.ask_requested` / `pending_ask` 问答交互与图片附件粘贴/上传。
+- [~] **Web 前端（`frontend/`）已停止维护与功能追赶。**
+  - 用户决策不再继续维护前端页面（维护成本过高）；原计划的 `reasoning`/`provider_progress`/`tool_progress` 流式输出、`isRunning` 排队追问、`pending_ask` 问答交互与图片上传等前端对等项**不再实施**。
+  - `[x]` `CoreApp.tsx` 已从持久 `TranscriptRun` 渲染 `failed` 运行失败态与 `interrupted` 详细原因；`transport/http.py` 仍作为底层 HTTP/RPC 入口保留，已修复 CORS `OPTIONS` 预检先于 Bearer 鉴权、`401` 响应附带 CORS 头、`frontend_dist` 缺 `index.html`/缺失 `assets/*` 误返 `200` 与 `ParkRevisionError` -> `409 stale_revision` 映射。
+- [x] **产品配置直接切换为 TOML（`voidcode.toml`），不保留任何 JSON 过渡或历史包袱。**
+  - `config.py` 新增标准库 `tomllib` 解析与 `dumps_toml` 规范序列化，`CONFIG_FILE_NAME = "voidcode.toml"`；支持 `tui.banner = false` 与 `providers.<name>.api_key = false` 原生 TOML 语义；同步更新 `bootstrap.py`、`cli.py`、`core/engine/__init__.py`、`tui/`、`plugins/`、示例、文档与全量测试。
 - [x] **补齐 `cli.py` 子命令参数与交互能力。**
-  - `resume` 子命令现支持 `--reason`、`--grant-policy` 与 `--interaction`；新增 `approval-policies` 查询子命令；新增 `answer-ask` / `cancel-ask` 子命令与底层 RPC 契约对齐。
+  - `resume` 子命令现支持 `--reason`、`--grant-policy` 与 `--interaction`；`run` 现补齐 `--interaction`；新增 `approval-policies` 查询子命令与 `answer-ask` / `cancel-ask` 子命令，并在 `open_core` 前校验 `answer-ask --values` JSON。
 
 ## P2：配置收敛、文档一致性与工程卫生
 
 - [ ] **清理 `bootstrap.py`、`config.py`、`cli.py` 的配置多重投影与重复解析。**
-  - 例如统一 `cli.py` 的 `_session_payload` 与 `transport/projection.py` 的 `session_payload`，消除外层多处重复拼装。
-- [x] **修正过时与自相矛盾的文档。**
-  - 已修复 `docs/README.md:45` 与 `README.md:20` 指向已删除 `docs/TODO.md` 的失效链接。
-  - `docs/configuration.md` 第 5 行与“仅设置 API key 环境变量不会配置 provider”的矛盾已在 provider 文档更正（`f9d46d42`）中消除，本次复核无残留。
-  - 已删除 `docs/command-ux.md` 中重复的 `skills, skills.show` 条目。
+  - `[x]` `cli.py` 已复用 `transport/projection.py` 的 `session_payload`，移除重复 `_session_payload`。
+  - 残留：进一步收敛 `bootstrap.py` 与 `config.py` 中重复的 provider/plugin 装配校验路径。
+- [ ] **修正过时与自相矛盾的文档。**
+  - `[x]` 已修复 `docs/README.md:45` 与 `README.md:20` 失效链接、`docs/configuration.md` provider 描述、`docs/command-ux.md` 重复 `skills, skills.show` 条目。
+  - `[x]` 已修复 `docs/README.md:45`、`README.md:20`、`docs/configuration.md:65` 与 `docs/command-ux.md` 过时/矛盾描述；仅剩 `docs/CHANGELOG.md:276` 历史记录条目标注。
 - [ ] **清理 `pyproject.toml` 未用依赖并收敛剩余测试夹具副本。**
   - [x] `click`、`tenacity`、`pydantic-settings`、`rapidfuzz` 在 `src/`、`tests/`、`scripts/` 中均无引用；已从 `pyproject.toml` 移除并由 `uv lock` 更新锁文件。
   - [x] 已核查列出的 6 个文件并收敛可机械替换的副本：`test_process_lease.py`、`test_cancellation.py`、`test_followup_image_refs.py`、`test_find_plugin.py` 与 integration `test_goal_plugin.py` 改用 `core_factory`；`tests/fixtures/s5_plugin.py` 与 unit `test_goal_plugin.py` 不含 core/loopback 夹具。goal/find 的配置内联保留（分别需要 files 启用与无 path 插件），其余测试文件的本地 loopback 副本不在本项列出的 6 个文件内。

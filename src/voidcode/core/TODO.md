@@ -34,7 +34,18 @@
 - [x] **在 `UsageFact` 中向观测器暴露当前模型上下文窗口。**
   - `ProjectionAllocation`、`UsageFact` 和 `compaction_observer` 现完整传递 `context_window`，保证自动压缩根据真实上下文门限准确触发。
 
-## P2: 模块收敛与强类型
+- [x] **修复存储事件写入旁路、唤醒恢复状态误判、会话分页截断与只读批次挂起缺陷。**
+  - `storage/adoption.py`、`wakeups.py`、`continuations.py`、`sessions.py` 统一复用 `insert_session_event_locked`，消除绕过索引维护的原样 `INSERT`；`adoption.recover_claimed_wakeup_runs` 复用到共享的 `RUN_INTERRUPTED` `stop_cause` 状态映射（`cancelled`/`failed`）与 checkpoint 更新，并为坏 checkpoint JSON 提供容错。
+  - `fact_delivery.py`、`activation_coordinator.py`、`engine/_host_adapters.py`、`engine/_lifecycle.py` 与 `bootstrap.py` 在全量枚举会话时显式传入 `limit=None`，消除超过 100 条会话后的静默漏扫；`fact_delivery.py` 拒绝将 `bool`/`float` 误认作 `dispatch_sequence`。
+  - `engine/_sessions.py` 的 `list_approval_policies`/`revoke_approval_policy` 改用 `self.session(session_id)` 强制校验 workspace 归属；`tool_execution.py` 并发只读批次支持 `ToolSuspension`/`ActivationFenced`、统一 `TOOL_INTENT` 提交与拒答上报路径并透传 `staged_wakeups`；`delegation/_spawn.py` 崩溃窗口恢复复用统一的 `CHILD_SPAWNED` 载荷构造（补齐 `root_action_budget`/`result_schema`）。
 
-- [ ] **拆分超大核心模块并收敛 `Any`/`type: ignore`。**
-  - `core/engine/__init__.py` 已收敛为 ~200 行 `Core` facade + 私有职责 mixin（lifecycle/activation/commands/sessions/children/wakeups/background/persistence/host adapters，均 < 750 行）；`core/engine/turn_execution.py` 已收敛为 ~30 行 `TurnDriver` facade + 私有职责 mixin（provider stream/policy/drive/terminal/contracts，均 < 450 行）；`core/services.py` 与 `core/processes.py` 已拆为稳定的 `RuntimeServices`/`ProcessRegistry`/`ProcessHost` facade + 私有职责模块（`core/services/`、`core/processes/`，均 < 400 行）；剩余 `core/delegation.py`（~2126 行）、`core/plugins.py`（~1890 行）及 `core/storage/{continuations,sessions,records,state}.py`（均 1100–1400 行）职责过重；继续收敛核心内 `Any`（~81 处）与 3 处 `type: ignore`。
+## P2: 共享运行时机制、模块收敛与强类型
+
+- [x] **为插件补齐“只读受监管服务进程”核心机制（`spawn_query_service_process`）。**
+  - `sdk/services/protocols.py`、`core/processes/` 与 `core/services/_processes.py` 现提供 `spawn_query_service_process`：允许只读工具租约启动 generation 托管的服务子进程（共享 `_readonly_sandbox()` 强制只读沙箱、禁止 hook 租约、`write_process`/`cancel_process` 对只读租约仅限其自身 `query_service=True` 句柄且不记录 mutating 观测），已供 `lsp` 直接复用。
+- [ ] **为插件补齐统一子进程托管与原始流捕获原语（供 `mcp` 等复用）。**
+  - `mcp` 仍在 `ProcessHost` 之外自行起 stdio 进程且丢弃 stderr 到 `/dev/null`，`sdk/services/processes.py` 的 `RawStreamCapture` 尚未接通运行时原始流捕获。
+- [ ] **按需接通 SDK 已声明但 Core 尚无接线的通用契约。**
+  - `sdk/resources.py` 的 `ResourceSchemeCaps`/枚举搜索能力发现与 `sdk/foreground.py`/`RawStreamCapture` 当前尚无 Core 侧实现或分发路径。
+- [ ] **继续收敛大模块及核心内 `Any` / `cast`。**
+  - `core/engine`、`core/delegation/`、`core/plugins/`、`core/services/`、`core/processes/` 均已完成包化拆分；剩余 `core/storage/{continuations,sessions,state}.py` 仍偏大；`src/voidcode/core/` 现已消除全部 `# type: ignore`（`_invocation.py` 最后 1 处已清除），尚存 64 处 AST `Any` 引用与 7 处 `cast(...)`（主要在 `core/delegation/`）待继续收敛。

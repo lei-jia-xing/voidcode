@@ -16,5 +16,7 @@
 - [x] **在 `UsageFact` 与流式错误契约中补齐运行时所需元数据。**
   - `UsageFact` 现携带当前模型的 `context_window`，供 `compaction` 等插件准确计算默认触发门限。
   - `ProviderStreamEvent` 错误变体保留 `retryable`/`retry_after`，流式建连失败退避重试完整保留。
+- [x] **收紧 SDK 工具解析契约（`sdk/tools.py`）。**
+  - `ToolDiagnostics.from_payload` 与 `Change.from_payload` 改用 `Mapping` 校验与显式操作枚举映射，严格拒绝非布尔 `scratch`，消除 `# type: ignore[arg-type]`。
 - [x] **Snapshot current-run capture diagnostics.**
   - `ChildSessionSnapshot.terminal_run` 投影最新已提交的精确 terminal fact（run id、terminal sequence、status、closed capture kind、自身 preview/reference/capture 原因与 eligibility），与按非空 completed 规则筛选的 `latest_outcome` 分离；`agent://` 分别展示两者。
