@@ -6,13 +6,19 @@ import logging
 import os
 import socket
 import time
+import zlib
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import ClassVar, final
+from typing import TYPE_CHECKING, ClassVar, final
 from urllib.parse import urljoin
 
+import httpcore
 import httpx
 from markdownify import MarkdownConverter
 from pydantic import BaseModel, ConfigDict, field_validator
+
+if TYPE_CHECKING:
+    from httpcore._backends.base import SOCKET_OPTION
 
 from voidcode.sdk.icons import Icon
 from voidcode.sdk.invocation import ToolContext
@@ -40,10 +46,10 @@ TIMEOUT_SECONDS = 30
 #: Advisory wall-clock budget for the whole fetch, enforced via monotonic deadline checks.
 TOTAL_FETCH_SECONDS = 30
 MAX_REDIRECTS = 5
-#: Decompressed response body cap; Content-Length alone is never trusted. This is a
-#: byte-count bound, not a hard memory bound: httpx decodes a compressed chunk before the
-#: cap check, so a high-ratio bomb can still allocate more than this in one chunk.
+#: Hard limit on both compressed wire stream and decoded response body; Content-Length
+#: alone is never trusted.
 FETCH_MAX_BYTES = 5 * 1024 * 1024
+_STREAM_CHUNK_BYTES = 16 * 1024
 WEB_URI_PREFIX = "web://"
 _MAX_URL_CHARS = 8192
 _MAX_LOCATION_CHARS = 2048
@@ -52,11 +58,22 @@ _HTML_MIMES = frozenset({"text/html", "application/xhtml+xml"})
 _FETCH_HEADERS = {
     "User-Agent": "voidcode-web-fetch",
     "Accept": "text/html, text/*;q=0.9, application/json;q=0.8, */*;q=0.1",
+    "Accept-Encoding": "gzip, deflate, identity",
 }
+_ORIGINAL_HTTPX_CLIENT = httpx.Client
 
 
 class _RestrictedNetworkError(ValueError):
     """The destination is not a globally routable unicast address."""
+
+
+class _UnresolvableHostError(ValueError):
+    """The destination host could not be resolved."""
+
+
+def _allow_local_network_fetch() -> bool:
+    # Deliberately dangerous test/dev escape hatch; never set this in normal operation.
+    return os.environ.get("VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH") == "1"
 
 
 def _is_restricted_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -68,10 +85,10 @@ def _is_restricted_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
     return not ip.is_global or ip.is_multicast
 
 
-def _validate_host_not_restricted(host: str) -> None:
-    # Deliberately dangerous test/dev escape hatch; never set this in normal operation.
-    if os.environ.get("VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH") == "1":
-        return
+def _resolve_public_ips(host: str, *, port: int = 0) -> tuple[str, ...]:
+    """Validate and resolve *host* to globally routable IP literals, or ``()`` under test override."""
+    if _allow_local_network_fetch():
+        return ()
     stripped_host = host.strip("[]").lower()
     if stripped_host in {"localhost", "localhost.localdomain"}:
         raise _RestrictedNetworkError("url points to a restricted/private network address")
@@ -82,18 +99,242 @@ def _validate_host_not_restricted(host: str) -> None:
     else:
         if _is_restricted_ip(ip):
             raise _RestrictedNetworkError("url points to a restricted/private network address")
-        return
+        return (str(ip),)
     try:
-        addr_info = socket.getaddrinfo(stripped_host, None)
+        addr_info = socket.getaddrinfo(stripped_host, port, type=socket.SOCK_STREAM) if port else socket.getaddrinfo(stripped_host, None)
     except OSError:
-        raise ValueError("url host could not be resolved") from None
+        raise _UnresolvableHostError("url host could not be resolved") from None
     if not addr_info:
-        raise ValueError("url host could not be resolved")
+        raise _UnresolvableHostError("url host could not be resolved")
+    resolved_ips: list[str] = []
     for _, _, _, _, sockaddr in addr_info:
-        ip_str = sockaddr[0]
+        ip_str = str(sockaddr[0])
         resolved_ip = ipaddress.ip_address(ip_str)
         if _is_restricted_ip(resolved_ip):
             raise _RestrictedNetworkError("url resolves to a restricted/private network address")
+        canonical = str(resolved_ip)
+        if canonical not in resolved_ips:
+            resolved_ips.append(canonical)
+    return tuple(resolved_ips)
+
+
+def _validate_host_not_restricted(host: str) -> None:
+    _resolve_public_ips(host)
+
+
+class _PinnedPublicNetworkBackend(httpcore.SyncBackend):
+    """Resolve and validate destinations at connect time and dial only the pinned IP literal."""
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> httpcore.NetworkStream:
+        ips = _resolve_public_ips(host, port=port)
+        if not ips:
+            return super().connect_tcp(host, port, timeout=timeout, local_address=local_address, socket_options=socket_options)
+        last_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = None
+        for ip in ips:
+            try:
+                return super().connect_tcp(ip, port, timeout=timeout, local_address=local_address, socket_options=socket_options)
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
+
+class _PinnedPublicTransport(httpx.HTTPTransport):
+    """HTTP transport that closes the DNS-rebinding TOCTOU window during TCP dial."""
+
+    def __init__(self) -> None:
+        super().__init__(http1=True, http2=False, trust_env=False)
+        if isinstance(self._pool, httpcore.ConnectionPool):
+            self._pool.close()
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=httpx.create_ssl_context(verify=True, trust_env=False),
+            http1=True,
+            http2=False,
+            network_backend=_PinnedPublicNetworkBackend(),
+        )
+
+
+def _open_fetch_client() -> httpx.Client:
+    if httpx.Client is _ORIGINAL_HTTPX_CLIENT:
+        return httpx.Client(timeout=TIMEOUT_SECONDS, follow_redirects=False, trust_env=False, transport=_PinnedPublicTransport())
+    return httpx.Client(timeout=TIMEOUT_SECONDS, follow_redirects=False, trust_env=False)
+
+
+class _DeflateStreamDecoder:
+    """Incremental RFC 1950 zlib / RFC 1951 raw deflate decoder with bounded output."""
+
+    def __init__(self) -> None:
+        self._zlib = zlib.decompressobj(wbits=zlib.MAX_WBITS)
+        self._raw_fallback = True
+        self._emitted = False
+
+    @property
+    def unconsumed_tail(self) -> bytes:
+        return self._zlib.unconsumed_tail
+
+    @property
+    def eof(self) -> bool:
+        return self._zlib.eof
+
+    def decompress(self, data: bytes, *, max_length: int) -> bytes:
+        try:
+            out = self._zlib.decompress(data, max_length=max_length)
+        except zlib.error:
+            if not self._raw_fallback or self._emitted:
+                raise
+            self._raw_fallback = False
+            self._zlib = zlib.decompressobj(wbits=-zlib.MAX_WBITS)
+            out = self._zlib.decompress(data, max_length=max_length)
+        else:
+            self._raw_fallback = False
+        if out:
+            self._emitted = True
+        return out
+
+    def flush(self, length: int) -> bytes:
+        return self._zlib.flush(length)
+
+
+class _GzipStreamDecoder:
+    """Thin wrapper unifying gzip decompressor calls with bounded max_length."""
+
+    def __init__(self) -> None:
+        self._zlib = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+
+    @property
+    def unconsumed_tail(self) -> bytes:
+        return self._zlib.unconsumed_tail
+
+    @property
+    def eof(self) -> bool:
+        return self._zlib.eof
+
+    def decompress(self, data: bytes, *, max_length: int) -> bytes:
+        return self._zlib.decompress(data, max_length=max_length)
+
+    def flush(self, length: int) -> bytes:
+        return self._zlib.flush(length)
+
+
+def _content_decoders(raw_encoding: str) -> list[_GzipStreamDecoder | _DeflateStreamDecoder] | None:
+    codings = [item.strip().lower() for item in raw_encoding.split(",") if item.strip()]
+    decoders: list[_GzipStreamDecoder | _DeflateStreamDecoder] = []
+    for coding in codings:
+        if coding == "identity":
+            continue
+        if coding in {"gzip", "x-gzip"}:
+            decoders.append(_GzipStreamDecoder())
+        elif coding == "deflate":
+            decoders.append(_DeflateStreamDecoder())
+        else:
+            return None
+    # Multiple Content-Encoding headers/codings are listed in encode order, so decode outer-last.
+    return list(reversed(decoders))
+
+
+def _pump_decoders(
+    stage_idx: int,
+    chunk: bytes | None,
+    decoders: list[_GzipStreamDecoder | _DeflateStreamDecoder],
+    raw: bytearray,
+    *,
+    cap: int,
+) -> bool:
+    """Incrementally decompress *chunk* (or flush on ``None``) without exceeding *cap* bytes."""
+    if stage_idx == len(decoders):
+        if chunk is None:
+            return True
+        if len(raw) + len(chunk) > cap:
+            return False
+        raw.extend(chunk)
+        return True
+    stage = decoders[stage_idx]
+    if chunk is None:
+        while True:
+            rem = cap - len(raw)
+            step = 1 if rem <= 0 else min(_STREAM_CHUNK_BYTES, rem + 1)
+            out = stage.flush(step)
+            if not out:
+                break
+            if not _pump_decoders(stage_idx + 1, out, decoders, raw, cap=cap):
+                return False
+            if len(out) < step:
+                break
+        return _pump_decoders(stage_idx + 1, None, decoders, raw, cap=cap)
+    pending = chunk
+    while pending:
+        rem = cap - len(raw)
+        step = 1 if rem <= 0 else min(_STREAM_CHUNK_BYTES, rem + 1)
+        out = stage.decompress(pending, max_length=step)
+        if rem <= 0 and (out or stage.unconsumed_tail):
+            return False
+        if out and not _pump_decoders(stage_idx + 1, out, decoders, raw, cap=cap):
+            return False
+        pending = stage.unconsumed_tail
+        if not pending:
+            break
+    return True
+
+
+def _read_bounded_body(
+    response: httpx.Response,
+    *,
+    tool_name: str,
+    source: str,
+    deadline: float,
+    context: ToolContext,
+) -> tuple[bytes, ToolFailure | None]:
+    """Read raw wire bytes and decompress incrementally under hard memory caps."""
+    timeout_msg = f"web_fetch exceeded {TOTAL_FETCH_SECONDS}s total fetch time."
+    limit_msg = f"web_fetch response exceeds {FETCH_MAX_BYTES}-byte limit."
+
+    raw = bytearray()
+    if response.is_stream_consumed:
+        # In-memory test responses created via ``httpx.Response(content=...)`` have already decoded
+        # their payload into ``_content`` before ``stream`` is iterated.
+        for chunk in response.iter_bytes(chunk_size=_STREAM_CHUNK_BYTES):
+            if _is_cancelled(context):
+                return b"", _cancelled(tool_name, source)
+            if time.monotonic() > deadline:
+                return b"", _fail(tool_name, timeout_msg, source=source, timeout=TOTAL_FETCH_SECONDS)
+            if len(raw) + len(chunk) > FETCH_MAX_BYTES:
+                return b"", _fail(tool_name, limit_msg, source=source)
+            raw.extend(chunk)
+        return bytes(raw), None
+
+    raw_encoding = response.headers.get("content-encoding", "").strip()
+    decoders = _content_decoders(raw_encoding) if raw_encoding else []
+    if decoders is None:
+        return b"", _fail(tool_name, f"web_fetch does not support Content-Encoding {raw_encoding[:64]}.", source=source)
+
+    wire_bytes = 0
+    try:
+        for wire_chunk in response.iter_raw():
+            if _is_cancelled(context):
+                return b"", _cancelled(tool_name, source)
+            if time.monotonic() > deadline:
+                return b"", _fail(tool_name, timeout_msg, source=source, timeout=TOTAL_FETCH_SECONDS)
+            wire_bytes += len(wire_chunk)
+            if wire_bytes > FETCH_MAX_BYTES:
+                return b"", _fail(tool_name, limit_msg, source=source)
+            if not _pump_decoders(0, wire_chunk, decoders, raw, cap=FETCH_MAX_BYTES):
+                return b"", _fail(tool_name, limit_msg, source=source)
+        if _is_cancelled(context):
+            return b"", _cancelled(tool_name, source)
+        if not _pump_decoders(0, None, decoders, raw, cap=FETCH_MAX_BYTES):
+            return b"", _fail(tool_name, limit_msg, source=source)
+        if any(not decoder.eof for decoder in decoders):
+            return b"", _fail(tool_name, "web_fetch received a truncated compressed response.", source=source)
+    except zlib.error:
+        return b"", _fail(tool_name, "web_fetch received a corrupted compressed response.", source=source)
+    return bytes(raw), None
 
 
 def _validated_url(value: str) -> str:
@@ -285,7 +526,7 @@ class WebFetchTool:
             return _cancelled(tool_name, requested_url)
         deadline = time.monotonic() + TOTAL_FETCH_SECONDS
         current_url = requested_url
-        with httpx.Client(timeout=TIMEOUT_SECONDS, follow_redirects=False, trust_env=False) as client:
+        with _open_fetch_client() as client:
             for _ in range(MAX_REDIRECTS + 1):
                 if _is_cancelled(context):
                     return _cancelled(tool_name, current_url)
@@ -318,22 +559,19 @@ class WebFetchTool:
                         if not _supported_text_mime(mime):
                             message = f"web_fetch does not support Content-Type {mime or 'unknown'}."
                             return _fail(tool_name, message, source=current_url)
-                        raw = bytearray()
-                        # Unbuffered decoded chunks: every network yield hits the deadline/cancel checks.
-                        for chunk in response.iter_bytes():
-                            if _is_cancelled(context):
-                                return _cancelled(tool_name, current_url)
-                            if time.monotonic() > deadline:
-                                message = f"web_fetch exceeded {TOTAL_FETCH_SECONDS}s total fetch time."
-                                return _fail(tool_name, message, source=current_url, timeout=TOTAL_FETCH_SECONDS)
-                            if len(raw) + len(chunk) > FETCH_MAX_BYTES:
-                                message = f"web_fetch response exceeds {FETCH_MAX_BYTES}-byte limit."
-                                return _fail(tool_name, message, source=current_url)
-                            raw.extend(chunk)
+                        raw_body, read_failure = _read_bounded_body(
+                            response,
+                            tool_name=tool_name,
+                            source=current_url,
+                            deadline=deadline,
+                            context=context,
+                        )
+                        if read_failure is not None:
+                            return read_failure
                         if _is_cancelled(context):
                             return _cancelled(tool_name, current_url)
                         try:
-                            text = _decode_body(bytes(raw), response.charset_encoding)
+                            text = _decode_body(raw_body, response.charset_encoding)
                         except ValueError as exc:
                             return _fail(tool_name, str(exc), source=current_url)
                         if mime in _HTML_MIMES:
@@ -371,6 +609,10 @@ class WebFetchTool:
                                 bytes=len(rendered_bytes),
                             ),
                         )
+                except _RestrictedNetworkError:
+                    return _fail(tool_name, "web_fetch target points to a restricted/private network address.", source=current_url)
+                except _UnresolvableHostError:
+                    return _fail(tool_name, "web_fetch host could not be resolved.", source=current_url)
                 except httpx.InvalidURL:
                     # Defense in depth: _validated_url parses before dispatch, but a
                     # later httpx normalization must still fail as a bounded result.

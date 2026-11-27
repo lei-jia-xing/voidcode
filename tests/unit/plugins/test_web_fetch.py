@@ -6,12 +6,16 @@ import gzip
 import hashlib
 import json
 import socket
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
+import httpcore
 import httpx
 import pytest
+from httpcore._backends.base import SOCKET_OPTION
 
 from tests.fixtures.fake_services import FakeServices
 from voidcode.bootstrap import open_core
@@ -571,3 +575,151 @@ def test_webfetch_disables_proxy_environment(tool_context: ToolContext, monkeypa
 
     assert seen["trust_env"] is False
     assert services.artifacts[result.body.artifact.sha256] == b"direct"
+
+
+def test_webfetch_connect_time_dns_rebinding_is_blocked(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def rebinding_resolver(host: str, port: object, *args: object, **kwargs: object) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        nonlocal calls
+        calls += 1
+        ip = "93.184.216.34" if calls == 1 else "127.0.0.1"
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, 0))]
+
+    def forbid_connect(*args: object, **kwargs: object) -> object:
+        raise AssertionError("must never connect when connect-time DNS rebinds to loopback")
+
+    monkeypatch.setattr("voidcode.plugins.web.web_fetch.socket.getaddrinfo", rebinding_resolver)
+    monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", forbid_connect)
+    services = FakeServices()
+    result = _run(tool_context, services, {"url": "http://rebind.example/secret"})
+
+    assert isinstance(result, ToolFailure)
+    assert "restricted/private network address" in result.error
+    assert calls >= 2
+    assert services.artifacts == {}
+
+
+def test_webfetch_pins_validated_ip_and_preserves_host_header(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_hosts: list[str] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen_hosts.append(str(self.headers.get("Host", "")))
+            body = b"pinned socket ok"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    dialed_hosts: list[str] = []
+    original_connect = httpcore.SyncBackend.connect_tcp
+    original_getaddrinfo = socket.getaddrinfo
+
+    def loopback_for_ip_literal(
+        host: str,
+        port: int | str | None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> list[Any]:
+        if host == "127.0.0.1":
+            port_num = int(port) if isinstance(port, (int, str)) else 0
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", port_num))]
+        return cast(list[Any], original_getaddrinfo(host, port, *args, **kwargs))
+
+    def pinned_connect(
+        self: httpcore.SyncBackend,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> httpcore.NetworkStream:
+        dialed_hosts.append(host)
+        monkeypatch.setattr(socket, "getaddrinfo", loopback_for_ip_literal)
+        return original_connect(self, "127.0.0.1", port, timeout=timeout, local_address=local_address, socket_options=socket_options)
+
+    monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", pinned_connect)
+    try:
+        services = FakeServices()
+        result = _ok(tool_context, services, f"http://pinned.example:{server.server_port}/ok")
+        assert services.artifacts[result.body.artifact.sha256] == b"pinned socket ok"
+        assert dialed_hosts == ["93.184.216.34"]
+        assert seen_hosts == [f"pinned.example:{server.server_port}"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+class _ChunkedStream(httpx.SyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.yielded = 0
+
+    def __iter__(self) -> Iterator[bytes]:
+        for chunk in self._chunks:
+            self.yielded += 1
+            yield chunk
+
+
+def test_webfetch_stops_compressed_stream_before_decompressing_past_cap(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    import zlib
+
+    compressor = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)
+    chunk_plain = b"A" * (512 * 1024)
+    chunks = [compressor.compress(chunk_plain) + compressor.flush(zlib.Z_SYNC_FLUSH) for _ in range(14)] + [compressor.flush()]
+    chunks = [c for c in chunks if c]
+    stream = _ChunkedStream(chunks)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain", "content-encoding": "gzip"},
+            stream=stream,
+            request=request,
+        )
+
+    _mock_transport(monkeypatch, handle)
+    services = FakeServices()
+    result = _run(tool_context, services, {"url": "http://example.com/bomb"})
+
+    assert isinstance(result, ToolFailure)
+    assert "byte limit" in result.error
+    assert stream.yielded < len(chunks)
+    assert services.artifacts == {}
+
+
+def test_webfetch_rejects_unsupported_and_truncated_compressed_streams(tool_context: ToolContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    truncated_gz = gzip.compress(b"hello world")[:-4]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/br":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain", "content-encoding": "br"},
+                stream=_ChunkedStream([b"raw"]),
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain", "content-encoding": "gzip"},
+            stream=_ChunkedStream([truncated_gz]),
+            request=request,
+        )
+
+    _mock_transport(monkeypatch, handle)
+    bad_enc = _run(tool_context, FakeServices(), {"url": "http://example.com/br"})
+    assert isinstance(bad_enc, ToolFailure)
+    assert "Content-Encoding br" in bad_enc.error
+
+    trunc_res = _run(tool_context, FakeServices(), {"url": "http://example.com/trunc"})
+    assert isinstance(trunc_res, ToolFailure)
+    assert "truncated" in trunc_res.error or "corrupted" in trunc_res.error
