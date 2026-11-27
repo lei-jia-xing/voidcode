@@ -1,11 +1,11 @@
 """Wakeup facts are delivered from the atomic claim, live and after recovery."""
 
-import json
 import time
 
 from tests.fixtures.core_factory import loopback_server
 from tests.unit.core.test_nested_tools import _turn
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
+from voidcode.config import dumps_toml
 from voidcode.sdk.hooks import WakeupFiredFact
 
 PLUGIN = """
@@ -59,8 +59,8 @@ def test_claim_fact_is_live_before_dispatch_and_recovery_delivers_it_once(tmp_pa
         plugins = {name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS}
         plugins["providers"] = {"enabled": True}
         plugins["probe"] = {"path": str(source)}
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/test-model"},

@@ -33,17 +33,19 @@ mise run frontend:install   # web client only
 
 ### Configure a workspace
 
-The product reads exactly one file, `voidcode.json`, from the workspace root. Write it yourself — there is no configuration CLI:
+The product reads exactly one file, `voidcode.toml`, from the workspace root. Write it yourself — there is no configuration CLI:
 
-```json
-{
-  "schema_version": 1,
-  "model": { "model": "openai/gpt-4o-mini" },
-  "policy": { "approval_mode": "ask" },
-  "providers": {
-    "openai": { "base_url": "https://api.openai.com/v1" }
-  }
-}
+```toml
+schema_version = 1
+
+[model]
+model = "openai/gpt-4o-mini"
+
+[policy]
+approval_mode = "ask"
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
 ```
 
 Export the API key before starting VoidCode:
@@ -136,7 +138,7 @@ For an in-depth explanation, see the [Architecture Overview](./docs/architecture
 
 ## Configuration & State
 
-- **Configuration**: `voidcode.json` only. Only `voidcode.json` is ever read; any other filename is ignored, not detected or converted.
+- **Configuration**: `voidcode.toml` only. Only `voidcode.toml` is ever read; any other filename is ignored, not detected or converted.
 - **State**: `$XDG_STATE_HOME/voidcode/<workspace-sha256>/voidcode.db`, next to `private/` (the 0600 configuration snapshot) and `artifacts/` (content-addressed tool outputs). `--state-dir` overrides it; it must be outside the workspace.
 - **No migration**: a database at any other schema version (including legacy v5) is refused read-only; legacy session databases from earlier architectures are neither imported nor auto-deleted.
 
@@ -153,7 +155,7 @@ mise run frontend:test    # Vitest component tests
 ## Documentation
 
 - [Architecture Overview](./docs/architecture.md): core, product layer, SDK, and the bundled plugin set.
-- [Configuration Guide](./docs/configuration.md): `voidcode.json` fields and state directory.
+- [Configuration Guide](./docs/configuration.md): `voidcode.toml` fields and state directory.
 - [Coding Standards](./docs/coding-standards.md): conventions and commit formats.
 - [Testing Policy](./docs/testing.md): test tiers, loopback providers, and offline guards.
 - [Core/SDK Contracts](./docs/contracts/README.md): durability, activation, client transport, and the plugin entry-doc index.

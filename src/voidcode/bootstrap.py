@@ -356,7 +356,7 @@ def sandbox_backend_for(
 ) -> SandboxBackend | None:
     """Assemble the transparent exec backend, or None when no sandbox section is configured.
 
-    Product maps config to neutral core policy; core never sees voidcode.json. A configured
+    Product maps config to neutral core policy; core never sees voidcode.toml. A configured
     sandbox with a missing backend refuses loudly, naming the missing piece. No silent
     degrade. Absent section means unconfined, today's behavior exactly.
     """
@@ -526,7 +526,7 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
                 )
                 validate_providers(config, candidate_runtime.providers, providers=config.providers)
                 fact_observers = dict(candidate_runtime.observer_owners)
-                session_ids = [record.session_id for record in store.sessions(workspace=str(workspace))]
+                session_ids = [record.session_id for record in store.sessions(workspace=str(workspace), limit=None)]
                 states = candidate_runtime.state_metadata()
                 plan = plan_state_copies(
                     store=store,
@@ -557,7 +557,8 @@ def adopt_generation(*, workspace: Path, state_dir: Path, session_id: str | None
                 if session.status is SessionStatus.RUNNING:
                     if checkpoint_payload is not None:
                         checkpoint_kind = CheckpointKind.INTERRUPTED
-                    logical_turn = checkpoint_payload["logical_turn"] if checkpoint_payload is not None else ""
+                    raw_turn = None if checkpoint_payload is None else checkpoint_payload.get("logical_turn")
+                    logical_turn = raw_turn if isinstance(raw_turn, str) else ""
                     drafts.append(
                         EventDraft(
                             EventType.RUN_INTERRUPTED,

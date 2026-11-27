@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import socket
 import threading
 import time
@@ -15,6 +14,7 @@ import pytest
 import uvicorn
 
 from voidcode.bootstrap import bundled_sources, open_core
+from voidcode.config import dumps_toml
 from voidcode.core.storage.store import EventDraft
 from voidcode.sdk.client import StreamCancellation
 from voidcode.transport.http import CoreTransportApp
@@ -62,7 +62,7 @@ def remote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[st
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     plugins = {name: {"enabled": False} for name in bundled_sources()}
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": plugins}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": plugins}), encoding="utf-8")
     core = open_core(workspace, state_dir=tmp_path / "state")
     core.create_session("s1")
     core.create_session("s2")

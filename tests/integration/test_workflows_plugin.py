@@ -9,6 +9,7 @@ from threading import Event
 from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 
 _REVIEW_SCRIPT = '''"""Parallel review then summary: the first configured example workflow."""
@@ -37,8 +38,8 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, script: str = _REVIEW_SC
     plugins["subagents"] = {"enabled": True}
     plugins["exec"] = {"enabled": True}
     plugins["workflows"] = {"enabled": True, "config": {"workflows": {"parallel_review": "flows/parallel_review.py"}}}
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/test-model"},
@@ -427,8 +428,8 @@ def _open_configured(tmp_path: Path, tag: str, name: str, body: str) -> tuple[Co
     state_dir.mkdir(parents=True, exist_ok=True)
     plugins: dict[str, object] = {plugin: {"enabled": False} for plugin in BUNDLED_PLUGIN_IDS}
     plugins["workflows"] = {"enabled": True, "config": {"workflows": {name: f"flows/{name}.py"}}}
-    (workspace / "voidcode.json").write_text(
-        json.dumps({"schema_version": 1, "policy": {"approval_mode": "yolo"}, "plugins": plugins}), encoding="utf-8"
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml({"schema_version": 1, "policy": {"approval_mode": "yolo"}, "plugins": plugins}), encoding="utf-8"
     )
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)

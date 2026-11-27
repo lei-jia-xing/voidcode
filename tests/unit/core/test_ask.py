@@ -14,6 +14,7 @@ from tests.fixtures.core_factory import loopback_server
 from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.events import EventType
 from voidcode.sdk.ask import AskError, AskRequest, AskValidationError
@@ -195,8 +196,8 @@ def _configure(tmp_path: Path, server: OpenAILoopbackServer, *, approval: str = 
     (source / "__init__.py").write_text(plugin_code, encoding="utf-8")
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},

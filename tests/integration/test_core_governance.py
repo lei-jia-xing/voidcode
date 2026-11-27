@@ -45,6 +45,7 @@ import pytest
 import uvicorn
 
 from tests.provider_loopback import OpenAILoopbackServer, _OpenAILoopbackHandler, openai_response
+from voidcode.config import dumps_toml
 from voidcode.core.storage.store import SqliteStore
 from voidcode.transport.http import create_core_app
 
@@ -680,7 +681,7 @@ def _configure(
         "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": plugins,
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
 
 
 def _call(identity: str, name: str, **arguments: object) -> dict[str, object]:
@@ -2709,7 +2710,7 @@ def test_internal_session_effects_need_no_read_only_waiver_or_approval(tmp_path:
             "providers": {"endpoint": {"api_key": "k", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
             "plugins": {"goal": {"path": str(goal_source)}},
         }
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
         _cli(workspace, state, "create-session", "--session-id", "session-effects-goal")
         _cli(workspace, state, "create-session", "--session-id", "session-effects-write")
 
@@ -2732,7 +2733,7 @@ def test_internal_session_effects_need_no_read_only_waiver_or_approval(tmp_path:
     # Internal state work never touched the workspace, and the external write did
     # not happen without the decision this policy requires.
     assert not (workspace / "gated.txt").exists()
-    assert sorted(path.name for path in workspace.iterdir()) == ["voidcode.json"]
+    assert sorted(path.name for path in workspace.iterdir()) == ["voidcode.toml"]
     if policy == "read-only":
         assert write_run["status"] == "completed", write_run
         assert write_run["pending_approval"] is None, write_run

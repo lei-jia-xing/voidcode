@@ -156,8 +156,8 @@ def test_tui_prefs_read_the_workspace_file(tmp_path: Path) -> None:
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(
-        json.dumps({"schema_version": 1, "tui": {"border": "box", "footer": "compact", "show_session": True}}),
+    (workspace / "voidcode.toml").write_text(
+        'schema_version = 1\n\n[tui]\nborder = "box"\nfooter = "compact"\nshow_session = true\n',
         encoding="utf-8",
     )
     prefs = _tui_prefs(Namespace(server=None, no_border=False, footer=None, show_session=False), workspace=workspace)
@@ -171,7 +171,7 @@ def test_tui_prefs_fail_visibly_on_a_malformed_file(tmp_path: Path) -> None:
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text("{not json", encoding="utf-8")
+    (workspace / "voidcode.toml").write_text("[not toml", encoding="utf-8")
     with pytest.raises(ValueError, match="cannot read TUI preferences"):
         _tui_prefs(Namespace(server=None, no_border=False, footer=None, show_session=False), workspace=workspace)
 

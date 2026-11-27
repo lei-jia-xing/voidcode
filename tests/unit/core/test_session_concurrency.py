@@ -11,6 +11,7 @@ from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.reload_plugin import BLOCK_TOOL, OVERLAY_COMMAND, write_reload_plugin
 from tests.provider_loopback import openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 
 PLUGIN_ID = "reload-fixture"
 
@@ -47,7 +48,7 @@ def test_a_blocked_session_does_not_serialize_another_session(tmp_path: Path) ->
         }
         workspace = tmp_path / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
         core = open_core(workspace, state_dir=tmp_path / "state")
         register_core(core)
         blocked_session = core.create_session("sess-blocked")

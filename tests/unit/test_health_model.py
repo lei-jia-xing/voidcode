@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.sdk.client import HealthStatus
 from voidcode.transport.projection import model_payload
 from voidcode.tui.local_client import CoreLocalClient
@@ -50,8 +51,8 @@ def test_supported_level_selection_and_hiding(
 def test_health_model_reads_admitted_config_not_the_edited_file(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "openai/gpt-5.2", "reasoning_effort": "max"},
@@ -62,8 +63,8 @@ def test_health_model_reads_admitted_config_not_the_edited_file(tmp_path: Path) 
         encoding="utf-8",
     )
     with open_core(workspace, state_dir=tmp_path / "state") as core:
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "openai/gpt-5", "reasoning_effort": "low"},

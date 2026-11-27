@@ -12,6 +12,7 @@ from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.s5_plugin import PLUGIN_ID, PROBE_TOOL, WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.coverage import read_artifact_content
 from voidcode.core.engine import Core
 from voidcode.sdk.codec import decode_tool_result
@@ -38,7 +39,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> N
         "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
 
 
 def _open(tmp_path: Path) -> Core:

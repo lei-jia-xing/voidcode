@@ -27,6 +27,7 @@ from tests.fixtures.png import rgb_png
 from tests.fixtures.tui_pty import AnsiScreen, TuiPty
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import bundled_sources, open_core
+from voidcode.config import dumps_toml
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="requires POSIX PTY support")
 
@@ -66,7 +67,7 @@ def _write_config(
         config["model"] = {"model": "endpoint/exact-model"}
         config["policy"] = {"approval_mode": approval_mode}
         config["providers"] = {"endpoint": {"api_key": "loopback-secret", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}}
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
 
 
 def _scene(

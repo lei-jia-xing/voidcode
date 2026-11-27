@@ -15,6 +15,7 @@ from threading import Thread
 import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
+from voidcode.config import dumps_toml
 from voidcode.core.storage.store import SqliteStore
 
 
@@ -52,7 +53,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, **policy: object) 
         "policy": policy,
         "providers": {"deepseek": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     return config
 
 
@@ -98,7 +99,7 @@ def test_native_batch_prefix_survives_approval_restart(tmp_path: Path, decision:
         # stays active until an explicit reload, so the parked approval stays resumable and
         # the activation barrier keeps a config-driven swap from happening underneath it.
         config["policy"] = {"approval_mode": "yolo", "read_only": True}
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
         unchanged = _cli(workspace, state, "show", first["session_id"])
         assert unchanged["revision_id"] == first["revision_id"]
         blocked = _cli(
@@ -115,7 +116,7 @@ def test_native_batch_prefix_survives_approval_restart(tmp_path: Path, decision:
         )
         assert "requires an idle session" in blocked["error"]
         config["policy"] = {"approval_mode": "ask"}
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
         (workspace / "input.txt").write_text("new observation\n", encoding="utf-8")
         resumed = _cli(workspace, state, "resume", first["session_id"], "--approval-request-id", pending["request_id"], "--decision", decision)
         assert resumed["status"] == "completed"
@@ -275,7 +276,7 @@ def test_interrupted_mutation_is_not_replayed(tmp_path: Path, stop: str) -> None
     ) as server:
         config = _configure(workspace, server, approval_mode="yolo")
         config["plugins"] = {"counter": {"path": str(source)}}
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
         process = subprocess.Popen(
             _command(workspace, state, "run", "exercise real effects", "--session-id", "crash-session"),
             stdout=subprocess.PIPE,
@@ -333,7 +334,7 @@ def test_safe_read_recovery_reuses_the_durable_invocation_identity(tmp_path: Pat
     with _server([_turn(_call("read", "counter", path="input.txt")), _turn(output="safe recovery complete")]) as server:
         config = _configure(workspace, server, approval_mode="ask")
         config["plugins"] = {"counter": {"path": str(source)}}
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
         process = subprocess.Popen(
             _command(workspace, state, "run", "read input", "--session-id", "safe-session"),
             stdout=subprocess.PIPE,

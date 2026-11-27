@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from tests.fixtures.core_factory import register_core
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 
 _SUBAGENTS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"
@@ -70,8 +70,8 @@ def _core(tmp_path: Path, *, subagents: bool, substitute: bool) -> Core:
         replacement.mkdir(parents=True, exist_ok=True)
         (replacement / "__init__.py").write_text(_SUBSTITUTE, encoding="utf-8")
         plugins["replacement"] = {"path": str(replacement)}
-    (workspace / "voidcode.json").write_text(
-        json.dumps({"schema_version": 1, "policy": {"approval_mode": "ask"}, "plugins": plugins}), encoding="utf-8"
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml({"schema_version": 1, "policy": {"approval_mode": "ask"}, "plugins": plugins}), encoding="utf-8"
     )
     core = open_core(workspace, state_dir=tmp_path / "state")
     register_core(core)

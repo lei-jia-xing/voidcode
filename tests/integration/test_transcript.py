@@ -1,10 +1,9 @@
 """Public transcript services and panels preserve committed history across restart."""
 
-import json
-
 from tests.fixtures.core_factory import loopback_server
 from tests.unit.core.test_nested_tools import _call, _turn
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
+from voidcode.config import dumps_toml
 from voidcode.sdk.provider import ProviderMessage, ProviderTurnResult
 from voidcode.sdk.transcript import TranscriptDispatch, TranscriptRun, TranscriptTool
 
@@ -48,8 +47,8 @@ def test_public_transcript_survives_restart_without_clipping_messages(tmp_path):
         plugins = {name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS}
         plugins["providers"] = {"enabled": True}
         plugins["probe"] = {"path": str(source)}
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/exact-model"},
@@ -90,8 +89,8 @@ def test_transcript_preserves_run_failure_and_interruption_details(tmp_path):
     ws_int.mkdir()
     state_int = tmp_path / "state_int"
     with loopback_server([_turn(_call("lookup-1", "arbitrary_lookup")), _turn(_call("lookup-2", "arbitrary_lookup"))]) as live_server:
-        (ws_int / "voidcode.json").write_text(
-            json.dumps(
+        (ws_int / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/exact-model"},
@@ -115,8 +114,8 @@ def test_transcript_preserves_run_failure_and_interruption_details(tmp_path):
     state_fail = tmp_path / "state_fail"
     with loopback_server([]) as dead_server:
         dead_port = dead_server.server_port
-    (ws_fail / "voidcode.json").write_text(
-        json.dumps(
+    (ws_fail / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},

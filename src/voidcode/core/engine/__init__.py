@@ -92,9 +92,9 @@ class Core(
         admits: Callable[..., Admission] | None = None,
         sandbox_backend: SandboxBackend | None = None,
         process_host: ProcessHost | None = None,
-        # Product-owned config filename (e.g. voidcode.json): the product layer
+        # Product-owned config filename (e.g. voidcode.toml): the product layer
         # passes its own name in; the core never spells it, only guards it.
-        config_filename: str = "voidcode.json",
+        config_filename: str = "voidcode.toml",
     ) -> None:
         self.auto_drain = auto_drain
         self._config_filename = config_filename

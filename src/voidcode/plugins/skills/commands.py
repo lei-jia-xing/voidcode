@@ -37,7 +37,7 @@ class SkillsCommand:
                 status="ok",
                 output="Skills are disabled.",
                 data={"enabled": False, "skills": []},
-                presentation=_skills_notice("Skills are disabled. Set plugins.skills.config.enabled to true in voidcode.json and run /core reload."),
+                presentation=_skills_notice("Skills are disabled. Set plugins.skills.config.enabled to true in voidcode.toml and run /core reload."),
             )
         workspace = invocation.context.require_workspace()
         try:
@@ -145,7 +145,7 @@ class SkillShowCommand:
     def prepare_input(self, invocation: CommandInvocation, services: PluginServices) -> CommandPresentation:
         _ = services
         if not self._config.enabled:
-            return _skills_notice("Skills are disabled. Enable plugins.skills.config.enabled in voidcode.json and run /core reload.")
+            return _skills_notice("Skills are disabled. Enable plugins.skills.config.enabled in voidcode.toml and run /core reload.")
         try:
             registry = build_registry(workspace=invocation.context.require_workspace(), config=self._config)
         except (ValueError, OSError) as exc:
@@ -177,7 +177,7 @@ class SkillShowCommand:
     def invoke(self, invocation: CommandInvocation, services: PluginServices) -> CommandResult:
         _ = services
         if not self._config.enabled:
-            return CommandResult(status="error", error="Skills are disabled. Enable plugins.skills.config.enabled in voidcode.json and reload.")
+            return CommandResult(status="error", error="Skills are disabled. Enable plugins.skills.config.enabled in voidcode.toml and reload.")
         name = invocation.arguments.get("name")
         offset, limit = invocation.arguments.get("offset", 0), invocation.arguments.get("limit", 4000)
         if not isinstance(name, str) or not name.strip():

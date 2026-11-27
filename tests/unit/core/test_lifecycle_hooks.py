@@ -11,6 +11,7 @@ from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.reload_plugin import BLOCK_TOOL, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.events import EventType
 
@@ -38,8 +39,8 @@ def _open(tmp_path: Path) -> Core:
 
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path, *, approval_mode: str = "yolo") -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},

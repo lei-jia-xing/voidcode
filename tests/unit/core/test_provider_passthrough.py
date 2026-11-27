@@ -18,6 +18,7 @@ from pathlib import Path
 from tests.fixtures.core_factory import loopback_server
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import bundled_sources, config_from_snapshot
+from voidcode.config import dumps_toml
 from voidcode.core.activation import load_private_snapshot, snapshot_path
 from voidcode.sdk.json_values import json_wire_object
 
@@ -33,7 +34,7 @@ VENDOR_FIELDS: dict[str, object] = {
     "region": "vendor-region-marker",
     "timeout_seconds": 5,
     "stream": True,
-    "retries": None,
+    "retries": 2,
     "scopes": ["chat", "tools"],
 }
 MARKERS = (API_KEY, "vendor-tenant-marker", "vendor-endpoint-marker", "vendor-region-marker")
@@ -187,7 +188,7 @@ def test_vendor_fields_reach_only_the_declaring_plugin(tmp_path: Path) -> None:
                 BYSTANDER_PLUGIN: {"path": str(bystander_source), "config": {"evidence": str(evidence)}},
             },
         }
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
 
         first = _cli(workspace, state, "run", "vendor fields", "--session-id", "vendor-first")
         assert first["status"] == "completed"
@@ -196,8 +197,8 @@ def test_vendor_fields_reach_only_the_declaring_plugin(tmp_path: Path) -> None:
 
         # A restart never re-admits the workspace file: the vendor fields reach the plugin from
         # the private snapshot, so a rewritten workspace provider entry changes nothing.
-        (workspace / "voidcode.json").write_text(
-            json.dumps({**config, "providers": {PROVIDER_NAME: {"api_key": "workspace-rewritten", "base_url": base_url}}}),
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml({**config, "providers": {PROVIDER_NAME: {"api_key": "workspace-rewritten", "base_url": base_url}}}),
             encoding="utf-8",
         )
         second = _cli(workspace, state, "run", "vendor fields after restart", "--session-id", "vendor-second")

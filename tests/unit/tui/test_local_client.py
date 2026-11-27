@@ -8,19 +8,19 @@ transport produces, and its event stream must carry the same frames.
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 import pytest
 
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.sdk.client import CoreClientError, EventFrame, HeadFrame, RunSpec, SessionFrame
 from voidcode.tui.local_client import CoreLocalClient
 
 
 def _configure(workspace: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": {}}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": {}}), encoding="utf-8")
 
 
 def test_local_client_matches_http_shapes_and_refusals(tmp_path: Path) -> None:

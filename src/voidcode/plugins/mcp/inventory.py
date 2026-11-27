@@ -116,7 +116,7 @@ class McpInventoryCommand:
             presentation = CommandPresentation(
                 title="MCP servers",
                 view_type="notice",
-                data={"message": "No MCP servers are configured. Configure servers in voidcode.json, then run /core reload."},
+                data={"message": "No MCP servers are configured. Configure servers in voidcode.toml, then run /core reload."},
             )
         else:
             presentation = CommandPresentation(

@@ -106,7 +106,7 @@ def _verify_installed_server(wheel_path: Path) -> None:
         workspace.mkdir()
         state_dir = root / "state"
         state_dir.mkdir()
-        (workspace / "voidcode.json").write_text('{"schema_version": 1}', encoding="utf-8")
+        (workspace / "voidcode.toml").write_text("schema_version = 1\n", encoding="utf-8")
         venv.EnvBuilder(with_pip=True).create(venv_dir)
         python = _venv_python(venv_dir)
         subprocess.run(

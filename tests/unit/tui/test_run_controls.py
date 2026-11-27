@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
@@ -10,6 +9,7 @@ import pytest
 
 from tests.unit.test_core_tui import _StubTerminal
 from voidcode.bootstrap import bundled_sources, open_core
+from voidcode.config import dumps_toml
 from voidcode.tui.local_client import CoreLocalClient
 from voidcode.tui.terminal_app import CoreTuiApp
 
@@ -46,8 +46,8 @@ def create_plugin(config):
     workspace.mkdir()
     plugins: dict[str, object] = {name: {"enabled": False} for name in bundled_sources()}
     plugins["slow"] = {"path": str(source), "config": {"mode": mode}}
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {"schema_version": 1, "model": {"model": "slow/test"}, "providers": {"slow": {"base_url": "http://127.0.0.1/unused"}}, "plugins": plugins}
         ),
         encoding="utf-8",

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.coverage import read_artifact_content
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.services import ArtifactReference
@@ -51,7 +52,7 @@ def _workspace(tmp_path: Path, server: OpenAILoopbackServer | None) -> Path:
             }
         },
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     return workspace
 
 

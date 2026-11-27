@@ -20,6 +20,7 @@ import pytest
 from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core, CoreResult
 from voidcode.core.events import child_completion_notice_id
 from voidcode.plugins.subagents.profiles.builtin import EXPLORE_AGENT
@@ -70,7 +71,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, minimal: bool = False
             "files": {"enabled": True},
             "subagents": {"path": str(_admitted_source(tmp_path)), "enabled": True},
         }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core

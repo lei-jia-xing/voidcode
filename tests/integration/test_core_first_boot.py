@@ -1,4 +1,4 @@
-"""First boot without ``voidcode.json``: providerless core, strict everywhere else."""
+"""First boot without ``voidcode.toml``: providerless core, strict everywhere else."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def test_fresh_state_without_config_opens_providerless_and_keeps_commands(tmp_pa
     workspace, state = _fresh_workspace(tmp_path)
     with open_core(workspace, state_dir=state) as core:
         assert core.config.model is None
-        assert not (workspace / "voidcode.json").exists()
+        assert not (workspace / "voidcode.toml").exists()
         revision = core.revision_id
         core.create_session("fresh-session")
 
@@ -63,7 +63,7 @@ def test_fresh_state_without_config_opens_providerless_and_keeps_commands(tmp_pa
         with pytest.raises(ModelQueryModelUnavailable, match="no model configured"):
             core.governed_model_query("fresh-session", "hello")
 
-        assert not (workspace / "voidcode.json").exists()
+        assert not (workspace / "voidcode.toml").exists()
         assert (state / "voidcode.db").is_file()
         assert list((state / "private").glob("*.json"))
 
@@ -92,13 +92,13 @@ def test_fresh_cli_catalog_without_config_opens(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert payload["commands"]
-    assert not (workspace / "voidcode.json").exists()
+    assert not (workspace / "voidcode.toml").exists()
 
 
 def test_existing_revision_restores_without_live_config_and_reload_stays_strict(tmp_path: Path) -> None:
     workspace, state = _fresh_workspace(tmp_path)
-    config_path = workspace / "voidcode.json"
-    config_path.write_text(json.dumps({"schema_version": 1, "model": {"model": None}}), encoding="utf-8")
+    config_path = workspace / "voidcode.toml"
+    config_path.write_text("schema_version = 1\n[model]\n", encoding="utf-8")
     with open_core(workspace, state_dir=state) as core:
         revision = core.revision_id
         core.create_session("restore-session")
@@ -129,6 +129,6 @@ def test_existing_database_without_a_workspace_revision_stays_strict(tmp_path: P
 
 def test_unknown_config_field_stays_strict(tmp_path: Path) -> None:
     workspace, state = _fresh_workspace(tmp_path)
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "unknown": True}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text("schema_version = 1\nunknown = true\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unsupported field: unknown"):
         open_core(workspace, state_dir=state)

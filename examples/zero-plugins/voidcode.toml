@@ -1,0 +1,68 @@
+schema_version = 1
+
+[model]
+model = "endpoint/your-model"
+
+[providers.endpoint]
+base_url = "http://127.0.0.1:8000/v1"
+api_key = "replace-with-your-key"
+
+[plugins.ast_grep]
+enabled = false
+
+[plugins.btw]
+enabled = false
+
+[plugins.compaction]
+enabled = false
+
+[plugins.cron]
+enabled = false
+
+[plugins.subagents]
+enabled = false
+
+[plugins.exec]
+enabled = false
+
+[plugins.files]
+enabled = false
+
+[plugins.find]
+enabled = false
+
+[plugins.goal]
+enabled = false
+
+[plugins.hooks]
+enabled = false
+
+[plugins.lsp]
+enabled = false
+
+[plugins.mcp]
+enabled = false
+
+[plugins.plan]
+enabled = false
+
+[plugins.providers]
+enabled = false
+
+[plugins.review]
+enabled = false
+
+[plugins.skills]
+enabled = false
+
+[plugins.todo]
+enabled = false
+
+[plugins.user_shell]
+enabled = false
+
+[plugins.web]
+enabled = false
+
+[plugins.workflows]
+enabled = false

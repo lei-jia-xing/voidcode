@@ -11,6 +11,7 @@ from pathlib import Path
 from tests.fixtures.png import decode_rgb_png, rgb_png
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
+from voidcode.config import dumps_toml
 
 _PLUGIN = """from pathlib import Path
 from voidcode.sdk.plugin import Plugin
@@ -76,8 +77,8 @@ def prepare(workspace: Path, state: Path) -> dict[str, object]:
     server.before_reply = respond
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/test-model"},

@@ -86,7 +86,7 @@ def test_failed_start_joins_worker_before_closing_store_and_releases_workspace_l
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text('{"schema_version": 1}', encoding="utf-8")
+    (workspace / "voidcode.toml").write_text("schema_version = 1\n", encoding="utf-8")
     with monkeypatch.context() as patch:
         patch.setattr(Core, "_drive_pending_activations", blocked)
         patch.setattr(Core, "_wakeup_loop", lambda core: None)

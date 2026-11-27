@@ -5,11 +5,11 @@ Proves the plugin loads from its admitted artifact and registers its tools and c
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from tests.fixtures.core_factory import register_core
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 
 _SUBAGENTS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "subagents"
@@ -30,7 +30,7 @@ def _core(tmp_path: Path) -> Core:
             "subagents": {"path": str(_SUBAGENTS_PLUGIN_ROOT)},
         },
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core

@@ -1,9 +1,11 @@
-"""Product configuration schema, voidcode.json parser, and provider resolution."""
+"""Product configuration schema, voidcode.toml parser, and provider resolution."""
 
 from __future__ import annotations
 
-import json
+import math
 import os
+import re
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -15,8 +17,84 @@ from .sdk.json_values import own_json_object
 from .sdk.provider import ProviderReasoningEffort
 from .sdk.views import StyleColor
 
-CONFIG_FILE_NAME = "voidcode.json"
+CONFIG_FILE_NAME = "voidcode.toml"
 CONFIG_SCHEMA_VERSION = 1
+
+_TOML_BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+_TOML_ESCAPE_MAP = str.maketrans(
+    {
+        "\\": "\\\\",
+        '"': '\\"',
+        "\b": "\\b",
+        "\t": "\\t",
+        "\n": "\\n",
+        "\f": "\\f",
+        "\r": "\\r",
+    }
+)
+
+
+def _toml_string(value: str) -> str:
+    escaped = value.translate(_TOML_ESCAPE_MAP)
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in escaped):
+        escaped = "".join(f"\\u{ord(ch):04x}" if ord(ch) < 0x20 or ord(ch) == 0x7F else ch for ch in escaped)
+    return f'"{escaped}"'
+
+
+def _toml_key(key: object) -> str:
+    if not isinstance(key, str) or not key:
+        raise ValueError("TOML keys must be non-empty strings")
+    return key if _TOML_BARE_KEY.fullmatch(key) is not None else _toml_string(key)
+
+
+def _toml_value(value: object) -> str:
+    if value is None:
+        raise ValueError("TOML does not support null values")
+    if type(value) is bool:
+        return "true" if value else "false"
+    if type(value) is int:
+        return str(value)
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("TOML does not support non-finite floats")
+        return repr(value)
+    if isinstance(value, str):
+        return _toml_string(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    if isinstance(value, Mapping):
+        return "{" + ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + "}"
+    raise ValueError(f"unsupported TOML value type: {type(value).__name__}")
+
+
+def _write_toml_table(lines: list[str], path: tuple[str, ...], table: Mapping[str, object]) -> None:
+    scalars: list[tuple[str, object]] = []
+    subtables: list[tuple[str, Mapping[str, object]]] = []
+    for key, value in table.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("TOML keys must be non-empty strings")
+        if isinstance(value, Mapping):
+            subtables.append((key, value))
+        else:
+            scalars.append((key, value))
+    if path and (scalars or not subtables):
+        if lines:
+            lines.append("")
+        lines.append("[" + ".".join(_toml_key(part) for part in path) + "]")
+    for key, value in scalars:
+        lines.append(f"{_toml_key(key)} = {_toml_value(value)}")
+    for key, subtable in subtables:
+        _write_toml_table(lines, (*path, key), subtable)
+
+
+def dumps_toml(payload: Mapping[str, object]) -> str:
+    """Serialize a configuration mapping cleanly to canonical TOML text."""
+    if not isinstance(payload, Mapping):
+        raise ValueError("config must be a table")
+    lines: list[str] = []
+    _write_toml_table(lines, (), payload)
+    return ("\n".join(lines) + "\n") if lines else ""
+
 
 ReasoningEffort = ProviderReasoningEffort
 
@@ -71,6 +149,15 @@ class TuiConfig(BaseModel):
     footer: Literal["full", "compact", "off"] = "full"
     show_session: bool = False
     banner: BannerConfig | None = Field(default_factory=BannerConfig)
+
+    @field_validator("banner", mode="before")
+    @classmethod
+    def _validate_banner(cls, value: Any) -> Any:
+        if value is False:
+            return None
+        if value is True:
+            raise ValueError("tui.banner cannot be true; omit it or configure [tui.banner]")
+        return value
 
 
 class PolicyConfig(BaseModel):
@@ -140,7 +227,7 @@ class ProviderEntry(BaseModel):
                 raise ValueError("provider field names must be non-empty strings")
         result: dict[str, Any] = {"extra": raw}
         if has_key:
-            result["api_key"] = api_key
+            result["api_key"] = None if api_key is False else api_key
         if has_url:
             result["base_url"] = base_url
         return result
@@ -201,9 +288,9 @@ class Config(BaseModel):
 
 
 def parse_config(payload: object) -> Config:
-    """Validate an untrusted ``voidcode.json`` payload."""
+    """Validate an untrusted ``voidcode.toml`` payload."""
     if not isinstance(payload, dict):
-        raise ValueError("config must be an object")
+        raise ValueError("config must be a TOML table")
     try:
         return Config.model_validate(payload)
     except ValidationError as err:
@@ -264,14 +351,18 @@ def load_config(workspace: Path, *, allow_missing: bool = False) -> Config:
         raise ValueError(f"not a regular file: {path.name}")
     if path.stat().st_size > 256 * 1024:
         raise ValueError("configuration file too large")
-    return parse_config(json.loads(path.read_text(encoding="utf-8")))
+    try:
+        payload = tomllib.loads(path.read_bytes().decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ValueError(f"invalid configuration TOML: {error}") from error
+    return parse_config(payload)
 
 
 type ModelField = Literal["model", "reasoning_effort"]
 
 
 def update_model_section(workspace: Path, field: ModelField, value: object) -> Config:
-    """Validate and atomically rewrite one ``model`` field in ``voidcode.json``.
+    """Validate and atomically rewrite one ``model`` field in ``voidcode.toml``.
 
     The whole payload is revalidated before the compare-and-swap replace, so an
     invalid value or an unknown/ill-typed section leaves the file untouched.
@@ -289,11 +380,10 @@ def update_model_section(workspace: Path, field: ModelField, value: object) -> C
             raise ValueError("configuration file too large")
         expected: bytes | None = path.read_bytes()
         try:
-            payload = json.loads(expected.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ValueError(f"invalid configuration JSON: {error}") from error
-        if not isinstance(payload, dict):
-            raise ValueError("config must be an object")
+            parsed = tomllib.loads(expected.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+            raise ValueError(f"invalid configuration TOML: {error}") from error
+        payload = dict(parsed)
     else:
         expected = None
         payload = {"schema_version": CONFIG_SCHEMA_VERSION}
@@ -303,11 +393,11 @@ def update_model_section(workspace: Path, field: ModelField, value: object) -> C
     elif isinstance(raw_section, dict):
         section = dict(raw_section)
     else:
-        raise ValueError("model section must be an object")
+        raise ValueError("model section must be a table")
     section[field] = value
     payload["model"] = section
     config = parse_config(payload)
-    content = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    content = dumps_toml(payload).encode("utf-8")
     from .sdk.atomic_file import replace_file
 
     replace_file(path, content, expected_content=expected)

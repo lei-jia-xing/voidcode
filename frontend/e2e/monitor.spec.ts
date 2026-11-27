@@ -104,8 +104,8 @@ async function startLiveScene(tag: string): Promise<{
     path.join(os.tmpdir(), `voidcode-monitor-${tag}-st-`),
   );
   writeFileSync(
-    path.join(liveWs, "voidcode.json"),
-    JSON.stringify({ schema_version: 1 }),
+    path.join(liveWs, "voidcode.toml"),
+    "schema_version = 1\n",
   );
   const liveBase = `http://127.0.0.1:${await freePort()}`;
   const liveToken = `monitor-${tag}-token`;
@@ -221,8 +221,8 @@ test.beforeAll(async () => {
   workspace = mkdtempSync(path.join(os.tmpdir(), "voidcode-monitor-ui-ws-"));
   const state = mkdtempSync(path.join(os.tmpdir(), "voidcode-monitor-ui-st-"));
   writeFileSync(
-    path.join(workspace, "voidcode.json"),
-    JSON.stringify({ schema_version: 1 }),
+    path.join(workspace, "voidcode.toml"),
+    "schema_version = 1\n",
   );
   base = `http://127.0.0.1:${await freePort()}`;
   const env = {
@@ -368,11 +368,8 @@ test("disabling subagents removes the monitor action and open panel", async ({
   // The catalog refresh must drop the button and the open panel, with no
   // silent re-read of the removed action.
   writeFileSync(
-    path.join(workspace, "voidcode.json"),
-    JSON.stringify({
-      schema_version: 1,
-      plugins: { subagents: { enabled: false } },
-    }),
+    path.join(workspace, "voidcode.toml"),
+    "schema_version = 1\n\n[plugins.subagents]\nenabled = false\n",
   );
   await page.evaluate(async () => {
     const socket = new WebSocket(

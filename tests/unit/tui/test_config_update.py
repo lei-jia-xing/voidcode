@@ -8,11 +8,11 @@ from voidcode.config import ModelConfig, load_config, update_model_section
 
 
 def _write_config(workspace: Path, payload: str) -> None:
-    (workspace / "voidcode.json").write_text(payload, encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(payload, encoding="utf-8")
 
 
 def test_update_model_preserves_other_sections_and_round_trips(tmp_path: Path) -> None:
-    _write_config(tmp_path, '{\n  "schema_version": 1,\n  "model": {"model": "old/model"},\n  "policy": {"approval_mode": "write"}\n}\n')
+    _write_config(tmp_path, 'schema_version = 1\n\n[model]\nmodel = "old/model"\n\n[policy]\napproval_mode = "write"\n')
     config = update_model_section(tmp_path, "model", "openai/gpt-5.2")
     assert config.model == ModelConfig(model="openai/gpt-5.2")
     stored = load_config(tmp_path)
@@ -27,22 +27,22 @@ def test_update_creates_a_missing_config_with_schema_version(tmp_path: Path) -> 
 
 
 def test_invalid_values_leave_the_file_byte_identical(tmp_path: Path) -> None:
-    original = '{\n  "schema_version": 1,\n  "model": {"model": "old/model"}\n}\n'
+    original = 'schema_version = 1\n\n[model]\nmodel = "old/model"\n'
     _write_config(tmp_path, original)
-    before = (tmp_path / "voidcode.json").read_bytes()
+    before = (tmp_path / "voidcode.toml").read_bytes()
     with pytest.raises(ValueError):
         update_model_section(tmp_path, "model", "")
     with pytest.raises(ValueError):
         update_model_section(tmp_path, "reasoning_effort", "ultra")
     with pytest.raises(ValueError):
         update_model_section(tmp_path, "reasoning_effort", -1)
-    assert (tmp_path / "voidcode.json").read_bytes() == before
+    assert (tmp_path / "voidcode.toml").read_bytes() == before
 
 
 def test_already_invalid_config_is_refused_before_any_write(tmp_path: Path) -> None:
-    original = '{\n  "schema_version": 1,\n  "model": [],\n  "unknown": true\n}\n'
+    original = "schema_version = 1\nmodel = []\nunknown = true\n"
     _write_config(tmp_path, original)
-    before = (tmp_path / "voidcode.json").read_bytes()
+    before = (tmp_path / "voidcode.toml").read_bytes()
     with pytest.raises(ValueError):
         update_model_section(tmp_path, "model", "openai/gpt-5.2")
-    assert (tmp_path / "voidcode.json").read_bytes() == before
+    assert (tmp_path / "voidcode.toml").read_bytes() == before

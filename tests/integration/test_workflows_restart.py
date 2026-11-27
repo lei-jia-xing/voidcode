@@ -19,6 +19,7 @@ from tests.fixtures.core_factory import discard_core, register_core
 from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 
 WORKFLOW_SOURCE = '''"""Sequential two-node restart fixture."""
@@ -73,7 +74,7 @@ def _configure(tmp_path: Path, server: OpenAILoopbackServer) -> Path:
             "workflows": {"enabled": True, "config": {"workflows": {"restart_flow": "restart_flow.py"}}},
         },
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     return workspace
 
 

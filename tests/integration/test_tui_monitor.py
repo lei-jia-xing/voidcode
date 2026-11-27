@@ -20,6 +20,7 @@ import pytest
 from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import bundled_sources, open_core
+from voidcode.config import dumps_toml
 from voidcode.tui.client import CoreRpcClient
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="requires POSIX PTY support")
@@ -200,8 +201,8 @@ def _write_config(workspace: Path, server: OpenAILoopbackServer, *, subagents: b
     plugins = {name: {"enabled": False} for name in bundled_sources()}
     plugins["subagents"] = {"enabled": subagents}
     plugins["providers"] = {"enabled": True}
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},
@@ -255,8 +256,8 @@ def _write_live_config(workspace: Path, server: OpenAILoopbackServer, plugin_dir
     plugins["providers"] = {"enabled": True}
     plugins["livemon"] = {"path": str(plugin_dir), "enabled": True, "config": {"command_id": "livemon.spawn_one"}}
     plugins["livemon2"] = {"path": str(plugin_dir), "enabled": True, "config": {"command_id": "livemon2.spawn_one"}}
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},

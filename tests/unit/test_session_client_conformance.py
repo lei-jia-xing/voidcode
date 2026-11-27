@@ -22,6 +22,7 @@ import uvicorn
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.storage.store import SqliteStore
 from voidcode.sdk import SessionClient
 from voidcode.sdk.client import ClientCapabilities, ClientCapability, CoreClientError, ResumeSpec, RunSpec
@@ -115,8 +116,8 @@ def _configure(
 ) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     disabled = {name: {"enabled": False} for name in _DISABLED_PLUGINS if not (enable_files and name == "files")}
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/test-model"},

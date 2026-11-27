@@ -31,6 +31,7 @@ from tests.fixtures.s5_plugin import PLUGIN_ID as S5_PLUGIN_ID
 from tests.fixtures.s5_plugin import WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import StoredEvent, WakeupRecord
 from voidcode.plugins.cron.loop_command import USAGE_MESSAGE
@@ -80,7 +81,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, extra_plugins: Mappin
         },
         "plugins": plugins,
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core

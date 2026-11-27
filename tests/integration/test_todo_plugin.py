@@ -12,6 +12,7 @@ from pathlib import Path
 from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.commands import CommandResult
@@ -51,7 +52,7 @@ def _core(
             "todo": todo_entry,
         },
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = register_core(open_core(workspace, state_dir=resolved_state))
     return core
 

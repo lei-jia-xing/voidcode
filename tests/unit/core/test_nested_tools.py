@@ -12,6 +12,7 @@ from tests.fixtures.core_factory import loopback_server
 from tests.fixtures.s5_plugin import HOOK_DIAGNOSTIC, PLUGIN_ID, PROBE_TOOL, WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.coverage import project_tool_result
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import StoreConflict
@@ -36,8 +37,8 @@ def _configure(tmp_path: Path, server: OpenAILoopbackServer, *, approval: str = 
     source = write_s5_plugin(tmp_path / "source", hooks=hooks)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},

@@ -2,14 +2,13 @@
 
 Tests that drive a real Core against a scripted model endpoint all repeat the
 same four steps: script a loopback server, write the workspace's
-``voidcode.json``, open the Core over a per-test state directory, and close it
+``voidcode.toml``, open the Core over a per-test state directory, and close it
 afterward. These helpers keep that contract in one place; a test keeps only the
 parts that are specific to what it proves.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,6 +16,7 @@ from threading import Thread
 
 from tests.provider_loopback import OpenAILoopbackServer
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 
 _CREATED: list[Core] = []
@@ -51,7 +51,7 @@ def discard_core(core: Core) -> None:
 def open_core_for_test(tmp_path: Path) -> Core:
     """Open a Core at ``tmp_path/workspace`` with state in ``tmp_path/state``.
 
-    The workspace is created when absent, so a test with no ``voidcode.json``
+    The workspace is created when absent, so a test with no ``voidcode.toml``
     can use the helper directly. The Core is registered for the autouse
     ``close_cores`` teardown, so a test that fails mid-turn still releases its
     processes and database handles.
@@ -73,7 +73,7 @@ def write_loopback_config(
     enabled: bool = True,
     api_key: str = "loopback-secret-not-for-storage",
 ) -> None:
-    """Write the ``voidcode.json`` for a guardrailed test workspace.
+    """Write the ``voidcode.toml`` for a guardrailed test workspace.
 
     The ``endpoint`` provider points at ``server``; bundled file tools are
     disabled so only ``plugin_id`` (a path plugin at ``source``) contributes
@@ -93,7 +93,7 @@ def write_loopback_config(
         },
         "plugins": {"files": {"enabled": False}, plugin_id: {"path": str(source), "enabled": enabled}},
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
 
 
 def close_cores() -> Iterator[None]:

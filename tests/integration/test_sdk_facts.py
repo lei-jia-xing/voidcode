@@ -1,11 +1,11 @@
 """A third-party plugin sees the same facts live, through paging, and after restart."""
 
-import json
 from dataclasses import asdict
 
 from tests.fixtures.core_factory import loopback_server
 from tests.unit.core.test_nested_tools import _call, _turn
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.storage.store import CheckpointKind, EventDraft, SessionStatus, StagedBudgetUpdate
 from voidcode.sdk.hooks import ContextProjectedFact, InvocationFinishedFact, RequestWindow, RunFinishedFact
 from voidcode.sdk.json_values import json_wire_value
@@ -71,8 +71,8 @@ def test_live_history_and_restart_preserve_original_declaration_and_observations
             _turn(output="done"),
         ]
     ) as server:
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/exact-model"},
@@ -156,8 +156,8 @@ def test_run_stop_fact_exposes_the_typed_cap_that_stopped_it(tmp_path):
     state_dir = tmp_path / "state"
     (workspace / "note.txt").write_text("content", encoding="utf-8")
     with loopback_server([_turn(_call("read-note", "read", path="note.txt"))]) as server:
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/exact-model"},
@@ -184,8 +184,8 @@ def test_owner_budget_stop_fact_names_the_metric_and_measured_spend(tmp_path):
     workspace.mkdir()
     state_dir = tmp_path / "state"
     with loopback_server([_turn(output="first turn")]) as server:
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/exact-model"},

@@ -12,6 +12,7 @@ import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
+from voidcode.config import dumps_toml
 from voidcode.plugins.mcp import _mcp_config
 from voidcode.plugins.mcp.mcp_manager import build_mcp_manager
 
@@ -113,7 +114,7 @@ def test_admitted_mcp_tool_reaches_the_model_and_updates_inventory(tmp_path: Pat
                 "mcp": {"config": {"servers": {"demo": {"command": [sys.executable, str(source)]}}}},
             },
         }
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
         with open_core(workspace, state_dir=tmp_path / "state") as core:
             session_id = core.create_session().session_id
             assert core.run("call echo", session_id=session_id).status == "completed"

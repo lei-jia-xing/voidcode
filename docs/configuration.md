@@ -1,47 +1,45 @@
 # Configuration Guide
 
-VoidCode is configured by exactly one file per workspace: `voidcode.json` at the workspace root, read by the product layer at startup. There is no configuration CLI, no user-level configuration file, and no per-run override.
+VoidCode is configured by exactly one file per workspace: `voidcode.toml` at the workspace root, read by the product layer at startup. There is no configuration CLI, no user-level configuration file, and no per-run override.
 
-A fresh state directory (no database or adopted revision) starts with bundled plugins enabled and no selected model; supported environment credentials can supply providers without a file. It never creates `voidcode.json`. Restarts restore the recorded configuration and private snapshot without reading new environment keys or the live file. The live file is required for explicit `/core reload`, or when a database exists without an adopted revision. `/status` and `/help` work without a model; model turns require a selected `model.model` and an available provider.
+A fresh state directory (no database or adopted revision) starts with bundled plugins enabled and no selected model; supported environment credentials can supply providers without a file. It never creates `voidcode.toml`. Restarts restore the recorded configuration and private snapshot without reading new environment keys or the live file. The live file is required for explicit `/core reload`, or when a database exists without an adopted revision. `/status` and `/help` work without a model; model turns require a selected `model.model` and an available provider.
 
-Configuration is adopted as a *revision*. To apply an edited `voidcode.json` or changed environment credentials, run `/core reload` on an idle session (`voidcode invoke <session_id> core.reload --expected-revision <revision_id>` from the CLI). It re-admits the live file and commits a new revision; busy sessions and `policy.read_only` refuse the reload. A new `--state-dir` adopts the current file and environment as a fresh first revision.
-Before upgrading from a build that bundles `effectiveness`, set `plugins.effectiveness.enabled` to `false` in `voidcode.json`, then run `/core reload` and confirm the revision commits while still on the old build. Editing the file alone is insufficient: restart restores the recorded revision, not the live file.
+Configuration is adopted as a *revision*. To apply an edited `voidcode.toml` or changed environment credentials, run `/core reload` on an idle session (`voidcode invoke <session_id> core.reload --expected-revision <revision_id>` from the CLI). It re-admits the live file and commits a new revision; busy sessions and `policy.read_only` refuse the reload. A new `--state-dir` adopts the current file and environment as a fresh first revision.
+Before upgrading from a build that bundles `effectiveness`, set `plugins.effectiveness.enabled` to `false` in `voidcode.toml`, then run `/core reload` and confirm the revision commits while still on the old build. Editing the file alone is insufficient: restart restores the recorded revision, not the live file.
 
-Plugins may additionally read their own resources (for example agent profiles under `$XDG_CONFIG_HOME/voidcode/agents`), but that never overrides `voidcode.json`.
+Plugins may additionally read their own resources (for example agent profiles under `$XDG_CONFIG_HOME/voidcode/agents`), but that never overrides `voidcode.toml`.
 
 ## Configuration File
 
-`voidcode.json`, when it is read, is validated strictly: the payload must be a JSON object, must not exceed 256 KiB, and any unknown field is an error rather than a silently ignored key. Only `voidcode.json` is ever read; any other filename (including a legacy `.voidcode.json`) is ignored, not detected or converted.
+`voidcode.toml`, when it is read, is validated strictly: the payload must be a TOML table, must not exceed 256 KiB, and any unknown field is an error rather than a silently ignored key. Only `voidcode.toml` is ever read; any other filename is ignored, not detected or converted.
 
-```json
-{
-  "schema_version": 1,
-  "model": {
-    "model": "openai/gpt-4o-mini",
-    "reasoning_effort": "medium"
-  },
-  "policy": {
-    "approval_mode": "ask",
-    "read_only": false,
-    "max_root_children": 4
-  },
-  "providers": {
-    "openai": {
-      "api_key": "sk-...",
-      "base_url": "https://api.openai.com/v1",
-      "timeout_seconds": 30
-    }
-  },
-  "plugins": {
-    "files": { "enabled": true },
-    "providers": { "enabled": true },
-    "my-linter": {
-      "enabled": true,
-      "path": "../voidcode-plugins/my-linter",
-      "config": { "strict": true }
-    }
-  }
-}
+```toml
+schema_version = 1
+
+[model]
+model = "openai/gpt-4o-mini"
+reasoning_effort = "medium"
+
+[policy]
+approval_mode = "ask"
+read_only = false
+max_root_children = 4
+
+[providers.openai]
+api_key = "sk-..."
+base_url = "https://api.openai.com/v1"
+timeout_seconds = 30
+
+[plugins.files]
+enabled = true
+
+[plugins.providers]
+enabled = true
+
+[plugins.my-linter]
+enabled = true
+path = "../voidcode-plugins/my-linter"
+config = { strict = true }
 ```
 
 The `my-linter` entry illustrates an external plugin: the directory must exist and export `create_plugin` from its `__init__.py`.
@@ -62,26 +60,21 @@ No other top-level field is accepted.
 
 ### `tui`
 
-Optional. Read by the terminal client only (embedded: the workspace file; remote `--server`: the client's local cwd file best-effort, never the server's block). CLI flags win per-field over the file, which wins over defaults. A malformed file never refuses TUI launch: prefs degrade to defaults.
+Optional. Read by the terminal client only (embedded: the workspace file; remote `--server`: the client's local cwd file, never the server's block). CLI flags win per-field over the file, which wins over defaults. A missing file falls back to defaults; a malformed or unreadable file refuses launch visibly.
 
 | Field | Type | Description |
 |---|---|---|
 | `border` | string | `lines` (default, horizontal rules), `box`, or `borderless` (`--no-border` forces borderless). |
 | `footer` | string | `full` (default: workspace · model · effort), `compact` (model · effort), or `off` (context row hidden; gates/notices still show). `--footer` overrides. |
 | `show_session` | boolean | Default `false`. `true` adds the short session id to the full footer. `--show-session` forces true. |
-| `banner` | object or null | Empty-session welcome artwork and palette; `null` disables it. Default: a Unicode V in blue-violet/cyan. |
+| `banner` | table or `false` | Empty-session welcome artwork and palette; `false` disables it. Default: a Unicode V in blue-violet/cyan. |
 
 The banner uses a centered header layout inspired by [dashboard-nvim](https://github.com/nvimdev/dashboard-nvim), without a dashboard framework or theme dependency. It appears only on an empty session, never over replayed conversation.
 
-```json
-{
-  "tui": {
-    "banner": {
-      "text": "██╗ ██╗\n╚███╔╝\n ╚═╝",
-      "colors": ["#8b5cf6", "#06b6d4"]
-    }
-  }
-}
+```toml
+[tui.banner]
+text = "██╗ ██╗\n╚███╔╝\n ╚═╝"
+colors = ["#8b5cf6", "#06b6d4"]
 ```
 
 `text` is optional; omitted or `null` uses the built-in V. Leading spaces and internal blank lines preserve the drawing's geometry. `colors` is a non-empty palette of `#RRGGBB` or the SDK's 16 ANSI color names, sampled from first to last across rows; one color is monochrome. Terminal controls are escaped, wide text is cell-clipped, and `NO_COLOR` removes color without replacing Unicode. These settings affect only the banner, not chat or composer styling.
@@ -112,7 +105,7 @@ Policy semantics:
 
 Commands are a separate, client-invoked surface: they follow the same `read_only` effect refusal, but they have no approval-mode gate, no pre-tool-hook gate, and no tool-allowlist check. A human invoking a command is the consent boundary; automation with client credentials inherits that trust. The `user_shell` `!` escape is therefore available under `ask`/`write`/`yolo` and is only refused by `read_only`.
 
-There is no per-invocation override (no `--model`, `--approval-mode`, or in-session policy command): the active policy comes from `voidcode.json` for the workspace.
+There is no per-invocation override (no `--model`, `--approval-mode`, or in-session policy command): the active policy comes from `voidcode.toml` for the workspace.
 
 ### `sandbox`
 
@@ -163,11 +156,11 @@ With the bundled `providers` plugin enabled, recognized non-blank credentials su
 
 | Field | Type | Description |
 |---|---|---|
-| `api_key` | string or null | Optional. Explicit values win, including `null` (no environment credential). Otherwise built-ins use their table-declared credential variables; explicitly configured names also accept `<PROVIDER>_API_KEY`, uppercased with `-` replaced by `_`. |
+| `api_key` | string or `false` | Optional. Explicit values win, including `false` (no environment credential). Otherwise built-ins use their table-declared credential variables; explicitly configured names also accept `<PROVIDER>_API_KEY`, uppercased with `-` replaced by `_`. |
 | `base_url` | string | Optional for built-ins, which use their own vendor endpoint. Custom provider names still require it. Explicit URLs override defaults; the `endpoint` provider also accepts `ENDPOINT_BASE_URL`. |
-| *any other field* | any JSON value | Passed to the declaring plugin verbatim and validated there against that plugin's own configuration schema. The product layer assigns no vendor meaning to them: for OpenAI-wire providers the plugin accepts `organization`, `project`, and `timeout_seconds`. `api_key` and `base_url` may not be repeated here, and a nested `extra` object is forbidden — configure provider fields flat. |
+| *any other field* | any TOML value | Passed to the declaring plugin verbatim and validated there against that plugin's own configuration schema. The product layer assigns no vendor meaning to them: for OpenAI-wire providers the plugin accepts `organization`, `project`, and `timeout_seconds`. `api_key` and `base_url` may not be repeated here, and a nested `extra` table is forbidden — configure provider fields flat. |
 
-Credentials never reach events or revisions, which carry digests only: resolved credentials are written only into the private 0600 snapshot inside the state directory. The core never writes environment-resolved keys back to the workspace; an `api_key` written explicitly in `voidcode.json` stays where the user put it.
+Credentials never reach events or revisions, which carry digests only: resolved credentials are written only into the private 0600 snapshot inside the state directory. The core never writes environment-resolved keys back to the workspace; an `api_key` written explicitly in `voidcode.toml` stays where the user put it.
 
 `/model deepseek` reads the shipped catalog. `/model openrouter` reads current model IDs from the configured OpenAI-compatible `/models` endpoint because OpenRouter has no shipped catalog. Discovery is explicit, uses the recorded credential and endpoint, and makes no inference request. A failed listing is an error, not an empty catalog. An unknown provider id is refused. A known provider with a shipped catalog is listed without configuration; one with no shipped catalog must be configured in this workspace, otherwise it is refused instead of reported as an empty catalog.
 
@@ -215,20 +208,16 @@ The bundled `mcp` plugin validates `plugins.mcp.config` strictly. Unknown fields
 incorrect types and non-positive/non-finite request timeouts are rejected before
 connecting. For example:
 
-```json
-{
-  "plugins": {
-    "mcp": {
-      "config": {
-        "request_timeout_seconds": 30,
-        "servers": {
-          "local": {"command": ["python", "server.py"]},
-          "remote": {"transport": "remote-http", "url": "http://127.0.0.1:8000/mcp"}
-        }
-      }
-    }
-  }
-}
+```toml
+[plugins.mcp.config]
+request_timeout_seconds = 30
+
+[plugins.mcp.config.servers.local]
+command = ["python", "server.py"]
+
+[plugins.mcp.config.servers.remote]
+transport = "remote-http"
+url = "http://127.0.0.1:8000/mcp"
 ```
 
 `stdio` is the default transport and requires a non-empty argv `command`; it may
@@ -292,14 +281,14 @@ Export API credentials in the environment of the process that starts VoidCode; n
 
 ### Model providers
 
-For a configured provider, omit `providers.<name>.api_key` to use the provider's table-declared credential variables, then the generic `<PROVIDER>_API_KEY` fallback: uppercase the provider name and replace `-` with `_`. For example, `openai` uses `OPENAI_API_KEY`, `deepseek` uses `DEEPSEEK_API_KEY`, and `github-copilot` uses `GITHUB_COPILOT_TOKEN` (its generic fallback is `GITHUB_COPILOT_API_KEY`). An explicit `api_key` in `voidcode.json` takes precedence over discovery, and an explicit nested `auth` block suppresses both discovered and generic keys. A non-null `api_key` and a nested `auth` block are mutually exclusive.
+For a configured provider, omit `providers.<name>.api_key` to use the provider's table-declared credential variables, then the generic `<PROVIDER>_API_KEY` fallback: uppercase the provider name and replace `-` with `_`. For example, `openai` uses `OPENAI_API_KEY`, `deepseek` uses `DEEPSEEK_API_KEY`, and `github-copilot` uses `GITHUB_COPILOT_TOKEN` (its generic fallback is `GITHUB_COPILOT_API_KEY`). An explicit `api_key` in `voidcode.toml` takes precedence over discovery, and an explicit nested `auth` table suppresses both discovered and generic keys. A non-empty `api_key` string and a nested `auth` table are mutually exclusive.
 
 ```bash
 export OPENAI_API_KEY="sk-..."
 voidcode run "Summarize this repository"
 ```
 
-A supported environment credential can make its provider available without a `providers` entry (see provider discovery above). It does not select a model, and it does not pin a non-default `base_url` or explicit auth: put those in `voidcode.json`. Provider credentials are captured when a revision is admitted and restored from its private snapshot on restart. To adopt a changed key, export it before starting the core process and invoke `core.reload`; changing another shell's environment does not affect an already-running core.
+A supported environment credential can make its provider available without a `providers` entry (see provider discovery above). It does not select a model, and it does not pin a non-default `base_url` or explicit auth: put those in `voidcode.toml`. Provider credentials are captured when a revision is admitted and restored from its private snapshot on restart. To adopt a changed key, export it before starting the core process and invoke `core.reload`; changing another shell's environment does not affect an already-running core.
 
 The normal turn path streams and is single-attempt. Once a provider dispatch has started, a failure is reported rather than retried or rerouted to another provider/model; the runtime retry policy applies to non-streaming provider implementations. No fallback provider or model is configured automatically.
 
@@ -333,7 +322,7 @@ Changed configuration is never admitted implicitly: a restart restores the
 persisted revision's recorded configuration and private snapshot. To move to
 different code, stop the process and start the new installation against the
 same workspace and state directory; to move to different configuration, edit
-`voidcode.json` and run `core.reload`.
+`voidcode.toml` and run `core.reload`.
 
 ## State Directory
 

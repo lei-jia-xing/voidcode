@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -27,6 +28,7 @@ import jsonschema
 from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.sdk.json_values import json_wire_object
 
@@ -176,7 +178,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, threshold_tokens: int
     }
     if observer:
         config["plugins"]["projection-observer"] = {"path": str(_projection_observer_source(tmp_path))}
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core
@@ -447,7 +449,7 @@ def test_disable_and_reenable_clears_the_parked_coverage_and_reprojects(tmp_path
     with loopback_server(replies) as server:
         core = _core(tmp_path, server)
         workspace = tmp_path / "workspace"
-        config_path = workspace / "voidcode.json"
+        config_path = workspace / "voidcode.toml"
         session_id = core.create_session("sess-reenable").session_id
         assert core.run("first prompt: write the notes", session_id=session_id).status == "completed"
         projected = _command(core, session_id, "compact", {})
@@ -458,9 +460,9 @@ def test_disable_and_reenable_clears_the_parked_coverage_and_reprojects(tmp_path
         # Removing the owner lets the activation transaction delete the projection row. The
         # parked state must stop describing that row, or a re-enable would wait for a new
         # provider-visible event before it could project again.
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
         config["plugins"]["compaction"]["enabled"] = False
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
         disabled = core.invoke_command(session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
         assert disabled.status == "ok", disabled
         assert core.store.window_projection(session_id) is None
@@ -470,7 +472,7 @@ def test_disable_and_reenable_clears_the_parked_coverage_and_reprojects(tmp_path
         assert parked["cursor_sequence"] >= 1
 
         config["plugins"]["compaction"]["enabled"] = True
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
         enabled = core.invoke_command(session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
         assert enabled.status == "ok", enabled
         assert core.store.window_projection(session_id) is None

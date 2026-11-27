@@ -15,6 +15,7 @@ from pathlib import Path
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.storage.store import SqliteStore
 
 _EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "tally-counter"
@@ -62,7 +63,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, plugin: Path) -> N
         "providers": {"endpoint": {"api_key": "loopback-test-key", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": {**disabled, "tally-counter": {"path": str(plugin)}},
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
 
 
 def _call(identity: str, name: str, **arguments: object) -> dict[str, object]:

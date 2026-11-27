@@ -11,6 +11,7 @@ import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
+from voidcode.config import dumps_toml
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.tools import ToolFailure, ToolSuccess
 
@@ -76,8 +77,8 @@ def test_file_tools_use_any_optional_workspace_provider(tmp_path: Path, mode: st
     worker = Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "model": {"model": "endpoint/test-model"},
                     "providers": {"endpoint": {"base_url": f"http://127.0.0.1:{server.server_port}/v1", "api_key": "test"}},

@@ -23,6 +23,7 @@ import uvicorn
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from tests.rpc_client import request as _request
+from voidcode.config import dumps_toml
 from voidcode.transport.http import create_core_app
 
 _HELLO_ID = "hello-state"
@@ -165,7 +166,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path, **po
         "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": {_HELLO_ID: {"path": str(source)}},
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
 
 
 @contextmanager
@@ -276,7 +277,7 @@ def test_cli_show_rescues_history_with_broken_config_and_broken_plugin(tmp_path:
         ran = _cli(workspace, state, "run", "hello", "--session-id", "rescue-1")
         assert ran["status"] == "completed"
     # Break both the config and the plugin source after history exists.
-    (workspace / "voidcode.json").write_text("{not valid json", encoding="utf-8")
+    (workspace / "voidcode.toml").write_text("[not valid toml", encoding="utf-8")
     (source / "hello_plugin.py").write_text("raise RuntimeError('broken plugin')\n", encoding="utf-8")
     assert (state / "voidcode.db").is_file()
     shown = _cli(workspace, state, "show", "rescue-1", "--events")
@@ -420,7 +421,7 @@ def test_cli_and_http_share_generic_command_route_with_restart(tmp_path: Path) -
     _hello_plugin_source(source)
     state = tmp_path / "state"
     # One provider port for the whole test: base_url is revision-pinned, so
-    # rewriting voidcode.json with a new endpoint would orphan the session.
+    # rewriting voidcode.toml with a new endpoint would orphan the session.
     with _provider([]) as server:
         _configure(workspace, server, source)
         _cli(workspace, state, "create-session", "--session-id", "shared-1")
@@ -444,7 +445,7 @@ def test_cli_and_http_share_generic_command_route_with_restart(tmp_path: Path) -
             hello = next(view for view in views if view["name"] == "hello_view")
             assert hello["data"]["value"] == "persist-me"
         # Cross-restart within the same revision: fresh CLI process reads the
-        # same durable state without touching voidcode.json.
+        # same durable state without touching voidcode.toml.
         again = _cli(workspace, state, "invoke", "shared-1", "hello_get")
         assert again["data"]["greeting"] == "persist-me"
         # The same admitted command answers to its canonical ID and public path.

@@ -85,8 +85,8 @@ test.beforeAll(async () => {
     path.join(os.tmpdir(), "voidcode-core-e2e-state-"),
   );
   writeFileSync(
-    path.join(workspace, "voidcode.json"),
-    JSON.stringify({ schema_version: 1 }),
+    path.join(workspace, "voidcode.toml"),
+    "schema_version = 1\n",
   );
   const port = await freePort();
   baseUrl = `http://127.0.0.1:${port}`;

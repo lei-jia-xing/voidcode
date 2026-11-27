@@ -13,6 +13,7 @@ from tests.fixtures.s5_plugin import PLUGIN_ID as S5_PLUGIN_ID
 from tests.fixtures.s5_plugin import WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import SessionStatus, StoredEvent, WakeupRecord
 
@@ -108,8 +109,8 @@ def _configure(
     workspace.mkdir(parents=True, exist_ok=True)
     config_plugins: dict[str, object] = {"files": {"enabled": False}}
     config_plugins.update(plugins or {})
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
 import shutil
 import threading
@@ -16,6 +15,7 @@ import pytest
 from tests.fixtures.png import decode_rgb_png, rgb_png
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from tests.unit.test_session_client_conformance import _EXAMPLE, _client, _configure
+from voidcode.config import dumps_toml
 from voidcode.core.artifacts import MAX_PAGE_BYTES, ArtifactStore
 from voidcode.sdk.client import ArtifactPageWire, CoreClientError, RunSpec, SessionClient
 from voidcode.sdk.provider import ImageAttachment
@@ -39,7 +39,7 @@ def spill(state: Path, data: bytes, media_type: str) -> ArtifactReference:
 def artifact_client(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[tuple[SessionClient, Path]]:
     workspace, state = tmp_path / "workspace", tmp_path / "state"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1}), encoding="utf-8")
     with _client(request.param, workspace, state) as client:
         yield client, state
 

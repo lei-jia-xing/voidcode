@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
+from voidcode.config import dumps_toml
 from voidcode.core.storage.store import EventDraft, SessionStatus, StagedBudgetUpdate
 from voidcode.sdk.services import PluginBudget
 
@@ -15,8 +15,8 @@ from voidcode.sdk.services import PluginBudget
 def _workspace(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "plugins": {name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS},
             }
@@ -85,8 +85,8 @@ def test_core_status_reports_counts_usage_and_all_owner_budgets_without_plugins(
 def test_core_status_stays_read_only_direct_receipt(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps({"policy": {"approval_mode": "ask", "read_only": True}, "plugins": {name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS}}),
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml({"policy": {"approval_mode": "ask", "read_only": True}, "plugins": {name: {"enabled": False} for name in BUNDLED_PLUGIN_IDS}}),
         encoding="utf-8",
     )
     with open_core(workspace, state_dir=tmp_path / "state") as core:
@@ -99,8 +99,10 @@ def test_core_status_stays_read_only_direct_receipt(tmp_path: Path) -> None:
 
 
 def test_zero_plugin_example_disables_every_bundled_plugin() -> None:
-    example = Path(__file__).resolve().parents[2] / "examples/zero-plugins/voidcode.json"
+    import tomllib
+
+    example = Path(__file__).resolve().parents[2] / "examples/zero-plugins/voidcode.toml"
     if example.is_file():
-        config = json.loads(example.read_text(encoding="utf-8"))
+        config = tomllib.loads(example.read_text(encoding="utf-8"))
         assert set(config["plugins"]) == set(BUNDLED_PLUGIN_IDS)
         assert all(entry == {"enabled": False} for entry in config["plugins"].values())

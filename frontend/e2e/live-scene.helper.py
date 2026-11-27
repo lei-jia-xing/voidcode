@@ -83,8 +83,10 @@ def main() -> int:
             ),
             encoding="utf-8",
         )
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        from voidcode.config import dumps_toml
+
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/exact-model"},

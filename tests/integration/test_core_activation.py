@@ -18,6 +18,7 @@ import pytest
 
 from tests.fixtures.reload_plugin import PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
+from voidcode.config import dumps_toml
 
 PLUGIN_ID = "reload-fixture"
 
@@ -55,7 +56,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, plugin_path: Path,
         "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": {PLUGIN_ID: {"path": str(plugin_path), "enabled": enabled}},
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
 
 
 def _command(workspace: Path, state: Path, *arguments: str) -> list[str]:

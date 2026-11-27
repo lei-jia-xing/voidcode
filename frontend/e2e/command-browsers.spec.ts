@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { spawn, execFileSync, type ChildProcess } from "child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { createServer } from "net";
 import * as os from "os";
 import * as path from "path";
@@ -70,8 +70,19 @@ test.beforeAll(async () => {
   ])
     plugins[name] = { enabled: true };
   writeFileSync(
-    path.join(workspace, "voidcode.json"),
-    JSON.stringify({ schema_version: 1, plugins }),
+    path.join(workspace, "voidcode.toml"),
+    execFileSync(
+      python,
+      [
+        "-c",
+        "import json, sys; from voidcode.config import dumps_toml; print(dumps_toml(json.loads(sys.stdin.read())), end='')",
+      ],
+      {
+        cwd: root,
+        env,
+        input: JSON.stringify({ schema_version: 1, plugins }),
+      },
+    ).toString(),
   );
   const skill = path.join(workspace, ".voidcode/skills/guide");
   mkdirSync(skill, { recursive: true });
@@ -249,10 +260,16 @@ test("keyboard discovery, todo editing, passive replay and paged skills work in 
   await input.press("Home");
   await input.press("Tab");
   await expect(input).toHaveValue("/todo e");
-  const configPath = path.join(workspace, "voidcode.json");
-  const config = JSON.parse(readFileSync(configPath, "utf8"));
-  config.plugins.skills.enabled = false;
-  writeFileSync(configPath, JSON.stringify(config));
+  const configPath = path.join(workspace, "voidcode.toml");
+  execFileSync(
+    python,
+    [
+      "-c",
+      "import pathlib, tomllib, sys; from voidcode.config import dumps_toml; p = pathlib.Path(sys.argv[1]); d = tomllib.loads(p.read_text(encoding='utf-8')); d['plugins']['skills']['enabled'] = False; p.write_text(dumps_toml(d), encoding='utf-8')",
+      configPath,
+    ],
+    { cwd: root },
+  );
   await input.fill("/core reload");
   await input.press("Enter");
   await expect(

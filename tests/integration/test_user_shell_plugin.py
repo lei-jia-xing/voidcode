@@ -9,11 +9,13 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
 from tests.fixtures.core_factory import register_core
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.plugins.user_shell.user_shell import MAX_SHELL_EVENT_BYTES, PREVIEW_BYTES
 from voidcode.sdk.json_values import json_wire_object
@@ -34,15 +36,15 @@ def _write_config(tmp_path: Path) -> tuple[Path, Path]:
             "user_shell": {"path": str(_SHELL_PLUGIN_ROOT)},
         },
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     return workspace, state_dir
 
 
 def _core(tmp_path: Path, *, read_only: bool = False, approval_mode: str = "ask") -> Core:
     workspace, state_dir = _write_config(tmp_path)
-    config = json.loads((workspace / "voidcode.json").read_text(encoding="utf-8"))
+    config = tomllib.loads((workspace / "voidcode.toml").read_text(encoding="utf-8"))
     config["policy"] = {"approval_mode": approval_mode, "read_only": read_only}
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core

@@ -11,6 +11,7 @@ from tests.fixtures.core_factory import loopback_server
 from tests.fixtures.reload_plugin import BLOCK_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 
 PLUGIN_ID = "reload-fixture"
@@ -39,7 +40,7 @@ def _setup_core(tmp_path: Path, server: OpenAILoopbackServer) -> tuple[Core, Pat
     }
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=tmp_path / "state")
     return core, workspace
 

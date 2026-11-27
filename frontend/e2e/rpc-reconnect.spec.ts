@@ -51,8 +51,8 @@ test("RPC reconnect restores events once and accepts a new command", async ({
   const workspace = mkdtempSync(path.join(os.tmpdir(), "voidcode-rpc-ws-"));
   const state = mkdtempSync(path.join(os.tmpdir(), "voidcode-rpc-state-"));
   writeFileSync(
-    path.join(workspace, "voidcode.json"),
-    JSON.stringify({ schema_version: 1 }),
+    path.join(workspace, "voidcode.toml"),
+    "schema_version = 1\n",
   );
   const selectedPort = await port();
   const base = `http://127.0.0.1:${selectedPort}`;

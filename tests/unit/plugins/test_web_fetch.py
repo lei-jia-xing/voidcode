@@ -15,6 +15,7 @@ import pytest
 
 from tests.fixtures.fake_services import FakeServices
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.coverage import project_tool_result
 from voidcode.plugins.web import create_plugin
 from voidcode.plugins.web.web_fetch import FETCH_MAX_BYTES, WebFetchResultBody, WebFetchTool
@@ -95,7 +96,7 @@ def test_webfetch_admitted_runtime_serves_snapshot_then_survives_web_removal(tmp
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1}), encoding="utf-8")
     with open_core(workspace, state_dir=tmp_path / "state") as core:
         # Patch after admission: the mock replaces the module-level Client factory.
         _mock_transport(monkeypatch, handle)
@@ -141,7 +142,7 @@ def test_webfetch_admitted_runtime_serves_snapshot_then_survives_web_removal(tmp
         assert isinstance(continued, ToolSuccess)
         stored_digest = fetched_payload["artifact"]["sha256"]
         monkeypatch.undo()
-        (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": {"web": {"enabled": False}}}), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": {"web": {"enabled": False}}}), encoding="utf-8")
         reloaded = core.invoke_command(session.session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
         assert reloaded.status == "ok", reloaded.error
         assert "web_fetch" not in {d.name for d in core.plugin_runtime.tools}

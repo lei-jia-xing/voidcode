@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from voidcode.bootstrap import bundled_sources, open_core
+from voidcode.config import dumps_toml
 from voidcode.sdk.commands import CommandInputSnapshot
 from voidcode.sdk.views import FormViewData, validate_form_submission
 
@@ -60,7 +60,7 @@ def core(tmp_path: Path):
     (source / "__init__.py").write_text(_SOURCE)
     plugins = {name: {"enabled": False} for name in bundled_sources()}
     plugins["probe"] = {"path": str(source)}
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": plugins}))
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": plugins}))
     with open_core(workspace, state_dir=tmp_path / "state") as instance:
         instance.create_session("s")
         yield instance

@@ -14,17 +14,22 @@ equal to the application: there is no manifest, no pinning, and no sandbox.
 Copy this directory anywhere outside the repo (or reference it in place), then
 point a workspace at it:
 
-```jsonc
-// <workspace>/voidcode.json
-{
-  "schema_version": 1,
-  "model": {"model": "endpoint/test-model"},
-  "policy": {"approval_mode": "ask"},
-  "providers": {
-    "endpoint": {"api_key": "loopback-test-key", "base_url": "http://127.0.0.1:PORT/v1"}
-  },
-  "plugins": {"tally-counter": {"path": "/abs/path/to/tally-counter"}}
-}
+```toml
+# <workspace>/voidcode.toml
+schema_version = 1
+
+[model]
+model = "endpoint/test-model"
+
+[policy]
+approval_mode = "ask"
+
+[providers.endpoint]
+api_key = "loopback-test-key"
+base_url = "http://127.0.0.1:PORT/v1"
+
+[plugins.tally-counter]
+path = "/abs/path/to/tally-counter"
 ```
 
 ## Run
@@ -46,7 +51,7 @@ update(s))`. A second invoke with `{"delta": 2}` yields `total: 5`,
 `updates: 2` — both surfaces share the same optimistic-versioned state.
 
 Omit the provider for command/view-only runs (no model traffic): drop
-`providers` from `voidcode.json` and leave `model` unset (`"model": {}`). The
+`providers` from `voidcode.toml` and leave `model` unset (`[model]`). The
 `model`-tool smoke (`run` with the loopback provider driving `tally_add`) is
 covered by `tests/integration/test_tally_example.py`, which needs no
 credentials.

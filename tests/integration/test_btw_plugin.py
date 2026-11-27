@@ -14,6 +14,7 @@ import pytest
 from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core, CoreResult
 from voidcode.core.storage.store import SequenceConflict, SessionStatus, StagedBudgetUpdate
 from voidcode.plugins.btw.btw_plugin import (
@@ -120,7 +121,7 @@ def _core(
         },
         "plugins": plugins,
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core

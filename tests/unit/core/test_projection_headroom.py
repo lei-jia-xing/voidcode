@@ -21,6 +21,7 @@ from voidcode.capabilities.providers.native.google_native import GoogleGenAIProv
 from voidcode.capabilities.providers.native.model_catalog import catalog_model_limits
 from voidcode.capabilities.providers.native.model_routing import RoutedTurnProvider, WireRouting
 from voidcode.capabilities.providers.native.openai_native import OpenAIChatCompletionsProvider
+from voidcode.config import dumps_toml
 from voidcode.core.coverage import (
     allocate_tool_text_budget,
     effective_input_limit_tokens,
@@ -178,8 +179,8 @@ def _configure(
     script_path.write_text(json.dumps(script), encoding="utf-8")
     limits_path = root / "limits.json"
     limits_path.write_text(json.dumps(limits), encoding="utf-8")
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": MODEL},

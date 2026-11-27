@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-import json
 import re
 import time
 from collections.abc import Mapping
@@ -150,7 +149,7 @@ def test_remote_arm_refuses_model_and_thinking_switches_visibly(tmp_path: Path) 
 
     error = "Model config lives with the server: switch from the server workspace"
     assert _plain(terminal.committed).count(error) == 2
-    assert not (tmp_path / "voidcode.json").exists()
+    assert not (tmp_path / "voidcode.toml").exists()
     assert client.invoked == []
     assert app._work.pending == 0
 
@@ -181,7 +180,9 @@ def test_declared_thinking_capability_switches_and_reloads(tmp_path: Path) -> No
     assert app.status_line == "Switching reasoning_effort..."
     _settle(app)
 
-    payload = json.loads((tmp_path / "voidcode.json").read_text(encoding="utf-8"))
+    import tomllib
+
+    payload = tomllib.loads((tmp_path / "voidcode.toml").read_text(encoding="utf-8"))
     assert payload["model"]["reasoning_effort"] == "high"
     assert client.invoked == [("s1", "core.reload", "rev-1")]
     assert "Model switched: revision rev-2 admitted" in _plain(terminal.committed)

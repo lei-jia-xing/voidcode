@@ -28,7 +28,7 @@ graph LR
 - **Core (`src/voidcode/core/`)**:
   The minimal engine: `engine/` (`Core`) runs governed turns over append-only SQLite events with native tool batches, approvals, and confirmation gates; `activation.py` defines neutral execution configurations and state copies; `plugins.py` is the in-process plugin runtime that loads plugins and dispatches invocations synchronously; `services.py` binds scoped services to invocation leases; `processes.py` owns child processes and background jobs; `storage/` owns the append-only SQLite store and v6 schema; `coverage.py` projects tool results for the model and resolves resource paths; `history_renderer.py` renders the readable event projection the history services share. Core has zero product configuration or provider credential concepts and imports no outer adapters, no capabilities, and no concrete plugin.
 - **Outer product layer (`src/voidcode/`)**:
-  Product wiring: `cli.py` (CLI entry point for `voidcode` and `python -m voidcode`), `config.py` (product `voidcode.json` schema and flat provider resolution), `bootstrap.py` (admission assembly, `open_core`, generation adoption, and bundled sources), `transport/` (WebSocket RPC server and web client bundle delivery), and `tui/` (terminal interface).
+  Product wiring: `cli.py` (CLI entry point for `voidcode` and `python -m voidcode`), `config.py` (product `voidcode.toml` schema and flat provider resolution), `bootstrap.py` (admission assembly, `open_core`, generation adoption, and bundled sources), `transport/` (WebSocket RPC server and web client bundle delivery), and `tui/` (terminal interface).
 - **Bundled plugins (`src/voidcode/plugins/`)**:
   The official plugins ship with the product. All tools (files, exec, providers, etc.) exist only through admitted plugins: there are no fallback builtins in the core.
 ### Layer Rules
@@ -52,7 +52,7 @@ scope. See `docs/contracts/optional-queries.md`.
 | Core generation & activation state | `src/voidcode/core/` | `activation.py` (`Admission`, `ExecutionConfig`) |
 | In-process plugin runtime, invocation leases | `src/voidcode/core/` | `plugins.py` (`PluginRuntime`), `services.py` |
 | Append-only session persistence (schema v6) | `src/voidcode/core/storage/` | `store.py` (`SqliteStore`), `schema.sql` |
-| Product config & voidcode.json parser | `src/voidcode/` | `config.py` (`Config`, `parse_config`) |
+| Product config & voidcode.toml parser | `src/voidcode/` | `config.py` (`Config`, `parse_config`) |
 | Product wiring, admission, adoption | `src/voidcode/` | `bootstrap.py` (`open_core`, `adopt_generation`) |
 | CLI entry point and subcommands | `src/voidcode/` | `cli.py` (`main`) |
 | WebSocket RPC transport and web client bundle | `src/voidcode/transport/` | `http.py`, `server.py`, `static.py` |
@@ -84,7 +84,7 @@ A plugin is a Python package directory whose `__init__.py` exports `create_plugi
 
 ## Configuration & State
 
-- **Configuration**: `voidcode.json` at the workspace root, and only that file. Only `voidcode.json` is ever read; any other filename is ignored, not detected or converted. See [`docs/configuration.md`](./docs/configuration.md).
+- **Configuration**: `voidcode.toml` at the workspace root, and only that file. Only `voidcode.toml` is ever read; any other filename is ignored, not detected or converted. See [`docs/configuration.md`](./docs/configuration.md).
 - **State**: `$XDG_STATE_HOME/voidcode/<workspace-sha256>/`, containing `voidcode.db` (schema v6; any other version is refused read-only), `artifacts/` (tool-output artifacts), and `private/` (the 0600 configuration snapshot carrying credentials). The state directory must live outside the workspace; `--state-dir` overrides it.
 - **Persistence**: session history is an append-only SQLite event stream. There is no fork, undo, revert, checkout, or import: clients are commit-once ledgers over durable facts.
 - **Credentials**: provider `api_key` values live only in the private snapshot; revisions and events carry digests, never secrets.

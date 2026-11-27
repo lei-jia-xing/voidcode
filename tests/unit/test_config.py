@@ -58,11 +58,13 @@ def test_provider_entry_is_opaque_and_api_key_masked() -> None:
     assert default_cfg.providers["deepseek"].api_key is None
     assert default_cfg.providers["deepseek"].base_url == "https://example.invalid/v1"
 
-    for non_str in (1, 1.0, True, False, [], {}):
+    for non_str in (1, 1.0, True, [], {}):
         with pytest.raises(ValueError):
             parse_config({"providers": {"deepseek": {"api_key": non_str, "base_url": "https://example.invalid/v1"}}})
         with pytest.raises(ValueError):
             parse_config({"providers": {"deepseek": {"base_url": non_str}}})
+    with pytest.raises(ValueError):
+        parse_config({"providers": {"deepseek": {"base_url": False}}})
 
     cfg = parse_config({"providers": {"deepseek": {"api_key": "sk-super-secret-key", "base_url": "https://example.invalid/v1"}}})
     assert "sk-super-secret-key" not in repr(cfg)
@@ -193,19 +195,25 @@ def test_environment_keys_admit_builtin_providers_without_explicit_entries(tmp_p
     assert "environment-deepseek-key" not in public
 
 
-def test_explicit_credentials_and_null_override_discovered_keys(monkeypatch) -> None:
+def test_explicit_credentials_and_false_override_discovered_keys(monkeypatch, tmp_path) -> None:
+    from voidcode.config import CONFIG_FILE_NAME, load_config
+
     monkeypatch.setenv("DEEPSEEK_API_KEY", "environment-deepseek-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "environment-openrouter-key")
-    providers = resolve_providers(
-        parse_config(
-            {
-                "providers": {
-                    "deepseek": {"api_key": "configured-key", "base_url": "https://example.invalid/v1"},
-                    "openrouter": {"api_key": None},
-                }
-            }
-        )
+    (tmp_path / CONFIG_FILE_NAME).write_text(
+        """
+schema_version = 1
+
+[providers.deepseek]
+api_key = "configured-key"
+base_url = "https://example.invalid/v1"
+
+[providers.openrouter]
+api_key = false
+""",
+        encoding="utf-8",
     )
+    providers = resolve_providers(load_config(tmp_path))
     assert providers["deepseek"] == {"api_key": "configured-key", "base_url": "https://example.invalid/v1"}
     assert providers["openrouter"] == {"api_key": None, "base_url": "https://openrouter.ai/api/v1"}
     with pytest.raises(ValueError, match="explicit base_url"):
@@ -257,8 +265,36 @@ def test_banner_colors_are_validated_and_owned_without_theme_fields() -> None:
     colors[0] = "mutated"
     assert config.tui.banner is not None
     assert config.tui.banner.colors == ("cyan", "#abcdef")
-    for banner in ({"colors": []}, {"colors": ["\x1b[31m"]}, {"colors": ["#12"]}, {"text": 7}, {"theme": "dark"}):
+    for banner in ({"colors": []}, {"colors": ["\x1b[31m"]}, {"colors": ["#12"]}, {"text": 7}, {"theme": "dark"}, True):
         with pytest.raises(ValueError):
             parse_config({"tui": {"banner": banner}})
+    assert parse_config({"tui": {"banner": False}}).tui.banner is None
     with pytest.raises(ValueError):
         parse_config({"tui": {"logo": {}}})
+
+
+def test_dumps_toml_round_trips_nested_tables_keys_and_rejects_null() -> None:
+    import tomllib
+
+    from voidcode.config import dumps_toml
+
+    payload: dict[str, object] = {
+        "model": {"model": "openai/gpt-5.2", "reasoning_effort": 1024},
+        "schema_version": 1,
+        "plugins": {
+            "files": {},
+            "custom": {
+                "enabled": True,
+                "config": {
+                    "dotted.key": "ok",
+                    "items": [{"name": "a", "flags": [1, 2]}],
+                },
+            },
+        },
+    }
+    text = dumps_toml(payload)
+    assert tomllib.loads(text) == payload
+    with pytest.raises(ValueError, match="null"):
+        dumps_toml({"model": {"model": None}})
+    with pytest.raises(ValueError, match="non-finite"):
+        dumps_toml({"model": {"ratio": float("nan")}})

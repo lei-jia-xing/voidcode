@@ -2,7 +2,7 @@
 
 Two review children in parallel, then one combined summary. The script is
 ordinary trusted Python — no manifest, no sandbox claim — admitted only
-because `voidcode.json` names it explicitly.
+because `voidcode.toml` names it explicitly.
 
 ## Layout
 
@@ -19,16 +19,13 @@ mkdir -p <workspace>/flows
 cp examples/workflows/parallel_review.py <workspace>/flows/parallel_review.py
 ```
 
-Then merge just the workflows fragment into your existing `voidcode.json`
+Then merge just the workflows fragment into your existing `voidcode.toml`
 (this example changes nothing about your model, providers, or approvals):
 
-```jsonc
-// merge into <workspace>/voidcode.json under "plugins"
-{
-  "workflows": {
-    "config": {"workflows": {"parallel_review": "flows/parallel_review.py"}}
-  }
-}
+```toml
+# <workspace>/voidcode.toml
+[plugins.workflows.config.workflows]
+parallel_review = "flows/parallel_review.py"
 ```
 
 Only `workflows: {name: workspace-relative .py path}` is accepted; unknown

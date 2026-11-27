@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from voidcode.bootstrap import bundled_sources, open_core
+from voidcode.config import dumps_toml
 from voidcode.sdk.views import ChoicesViewData, FormViewData, MarkdownViewData, choices_dispatch, validate_form_submission
 from voidcode.tui.local_client import CoreLocalClient
 
@@ -21,7 +21,7 @@ def client(tmp_path: Path):
     (skills / "SKILL.md").write_text("---\nname: guide\ndescription: Test guide\n---\n\n" + "Read the workspace.\n" * 300)
     plugins = {name: {"enabled": False} for name in bundled_sources()}
     plugins.update({"skills": {"enabled": True, "config": {"enabled": True}}, "todo": {"enabled": True}})
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": plugins}))
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": plugins}))
     with open_core(workspace, state_dir=tmp_path / "state") as core:
         adapter = CoreLocalClient(core, workspace=workspace)
         adapter.create_session("s")

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
 from tests.fixtures.core_factory import loopback_server, open_core_for_test, write_loopback_config
 from tests.provider_loopback import openai_response
+from voidcode.config import dumps_toml
 from voidcode.core.engine.governance import ToolGovernance
 from voidcode.core.execution import _Cursor, _Execution
 from voidcode.core.storage.store import SessionRecord, SessionStatus
@@ -160,10 +162,10 @@ def test_post_hook_note_preserves_mcp_web_and_text_output(tmp_path: Path) -> Non
     with loopback_server(replies) as server:
         workspace = tmp_path / "workspace"
         write_loopback_config(workspace, server, source, plugin_id=PLUGIN_ID)
-        config_path = workspace / "voidcode.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config_path = workspace / "voidcode.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
         config["plugins"]["mcp"] = {"enabled": False}
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
         core = open_core_for_test(tmp_path)
         core.create_session("sess-output")
         result = core.run("run all shapes", session_id="sess-output")

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import json
 import os
 import re
 import select
@@ -16,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from voidcode.bootstrap import bundled_sources
+from voidcode.config import dumps_toml
 from voidcode.core.storage.store import SqliteStore
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="requires POSIX PTY support")
@@ -91,7 +91,7 @@ def test_todo_add_actions_and_restart_replay_in_real_terminal(tmp_path: Path, wi
     state = tmp_path / "state"
     plugins = {name: {"enabled": False} for name in bundled_sources()}
     plugins["todo"] = {"enabled": True}
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": plugins}))
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": plugins}))
     terminal = _TerminalProcess(workspace, state, width=width, height=height, palette=palette)
     try:
         terminal.until("no model")

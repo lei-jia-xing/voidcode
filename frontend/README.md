@@ -55,7 +55,7 @@ VITE_BACKEND_URL=http://127.0.0.1:8765 bun run dev
 # then open http://127.0.0.1:5173/?server=http://127.0.0.1:8765
 ```
 
-The core reads one config file, `voidcode.json` in the workspace (`{"schema_version": 1}` is a complete minimal file). Any other filename (including a legacy `.voidcode.json`) is ignored, not detected or converted.
+The core reads one config file, `voidcode.toml` in the workspace (`schema_version = 1` is a complete minimal file). Any other filename is ignored, not detected or converted.
 
 ## API surface
 
@@ -78,7 +78,7 @@ mise run frontend:api:check      # fail when the committed types are stale
 
 `e2e/core.spec.ts` covers initial connection and command execution.
 `e2e/rpc-reconnect.spec.ts` restarts the real server while the browser stays open
-and proves cursor replay without duplicate rows or command resends. The smoke spawns the real core server on a throwaway workspace and state dir whose `voidcode.json` is just `{"schema_version": 1}`, opens the bundle the core serves at `/`, and asserts that the client renders, creates a session, and renders the committed result of the `/plan status` plugin command. No provider is configured, so nothing in the smoke reaches a model.
+and proves cursor replay without duplicate rows or command resends. The smoke spawns the real core server on a throwaway workspace and state dir whose `voidcode.toml` is just `schema_version = 1`, opens the bundle the core serves at `/`, and asserts that the client renders, creates a session, and renders the committed result of the `/plan status` plugin command. No provider is configured, so nothing in the smoke reaches a model.
 
 ```bash
 bun run build       # the served bundle is dist/index.html

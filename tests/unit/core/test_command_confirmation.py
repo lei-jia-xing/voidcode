@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from voidcode.bootstrap import bundled_sources, open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import ConfirmationStatus
 from voidcode.sdk.commands import CommandResult
@@ -72,7 +72,7 @@ def core(tmp_path: Path) -> Iterator[Core]:
     plugins = {name: {"enabled": False} for name in bundled_sources()}
     plugins["probe"] = {"path": str(probe)}
     plugins["observer"] = {"path": str(observer)}
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": plugins}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": plugins}), encoding="utf-8")
     with open_core(workspace, state_dir=tmp_path / "state") as instance:
         instance.create_session("s")
         yield instance

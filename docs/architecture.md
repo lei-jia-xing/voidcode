@@ -31,7 +31,7 @@ graph TD
 
     subgraph Outer["Outer product layer (src/voidcode/)"]
         CLIImpl["cli.py — entry point, subcommands"]
-        Config["config.py — voidcode.json schema"]
+        Config["config.py — voidcode.toml schema"]
         Bootstrap["bootstrap.py — admission, adoption, bundled sources"]
         Transport["transport/ — WebSocket RPC, health + served web bundle"]
         TUIImpl["tui/ — terminal client"]
@@ -96,7 +96,7 @@ graph TD
 ### Outer product layer (`src/voidcode/`)
 
 - **`cli.py`** — the product CLI entry point (`voidcode` console script and `python -m voidcode`): `run`, `resume`, `show`, `create-session`, `sessions`, `catalog`, `invoke`, `confirm`, `views`, `drain`, `usage`, `serve`, and the bare command (in-process local TUI server, or `--server`/`--token` for a remote one). `show` is a config-free SQLite rescue reader.
-- **`config.py`** — the product `voidcode.json` schema (`Config`), strict parser, and flat provider resolution (explicit fields plus the `<PROVIDER>_API_KEY` environment key).
+- **`config.py`** — the product `voidcode.toml` schema (`Config`), strict parser, and flat provider resolution (explicit fields plus the `<PROVIDER>_API_KEY` environment key).
 - **`bootstrap.py`** — admission assembly (`admit_live`, `open_core`), generation adoption, the bundled plugin id list (`BUNDLED_PLUGIN_IDS`), and the private-snapshot lifecycle.
 - **`transport/`** — `http.py` serves the core API (`/api/...`), `models.py` holds its wire models, `server.py` binds loopback with a bearer token printed at launch, `static.py` locates the built web bundle served at `/`.
 - **`tui/`** — the inline terminal client (`catalog → invoke → events → views`) with a commit-once ledger: settled rows are never replayed. `client.py` streams events as a direct async generator over `httpx.AsyncClient`; the UI thread owns a worker loop with task cancellation and generation isolation.

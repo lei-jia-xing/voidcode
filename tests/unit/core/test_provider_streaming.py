@@ -10,6 +10,7 @@ import pytest
 from tests.fixtures.core_factory import loopback_server
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.sdk.provider import ProviderExecutionError
 
@@ -25,8 +26,8 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
 def _configure(tmp_path: Path, server: OpenAILoopbackServer) -> Path:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},
@@ -93,8 +94,8 @@ def test_non_streamable_provider_falls_back_to_propose_turn(tmp_path: Path) -> N
     )
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "plain/exact-model"},

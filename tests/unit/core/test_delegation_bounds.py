@@ -12,6 +12,7 @@ from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.reload_plugin import DELEGATE_TOOL, OVERLAY_COMMAND, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import MAX_CHILD_LABEL_BYTES
 from voidcode.sdk.child_schema import CHILD_PROMPT_MAX_BYTES
@@ -32,8 +33,8 @@ def _turn(*calls: dict[str, object], output: str | None = None) -> dict[str, obj
 
 def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},

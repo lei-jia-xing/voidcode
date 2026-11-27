@@ -19,6 +19,7 @@ import pytest
 from tests.fixtures.core_factory import register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import locate_sandbox_helper, open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.plugins import LeaseContext, LeaseIdentity
 from voidcode.core.services import RuntimeServices
@@ -43,7 +44,7 @@ def _core(tmp_path: Path, *, sandbox: dict | None, extra: dict | None = None) ->
         config["sandbox"] = sandbox
     if extra:
         config.update(extra)
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core

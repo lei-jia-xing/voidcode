@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 from pathlib import Path
 
@@ -10,6 +9,7 @@ import pytest
 
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import adopt_generation, bundled_sources, open_core
+from voidcode.config import dumps_toml
 from voidcode.core.execution import _Cursor, _Execution
 from voidcode.core.fact_delivery import FactDeliveryContractError
 from voidcode.core.storage.store import StoreConflict
@@ -73,7 +73,7 @@ def _write(root: Path, body: str) -> Path:
 
 def _config(workspace: Path, plugins: dict[str, object]) -> None:
     disabled = {plugin_id: {"enabled": False} for plugin_id in bundled_sources()}
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": {**disabled, **plugins}}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": {**disabled, **plugins}}), encoding="utf-8")
 
 
 def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(tmp_path: Path) -> None:
@@ -88,8 +88,8 @@ def test_fact_owners_are_frozen_on_the_event_across_restart_with_changed_source(
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/exact-model"},
@@ -244,7 +244,7 @@ def test_confirmation_is_provenance_not_a_read_only_exemption(tmp_path: Path) ->
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     _write(workspace / "confirmer", CONFIRMER)
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": {"confirmer": {"path": "confirmer"}}}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": {"confirmer": {"path": "confirmer"}}}), encoding="utf-8")
     core = open_core(workspace, state_dir=tmp_path / "state")
     try:
         core.create_session("s")
@@ -276,7 +276,7 @@ def test_pending_confirmation_blocks_quiescent_adoption_until_resolved(tmp_path:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     _write(workspace / "confirmer", CONFIRMER)
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": {"confirmer": {"path": "confirmer"}}}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": {"confirmer": {"path": "confirmer"}}}), encoding="utf-8")
     core = open_core(workspace, state_dir=tmp_path / "state")
     try:
         core.create_session("s")

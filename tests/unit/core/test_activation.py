@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from tests.fixtures.core_factory import loopback_server, register_core
 from tests.fixtures.reload_plugin import DEACTIVATE_TOOL, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import PluginStateRow, SqliteStore
 from voidcode.sdk.json_values import json_wire_object
@@ -54,7 +56,7 @@ def _configure(
         "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": plugins,
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     return config
 
 
@@ -423,20 +425,20 @@ def test_provider_selection_must_be_a_registered_name(tmp_path: Path) -> None:
     write_reload_plugin(source, tool_output="v1")
     with loopback_server([_turn(output="unused")]) as server:
         _configure(tmp_path / "workspace", server, source)
-        config_path = tmp_path / "workspace" / "voidcode.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config_path = tmp_path / "workspace" / "voidcode.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
         assert "endpoint" in config["providers"]
 
         # A configured provider nobody declares is refused at admission, not at dispatch time.
         config["providers"]["ghost-adapter"] = {"base_url": "http://127.0.0.1:1/v1"}
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
         with pytest.raises(ValueError, match="is not registered by any admitted plugin"):
             _open(tmp_path)
 
         # A model naming a provider that is not configured is refused too.
         del config["providers"]["ghost-adapter"]
         config["model"] = {"model": "ghost-adapter/whatever"}
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
         with pytest.raises(ValueError, match="must name a configured provider/model"):
             _open(tmp_path)
 
@@ -478,8 +480,8 @@ def test_environment_provider_discovery_requires_reload_not_restart(tmp_path, mo
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     with loopback_server([_turn(output="before"), _turn(output="restarted"), _turn(output="reloaded")]) as server:
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "model": {"model": "deepseek/a-model"},
                     "providers": {"deepseek": {"base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
@@ -522,7 +524,7 @@ def test_environment_credentials_do_not_enable_disabled_provider_capabilities(tm
     monkeypatch.setenv("OPENROUTER_API_KEY", "disabled-provider-key")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(json.dumps({"plugins": {name: {"enabled": False} for name in bundled_sources()}}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"plugins": {name: {"enabled": False} for name in bundled_sources()}}), encoding="utf-8")
     with open_core(workspace, state_dir=tmp_path / "state") as core:
         session = core.create_session("without-providers")
         assert "model" not in {command.name for command in core.command_catalog().commands}

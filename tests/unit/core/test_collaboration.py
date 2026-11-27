@@ -35,6 +35,7 @@ from tests.fixtures.s5_plugin import PROBE_TOOL as S5_PROBE_TOOL
 from tests.fixtures.s5_plugin import write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.delegation import DelegationManager
 from voidcode.core.engine import Core
 from voidcode.core.events import CHILD_OUTCOME_RECEIPT_OWNER, EventType, child_completion_notice_id
@@ -183,7 +184,7 @@ def _open(
 ) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    config_path = workspace / "voidcode.json"
+    config_path = workspace / "voidcode.toml"
     if not config_path.exists():
         source = tmp_path / "plugin"
         _write_plugin(source)
@@ -194,7 +195,7 @@ def _open(
             "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
             "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
         }
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
     return register_core(open_core(workspace, state_dir=tmp_path / "state"))
 
 
@@ -1669,8 +1670,8 @@ def _open_bundled(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     """A real core with the whole bundled plugin set admitted, like production boot."""
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},
@@ -1971,8 +1972,8 @@ def test_genuine_root_budget_exhaustion_still_reports_limit_reached(tmp_path: Pa
     with loopback_server([_turn(_call("recurse", S5_PROBE_TOOL, action="recurse"))]) as server:
         workspace = tmp_path / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/exact-model"},

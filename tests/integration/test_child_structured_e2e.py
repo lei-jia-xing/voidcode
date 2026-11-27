@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,6 +10,7 @@ from pathlib import Path
 from tests.fixtures.fake_services import FakeServices
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.plugins.subagents.subagents_plugin import ChildRecord, DelegationState, TaskTool
 from voidcode.plugins.workflows import workflows_plugin
@@ -44,8 +44,8 @@ def _server(replies: list[dict[str, object]]) -> Iterator[OpenAILoopbackServer]:
 def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},

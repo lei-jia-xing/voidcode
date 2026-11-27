@@ -247,7 +247,7 @@ def render_help(
     if groups:
         rows.extend(_command_rows(groups, width=width, styles=styles))
     elif not catalog_error:
-        for line in wrap_plain("No commands are admitted. Enable a plugin in voidcode.json.", max(1, width - 2)):
+        for line in wrap_plain("No commands are admitted. Enable a plugin in voidcode.toml.", max(1, width - 2)):
             rows.append("  " + styles.fg("warning", line))
     rows.extend(["", _heading("Keys", styles)])
     rows.extend(_key_rows(bindings, conflicts, width=width, styles=styles, quit_arm_seconds=quit_arm_seconds))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import tomllib
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +15,7 @@ from tests.fixtures.core_factory import register_core
 from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.events import child_completion_notice_id
 from voidcode.core.history_renderer import iter_event_blocks
@@ -50,7 +52,7 @@ def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
         "providers": {"endpoint": {"api_key": "loopback-secret", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": {"files": {"enabled": False}, "subagents": {"path": str(_SUBAGENTS_ROOT), "enabled": True}},
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=tmp_path / "state")
     register_core(core)
     return core
@@ -223,7 +225,7 @@ def test_monitor_detail_paging_reaches_every_marker_exactly_once(tmp_path: Path)
                 "marker": {"path": str(plugin_dir), "enabled": True},
             },
         }
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
         core = open_core(workspace, state_dir=tmp_path / "state")
         register_core(core)
         core.create_session("root")
@@ -577,7 +579,7 @@ def test_parked_settle_pin_refuses_after_newer_run_claims(tmp_path: Path) -> Non
                 "park": {"path": str(plugin_dir), "enabled": True},
             },
         }
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
         core = open_core(workspace, state_dir=tmp_path / "state")
         register_core(core)
         core.auto_drain = False
@@ -769,10 +771,10 @@ def create_plugin(config):
 """.replace("OPERATION", repr(operation)),
             encoding="utf-8",
         )
-        config_path = core.workspace / "voidcode.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config_path = core.workspace / "voidcode.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
         config["plugins"]["late_registration"] = {"path": str(source)}
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
         reloaded = core.invoke_command("root", "core.reload", {}, expected_revision=core.revision_id)
         assert reloaded.status == "ok", reloaded.error
         child = core.spawn_child("root", "prepare parent", notify_on_completion=False)

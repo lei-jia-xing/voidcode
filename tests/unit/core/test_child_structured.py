@@ -12,6 +12,7 @@ import pytest
 from tests.fixtures.core_factory import loopback_server
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.delegation import DelegationManager
 from voidcode.core.engine import Core
 from voidcode.core.events import EventType
@@ -65,8 +66,8 @@ def _turn(output: str | None) -> dict[str, object]:
 def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},

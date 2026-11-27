@@ -10,11 +10,13 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import tomllib
 from pathlib import Path
 
 from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.storage.store import SequenceConflict
 from voidcode.plugins.plan.plan_plugin import PLAN_MODE_INSTRUCTION
@@ -82,7 +84,7 @@ def _core(
             "notes": {"path": str(notes_root)},
         },
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = register_core(open_core(workspace, state_dir=resolved_state))
     return core
 
@@ -243,10 +245,10 @@ def test_plan_ignores_absent_and_malformed_legacy_state(tmp_path: Path) -> None:
         assert reopened.overlay_active(session_id, "plan") is True
 
         # The legacy row also must not block dropping the owner and deleting its overlay.
-        config_path = tmp_path / "workspace" / "voidcode.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config_path = tmp_path / "workspace" / "voidcode.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
         config["plugins"]["plan"]["enabled"] = False
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
         switched = _invoke(reopened, session_id, "core.reload", {})
         assert switched.status == "ok", switched.error
         assert reopened.overlay_active(session_id, "plan") is False
@@ -300,10 +302,10 @@ def test_disabling_plan_revokes_only_its_overlay(tmp_path: Path) -> None:
         assert core.overlay_active(session_id, "plan") is True
         core.store.set_session_overlay(session_id, "other-owner")
 
-        config_path = tmp_path / "workspace" / "voidcode.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config_path = tmp_path / "workspace" / "voidcode.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
         config["plugins"]["plan"]["enabled"] = False
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
 
         switched = _invoke(core, session_id, "core.reload", {})
         assert switched.status == "ok", switched.error

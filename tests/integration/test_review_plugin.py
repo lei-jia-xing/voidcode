@@ -11,6 +11,7 @@ from pathlib import Path
 from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.plugins.review.review_plugin import REVIEW_CHILD_LABEL, REVIEW_INSPECTION_TOOLS
 from voidcode.plugins.review.workspace_review import WorkspaceReviewService, git_status_snapshot
@@ -72,7 +73,7 @@ def _core(
         },
         "plugins": plugins,
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     if custom_reader:
         source = tmp_path / "custom_reader"
         source.mkdir()
@@ -88,7 +89,7 @@ def _core(
             encoding="utf-8",
         )
         config["plugins"]["custom_reader"] = {"path": str(source)}
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from tests.fixtures.core_factory import discard_core, loopback_server, register_
 from tests.fixtures.reload_plugin import OVERLAY_COMMAND, PROBE_TOOL, write_reload_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 
 PLUGIN_ID = "reload-fixture"
@@ -35,7 +37,7 @@ def _configure(workspace: Path, server: OpenAILoopbackServer, source: Path, *, r
         "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
         "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
 
 
 def _open(tmp_path: Path) -> Core:
@@ -144,9 +146,9 @@ def test_deactivating_the_owner_revokes_its_overlay_in_the_switch(tmp_path: Path
         assert core.invoke_command("sess-disable", OVERLAY_COMMAND, {"action": "on"}, expected_revision=core.revision_id).status == "ok"
         # A foreign owner's overlay must not be touched by another owner's deactivation.
         core.store.set_session_overlay("sess-disable", "other-owner")
-        config = json.loads((tmp_path / "workspace" / "voidcode.json").read_text(encoding="utf-8"))
+        config = tomllib.loads((tmp_path / "workspace" / "voidcode.toml").read_text(encoding="utf-8"))
         config["plugins"][PLUGIN_ID]["enabled"] = False
-        (tmp_path / "workspace" / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (tmp_path / "workspace" / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
 
         switched = core.invoke_command("sess-disable", "core.reload", {}, expected_revision=core.revision_id)
         assert switched.status == "ok", switched.error
@@ -231,8 +233,8 @@ def test_confirmed_session_command_under_read_only_stages_state_but_cannot_touch
     (source / "__init__.py").write_text(_SESSION_PROBE, encoding="utf-8")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "policy": {"approval_mode": "yolo", "read_only": True},
@@ -265,8 +267,8 @@ def test_session_command_under_read_only_stages_state_but_cannot_touch_the_machi
     (source / "__init__.py").write_text(_SESSION_PROBE, encoding="utf-8")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "policy": {"approval_mode": "yolo", "read_only": True},

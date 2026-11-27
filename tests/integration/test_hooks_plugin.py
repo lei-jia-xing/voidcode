@@ -15,6 +15,7 @@ from pathlib import Path
 from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 
 _HOOKS_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "hooks"
@@ -109,7 +110,7 @@ def _core(
             "hooks": {"path": str(_HOOKS_ROOT), "config": dict(hooks_config)},
         },
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core

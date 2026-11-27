@@ -20,6 +20,7 @@ import pytest
 from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.events import EventType
 from voidcode.core.storage.store import EventDraft
@@ -187,7 +188,7 @@ def _close_cores() -> Iterator[None]:
 def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    config_path = workspace / "voidcode.json"
+    config_path = workspace / "voidcode.toml"
     if not config_path.exists():
         source = tmp_path / "plugin"
         _write_plugin(source)
@@ -198,7 +199,7 @@ def _open(tmp_path: Path, server: OpenAILoopbackServer) -> Core:
             "providers": {"endpoint": {"api_key": "loopback-secret-not-for-storage", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
             "plugins": {"files": {"enabled": False}, PLUGIN_ID: {"path": str(source), "enabled": True}},
         }
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=tmp_path / "state")
     _CREATED.append(core)
     return core
@@ -684,8 +685,8 @@ def test_parallel_child_sessions_share_finite_captured_authorization_across_rest
         workspace.mkdir()
         plugins = {name: {"enabled": name == "providers"} for name in BUNDLED_PLUGIN_IDS}
         plugins["parallel_fixture"] = {"path": str(source)}
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/exact-model"},

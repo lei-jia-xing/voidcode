@@ -9,6 +9,7 @@ import socket
 import sys
 import threading
 import time
+import tomllib
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -21,6 +22,7 @@ from websockets.sync.client import connect
 from websockets.typing import Subprotocol
 
 from voidcode.bootstrap import bundled_sources
+from voidcode.config import dumps_toml
 from voidcode.sdk.client import CoreClientError, ErrorFrame, EventFrame, HeadFrame
 from voidcode.transport.http import CoreTransportApp, create_core_app
 from voidcode.transport.models import RPC_SUBPROTOCOL
@@ -35,7 +37,7 @@ def remote(tmp_path: Path) -> Iterator[tuple[str, CoreTransportApp, Path]]:
     workspace.mkdir()
     plugins = {name: {"enabled": False} for name in bundled_sources()}
     plugins["user_shell"] = {"enabled": True}
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": plugins}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": plugins}), encoding="utf-8")
     app = create_core_app(workspace=workspace, state_dir=tmp_path / "state", bearer_token=TOKEN)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -273,11 +275,11 @@ def test_command_input_returns_dynamic_values_without_invoking(remote) -> None:
     from voidcode.sdk.views import FormViewData
 
     base, app, workspace = remote
-    path = workspace / "voidcode.json"
-    config = json.loads(path.read_text())
+    path = workspace / "voidcode.toml"
+    config = tomllib.loads(path.read_text())
     config["plugins"]["subagents"] = {"enabled": True}
     config["plugins"]["workflows"] = {"enabled": True, "config": {"workflows": {"review": "flows/review.py"}}}
-    path.write_text(json.dumps(config))
+    path.write_text(dumps_toml(config))
     client = CoreRpcClient(base, token=TOKEN)
     try:
         client.create_session("input")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -18,6 +17,7 @@ import pytest
 from tests.fixtures.polling import wait_for
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.core.events import EventType
 from voidcode.sdk.codec import decode_tool_result
@@ -426,8 +426,8 @@ def _configure(tmp_path: Path, server: OpenAILoopbackServer, *, approval: str = 
     (source / "__init__.py").write_text(_PLUGIN_CODE, encoding="utf-8")
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},

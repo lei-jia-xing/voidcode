@@ -14,6 +14,7 @@ from tests.provider_loopback import openai_response
 from voidcode.capabilities.files.find_queries import FIND_GREP, FIND_READ
 from voidcode.capabilities.files.grep_tool import GrepTool
 from voidcode.capabilities.files.read_tool import ReadResultBody, ReadTool
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.plugins.files import create_plugin as create_files_plugin
 from voidcode.plugins.find import create_plugin
@@ -1009,8 +1010,8 @@ def test_real_core_judge_round_trip(tmp_path: Path) -> None:
     reply = openai_response(message={"role": "assistant", "content": json.dumps({"verdicts": [verdict, declined]})}, finish="stop")
     workspace = _tree(tmp_path / "workspace")
     with loopback_server([reply]) as server:
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/exact-model"},
@@ -1081,8 +1082,8 @@ def test_real_core_projection_surfaces_limit_drops(tmp_path: Path) -> None:
         openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
     ]
     with loopback_server(replies) as server:
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/test-model"},
@@ -1127,8 +1128,8 @@ def test_real_core_files_disabled_makes_find_fail_visibly(tmp_path: Path) -> Non
         openai_response(message={"role": "assistant", "content": "done"}, finish="stop"),
     ]
     with loopback_server(replies) as server:
-        (workspace / "voidcode.json").write_text(
-            json.dumps(
+        (workspace / "voidcode.toml").write_text(
+            dumps_toml(
                 {
                     "schema_version": 1,
                     "model": {"model": "endpoint/test-model"},

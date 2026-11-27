@@ -25,6 +25,7 @@ from tests.unit.core.test_nested_tools import _call, _turn
 from tests.unit.plugins.test_providers_auth_catalog import _JsonLoopback, _provider, _request
 from voidcode.bootstrap import BUNDLED_PLUGIN_IDS, open_core
 from voidcode.capabilities.files.read_tool import ReadResultBody, ReadTool
+from voidcode.config import dumps_toml
 from voidcode.core.artifacts import MAX_PAGE_BYTES, ArtifactNotFoundError, ArtifactStore
 from voidcode.core.coverage import MODEL_PROJECTION_MARKER, ProjectionRequiresReference, project_tool_result, read_artifact_content
 from voidcode.core.services import RuntimeServices
@@ -88,8 +89,8 @@ def _configure(tmp_path: Path, *, provider: str, base_url: str, extra_plugins: d
     plugins = {identity: {"enabled": identity in {"providers", "files", "exec"}} for identity in BUNDLED_PLUGIN_IDS}
     plugins.update(extra_plugins or {})
     model = "claude-sonnet-4-5" if provider == "anthropic" else "exact-model"
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": f"{provider}/{model}"},

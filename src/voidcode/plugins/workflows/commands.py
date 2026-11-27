@@ -50,7 +50,7 @@ class WorkflowRunCommand:
             return CommandPresentation(
                 title="Run workflow",
                 view_type="notice",
-                data={"message": "No workflows are configured. Add a workflow script to voidcode.json and reload configuration."},
+                data={"message": "No workflows are configured. Add a workflow script to voidcode.toml and reload configuration."},
             )
         view = WorkflowRunFormView(self._workflows).render(invocation.context.session_id, services)
         return CommandPresentation(title=view.title, view_type="form", data=view.data)

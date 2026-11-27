@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import socket
 import threading
@@ -15,6 +14,7 @@ import pytest
 import uvicorn
 
 from voidcode.bootstrap import bundled_sources, open_core
+from voidcode.config import dumps_toml
 from voidcode.transport.http import create_core_app
 from voidcode.tui.client import CoreRpcClient
 from voidcode.tui.local_client import CoreLocalClient
@@ -65,7 +65,7 @@ def _settle(app: CoreTuiApp, predicate: Any, *, timeout: float = 10.0) -> None:
 
 def _workspace_config(workspace: Path, *, files: bool) -> None:
     plugins = {name: {"enabled": name == "files" and files} for name in bundled_sources()}
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1, "plugins": plugins}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1, "plugins": plugins}), encoding="utf-8")
 
 
 def test_local_completion_uses_the_workspace_query(tmp_path: Path) -> None:
@@ -160,7 +160,7 @@ def test_remote_completion_is_server_workspace_relative(remote: tuple[str, Path]
         _settle(app, lambda: bool(app.composer.completion))
         # The client's own working directory is the repository; none of its
         # entries may leak into a remote workspace listing.
-        assert app.composer.completion == ("server-dir/", "remote-only.txt", "voidcode.json")
+        assert app.composer.completion == ("server-dir/", "remote-only.txt", "voidcode.toml")
         assert "pyproject.toml" not in app.composer.completion
 
         nested = workspace / "server-dir" / "deep"

@@ -13,6 +13,7 @@ from pathlib import Path
 from tests.fixtures.core_factory import loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 
 _SKILLS_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "src" / "voidcode" / "plugins" / "skills"
@@ -89,7 +90,7 @@ def _core(tmp_path: Path, server: OpenAILoopbackServer, *, skills_enabled: bool)
             _TOUCH_PLUGIN_ID: {"path": str(_write_touch_plugin(tmp_path / "touch-plugin")), "enabled": True},
         },
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core

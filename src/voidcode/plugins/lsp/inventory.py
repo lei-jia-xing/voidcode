@@ -81,7 +81,7 @@ class LspInventoryCommand:
             presentation = CommandPresentation(
                 title="Language servers",
                 view_type="notice",
-                data={"message": message + " Check LSP configuration in voidcode.json, then run /core reload."},
+                data={"message": message + " Check LSP configuration in voidcode.toml, then run /core reload."},
             )
         else:
             presentation = CommandPresentation(
