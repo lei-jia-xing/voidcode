@@ -28,6 +28,7 @@ from voidcode.core.storage.store import (
 from voidcode.core.transcript import transcript_entry
 from voidcode.sdk.json_values import json_wire_object
 from voidcode.sdk.services import QueryContractError, QueryUnavailable
+from voidcode.sdk.suspend import ParkRevisionError
 from voidcode.sdk.transcript import encode_transcript_entry
 
 from .models import SESSION_ID_MAX_LENGTH, SESSION_ID_PATTERN
@@ -179,7 +180,7 @@ def core_error_status(error: Exception) -> tuple[int, str | None]:
     """
     # A client acting on a stale or missing displayed revision is refused before
     # any dispatch: the refusal is visible and never retried automatically.
-    if isinstance(error, StaleRevision):
+    if isinstance(error, (StaleRevision, ParkRevisionError)):
         return 409, "stale_revision"
     if isinstance(error, InvalidRevision):
         return 400, "invalid_params"

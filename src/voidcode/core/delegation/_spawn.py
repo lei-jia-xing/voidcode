@@ -28,6 +28,38 @@ from ._outcomes import _child_run_status, _terminal_run_result
 from ._publication import _DelegationPublication
 
 
+def _build_spawned_payload(
+    *,
+    child_id: str,
+    root_id: str,
+    root_budget: int | None,
+    label: str,
+    depth: int,
+    scope: tuple[str, ...] | None,
+    notify_on_completion: bool,
+    result_schema: object = None,
+    owner: str | None = None,
+    idempotency_key: str | None = None,
+    spec_hash: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "child_session_id": child_id,
+        "root_id": root_id,
+        "root_action_budget": root_budget,
+        "label": label,
+        "depth": depth,
+        "tool_allowlist": list(scope) if scope is not None else None,
+        "notify_on_completion": notify_on_completion,
+    }
+    if isinstance(result_schema, Mapping):
+        payload["result_schema"] = dict(result_schema)
+    if idempotency_key is not None:
+        payload["spawn_owner"] = owner or ""
+        payload["idempotency_key"] = idempotency_key
+        payload["spec_hash"] = spec_hash or ""
+    return payload
+
+
 class _DelegationSpawn(_DelegationPublication):
     """Spawn authorization, idempotent child creation, and the initial child driver."""
 
@@ -217,21 +249,19 @@ class _DelegationSpawn(_DelegationPublication):
                 self.core.store.set_session_overlay(child_id, "core")
             except Exception as exc:
                 raise ChildSpawnIncomplete(child_id) from exc
-        spawned_payload: dict[str, object] = {
-            "child_session_id": child_id,
-            "root_id": root_id,
-            "root_action_budget": root_cap,
-            "label": label,
-            "depth": depth,
-            "tool_allowlist": list(scope) if scope is not None else None,
-            "notify_on_completion": notify_on_completion,
-        }
-        if canonical_schema is not None:
-            spawned_payload["result_schema"] = canonical_schema
-        if idempotency_key is not None:
-            spawned_payload["spawn_owner"] = owner
-            spawned_payload["idempotency_key"] = idempotency_key
-            spawned_payload["spec_hash"] = spec_hash
+        spawned_payload = _build_spawned_payload(
+            child_id=child_id,
+            root_id=root_id,
+            root_budget=root_cap,
+            label=label,
+            depth=depth,
+            scope=scope,
+            notify_on_completion=notify_on_completion,
+            result_schema=canonical_schema,
+            owner=owner,
+            idempotency_key=idempotency_key,
+            spec_hash=spec_hash,
+        )
         try:
             self.core.commit_public_fact(
                 parent.session_id,
@@ -409,17 +439,19 @@ class _DelegationSpawn(_DelegationPublication):
                     EventType.CHILD_SPAWNED,
                     "core",
                     "plugin",
-                    {
-                        "child_session_id": child_id,
-                        "root_id": root_id,
-                        "label": label,
-                        "depth": depth,
-                        "tool_allowlist": list(scope) if scope is not None else None,
-                        "notify_on_completion": notify_on_completion,
-                        "spawn_owner": owner,
-                        "idempotency_key": idempotency_key,
-                        "spec_hash": spec_hash,
-                    },
+                    _build_spawned_payload(
+                        child_id=child_id,
+                        root_id=root_id,
+                        root_budget=birth_budget,
+                        label=label,
+                        depth=depth,
+                        scope=scope,
+                        notify_on_completion=notify_on_completion,
+                        result_schema=birth.get("result_schema"),
+                        owner=owner,
+                        idempotency_key=idempotency_key,
+                        spec_hash=spec_hash,
+                    ),
                 ),
                 root_action_id=root_id,
                 initial_root_budget=birth_budget,

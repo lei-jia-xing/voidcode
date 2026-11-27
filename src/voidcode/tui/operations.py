@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Literal
 
 from voidcode.capabilities.files.path_queries import PATH_COMPLETION, PathCompletionRequest, PathCompletionResult
-from voidcode.config import ModelField, update_model_section
+from voidcode.config import CONFIG_FILE_NAME, ModelField, update_model_section
+from voidcode.sdk.atomic_file import replace_file
 from voidcode.sdk.client import SessionClient
 from voidcode.sdk.services import QueryContractError, QueryUnavailable
 from voidcode.sdk.views import PluginViewDescriptor
@@ -149,6 +150,21 @@ def withdraw_followup(
     return FollowupWithdrawnEvent(receipt=receipt, session_id=session_id, generation=generation)
 
 
+def _rollback_model_config(config_path: Path, previous_bytes: bytes | None, written_bytes: bytes | None) -> str | None:
+    """Restore ``voidcode.toml`` after a rejected ``core.reload``, without clobbering concurrent writes."""
+    if written_bytes is None:
+        return None
+    try:
+        if previous_bytes is None:
+            if config_path.is_file() and not config_path.is_symlink() and config_path.read_bytes() == written_bytes:
+                config_path.unlink(missing_ok=True)
+            return None
+        replace_file(config_path, previous_bytes, expected_content=written_bytes)
+        return None
+    except OSError as exc:
+        return f" (config rollback failed: {exc})"
+
+
 def switch_model(
     client: SessionClient,
     *,
@@ -159,20 +175,35 @@ def switch_model(
     session_id: str,
     generation: int,
 ) -> ModelSwitchDoneEvent:
+    config_path = workspace / CONFIG_FILE_NAME
+    if config_path.is_symlink():
+        return ModelSwitchDoneEvent(
+            ok=False, stage="config", error=f"not a regular file: {CONFIG_FILE_NAME}", session_id=session_id, generation=generation
+        )
+    previous_bytes = config_path.read_bytes() if config_path.is_file() else None
     try:
         update_model_section(workspace, field, value)
+        written_bytes = config_path.read_bytes() if config_path.is_file() and not config_path.is_symlink() else None
     except Exception as exc:
         return ModelSwitchDoneEvent(ok=False, stage="config", error=str(exc), session_id=session_id, generation=generation)
     try:
         result = client.invoke_command(session_id, "core.reload", {}, expected_revision=revision)
     except Exception as exc:
-        return ModelSwitchDoneEvent(ok=False, stage="reload", error=f"Reload failed: {exc}", session_id=session_id, generation=generation)
+        rollback_note = _rollback_model_config(config_path, previous_bytes, written_bytes) or ""
+        return ModelSwitchDoneEvent(
+            ok=False, stage="reload", error=f"Reload failed: {exc}{rollback_note}", session_id=session_id, generation=generation
+        )
     if result.status == "ok":
         data = result.data if isinstance(result.data, Mapping) else {}
         to_revision = str(data.get("to_revision_id", "")) or revision
         return ModelSwitchDoneEvent(ok=True, revision=to_revision, session_id=session_id, generation=generation)
+    rollback_note = _rollback_model_config(config_path, previous_bytes, written_bytes) or ""
     return ModelSwitchDoneEvent(
-        ok=False, stage="reload", error=f"Reload {result.status}: {result.error}", session_id=session_id, generation=generation
+        ok=False,
+        stage="reload",
+        error=f"Reload {result.status}: {result.error}{rollback_note}",
+        session_id=session_id,
+        generation=generation,
     )
 
 

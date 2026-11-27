@@ -7,9 +7,11 @@ use one implementation instead of each growing a private copy.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
+from typing import Literal
 
 from ..events import EventType
 from ._rows import _decode_session
@@ -190,3 +192,23 @@ def insert_session_event_locked(
         revision_id=revision_id,
         payload=draft.payload,
     )
+
+
+def event_stop_cause_locked(connection: sqlite3.Connection, session_id: str, sequence: int) -> object:
+    """Return the recorded stop_cause for one session event inside an open transaction."""
+    row = connection.execute(
+        "SELECT payload_json FROM session_events WHERE session_id = ? AND sequence = ?",
+        (session_id, sequence),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row[0])
+    except TypeError, ValueError:
+        return None
+    return payload.get("stop_cause") if isinstance(payload, Mapping) else None
+
+
+def interrupted_terminal_status(stop_cause: object) -> Literal["cancelled", "failed"]:
+    """Map an interruption stop_cause onto durable wakeup terminal status."""
+    return "cancelled" if stop_cause in ("user_stop", "owner_cancel") else "failed"

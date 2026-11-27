@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, NoReturn
 from uuid import uuid4
@@ -273,7 +274,7 @@ class InvocationServices(ServiceLease):
 class _LeaseAbortSignal:
     """A ``ProviderAbortSignal`` view over one lease's runtime cancel event."""
 
-    def __init__(self, event) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, event: threading.Event) -> None:
         self._event = event
 
     @property

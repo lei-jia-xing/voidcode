@@ -83,3 +83,36 @@ def test_artifact_overlay_returns_typed_page_cancel_and_open_outcomes() -> None:
     assert viewer.accept_page(request_id, ArtifactPage(artifact=reference, offset=0, data=b"abc", eof=False))
     assert viewer.handle_key(Key("pageDown")) == ArtifactPageRequested(offset=3)
     assert isinstance(viewer.handle_key(Key("o")), ArtifactOpenRequested)
+
+
+def test_ask_multiselect_toggles_with_x_and_approval_reason_exits_on_esc() -> None:
+    from voidcode.sdk.tools import ToolCall
+    from voidcode.tui.gates import ApprovalGate
+    from voidcode.tui.views import InteractiveApproval
+
+    request = AskRequest(
+        request_id="ask-2",
+        session_id="s1",
+        revision_id="rev-1",
+        owner="core",
+        title="Ask",
+        questions=(AskMultiSelect(name="tags", label="Tags", options=(ChoiceOption(id="a", label="A"),), required=False),),
+        context=(),
+        media=(),
+        timeout_ms=None,
+    )
+    overlay = InteractiveAsk(request)
+    overlay.handle_key(Key("x"))
+    outcome = overlay.handle_key(Key("ctrl+s"))
+    assert isinstance(outcome, AskAnswered)
+    assert outcome.values == {"tags": ["a"]}
+
+    approval = InteractiveApproval(
+        ApprovalGate(call=ToolCall(tool_name="exec", arguments={"cmd": "ls"}), request_id="appr-1", run_id="run-1", revision_id="rev-1")
+    )
+    assert approval.handle_key(Key("r")) is None
+    assert approval.reason_mode is True
+    assert approval.handle_key(Key("paste", text="nope")) is None
+    assert approval.handle_key(Key("esc")) is None
+    assert approval.reason_mode is False
+    assert approval.reason_input == ""

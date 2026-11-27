@@ -2659,3 +2659,19 @@ def test_live_subagent_view_renders_above_composer_with_active_tools_and_resets_
     assert app._live_views == ()
     assert app._live_views_armed() is False
     assert rendering.live_view_rows(app._live_views, width=90, max_rows=6, styles=app.styles) == []
+
+
+def test_switch_session_preserves_per_session_composer_history() -> None:
+    from voidcode.tui.terminal_app import CoreTuiApp
+
+    app = CoreTuiApp(_RunClient(), session_id="s1", terminal=_StubTerminal())
+    app._record_user_prompt_history("first prompt")
+    assert app.composer.history == ("first prompt",)
+
+    app._switch_session("s2")
+    assert app.composer.history == ()
+    app._record_user_prompt_history("second prompt")
+    assert app.composer.history == ("second prompt",)
+
+    app._switch_session("s1")
+    assert app.composer.history == ("first prompt",)

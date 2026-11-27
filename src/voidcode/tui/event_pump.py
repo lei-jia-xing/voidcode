@@ -478,16 +478,19 @@ def _handle_followups_load_failed(app: CoreTuiApp, frame: FollowupsLoadFailedEve
         app.status_line = f"Warning: could not load queued follow-ups: {frame.error}"
 
 
-def _handle_followup_withdrawn(app: CoreTuiApp, frame: FollowupWithdrawnEvent, _rows: list[str]) -> None:
+def _handle_followup_withdrawn(app: CoreTuiApp, frame: FollowupWithdrawnEvent, rows: list[str]) -> None:
     app._followup_withdrawing = False
     receipt = frame.receipt
     app._queued_followups = tuple(item for item in app._queued_followups if item.continuation_id != receipt.continuation_id)
     if not app.composer.value.strip():
         app.composer.set_text(receipt.prompt)
-    if receipt.image_count > 0:
-        app.status_line = "Recalled prompt text (attached images cannot be re-edited in composer)"
-    else:
-        app.status_line = "Queued follow-up recalled to composer"
+        if receipt.image_count > 0:
+            app.status_line = "Recalled prompt text (attached images cannot be re-edited in composer)"
+        else:
+            app.status_line = "Queued follow-up recalled to composer"
+        return
+    rows.append(app.styles.fg("warning", f"[Queued follow-up recalled while composer held a draft]: {safe(receipt.prompt)}"))
+    app.status_line = "Recalled follow-up shown in transcript (composer already has a draft)"
 
 
 def _handle_followup_withdraw_failed(app: CoreTuiApp, frame: FollowupWithdrawFailedEvent, _rows: list[str]) -> None:
@@ -574,6 +577,8 @@ def _handle_model_switch_done(app: CoreTuiApp, frame: ModelSwitchDoneEvent, rows
         rows.append(app.styles.fg("success", f"[Model switched: revision {safe(frame.revision)} admitted]"))
         app._refresh_health_async()
         return
+    if app.upgrade is None or not app.upgrade.fenced:
+        app.status_line = ""
     label = "Config rewrite refused" if frame.stage == "config" else "Model switch failed"
     rows.append(app.styles.fg("error", f"{label}: {safe(frame.error or 'unknown error')}"))
 

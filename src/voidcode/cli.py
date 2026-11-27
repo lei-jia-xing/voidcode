@@ -21,23 +21,24 @@ from uuid import uuid4
 
 from . import __version__
 from .bootstrap import open_core, state_directory
-from .config import BannerConfig
-from .core.storage.store import DATABASE_FILENAME, SessionRecord, open_read_only
+from .config import CONFIG_FILE_NAME, BannerConfig, load_config
+from .core.storage.store import DATABASE_FILENAME, open_read_only
 from .sdk.command_help import public_command_parts
 from .sdk.json_values import json_wire_object, own_json_object
+from .transport.projection import session_payload
 
 if TYPE_CHECKING:
     from .core.engine import Core
     from .sdk.commands import CommandResult
 
 
-def _parse_arguments(raw: str) -> dict[str, object]:
+def _parse_arguments(raw: str, *, field_name: str = "arguments") -> dict[str, object]:
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"arguments must be a JSON object: {exc}") from exc
+        raise ValueError(f"{field_name} must be a JSON object: {exc}") from exc
     if not isinstance(payload, dict):
-        raise ValueError("arguments must be a JSON object")
+        raise ValueError(f"{field_name} must be a JSON object")
     return json_wire_object(own_json_object(payload))
 
 
@@ -121,7 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         default=argparse.SUPPRESS,
         metavar="PATH",
-        help="Workspace directory holding voidcode.json (default: current directory)",
+        help="Workspace directory holding voidcode.toml (default: current directory)",
     )
     roots.add_argument(
         "--state-dir", type=Path, default=argparse.SUPPRESS, metavar="PATH", help="State directory (default: derived from the workspace)"
@@ -145,6 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="N",
         help="Optional shared root-action cap for this run and its descendants",
     )
+    agents.add_argument("--interaction", choices=("interactive", "unattended"), default=None, help="Interaction mode override for this run")
     resume = commands.add_parser(
         "resume",
         help="Resume a session, optionally deciding a parked approval",
@@ -318,6 +320,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _show(workspace, bare_directory, args.session_id, events=args.events)
         if args.command == "invoke":
             args.parsed_arguments = _parse_arguments(args.arguments)
+        elif args.command == "answer-ask":
+            args.parsed_values = _parse_arguments(args.values, field_name="values")
         if args.command in ("invoke", "confirm") and getattr(args, "wait_background", False):
             _check_wait_timeout(args.wait_timeout)
 
@@ -433,8 +437,6 @@ def _tui_prefs(args: argparse.Namespace, *, workspace: Path) -> _TuiPrefs:
     the server owns its own. A missing file falls back to defaults, while a malformed or
     unreadable file fails visibly instead of silently dropping the user's preferences.
     """
-    from .config import CONFIG_FILE_NAME, load_config
-
     source = workspace if args.server is None else Path.cwd()
     try:
         parsed = load_config(source, allow_missing=True)
@@ -474,6 +476,7 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
             session_id=args.session_id,
             max_steps=args.max_steps,
             root_action_budget=args.root_action_budget,
+            interaction=args.interaction,
         )
         print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
         return 130 if result.status == "interrupted" else 1 if result.status == "failed" else 0
@@ -492,16 +495,10 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
         print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
         return 130 if result.status == "interrupted" else 1 if result.status == "failed" else 0
     if args.command == "answer-ask":
-        try:
-            values = json.loads(args.values)
-        except Exception as exc:
-            raise ValueError(f"malformed values JSON: {exc}") from exc
-        if not isinstance(values, Mapping):
-            raise ValueError("values must be a JSON object")
         result = core.answer_ask(
             args.session_id,
             args.request_id,
-            values,
+            args.parsed_values,
             expected_revision=args.expected_revision,
         )
         print(json.dumps(result.as_payload(), ensure_ascii=False, allow_nan=False))
@@ -524,11 +521,11 @@ def _dispatch(core: Core, args: argparse.Namespace) -> int:
         return 0
     if args.command == "create-session":
         record = core.create_session(args.session_id)
-        print(json.dumps(_session_payload(record), ensure_ascii=False, allow_nan=False))
+        print(json.dumps(session_payload(record), ensure_ascii=False, allow_nan=False))
         return 0
     if args.command == "sessions":
         records = core.sessions(limit=args.limit)
-        print(json.dumps({"sessions": [_session_payload(record) for record in records]}, ensure_ascii=False, allow_nan=False))
+        print(json.dumps({"sessions": [session_payload(record) for record in records]}, ensure_ascii=False, allow_nan=False))
         return 0
     if args.command == "catalog":
         catalog = core.command_catalog()
@@ -597,18 +594,6 @@ def _waited_background(core: Core, args: argparse.Namespace, result: CommandResu
     except RuntimeError as exc:
         return [{"action_id": action_id or "", "status": "failed", "error": str(exc)}]
     return [dict(item) for item in settled]
-
-
-def _session_payload(record: SessionRecord) -> dict[str, object]:
-    return {
-        "session_id": record.session_id,
-        "workspace": record.workspace,
-        "status": record.status.value,
-        "active_revision_id": record.active_revision_id,
-        "run_id": record.run_id,
-        "turn": record.turn,
-        "last_event_sequence": record.last_event_sequence,
-    }
 
 
 if __name__ == "__main__":

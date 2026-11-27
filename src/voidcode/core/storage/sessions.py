@@ -29,8 +29,8 @@ from ._values import (
     SessionStatus,
     StoreConflict,
     StoredEvent,
-    canonical_json,
 )
+from .writes import insert_session_event_locked
 
 
 class _SessionsMixin(_ConnectionStore):
@@ -137,14 +137,14 @@ class _SessionsMixin(_ConnectionStore):
                 if birth is not None:
                     birth_payload = dict(own_json_object(birth))
                     birth_payload["eligible_owners"] = []
-                    birth_payload_json = canonical_json(birth_payload)
-                    self._connection.execute(
-                        """
-                        INSERT INTO session_events (
-                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
-                        ) VALUES (?, 1, '', ?, 'core', 'plugin', ?, ?, ?)
-                        """,
-                        (session_id, EventType.CHILD_RESERVED, revision_id, birth_payload_json, len(birth_payload_json.encode("utf-8"))),
+                    insert_session_event_locked(
+                        self._connection,
+                        session_id,
+                        1,
+                        run_id="",
+                        revision_id=revision_id,
+                        draft=EventDraft(EventType.CHILD_RESERVED, "core", "plugin", birth_payload),
+                        now=now,
                     )
                     self._connection.execute(
                         "UPDATE sessions SET last_event_sequence = 1, updated_at = ? WHERE session_id = ?",

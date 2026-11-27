@@ -279,7 +279,7 @@ class InteractiveAsk:
             if key.name in ("right", "l"):
                 self.multiselect_focused_opt[name] = (opt_idx + 1) % len(current.options)
                 return None
-            if key.name == "space":
+            if key.name in ("space", "x"):
                 chosen = self._selections(name)
                 opt_id = current.options[opt_idx].id
                 if opt_id in chosen:

@@ -263,7 +263,7 @@ class ActivationCoordinator:
             host.flush_old_generation_facts(admission.plugin_ids)
             if admission.validate is not None:
                 admission.validate(candidate_runtime.providers)
-            session_ids = tuple(record.session_id for record in host.store.sessions(workspace=str(host.workspace)))
+            session_ids = tuple(record.session_id for record in host.store.sessions(workspace=str(host.workspace), limit=None))
             old_states = snapshot.plugin_runtime.state_metadata()
             candidate_states = candidate_runtime.state_metadata()
             copies = plan_state_copies(

@@ -268,7 +268,7 @@ class CoreHostAdapters(CoreLifecycle):
         )
 
     def store_sessions(self, workspace: str) -> Sequence[SessionRecord]:
-        return self.store.sessions(workspace=workspace)
+        return self.store.sessions(workspace=workspace, limit=None)
 
     def store_session(self, session_id: str) -> SessionRecord:
         return self.store.session(session_id)

@@ -48,7 +48,7 @@ from ._values import (
     UnknownSession,
     canonical_json,
 )
-from .writes import insert_session_event_locked, read_session, record_event_indexes
+from .writes import insert_session_event_locked, read_session
 
 
 class _ContinuationsMixin(_ConnectionStore):
@@ -278,35 +278,20 @@ class _ContinuationsMixin(_ConnectionStore):
                     )
                     sequence += 1
                     payload = own_json_object(json.loads(payload_json))
-                    child_payload_json = canonical_json({"continuation_id": continuation_id, "payload": payload, "role": str(role)})
-                    self._connection.execute(
-                        """
-                    INSERT INTO session_events (
-                        session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
-                    ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?, ?)
-                    """,
-                        (
+                    claimed.append(
+                        insert_session_event_locked(
+                            self._connection,
                             session_id,
                             sequence,
-                            run_id,
-                            EventType.CONTINUATION_STARTED,
-                            source,
-                            revision_id,
-                            child_payload_json,
-                            len(child_payload_json.encode("utf-8")),
-                        ),
-                    )
-                    record_event_indexes(self._connection, session_id, EventType.CONTINUATION_STARTED, {"continuation_id": continuation_id}, now)
-                    claimed.append(
-                        StoredEvent(
-                            session_id=session_id,
-                            sequence=sequence,
                             run_id=run_id,
-                            event_type=EventType.CONTINUATION_STARTED,
-                            source=source,
-                            actor="plugin",
                             revision_id=revision_id,
-                            payload={"continuation_id": continuation_id, "payload": payload, "role": str(role)},
+                            draft=EventDraft(
+                                EventType.CONTINUATION_STARTED,
+                                source,
+                                "plugin",
+                                {"continuation_id": continuation_id, "payload": payload, "role": str(role)},
+                            ),
+                            now=now,
                         )
                     )
                 self._connection.execute(
@@ -631,28 +616,19 @@ class _ContinuationsMixin(_ConnectionStore):
                 )
 
                 new_seq = session_row.last_event_sequence + 1
-                disp_payload = canonical_json(
-                    {"continuation_id": cont_record.continuation_id, "payload": cont_record.payload, "role": cont_record.role}
-                )
-                self._connection.execute(
-                    """
-                    INSERT INTO session_events (
-                        session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
-                    ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?, ?)
-                    """,
-                    (
-                        session_id,
-                        new_seq,
-                        run_id,
+                insert_session_event_locked(
+                    self._connection,
+                    session_id,
+                    new_seq,
+                    run_id=run_id,
+                    revision_id=revision_id,
+                    draft=EventDraft(
                         EventType.CONTINUATION_STARTED,
                         f"plugin.{cont_record.owner}",
-                        revision_id,
-                        disp_payload,
-                        len(disp_payload.encode("utf-8")),
+                        "plugin",
+                        {"continuation_id": cont_record.continuation_id, "payload": cont_record.payload, "role": cont_record.role},
                     ),
-                )
-                record_event_indexes(
-                    self._connection, session_id, EventType.CONTINUATION_STARTED, {"continuation_id": cont_record.continuation_id}, now
+                    now=now,
                 )
 
                 new_turn = session_row.turn + 1

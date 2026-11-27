@@ -149,7 +149,7 @@ class CoreLifecycle(ABC):
         """Refuse stored owner state that does not match the declared version and schema."""
         states = self._snapshot.plugin_runtime.state_metadata()
         scopes: list[tuple[StateScope, str]] = [("workspace", str(self.workspace))]
-        scopes.extend(("session", record.session_id) for record in self.store.sessions(workspace=str(self.workspace)))
+        scopes.extend(("session", record.session_id) for record in self.store.sessions(workspace=str(self.workspace), limit=None))
         for scope, scope_key in scopes:
             for row in self.store.plugin_state_rows(scope, scope_key):
                 state = states.get(row.owner)

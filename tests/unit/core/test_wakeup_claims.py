@@ -359,3 +359,37 @@ def test_recovery_keeps_a_parked_claim_and_settles_finished_work_without_replay(
         assert len(store.events("finished")) == finished_events
         after = store.checkpoint("finished")
         assert after is not None and after.payload == finished_checkpoint.payload
+
+
+def test_recovery_maps_user_stop_interrupted_wakeup_to_cancelled(tmp_path: Path) -> None:
+    with _store(tmp_path) as store:
+        revision = _session(store, "sess")
+        _schedule(store, "wake", "sess")
+        claims, _skipped = _claim(store)
+        assert len(claims) == 1
+        session = store.session("sess")
+        store.commit_staged(
+            "sess",
+            expected_sequence=session.last_event_sequence,
+            expected_run_id=session.run_id,
+            run_id=session.run_id or "run-wake",
+            revision_id=revision,
+            events=(EventDraft(EventType.RUN_INTERRUPTED, "core", "core", {"reason": "user stopped", "stop_cause": "user_stop"}),),
+            status=SessionStatus.INTERRUPTED,
+            checkpoint_kind=CheckpointKind.INTERRUPTED,
+            checkpoint_payload={"root_id": ROOT},
+        )
+        # Reconstruct a pre-settlement crash state: terminal RUN_INTERRUPTED event exists,
+        # while the session row and claimed wakeup still reflect RUNNING / 'claimed'.
+        with store._lock:
+            store._connection.execute("UPDATE sessions SET status = 'running' WHERE session_id = 'sess'")
+            store._connection.execute("UPDATE wakeups SET status = 'claimed' WHERE wakeup_id = 'wake'")
+            store._connection.commit()
+
+        recovered = store.recover_claimed_wakeup_runs(WS, revision_id=revision, fact_observers={"run_finished": ("owner",)})
+
+        assert recovered == (("sess", "cancelled"),)
+        assert _wakeup_row(store, "wake")[0] == "cancelled"
+        assert store.session("sess").status is SessionStatus.INTERRUPTED
+        checkpoint = store.checkpoint("sess")
+        assert checkpoint is not None and checkpoint.kind is CheckpointKind.TERMINAL

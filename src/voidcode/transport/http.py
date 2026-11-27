@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -48,8 +48,8 @@ class JsonResponse(JSONResponse):
         return json.dumps(content, allow_nan=False).encode("utf-8")
 
 
-def _error(status: int, message: str, code: str | None = None) -> JsonResponse:
-    return JsonResponse({"error": message, "code": code}, status_code=status)
+def _error(status: int, message: str, code: str | None = None, *, headers: Mapping[str, str] | None = None) -> JsonResponse:
+    return JsonResponse({"error": message, "code": code}, status_code=status, headers=headers)
 
 
 async def _http_exception_handler(_request: Request, exc: HTTPException) -> Response:
@@ -140,7 +140,7 @@ class CoreTransportApp(FastAPI):
         self._allow_origin = allow_origin
         self._workspace = workspace
         self._state_dir = state_dir
-        self._frontend_dist = frontend_dist.resolve() if frontend_dist is not None and frontend_dist.is_dir() else None
+        self._frontend_dist = frontend_dist.resolve() if frontend_dist is not None and (frontend_dist / "index.html").is_file() else None
         self._rpc_calls: set[asyncio.Task[None]] = set()
         self.add_api_route("/api/health", self._handle_health, response_model=HealthStatus)
         self.add_api_route("/api/openapi.json", self._handle_schema, include_in_schema=False)
@@ -168,27 +168,29 @@ class CoreTransportApp(FastAPI):
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and (scope["path"] == "/api" or scope["path"].startswith("/api/")):
+            if not self._origin_allowed(scope):
+                await _error(403, "origin is not allowed", "forbidden_origin")(scope, receive, send)
+                return
             headers = dict(scope.get("headers", []))
+            origin = headers.get(b"origin")
+            cors_headers = {"access-control-allow-origin": origin.decode("latin-1")} if origin else None
+            if scope.get("method") == "OPTIONS":
+                preflight_headers = {
+                    "access-control-allow-methods": "GET, OPTIONS",
+                    "access-control-allow-headers": "Authorization, Content-Type",
+                }
+                if origin is not None:
+                    preflight_headers["access-control-allow-origin"] = origin.decode("latin-1")
+                elif self._allow_origin is None:
+                    preflight_headers["access-control-allow-origin"] = "*"
+                await Response(status_code=204, headers=preflight_headers)(scope, receive, send)
+                return
             presented = headers.get(b"authorization", b"").decode("latin-1")
             scheme, _, token = presented.partition(" ")
             if self._bearer_token is not None and (
                 scheme.lower() != "bearer" or not secrets.compare_digest(token.encode("utf-8"), self._bearer_token.encode("utf-8"))
             ):
-                await _error(401, "missing or invalid bearer token", "unauthorized")(scope, receive, send)
-                return
-            if not self._origin_allowed(scope):
-                await _error(403, "origin is not allowed", "forbidden_origin")(scope, receive, send)
-                return
-            origin = headers.get(b"origin")
-            if scope.get("method") == "OPTIONS":
-                await Response(
-                    status_code=204,
-                    headers={
-                        "access-control-allow-origin": origin.decode("latin-1") if origin else "*",
-                        "access-control-allow-methods": "GET, OPTIONS",
-                        "access-control-allow-headers": "Authorization, Content-Type",
-                    },
-                )(scope, receive, send)
+                await _error(401, "missing or invalid bearer token", "unauthorized", headers=cors_headers)(scope, receive, send)
                 return
             if origin:
 
@@ -271,6 +273,8 @@ class CoreTransportApp(FastAPI):
         candidate = (dist / path).resolve()
         if candidate.is_file() and candidate.is_relative_to(dist):
             return FileResponse(candidate)
+        if path == "assets" or path.startswith("assets/"):
+            return _error(404, "not found", "not_found")
         return FileResponse(dist / "index.html")
 
 

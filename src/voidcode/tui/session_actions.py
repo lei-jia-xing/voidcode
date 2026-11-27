@@ -73,10 +73,12 @@ class SessionActions:
                 self.event_queue.get_nowait()
             except queue.Empty:
                 break
+        if self.session_id:
+            self._session_histories[self.session_id] = self.composer.history
         self.session_id = session_id
         self._close_live_input()
         self._overlays.reset_session()
-        self.composer.load_history(())
+        self.composer.load_history(self._session_histories.get(session_id, ()))
         self._pending_images.clear()
         self._attachment_path = None
         self._gates = GateState()

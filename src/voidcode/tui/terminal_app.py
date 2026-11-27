@@ -54,36 +54,6 @@ from .work import WorkGroup
 
 logger = logging.getLogger(__name__)
 
-#: Control bytes inside model/plugin text must never reach the terminal as
-#: commands (they could clear scrollback or switch buffers), so they are made
-#: visible before the row is styled or committed.
-
-#: A lone ESC byte is ambiguous (it may start a sequence) until no further input
-#: follows: the decoder buffers it, and the loop resolves it after this window.
-#: Matches the 50 ms window the pre-cutover client used.
-_ESCAPE_FLUSH_SECONDS = 0.05
-
-#: Fallback live-view cadence when a reply carries no explicit refresh interval;
-#: only a reply rearms, so this never stacks workers.
-_LIVE_REFRESH_FALLBACK_SECONDS = 60.0
-
-#: One typed image path is bounded like any other client-side text buffer.
-_MAX_ATTACHMENT_PATH_CHARS = 4096
-
-#: Spinner/live cadence while animations run; matches the pre-cutover 30 fps render loop.
-_SPINNER_TICK_SECONDS = 1 / 30
-#: Retry nap for instant-returning read doubles (tests); real terminals block in read_bytes.
-_INPUT_RETRY_SECONDS = 0.01
-
-#: Input-fd read slice: bounds each locked terminal read so kitty probe/upload
-#: queries never wait long for the input thread (concurrent readers would split replies).
-_INPUT_READ_SLICE_SECONDS = 0.05
-#: Idle queue-block ceiling: bounds the snooze when no timer is armed. Real
-#: events, input, and the shutdown wake return from queue.get immediately; the
-#: one-second ceiling bounds flag-only wakeups (SIGWINCH sets a flag the next
-#: render consumes) without rendering while idle.
-_MAX_IDLE_BLOCK_SECONDS = 1.0
-
 #: Immutable ctor/entry default: None at the boundary always means disabled.
 _DEFAULT_BANNER = BannerConfig()
 
@@ -137,6 +107,7 @@ class CoreTuiApp(
         self._escape_flush_at = 0.0
         self.event_queue: queue.Queue[events.TuiFrame] = queue.Queue()
         self._session_cursors: dict[str, int] = {}
+        self._session_histories: dict[str, tuple[str, ...]] = {}
         #: Active tools in flight, keyed by invocation id (displayed in Live region).
         self._active_tools: dict[str, ActiveToolProgress] = {}
         #: Last known server identity/liveness from /api/health. The fence bit

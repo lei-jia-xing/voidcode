@@ -30,7 +30,12 @@ from ._values import (
     UnknownSession,
     canonical_json,
 )
-from .writes import apply_state_updates_locked, record_event_indexes
+from .writes import (
+    apply_state_updates_locked,
+    event_stop_cause_locked,
+    insert_session_event_locked,
+    interrupted_terminal_status,
+)
 
 
 class _AdoptionMixin(_ConnectionStore):
@@ -260,26 +265,15 @@ class _AdoptionMixin(_ConnectionStore):
                     current_seq = adopt_row.last_event_sequence
                     for draft in events:
                         current_seq += 1
-                        event_payload_json = canonical_json(draft.payload)
-                        self._connection.execute(
-                            """
-                            INSERT INTO session_events (
-                                session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                session_id,
-                                current_seq,
-                                run_id,
-                                draft.event_type,
-                                draft.source,
-                                draft.actor,
-                                target_revision_id,
-                                event_payload_json,
-                                len(event_payload_json.encode("utf-8")),
-                            ),
+                        insert_session_event_locked(
+                            self._connection,
+                            session_id,
+                            current_seq,
+                            run_id=run_id,
+                            revision_id=target_revision_id,
+                            draft=draft,
+                            now=now,
                         )
-                        record_event_indexes(self._connection, session_id, draft.event_type, draft.payload, now)
                     self._connection.execute(
                         """
                         UPDATE sessions
@@ -416,32 +410,30 @@ class _AdoptionMixin(_ConnectionStore):
             ).fetchone()
             if checkpoint is not None:
                 (checkpoint_json,) = checkpoint
-                payload = json.loads(checkpoint_json)
+                try:
+                    payload = json.loads(checkpoint_json)
+                except TypeError, ValueError:
+                    payload = None
                 if isinstance(payload, Mapping) and isinstance(payload.get("logical_turn"), str):
                     logical_turn = payload["logical_turn"]
-            orphan_payload_json = canonical_json(
-                {
-                    "reason": "the process that owned this run is gone; adoption recovered the session at its last committed boundary",
-                    "stop_cause": "shutdown",
-                    "logical_turn": logical_turn,
-                    "eligible_owners": eligible_owners,
-                }
-            )
-            self._connection.execute(
-                """
-                INSERT INTO session_events (
-                    session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
-                ) VALUES (?, ?, ?, ?, 'core', 'core', ?, ?, ?)
-                """,
-                (
-                    str(session_id),
-                    sequence,
-                    str(run_id),
+            insert_session_event_locked(
+                self._connection,
+                str(session_id),
+                sequence,
+                run_id=str(run_id),
+                revision_id=target_revision_id,
+                draft=EventDraft(
                     EventType.RUN_INTERRUPTED,
-                    target_revision_id,
-                    orphan_payload_json,
-                    len(orphan_payload_json.encode("utf-8")),
+                    "core",
+                    "core",
+                    {
+                        "reason": "the process that owned this run is gone; adoption recovered the session at its last committed boundary",
+                        "stop_cause": "shutdown",
+                        "logical_turn": logical_turn,
+                        "eligible_owners": eligible_owners,
+                    },
                 ),
+                now=now,
             )
             self._connection.execute(
                 "UPDATE sessions SET status = 'interrupted', last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
@@ -530,18 +522,27 @@ class _AdoptionMixin(_ConnectionStore):
                             # The run already recorded its own finish; only the session row
                             # was not advanced (no replay, no second run-finished fact).
                             recorded = str(latest[0])
+                            checkpoint_kind: CheckpointKind
                             if recorded == EventType.RUN_COMPLETED:
                                 terminal_status = "completed"
                                 new_session_status = SessionStatus.COMPLETED
+                                checkpoint_kind = CheckpointKind.TERMINAL
                             elif recorded == EventType.RUN_FAILED:
                                 terminal_status = "failed"
                                 new_session_status = SessionStatus.FAILED
+                                checkpoint_kind = CheckpointKind.TERMINAL
                             else:
-                                terminal_status = "failed"
+                                stop_cause = event_stop_cause_locked(self._connection, str(session_id), last_sequence)
+                                terminal_status = interrupted_terminal_status(stop_cause)
                                 new_session_status = SessionStatus.INTERRUPTED
+                                checkpoint_kind = CheckpointKind.TERMINAL if terminal_status == "cancelled" else CheckpointKind.INTERRUPTED
                             self._connection.execute(
                                 "UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?",
                                 (new_session_status.value, now, str(session_id)),
+                            )
+                            self._connection.execute(
+                                "UPDATE checkpoints SET kind = ?, updated_at = ? WHERE session_id = ?",
+                                (checkpoint_kind.value, now, str(session_id)),
                             )
                             self._connection.execute(
                                 "UPDATE wakeups SET status = ?, updated_at = ? WHERE session_id = ? AND status = 'claimed'",
@@ -555,36 +556,34 @@ class _AdoptionMixin(_ConnectionStore):
                             (str(session_id),),
                         ).fetchone()
                         if checkpoint is not None:
-                            payload = json.loads(checkpoint[0])
+                            try:
+                                payload = json.loads(checkpoint[0])
+                            except TypeError, ValueError:
+                                payload = None
                             if isinstance(payload, Mapping) and isinstance(payload.get("logical_turn"), str):
                                 logical_turn = payload["logical_turn"]
                         sequence = last_sequence + 1
-                        orphan_payload_json = canonical_json(
-                            {
-                                "reason": (
-                                    "the process that owned this claimed wakeup run is gone; "
-                                    "startup recovered the session at its last committed boundary"
-                                ),
-                                "stop_cause": "shutdown",
-                                "logical_turn": logical_turn,
-                                "eligible_owners": eligible_owners,
-                            }
-                        )
-                        self._connection.execute(
-                            """
-                            INSERT INTO session_events (
-                                session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
-                            ) VALUES (?, ?, ?, ?, 'core', 'core', ?, ?, ?)
-                            """,
-                            (
-                                str(session_id),
-                                sequence,
-                                run_id,
+                        insert_session_event_locked(
+                            self._connection,
+                            str(session_id),
+                            sequence,
+                            run_id=run_id,
+                            revision_id=session_revision,
+                            draft=EventDraft(
                                 EventType.RUN_INTERRUPTED,
-                                session_revision,
-                                orphan_payload_json,
-                                len(orphan_payload_json.encode("utf-8")),
+                                "core",
+                                "core",
+                                {
+                                    "reason": (
+                                        "the process that owned this claimed wakeup run is gone; "
+                                        "startup recovered the session at its last committed boundary"
+                                    ),
+                                    "stop_cause": "shutdown",
+                                    "logical_turn": logical_turn,
+                                    "eligible_owners": eligible_owners,
+                                },
                             ),
+                            now=now,
                         )
                         self._connection.execute(
                             "UPDATE sessions SET status = 'interrupted', last_event_sequence = ?, updated_at = ? WHERE session_id = ?",

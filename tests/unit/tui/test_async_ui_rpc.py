@@ -203,5 +203,58 @@ def test_model_switch_rewrites_and_reloads_off_the_ui_thread(tmp_path: Path) -> 
     client.release.set()
     _settle(app)
     assert client.calls == [("s1", "core.reload", "rev-1")]
-    assert (tmp_path / "voidcode.json").exists()
+    assert (tmp_path / "voidcode.toml").exists()
     assert "Model switched: revision rev-2 admitted" in _plain(terminal.committed)
+
+
+def test_model_switch_rolls_back_config_and_clears_status_on_reload_failure(tmp_path: Path) -> None:
+    from voidcode.sdk.client import CoreClientError
+
+    config_path = tmp_path / "voidcode.toml"
+    original = 'schema_version = 1\n\n[model]\nmodel = "old/model"\n'
+    config_path.write_text(original, encoding="utf-8")
+
+    class _FailingReloadClient(_FakeLocalClient):
+        def invoke_command(self, session_id: str, name: str, arguments: Any, expected_revision: str) -> CommandResult:
+            self.calls.append((session_id, name, expected_revision))
+            raise CoreClientError("reload rejected", code="reload_failed")
+
+    client = _FailingReloadClient()
+    terminal = _StubTerminal()
+    app = CoreTuiApp(client, session_id="s1", terminal=terminal, workspace_dir=tmp_path)
+    catalog.cache(app, (), "rev-1")
+    app._tui_switch_model("model", "openai/gpt-5.2")
+    _settle(app)
+    assert config_path.read_text(encoding="utf-8") == original
+    assert app.status_line == ""
+    assert "Model switch failed" in _plain(terminal.committed)
+
+
+def test_model_switch_removes_newly_created_config_on_reload_failure(tmp_path: Path) -> None:
+    config_path = tmp_path / "voidcode.toml"
+
+    class _BadStatusReloadClient(_FakeLocalClient):
+        def invoke_command(self, session_id: str, name: str, arguments: Any, expected_revision: str) -> CommandResult:
+            return CommandResult(status="error", error="bad reload")
+
+    app = CoreTuiApp(_BadStatusReloadClient(), session_id="s1", terminal=_StubTerminal(), workspace_dir=tmp_path)
+    catalog.cache(app, (), "rev-1")
+    app._tui_switch_model("model", "openai/gpt-5.2")
+    _settle(app)
+    assert not config_path.exists()
+    assert app.status_line == ""
+
+
+def test_upgrade_pending_invoke_decrements_commands_in_flight(tmp_path: Path) -> None:
+    from voidcode.sdk.client import CoreClientError
+
+    class _FencedClient(_FakeLocalClient):
+        def invoke_command(self, session_id: str, name: str, arguments: Any, expected_revision: str) -> CommandResult:
+            raise CoreClientError("upgrade pending", code="upgrade_pending")
+
+    terminal = _StubTerminal()
+    app = CoreTuiApp(_FencedClient(), session_id="s1", terminal=terminal, workspace_dir=tmp_path)
+    app._invoke_async("status", {}, "rev-1")
+    _settle(app)
+    assert app._commands_in_flight == 0
+    assert "draining for an upgrade" in _plain(terminal.committed)

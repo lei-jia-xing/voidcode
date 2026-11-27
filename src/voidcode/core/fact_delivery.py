@@ -122,8 +122,8 @@ class FactDelivery:
         for event in events:
             if event.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
                 dispatch_seq = event.payload.get("dispatch_sequence")
-                if isinstance(dispatch_seq, (int, float)):
-                    completed_dispatches.add(int(dispatch_seq))
+                if type(dispatch_seq) is int:
+                    completed_dispatches.add(dispatch_seq)
         pending: list[StoredEvent] = []
         for event in events:
             if event.event_type == EventType.PROVIDER_INTENT:
@@ -146,8 +146,8 @@ class FactDelivery:
         `require_complete`, an eligible owner that is no longer registered aborts instead of
         being papered over: an activation must never mask an undelivered fact.
         """
-        for session in self._host.store.sessions():
-            if session.workspace != str(self._host.workspace) or session.active_revision_id != self._host.revision_id:
+        for session in self._host.store.sessions(workspace=str(self._host.workspace), limit=None):
+            if session.active_revision_id != self._host.revision_id:
                 continue
             pending = self.settlement_candidates(session.session_id)
             if not pending:
@@ -389,8 +389,8 @@ class FactDelivery:
         for event in execution.events:
             if event.event_type in (EventType.MODEL_TURN, EventType.PROVIDER_INTERRUPTED):
                 dispatch_seq = event.payload.get("dispatch_sequence")
-                if isinstance(dispatch_seq, (int, float)):
-                    completed.add(int(dispatch_seq))
+                if type(dispatch_seq) is int:
+                    completed.add(dispatch_seq)
         for event in execution.events:
             if event.event_type == EventType.PROVIDER_INTENT and event.sequence not in completed:
                 settled = self._record_unknown_dispatch(execution, event)

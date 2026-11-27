@@ -457,7 +457,7 @@ class CoreSessions(CoreLifecycle):
         return False
 
     def list_approval_policies(self, session_id: str) -> list[ApprovalPolicyRule]:
-        self.ensure_open()
+        self.session(session_id)
         raw_list = self.store.approval_policies(session_id)
         res: list[ApprovalPolicyRule] = []
         for item in raw_list:
@@ -474,7 +474,7 @@ class CoreSessions(CoreLifecycle):
         return res
 
     def revoke_approval_policy(self, session_id: str, rule_id: str) -> bool:
-        self.ensure_open()
+        self.session(session_id)
         with self._session_lock(session_id):
             revoked = self.store.revoke_approval_policy(session_id, rule_id, revision_id=self.revision_id)
             if revoked:

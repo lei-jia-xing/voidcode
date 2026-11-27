@@ -177,6 +177,40 @@ class ToolExecutionManager:
     def __init__(self, host: ToolExecutionHost) -> None:
         self._host = host
 
+    def _commit_tool_intent(
+        self,
+        execution: _Execution,
+        snapshot: ToolExecutionSnapshot,
+        call: ToolCall,
+        definition: ToolDefinition,
+        invocation_id: str,
+    ) -> None:
+        """Persist the core tool-intent record before invoking or reporting a tool."""
+        cursor = execution.cursor
+        self._host.commit(
+            execution,
+            SessionStatus.RUNNING,
+            CheckpointKind.READY,
+            EventDraft(
+                EventType.TOOL_INTENT,
+                "core",
+                "plugin" if cursor.deferred_sequence is not None else "model",
+                {
+                    "invocation_id": invocation_id,
+                    "batch_sequence": cursor.deferred_sequence or cursor.batch_sequence,
+                    "call": encode_tool_call(call),
+                    "owner": snapshot.owner_of(call.tool_name),
+                    "effects": sorted(effect.value for effect in definition.effects),
+                    "semantics": [],
+                    "replay_policy": definition.effective_replay_policy,
+                    "icon": {"glyph": definition.icon.glyph} if definition.icon is not None else None,
+                    "logical_turn": execution.cursor.logical_turn,
+                    "depth": cursor.deferred_depth,
+                },
+            ),
+            checkpoint_bindings=(("intent_sequence", EventType.TOOL_INTENT),),
+        )
+
     def invoke(self, execution: _Execution, call: ToolCall, definition: ToolDefinition) -> CoreResult | None:
         """Invoke one tool call inside a snapshot dispatch, handling outcomes or suspensions."""
         with self._host.dispatch(f"tool:{call.tool_name}") as snapshot:
@@ -188,29 +222,7 @@ class ToolExecutionManager:
                 return self._host.stop(execution, reason, stop_cause=effective_abort.stop_cause or "user_stop")
             if cursor.intent_sequence is None:
                 invocation_id = uuid4().hex
-                self._host.commit(
-                    execution,
-                    SessionStatus.RUNNING,
-                    CheckpointKind.READY,
-                    EventDraft(
-                        EventType.TOOL_INTENT,
-                        "core",
-                        "plugin" if cursor.deferred_sequence is not None else "model",
-                        {
-                            "invocation_id": invocation_id,
-                            "batch_sequence": cursor.deferred_sequence or cursor.batch_sequence,
-                            "call": encode_tool_call(call),
-                            "owner": snapshot.owner_of(call.tool_name),
-                            "effects": sorted(effect.value for effect in definition.effects),
-                            "semantics": [],
-                            "replay_policy": definition.effective_replay_policy,
-                            "icon": {"glyph": definition.icon.glyph} if definition.icon is not None else None,
-                            "logical_turn": execution.cursor.logical_turn,
-                            "depth": cursor.deferred_depth,
-                        },
-                    ),
-                    checkpoint_bindings=(("intent_sequence", EventType.TOOL_INTENT),),
-                )
+                self._commit_tool_intent(execution, snapshot, call, definition, invocation_id)
             else:
                 intent = committed_event(execution, cursor.intent_sequence, EventType.TOOL_INTENT)
                 invocation_id = str(intent.payload["invocation_id"])
@@ -392,7 +404,7 @@ class ToolExecutionManager:
             def _run_worker(
                 c: ToolCall,
                 ctx: ToolContext,
-            ) -> ToolInvocationOutcome | Exception:
+            ) -> ToolInvocationOutcome | ToolSuspension | Exception:
                 try:
                     res = snapshot.plugin_runtime.invoke(
                         c,
@@ -400,9 +412,10 @@ class ToolExecutionManager:
                         return_outcome=True,
                         readonly=True,
                     )
-                    assert isinstance(res, ToolInvocationOutcome)
+                    if not isinstance(res, ToolInvocationOutcome):
+                        return TypeError("plugin runtime returned a bare tool result for an outcome request")
                     return res
-                except Exception as exc:
+                except (ToolSuspension, Exception) as exc:
                     return exc
 
             max_workers = min(len(prepared), 8)
@@ -414,6 +427,16 @@ class ToolExecutionManager:
                 if effective_abort.cancelled:
                     return self._host.stop(execution, "tool invocation was cancelled", stop_cause=effective_abort.stop_cause or "user_stop")
 
+                if isinstance(outcome, ActivationFenced):
+                    return self._host.stop(execution, str(outcome), stop_cause="error")
+
+                if isinstance(outcome, ToolSuspension):
+                    self._commit_tool_intent(execution, snapshot, call, definition, invocation_id)
+                    parked = self.park_suspended_tool(execution, call, snapshot, outcome, effective_abort)
+                    if parked is not None:
+                        return parked
+                    continue
+
                 if isinstance(outcome, ToolInvocationOutcome):
                     result = outcome.result
                     staged_state = outcome.staged_state
@@ -422,8 +445,10 @@ class ToolExecutionManager:
                     staged_cancels = outcome.staged_cancellations
                     staged_receipts = outcome.staged_observer_receipts
                     staged_budget = outcome.staged_budget
+                    staged_wakeups = outcome.staged_wakeups
+                    staged_wakeup_cancels = outcome.staged_wakeup_cancels
                     staged_observations = outcome.staged_observations
-                elif isinstance(outcome, Exception):
+                else:
                     result = ToolFailure(call.tool_name, f"tool failed: {type(outcome).__name__}: {outcome}")
                     staged_state = ()
                     staged_events = ()
@@ -431,43 +456,14 @@ class ToolExecutionManager:
                     staged_cancels = ()
                     staged_budget = None
                     staged_receipts = ()
-                    staged_observations = ()
-                else:
-                    result = ToolFailure(call.tool_name, "plugin runtime returned invalid outcome")
-                    staged_state = ()
-                    staged_events = ()
-                    staged_conts = ()
-                    staged_cancels = ()
-                    staged_budget = None
-                    staged_receipts = ()
+                    staged_wakeups = ()
+                    staged_wakeup_cancels = ()
                     staged_observations = ()
 
                 if result.tool_name != call.tool_name:
                     return self._host.stop(execution, "tool result identity differs from the dispatched native call", stop_cause="error")
 
-                self._host.commit(
-                    execution,
-                    SessionStatus.RUNNING,
-                    CheckpointKind.READY,
-                    EventDraft(
-                        EventType.TOOL_INTENT,
-                        "core",
-                        "plugin" if cursor.deferred_sequence is not None else "model",
-                        {
-                            "invocation_id": invocation_id,
-                            "batch_sequence": cursor.deferred_sequence or cursor.batch_sequence,
-                            "call": encode_tool_call(call),
-                            "owner": snapshot.owner_of(call.tool_name),
-                            "effects": sorted(effect.value for effect in definition.effects),
-                            "semantics": [],
-                            "replay_policy": definition.effective_replay_policy,
-                            "icon": {"glyph": definition.icon.glyph} if definition.icon is not None else None,
-                            "logical_turn": execution.cursor.logical_turn,
-                            "depth": cursor.deferred_depth,
-                        },
-                    ),
-                    checkpoint_bindings=(("intent_sequence", EventType.TOOL_INTENT),),
-                )
+                self._commit_tool_intent(execution, snapshot, call, definition, invocation_id)
 
                 result = self._host.post_tool_hooks(execution, snapshot, call, result)
 
@@ -481,6 +477,8 @@ class ToolExecutionManager:
                     staged_cancels=staged_cancels,
                     staged_budget=staged_budget,
                     staged_receipts=staged_receipts,
+                    staged_wakeups=staged_wakeups,
+                    staged_wakeup_cancels=staged_wakeup_cancels,
                     staged_observations=staged_observations,
                 )
 
@@ -505,52 +503,27 @@ class ToolExecutionManager:
         if effective_abort.cancelled:
             return self._host.stop(execution, "tool invocation was cancelled", stop_cause=effective_abort.stop_cause or "user_stop")
         park = suspension.park
+        rejection: str | None = None
         if park.park_kind != "ask":
-            self.report(
-                execution,
-                call,
-                ToolFailure(
-                    call.tool_name,
-                    "foreground composition is not implemented: the composition slice (driver, rows, terminals) has not landed",
-                ),
-                staged_state=staged.staged_state,
-                staged_events=staged.staged_events,
-                staged_conts=staged.staged_continuations,
-                staged_cancels=staged.staged_cancellations,
-                staged_budget=staged.staged_budget,
-                staged_receipts=staged.staged_observer_receipts,
-                staged_observations=staged.staged_observations,
-            )
-            return None
-        if cursor.ask_sequence is not None or cursor.ask_request_id is not None:
+            rejection = "foreground composition is not implemented: the composition slice (driver, rows, terminals) has not landed"
+        elif cursor.ask_sequence is not None or cursor.ask_request_id is not None:
             live = cursor.ask_request_id if cursor.ask_request_id is not None else "unknown"
+            rejection = f"AskAlreadyParked: session {execution.session.session_id!r} already holds live ask {live!r}; refusing a second suspend"
+        elif execution.interaction == "unattended":
+            rejection = f"ask is unsupported while unattended; {call.tool_name} was not parked"
+        if rejection is not None:
             self.report(
                 execution,
                 call,
-                ToolFailure(
-                    call.tool_name,
-                    f"AskAlreadyParked: session {execution.session.session_id!r} already holds live ask {live!r}; refusing a second suspend",
-                ),
+                ToolFailure(call.tool_name, rejection),
                 staged_state=staged.staged_state,
                 staged_events=staged.staged_events,
                 staged_conts=staged.staged_continuations,
                 staged_cancels=staged.staged_cancellations,
                 staged_budget=staged.staged_budget,
                 staged_receipts=staged.staged_observer_receipts,
-                staged_observations=staged.staged_observations,
-            )
-            return None
-        if execution.interaction == "unattended":
-            self.report(
-                execution,
-                call,
-                ToolFailure(call.tool_name, f"ask is unsupported while unattended; {call.tool_name} was not parked"),
-                staged_state=staged.staged_state,
-                staged_events=staged.staged_events,
-                staged_conts=staged.staged_continuations,
-                staged_cancels=staged.staged_cancellations,
-                staged_budget=staged.staged_budget,
-                staged_receipts=staged.staged_observer_receipts,
+                staged_wakeups=staged.staged_wakeups,
+                staged_wakeup_cancels=staged.staged_wakeup_cancels,
                 staged_observations=staged.staged_observations,
             )
             return None
@@ -587,6 +560,8 @@ class ToolExecutionManager:
             staged_state=staged.staged_state,
             staged_continuations=staged.staged_continuations,
             staged_cancellations=staged.staged_cancellations,
+            staged_wakeups=staged.staged_wakeups,
+            staged_wakeup_cancels=staged.staged_wakeup_cancels,
             staged_budgets=tuple(staged_budget_updates),
             observer_receipts=staged.staged_observer_receipts,
             checkpoint_bindings=(("ask_sequence", EventType.ASK_REQUESTED),),

@@ -19,6 +19,7 @@ from voidcode.capabilities.files.path_queries import (
 )
 from voidcode.sdk.plugin import PluginQueryCaller
 from voidcode.sdk.services import QueryContractError, QueryUnavailable
+from voidcode.sdk.suspend import ParkRevisionError
 from voidcode.transport.projection import core_error_status
 
 
@@ -267,3 +268,4 @@ def test_bound_handler_rejects_invalid_arguments_before_running(tmp_path: Path) 
 def test_query_failure_sources_map_to_stable_transport_codes() -> None:
     assert core_error_status(QueryUnavailable("no provider")) == (404, "query_unavailable")
     assert core_error_status(QueryContractError("malformed")) == (400, "query_contract")
+    assert core_error_status(ParkRevisionError("stale")) == (409, "stale_revision")

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import uvicorn
 
+from voidcode.config import dumps_toml
 from voidcode.transport.http import create_core_app
 
 _TOKEN = "static-serving-token"
@@ -42,7 +43,7 @@ def _write_bundle(root: Path) -> Path:
 def _workspace(tmp_path: Path) -> tuple[Path, Path]:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml({"schema_version": 1}), encoding="utf-8")
     state = tmp_path / "state"
     state.mkdir()
     return workspace, state
@@ -134,3 +135,27 @@ def test_bundle_never_reads_outside_its_root(tmp_path: Path) -> None:
             assert status == 200, path
             assert b"secret-outside-bundle" not in body, path
             assert b"spa entry" in body, path
+
+
+def test_static_missing_asset_returns_404_and_api_cors_preflight_works_with_bearer_token(tmp_path: Path) -> None:
+    workspace, state = _workspace(tmp_path)
+    bundle = _write_bundle(tmp_path / "dist")
+    with _listening(workspace, state, bundle) as base:
+        status, body = _request(base, "/assets/missing.js")
+        assert status == 404
+        assert json.loads(body)["code"] == "not_found"
+
+        preflight = urllib.request.Request(base + "/api/health", method="OPTIONS")
+        preflight.add_header("Origin", "http://127.0.0.1:5173")
+        with urllib.request.urlopen(preflight, timeout=30) as response:
+            assert response.status == 204
+            assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"
+
+        unauthorized = urllib.request.Request(base + "/api/health", method="GET")
+        unauthorized.add_header("Origin", "http://127.0.0.1:5173")
+        try:
+            urllib.request.urlopen(unauthorized, timeout=30)
+            raise AssertionError("expected HTTP 401")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 401
+            assert exc.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"

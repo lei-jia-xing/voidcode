@@ -158,17 +158,25 @@ class ToolDiagnostics:
 
     @classmethod
     def from_payload(cls, payload: object) -> ToolDiagnostics:
-        if not isinstance(payload, dict):
+        if not isinstance(payload, Mapping):
             raise ValueError("diagnostics must be an object")
         allowed = {"kind", "summary", "details", "guidance"}
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise ValueError("diagnostics contains unknown field(s): " + ", ".join(unknown))
         details = payload.get("details", {})
-        if not isinstance(details, dict):
+        if not isinstance(details, Mapping):
             raise ValueError("diagnostics details must be an object")
-        values = {name: payload.get(name) for name in ("kind", "summary", "guidance")}
-        return cls(details=details, **values)
+        kind = payload.get("kind")
+        summary = payload.get("summary")
+        guidance = payload.get("guidance")
+        for name, value in (("kind", kind), ("summary", summary), ("guidance", guidance)):
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"diagnostics {name} must be a string or null")
+        assert kind is None or isinstance(kind, str)
+        assert summary is None or isinstance(summary, str)
+        assert guidance is None or isinstance(guidance, str)
+        return cls(kind=kind, summary=summary, details=details, guidance=guidance)
 
 
 def required_str(value: object, field: str) -> str:
@@ -185,12 +193,22 @@ def optional_str(value: object, field: str) -> str | None:
     return value
 
 
+type ChangeOperation = Literal["create", "update", "delete", "move"]
+
+_CHANGE_OPERATIONS: Final[Mapping[str, ChangeOperation]] = {
+    "create": "create",
+    "update": "update",
+    "delete": "delete",
+    "move": "move",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class Change:
     """One filesystem change: observed by a helper or attributed to a tool result."""
 
     path: str
-    operation: Literal["create", "update", "delete", "move"] = "update"
+    operation: ChangeOperation = "update"
     old_path: str | None = None
     content_hash: str | None = None
     #: The write landed in sandbox scratch (tmpfs), not on host paths: surface in
@@ -223,17 +241,24 @@ class Change:
 
     @classmethod
     def from_payload(cls, payload: object) -> Change:
-        if not isinstance(payload, dict):
+        if not isinstance(payload, Mapping):
             raise ValueError("change must be an object")
         unknown = sorted(set(payload) - {"path", "operation", "old_path", "content_hash", "scratch"})
         if unknown:
             raise ValueError("change contains unknown field(s): " + ", ".join(unknown))
+        raw_operation = payload.get("operation", "update")
+        operation = _CHANGE_OPERATIONS.get(raw_operation) if isinstance(raw_operation, str) else None
+        if operation is None:
+            raise ValueError("invalid change operation")
+        scratch = payload.get("scratch", False)
+        if type(scratch) is not bool:
+            raise ValueError("scratch must be a boolean")
         return cls(
             path=required_str(payload.get("path"), "path"),
-            operation=payload.get("operation", "update"),  # type: ignore[arg-type]
+            operation=operation,
             old_path=optional_str(payload.get("old_path"), "old_path"),
             content_hash=optional_str(payload.get("content_hash"), "content_hash"),
-            scratch=bool(payload.get("scratch", False)),
+            scratch=scratch,
         )
 
 

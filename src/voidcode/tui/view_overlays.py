@@ -355,7 +355,7 @@ class InteractiveApproval:
 
     def handle_key(self, key: Key) -> ApprovalDecided | None:
         if self.reason_mode:
-            if key.name == "escape":
+            if key.name in ("esc", "escape"):
                 self.reason_mode = False
                 self.reason_input = ""
                 return None

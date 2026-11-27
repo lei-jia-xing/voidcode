@@ -9,6 +9,7 @@ from tests.fixtures.core_factory import loopback_server
 from tests.fixtures.s5_plugin import PLUGIN_ID, WRITE_TOOL, write_s5_plugin
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.events import EventType
 
 
@@ -24,8 +25,8 @@ def _configure(tmp_path: Path, server: OpenAILoopbackServer) -> Path:
     source = write_s5_plugin(tmp_path / "source")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "voidcode.json").write_text(
-        json.dumps(
+    (workspace / "voidcode.toml").write_text(
+        dumps_toml(
             {
                 "schema_version": 1,
                 "model": {"model": "endpoint/exact-model"},
@@ -113,3 +114,41 @@ def test_deny_with_reason_reports_to_model(tmp_path: Path) -> None:
             # Check tool completed failure carries denial reason
             tool_res = next(e for e in events if e.event_type == EventType.TOOL_COMPLETED)
             assert "user denied this invocation: file is protected by policy" in str(tool_res.payload)
+
+
+def test_approval_policy_operations_enforce_workspace_ownership(tmp_path: Path) -> None:
+    import pytest
+
+    with loopback_server([_turn(_call("call_1", WRITE_TOOL, path="a.txt", text="hi")), _turn(output="ok")]) as server:
+        ws_a = tmp_path / "workspace_a"
+        ws_b = tmp_path / "workspace_b"
+        ws_a.mkdir()
+        ws_b.mkdir()
+        source = write_s5_plugin(tmp_path / "source")
+        cfg = {
+            "schema_version": 1,
+            "model": {"model": "endpoint/exact-model"},
+            "policy": {"approval_mode": "ask", "read_only": False},
+            "providers": {"endpoint": {"api_key": "secret", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}},
+            "plugins": {PLUGIN_ID: {"path": str(source)}},
+        }
+        (ws_a / "voidcode.toml").write_text(dumps_toml(cfg), encoding="utf-8")
+        (ws_b / "voidcode.toml").write_text(dumps_toml(cfg), encoding="utf-8")
+        state = tmp_path / "state"
+        with open_core(ws_a, state_dir=state) as core_a:
+            res = core_a.run("write")
+            assert res.pending_approval is not None
+            res2 = core_a.resume(
+                res.session_id,
+                approval_request_id=res.pending_approval["request_id"],
+                decision="allow",
+                grant_session_policy=True,
+            )
+            assert res2.status == "completed"
+            assert len(core_a.list_approval_policies(res.session_id)) == 1
+
+        with open_core(ws_b, state_dir=state) as core_b:
+            with pytest.raises(ValueError, match="belongs to another workspace"):
+                core_b.list_approval_policies(res.session_id)
+            with pytest.raises(ValueError, match="belongs to another workspace"):
+                core_b.revoke_approval_policy(res.session_id, "any-rule")

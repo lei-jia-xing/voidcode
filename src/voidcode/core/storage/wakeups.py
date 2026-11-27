@@ -30,6 +30,7 @@ from ._rows import (
 from ._values import (
     MAX_WAKEUP_PAYLOAD_BYTES,
     CheckpointKind,
+    EventDraft,
     SessionRecord,
     SessionStatus,
     StoreConflict,
@@ -38,6 +39,7 @@ from ._values import (
     WakeupSkip,
     canonical_json,
 )
+from .writes import event_stop_cause_locked, insert_session_event_locked, interrupted_terminal_status
 
 
 class _WakeupsMixin(_ConnectionStore):
@@ -193,32 +195,26 @@ class _WakeupsMixin(_ConnectionStore):
                         skipped.append(WakeupSkip(wakeup.wakeup_id, wakeup.session_id, "claimed_concurrently"))
                         continue
                     new_seq = session.last_event_sequence + 1
-                    fired_payload = canonical_json(
-                        {
-                            "eligible_owners": list(eligible_owners),
-                            "wakeup_id": wakeup.wakeup_id,
-                            "owner": wakeup.owner,
-                            "payload": json_wire_object(wakeup.payload),
-                            "role": wakeup.role,
-                            "logical_turn": claimed_logical_turn,
-                        }
-                    )
-                    self._connection.execute(
-                        """
-                        INSERT INTO session_events (
-                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
-                        ) VALUES (?, ?, ?, ?, ?, 'plugin', ?, ?, ?)
-                        """,
-                        (
-                            session.session_id,
-                            new_seq,
-                            claim_run_id,
+                    insert_session_event_locked(
+                        self._connection,
+                        session.session_id,
+                        new_seq,
+                        run_id=claim_run_id,
+                        revision_id=revision_id,
+                        draft=EventDraft(
                             EventType.WAKEUP_FIRED,
                             f"plugin.{wakeup.owner}",
-                            revision_id,
-                            fired_payload,
-                            len(fired_payload.encode("utf-8")),
+                            "plugin",
+                            {
+                                "eligible_owners": list(eligible_owners),
+                                "wakeup_id": wakeup.wakeup_id,
+                                "owner": wakeup.owner,
+                                "payload": json_wire_object(wakeup.payload),
+                                "role": wakeup.role,
+                                "logical_turn": claimed_logical_turn,
+                            },
                         ),
+                        now=now,
                     )
                     wakeup_checkpoint = {
                         "batch_sequence": None,
@@ -373,7 +369,12 @@ class _WakeupsMixin(_ConnectionStore):
                         checkpoint_payload = None
                         if checkpoint is not None:
                             (checkpoint_json,) = checkpoint
-                            checkpoint_payload = json.loads(checkpoint_json)
+                            try:
+                                parsed_cp = json.loads(checkpoint_json)
+                            except TypeError, ValueError:
+                                parsed_cp = None
+                            if isinstance(parsed_cp, Mapping):
+                                checkpoint_payload = parsed_cp
                         candidate_root_id = None if checkpoint_payload is None else checkpoint_payload.get("root_id")
                         if not isinstance(candidate_root_id, str) or not candidate_root_id:
                             raise StoreConflict(f"active wakeup session {session_id!r} has no captured root action identity")
@@ -522,9 +523,7 @@ class _WakeupsMixin(_ConnectionStore):
                     elif latest[0] == EventType.RUN_FAILED:
                         terminal_status, checkpoint_kind = "failed", CheckpointKind.TERMINAL
                     elif latest[0] == EventType.RUN_INTERRUPTED:
-                        terminal_status = (
-                            "cancelled" if self._event_stop_cause(str(session_id), int(last_sequence)) in ("user_stop", "owner_cancel") else "failed"
-                        )
+                        terminal_status = interrupted_terminal_status(event_stop_cause_locked(self._connection, str(session_id), int(last_sequence)))
                         checkpoint_kind = CheckpointKind.TERMINAL if terminal_status == "cancelled" else CheckpointKind.INTERRUPTED
                 if terminal_status is not None:
                     # The run's own terminal event committed; only the claim/session row lagged.
@@ -559,29 +558,24 @@ class _WakeupsMixin(_ConnectionStore):
                         if isinstance(checkpoint_payload, Mapping) and isinstance(checkpoint_payload.get("logical_turn"), str):
                             logical_turn = checkpoint_payload["logical_turn"]
                     sequence = int(last_sequence) + 1
-                    interrupted_payload = canonical_json(
-                        {
-                            "reason": reason_text,
-                            "stop_cause": "error",
-                            "logical_turn": logical_turn,
-                            "eligible_owners": list(owners),
-                        }
-                    )
-                    self._connection.execute(
-                        """
-                        INSERT INTO session_events (
-                            session_id, sequence, run_id, event_type, source, actor, revision_id, payload_json, payload_bytes
-                        ) VALUES (?, ?, ?, ?, 'core', 'core', ?, ?, ?)
-                        """,
-                        (
-                            str(session_id),
-                            sequence,
-                            str(run_id),
+                    insert_session_event_locked(
+                        self._connection,
+                        str(session_id),
+                        sequence,
+                        run_id=str(run_id),
+                        revision_id=str(revision_id),
+                        draft=EventDraft(
                             EventType.RUN_INTERRUPTED,
-                            str(revision_id),
-                            interrupted_payload,
-                            len(interrupted_payload.encode("utf-8")),
+                            "core",
+                            "core",
+                            {
+                                "reason": reason_text,
+                                "stop_cause": "error",
+                                "logical_turn": logical_turn,
+                                "eligible_owners": list(owners),
+                            },
                         ),
+                        now=now,
                     )
                     self._connection.execute(
                         "UPDATE sessions SET status = 'interrupted', last_event_sequence = ?, updated_at = ? WHERE session_id = ?",
@@ -608,17 +602,7 @@ class _WakeupsMixin(_ConnectionStore):
 
     def _event_stop_cause(self, session_id: str, sequence: int) -> object:
         """The recorded stop cause for one interrupted event inside the caller's transaction."""
-        row = self._connection.execute(
-            "SELECT payload_json FROM session_events WHERE session_id = ? AND sequence = ?",
-            (session_id, sequence),
-        ).fetchone()
-        if row is None:
-            return None
-        try:
-            payload = json.loads(row[0])
-        except TypeError, ValueError:
-            return None
-        return payload.get("stop_cause") if isinstance(payload, Mapping) else None
+        return event_stop_cause_locked(self._connection, session_id, sequence)
 
     def settle_claimed_wakeups(self, session_id: str, status: Literal["completed", "failed", "cancelled"]) -> int:
         """Settle every claimed wakeup of one session whose run just finished."""

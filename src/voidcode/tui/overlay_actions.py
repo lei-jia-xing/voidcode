@@ -430,7 +430,7 @@ class OverlayActions:
                     self._upgrade_pending_notice(f"/{shown}", session_id=session_id, generation=generation)
                 else:
                     self._queue_notice(f"/{shown} failed: {exc}", tone="error", session_id=session_id, generation=generation)
-                    finish("error")
+                finish("error")
                 if submit_key is not None:
                     self.event_queue.put(events.DecisionDoneEvent(request_id=submit_key, session_id=session_id, generation=generation))
                 return
