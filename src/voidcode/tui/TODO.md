@@ -80,4 +80,5 @@ TUI 是服务端事件流之上的内联终端客户端：不持有业务真相�
   - `InteractiveApproval.reason_mode` 同时支持 `esc`/`escape` 退出原因输入；`AskMultiSelect` 同时支持 `x` 与 `space` 切换；`RESERVED_SHORTCUTS` 补齐 `ctrl+a`/`ctrl+e`/`ctrl+u`/`ctrl+k`。
   - `_invoke_async` 在 `upgrade_pending` 拒绝时同样回收 `_commands_in_flight`；`_switch_session` 按会话保留/恢复 composer 输入历史；`switch_model` 在 `core.reload` 失败时原子回滚（或清理新建）`voidcode.toml` 并清空状态行；`_handle_followup_withdrawn` 在已有草稿时不丢弃撤回文本（改为记入 transcript）；移除 `terminal_app.py` 7 个冗余死常量。
 - [ ] **补齐 `Ctrl+R` 历史搜索、非 PNG 内嵌解码与信号/废弃参数收口。**
-  - 为 composer 补齐 `Ctrl+R` 增量历史搜索；扩展 `artifact_viewer.py` 对 JPEG/WebP/GIF 的渲染能力（当前仅 Kitty 原生 PNG，`pyproject.toml` 无独立图像解码依赖）；收口 `terminal_app.py` SIGWINCH 重绘/状态协同与已失效的 `show_session` CLI/配置选项。
+  - [x] 基于 `pillow` 与 `capabilities/images.py` 扩展 `artifact_viewer.py` 对 PNG/JPEG/WebP/GIF（含 EXIF 方向）的 Kitty Graphics 预览渲染与原字节打开。
+  - 残留：为 composer 补齐 `Ctrl+R` 增量历史搜索；收口 `terminal_app.py` SIGWINCH 重绘/状态协同与已失效的 `show_session` CLI/配置选项。

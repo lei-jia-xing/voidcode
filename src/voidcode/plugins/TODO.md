@@ -3,8 +3,8 @@
 ## 插件生产化与能力收敛
 
 - [ ] **为官方插件建立真实任务的生产化门槛，先覆盖 files、exec、mcp、lsp、subagents、workflows。**
-- [ ] **让正常截图/图片读取真正可用，贯通工具结果和客户端显示。**
-  - `capabilities/files/read_tool.py` 按当前契约原样发布光栅字节（见 `plugins/files/README.md`），需补齐读取/投影链路的尺寸与解码保护，避免超大图片引发异常或延迟拒绝。
+- [x] **让正常截图/图片读取真正可用，贯通工具结果和客户端显示。**
+  - `capabilities/images.py` 接入 Pillow 共享栅格检查与 Kitty PNG 转码：`capabilities/files/read_tool.py` 在发布前执行容器完整性校验（`verify=True`）及尺寸/像素/体积护栏（`MAX_RASTER_DIMENSION` / `MAX_RASTER_PIXELS` / `MAX_RASTER_BYTES`），拒绝损坏图像与解压炸弹并避免延迟失败；`tui/artifact_viewer.py` 支持 PNG/JPEG/WebP/GIF（含 EXIF 方向校正）的 Kitty Graphics 预览并保留原字节外部打开。
 - [x] **删除没有边界依据的 PREVIEW/MAX，以及同一数据链路的重复截断。**
   - `ast_grep_tool.py` 删除固定 `_MATCH_PREVIEW_LIMIT = 50`，改为按 `TOOL_OUTPUT_BYTES` 留出字节余量动态打包；成功结果保留过滤后 `native_jsonl` artifact URI，零匹配不再产生空 artifact，进程输出超限/超时/取消时返回带 partial artifact 的 typed failure 而不是丢弃结果或伪称完整。`user_shell_plugin` 事件载荷移除第三份冗余 `"output"` 拷贝（保留 `stdout`/`stderr` 与 `record`）。
 - [ ] **提供面向模型的持久 Python `eval`，而不只是 shell 的另一层包装。**
@@ -26,9 +26,9 @@
 
 - [x] **修复 `compaction` 默认配置下自动压缩失效。**
   - `compaction_observer` 现从 `UsageFact` 接收 `context_window` 并传入 `resolve_compaction_budget`，保证默认配置下能正确算出压缩触发门限。
-- [ ] **为 `web_fetch` 补齐 SSRF 防护，消除 `web_search` 静默降级（部分完成）。**
-  - `_validated_url` 现按 `not is_global or is_multicast` 拒绝回环/私有/链路本地/CGNAT/保留/组播/云元数据，并解包 IPv4-mapped IPv6；重定向目标同样校验；DNS 解析失败 fail closed；fetch/search 客户端设置 `trust_env=False`。`VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH=1` 仅为危险的测试/开发覆盖。
-  - 残留：校验与连接之间的 DNS rebinding TOCTOU（未做连接期 IP 固定）；解压后的字节上限不是硬内存界。`web_search` 已消除 DeepSeek 静默截断并标注 keyless Jina。
+- [x] **为 `web_fetch` 补齐 SSRF 防护，消除 `web_search` 静默降级。**
+  - `_resolve_public_ips` 统一按 `not is_global or is_multicast` 拒绝回环/私有/链路本地/CGNAT/保留/组播/云元数据并解包 IPv4-mapped IPv6，DNS 失败 fail closed；`_PinnedPublicNetworkBackend` 在 `connect_tcp` 阶段单次解析并固定连接已校验 IP 字面量（保持 `Host` 与 TLS SNI 原样，消除 DNS rebinding TOCTOU）；重定向每跳复用同一校验。
+  - `_read_bounded_body` 通过 `response.iter_raw()` + 增量有界 `zlib`（`max_length`）为 `gzip`/`deflate`/`identity` 同时约束压缩线流与解压字节内存峰值，并显式拒绝不支持的 `Content-Encoding`；客户端设置 `trust_env=False`；`VOIDCODE_ALLOW_LOCAL_NETWORK_FETCH=1` 仅为危险测试/开发开关。`web_search` 已消除 DeepSeek 静默截断并标注 keyless Jina（`web_search` 响应解压界限仍保留在 `plugins/web/README.md` 备注中）。
 - [x] **完善 `files` 的忽略规则。**
   - `GitIgnoreMatcher`（`capabilities/files/gitignore.py`）现按目录惰性加载搜索根 `.git/info/exclude`、根 `.gitignore` 与嵌套 `.gitignore`；每条规则相对其所在目录解释（锚定/浮动/`**`/目录专属/`!` 取反），深层文件覆盖祖先、最后匹配规则获胜，被忽略子树不再扫描。pathspec 拒绝的行按字面量模式应用而非中止搜索；不可读的忽略文件仍是类型化失败。`glob`/`grep`/路径补全与 `find`（经 grep 查询）共用该匹配器；hidden 默认包含、`respect_gitignore` 默认 false 的既有策略不变，全局 excludes 不读取。
   - `write`/`edit` 共用 64 KiB mutation-content 上限（按 UTF-8 字节计：`write.content`、文本模式 `newString` 之和、range 模式 `newText` 之和），覆盖写按流式哈希复核，仅对不超过 64 KiB 的旧文件回传 unified `diff`/`additions`/`deletions`。
@@ -38,4 +38,5 @@
   - 残留：MCP 仅实现 `tools/list` 分页（见 `plugins/mcp/README.md`），`resources/list`、`read_resource` 与 `prompts/list`/`get_prompt` 尚未实现；MCP 仍自行启动 stdio 子进程并丢弃 stderr 到 `/dev/null`，需待 Core 提供统一服务进程原语后迁入。
 - [ ] **收敛 Provider 适配器重复实现并补齐现代特性。**
   - [x] 消除 `openai_native.py` 与 `anthropic_native.py` 重复的 `_tool_maps` 及重复 `_MAX_TOOL_NAME_LENGTH` 常量（已收敛至 `_wire_common.py` 的 `tool_name_maps` 与 `_MAX_TOOL_NAME_LENGTH`）。
-  - `anthropic_native.py` 仅在 `tools[-1]`/`system` 上设置 `cache_control`，应为多轮历史消息前缀设置缓存断点；`openai_native.py` 补充 OpenAI Responses API 支持（推理摘要与状态化推理）。
+  - [x] `anthropic_native.py` 现对 `tools[-1]`、`system` 与多轮历史消息前缀（保留最近上轮边界与当前尾块，跳过 `thinking`/`redacted_thinking` 及空 `text` 块，最多 4 处断点）设置 `cache_control`。
+  - 残留：`openai_native.py` 补充 OpenAI Responses API 支持（推理摘要与状态化推理）。
