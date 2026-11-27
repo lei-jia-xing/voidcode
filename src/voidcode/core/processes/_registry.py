@@ -107,6 +107,7 @@ class ProcessRegistry:
         stderr_path: Path,
         process_id: str | None = None,
         service: bool = False,
+        query_service: bool = False,
         sandbox: SandboxBackend | None = None,
         workspace: Path | None = None,
     ) -> ProcessHandle:
@@ -116,6 +117,8 @@ class ProcessRegistry:
         they survive a generation swap. ``service=True`` starts a generation-owned helper in its
         own session; a generation retire stops exactly that service tree.
         """
+        if query_service and not service:
+            raise ValueError("query_service requires service=True")
         identifier = process_id or f"{'svc' if service else 'proc'}-{uuid4().hex[:16]}"
         self._ensure_identifier_available(identifier, owner=owner, session_id=session_id)
         if not service:
@@ -167,6 +170,7 @@ class ProcessRegistry:
             stderr_path=stderr_path,
             frame=frame,
             effects_path=effects_path,
+            query_service=query_service,
         )
 
     def _ensure_identifier_available(self, identifier: str, *, owner: str, session_id: str) -> None:
@@ -195,6 +199,7 @@ class ProcessRegistry:
         stderr_path: Path,
         frame: bytes | None = None,
         effects_path: Path | None = None,
+        query_service: bool = False,
     ) -> ProcessHandle:
         """Start one service child in its own session."""
         try:
@@ -225,6 +230,7 @@ class ProcessRegistry:
             stderr_path=stderr_path,
             process=server,
             own_group=True,
+            query_service=bool(query_service),
             effects_path=effects_path,
         )
         with self._lock:
@@ -250,6 +256,11 @@ class ProcessRegistry:
         if entry is None or entry.owner != owner or entry.session_id != session_id:
             return None
         return entry
+
+    def is_query_service(self, process_id: str, *, owner: str, session_id: str) -> bool:
+        """Whether `process_id` names a read-only query service owned by `(owner, session_id)`."""
+        entry = self.service_entry(process_id, owner=owner, session_id=session_id)
+        return entry is not None and entry.query_service
 
     def list_background(self, *, owner: str, session_id: str) -> tuple[ProcessHandle, ...]:
         with self._lock:

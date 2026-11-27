@@ -33,6 +33,8 @@ class _Background:
     stderr_path: Path
     process: subprocess.Popen[Any]
     own_group: bool = True
+    #: Whether this generation service is restricted to read-only query leases.
+    query_service: bool = False
     tree_pids: tuple[int, ...] = ()
     #: Supervisor effects sidecar path for confined spawns; None when unconfined.
     effects_path: Path | None = None

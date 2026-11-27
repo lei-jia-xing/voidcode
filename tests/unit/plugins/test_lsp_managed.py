@@ -59,6 +59,22 @@ class _Services:
     def names(self) -> list[str]:
         return [name for name, _ in self.calls]
 
+    def spawn_query_service_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        process_id: str | None = None,
+    ) -> ProcessHandle:
+        return self._spawn_service_common(
+            "spawn_query_service_process",
+            argv,
+            cwd=cwd,
+            env=env,
+            process_id=process_id,
+        )
+
     def spawn_service_process(
         self,
         argv: Sequence[str],
@@ -67,8 +83,25 @@ class _Services:
         env: Mapping[str, str] | None = None,
         process_id: str | None = None,
     ) -> ProcessHandle:
+        return self._spawn_service_common(
+            "spawn_service_process",
+            argv,
+            cwd=cwd,
+            env=env,
+            process_id=process_id,
+        )
+
+    def _spawn_service_common(
+        self,
+        method_name: str,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        process_id: str | None = None,
+    ) -> ProcessHandle:
         identifier = process_id or "svc-test"
-        self.calls.append(("spawn_service_process", {"argv": list(argv), "process_id": identifier}))
+        self.calls.append((method_name, {"argv": list(argv), "process_id": identifier}))
         stdout_log = self._spool / f"{identifier}.stdout.log"
         stderr_log = self._spool / f"{identifier}.stderr.log"
         out = stdout_log.open("ab")
@@ -220,8 +253,8 @@ def test_request_drives_real_stdio_and_opens_the_document(harness: tuple[_Servic
     methods = [entry["method"] for entry in _echo_methods(record)]
     assert methods[:2] == ["initialize", "initialized"]
     assert "textDocument/didOpen" in methods
-    assert "spawn_service_process" in services.names()
-    assert services.names().count("spawn_service_process") == 1
+    assert "spawn_query_service_process" in services.names()
+    assert services.names().count("spawn_query_service_process") == 1
 
 
 def test_second_request_reuses_service_and_sends_did_change(harness: tuple[_Services, Path]) -> None:
@@ -255,7 +288,7 @@ def test_second_request_reuses_service_and_sends_did_change(harness: tuple[_Serv
     second = _ask()
     assert second.document_state is not None and second.document_state.version == 2
     assert second.document_state.content_hash == hashlib.sha256(b"v2-longer\n").hexdigest()
-    assert services.names().count("spawn_service_process") == 1
+    assert services.names().count("spawn_query_service_process") == 1
     versions = [entry["version"] for entry in _echo_methods(record) if entry["method"].endswith(":version")]
     assert versions == [1, 2]
 
@@ -374,7 +407,7 @@ def test_tool_registers_query_and_effects() -> None:
     plugin = create_plugin(None)
     assert [query.name for query in plugin.queries] == ["workspace.document_version"]
     tool = next(tool for tool in plugin.tools if tool.definition.name == "lsp")
-    assert tool.definition.effects == frozenset({"read", "execute"})
+    assert tool.definition.effects == frozenset({"read"})
     _ = replace
 
 
@@ -391,7 +424,7 @@ def test_lsp_command_lists_servers_without_spawning(tmp_path: Path) -> None:
         services,  # type: ignore[arg-type]
     )
     assert result.status == "ok"
-    assert "spawn_service_process" not in services.names()
+    assert "spawn_query_service_process" not in services.names()
     assert result.data is not None and result.data["servers"][0]["name"] == "echo"
 
 
@@ -418,7 +451,7 @@ def test_each_session_gets_its_own_server(harness: tuple[_Services, Path]) -> No
                 abort_signal=_Abort(),  # type: ignore[arg-type]
             )
         )
-    assert services.names().count("spawn_service_process") == 2
+    assert services.names().count("spawn_query_service_process") == 2
 
 
 def test_disabled_inventory_uses_the_same_configuration_contract(tmp_path: Path) -> None:
@@ -683,7 +716,7 @@ def test_shutdown_stops_owner_thread_and_next_manager_works(harness: tuple[_Serv
     assert isinstance(replacement, ManagedLspManager)
     try:
         _hover(replacement)
-        assert services.names().count("spawn_service_process") == 2
+        assert services.names().count("spawn_query_service_process") == 2
     finally:
         replacement.shutdown()
     assert {thread for thread in threading.enumerate() if thread.name == "lsp-owner"} == baseline
@@ -762,7 +795,7 @@ def test_crashed_server_is_replaced_between_requests(harness: tuple[_Services, P
     process.kill()
     process.wait(timeout=5)
     _hover()
-    assert services.names().count("spawn_service_process") == 2
+    assert services.names().count("spawn_query_service_process") == 2
     manager.shutdown()
 
 
@@ -855,7 +888,7 @@ def test_alternating_roots_keep_separate_servers(harness: tuple[_Services, Path]
     _hover(first_target)
     _hover(second_target)
     third = _hover(first_target)
-    assert services.names().count("spawn_service_process") == 2
+    assert services.names().count("spawn_query_service_process") == 2
     assert third.document_state is not None and third.document_state.version == 1
     manager.shutdown()
 

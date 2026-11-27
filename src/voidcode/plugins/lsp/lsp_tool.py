@@ -177,7 +177,7 @@ class LspTool:
             "required": ["operation", "path"],
             "additionalProperties": False,
         },
-        effects=frozenset({ToolEffect.READ, ToolEffect.EXECUTE}),
+        effects=frozenset({ToolEffect.READ}),
         path_argument_keys=("path",),
     )
 

@@ -16,6 +16,7 @@ from ._lease import ServiceLease
 
 if TYPE_CHECKING:
     from ..plugins import LeaseContext
+    from ..sandbox import SandboxBackend
 
 
 class ProcessServices(ServiceLease):
@@ -26,6 +27,24 @@ class ProcessServices(ServiceLease):
         lease = self._active_lease()
         if lease.identity.hook or lease.identity.readonly:
             raise PermissionError(f"this lease may not {action}: read-only and hook leases do not touch the machine")
+
+    def _require_writable_or_query_service(self, action: str, process_id: str) -> LeaseContext:
+        """Allow writable leases, or read-only leases targeting only their own query service."""
+        lease = self._active_lease()
+        if lease.identity.hook:
+            raise PermissionError(f"this lease may not {action}: hook leases do not touch the machine")
+        if lease.identity.readonly and not self._runtime.processes.is_query_service(
+            str(process_id), owner=lease.identity.owner, session_id=lease.identity.session_id
+        ):
+            raise PermissionError(f"this lease may not {action}: read-only leases only touch their own query services")
+        return lease
+
+    def _readonly_sandbox(self) -> SandboxBackend | None:
+        """Tighten any active sandbox policy to strict read-only with no host writable roots."""
+        sandbox = self._runtime.sandbox_backend
+        if sandbox is not None and (sandbox.policy.mode != "read-only" or sandbox.policy.writable_roots):
+            return replace(sandbox, policy=replace(sandbox.policy, mode="read-only", writable_roots=()))
+        return sandbox
 
     def _stage_observations(self, lease: LeaseContext, effects: ObservedEffects | None) -> None:
         """Append confined changes to the lease; the engine merges them into result.changes.
@@ -123,9 +142,6 @@ class ProcessServices(ServiceLease):
         resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
         if cwd is not None and not resolved_cwd.is_dir():
             raise ValueError(f"run_query_process cwd is not a directory: {resolved_cwd}")
-        sandbox = self._runtime.sandbox_backend
-        if sandbox is not None and (sandbox.policy.mode != "read-only" or sandbox.policy.writable_roots):
-            sandbox = replace(sandbox, policy=replace(sandbox.policy, mode="read-only", writable_roots=()))
         return self._runtime.processes.run(
             argv,
             cwd=resolved_cwd,
@@ -135,7 +151,7 @@ class ProcessServices(ServiceLease):
             max_output_bytes=max_output_bytes,
             cancel_event=self._runtime.cancel_event_for(lease),
             on_output=on_output,
-            sandbox=sandbox,
+            sandbox=self._readonly_sandbox(),
             workspace=self._runtime.workspace,
         )
 
@@ -175,20 +191,22 @@ class ProcessServices(ServiceLease):
             workspace=self._runtime.workspace,
         )
 
-    def spawn_service_process(
+    def _spawn_service(
         self,
         argv: Sequence[str],
         *,
-        cwd: Path | str | None = None,
-        env: Mapping[str, str] | None = None,
-        process_id: str | None = None,
+        cwd: Path | str | None,
+        env: Mapping[str, str] | None,
+        process_id: str | None,
+        caller: str,
+        sandbox: SandboxBackend | None,
+        query_service: bool,
     ) -> ProcessHandle:
-        self._require_writable_stance("start service processes")
         lease = self._active_lease()
         identifier = process_id or f"svc-{uuid4().hex[:16]}"
         resolved_cwd = self._runtime.workspace if cwd is None else Path(cwd)
         if cwd is not None and not resolved_cwd.is_dir():
-            raise ValueError(f"spawn_service_process cwd is not a directory: {resolved_cwd}")
+            raise ValueError(f"{caller} cwd is not a directory: {resolved_cwd}")
         stdout_resolved, stderr_resolved = self._spool_paths(
             identifier,
             None,
@@ -205,16 +223,55 @@ class ProcessServices(ServiceLease):
             stderr_path=stderr_resolved,
             process_id=identifier,
             service=True,
-            sandbox=self._runtime.sandbox_backend,
+            query_service=query_service,
+            sandbox=sandbox,
             workspace=self._runtime.workspace,
         )
         self._mark_active_process(handle.process_id)
         return handle
 
+    def spawn_service_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        process_id: str | None = None,
+    ) -> ProcessHandle:
+        self._require_writable_stance("start service processes")
+        return self._spawn_service(
+            argv,
+            cwd=cwd,
+            env=env,
+            process_id=process_id,
+            caller="spawn_service_process",
+            sandbox=self._runtime.sandbox_backend,
+            query_service=False,
+        )
+
+    def spawn_query_service_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        process_id: str | None = None,
+    ) -> ProcessHandle:
+        self._active_lease()
+        self._check_hook("spawn_query_service_process")
+        return self._spawn_service(
+            argv,
+            cwd=cwd,
+            env=env,
+            process_id=process_id,
+            caller="spawn_query_service_process",
+            sandbox=self._readonly_sandbox(),
+            query_service=True,
+        )
+
     def write_process(self, process_id: str, data: bytes | str) -> int:
-        self._require_writable_stance("write to background processes")
+        lease = self._require_writable_or_query_service("write to background processes", str(process_id))
         payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
-        lease = self._active_lease()
         # Bind before the potentially blocking pipe write: a reused server that stops reading
         # stdin must already be cancellable by this invocation, or the cancellation cannot reach it.
         self._mark_active_process(str(process_id))
@@ -264,9 +321,8 @@ class ProcessServices(ServiceLease):
         )
 
     def cancel_process(self, process_id: str, reason: str = "owner cancellation") -> bool:
-        self._require_writable_stance("stop background processes")
+        lease = self._require_writable_or_query_service("stop background processes", str(process_id))
         del reason  # the stop is by process group; a reason would only be a log line we do not own
-        lease = self._active_lease()
         gone = self._runtime.processes.cancel(str(process_id), owner=lease.identity.owner, session_id=lease.identity.session_id)
         # Stopping a user job stages its final cumulative effects (the committed prefix).
         # Service stops never stage.

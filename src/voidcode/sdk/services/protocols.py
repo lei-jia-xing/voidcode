@@ -649,6 +649,17 @@ class ProcessServices(Protocol):
         """Start a supervised service process tied to the lifetime of this runtime generation."""
         ...
 
+    def spawn_query_service_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        process_id: str | None = None,
+    ) -> ProcessHandle:
+        """Start a read-only supervised service process tied to this runtime generation."""
+        ...
+
     def spawn_process(
         self,
         argv: Sequence[str],

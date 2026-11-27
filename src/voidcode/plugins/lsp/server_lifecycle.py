@@ -266,7 +266,7 @@ class ServerLifecycle:
         initialize: InitializeServer,
     ) -> RunningLspServer:
         try:
-            services.spawn_service_process(
+            services.spawn_query_service_process(
                 list(server_config.command),
                 cwd=workspace_root,
                 process_id=process_id,

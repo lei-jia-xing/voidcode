@@ -75,8 +75,9 @@ arguments against the registered schema before dispatch; a schema failure is
   A tool that mixes operations with different external reach declares the union
   of everything any operation may do. Examples: `find` literal mode is
   model-free `READ` while auto mode also makes one `NETWORK` judge call;
-  `lsp` queries are read-like while the tool also spawns and manages
-  language-server processes, so it declares `READ`+`EXECUTE`. Per-operation
+  `lsp` uses Core's read-only supervised service primitive
+  (`spawn_query_service_process`), so all `lsp` operations stay pure `READ`
+  (`rename`/`codeAction`/`willRenameFiles` return previews only). Per-operation
   effect semantics are future SDK design, not implemented.
 - **Input errors**: return `ToolFailure(tool_name, error, output)` with a
   plain message — never raise for bad input, never invent a placeholder
@@ -168,7 +169,7 @@ Conventions that keep state debuggable:
 
 ## 6. Configuration, revisions, activation
 
-- External sources are configured per plugin id in `voidcode.json`
+- External sources are configured per plugin id in `voidcode.toml`
   (`plugins.<id>.path`, resolved relative to the workspace). Bundled ids
   need no entry: they are enabled with an empty configuration by default.
 - Plugin `config` is validated by the plugin itself in `create_plugin`;

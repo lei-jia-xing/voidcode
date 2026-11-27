@@ -1,12 +1,13 @@
 """LSP managed-consumer smoke on the real core + loopback provider.
 
-End-to-end proofs the unit suite cannot give: the read+execute lease fix lets a
-yolo `lsp` call spawn a real fixture server; the `workspace.document_version`
-query drives genuine `edit` range-mode match/stale/None guards through the
-core; a session cancel during a blocked second use kills the actual server plus
-its TERM-ignoring descendant; graceful close and reload leave no service or
-descendant behind (detached background jobs survive); read_only refuses
-the tool while the inventory command stays passive.
+End-to-end proofs the unit suite cannot give: Core's read-only supervised
+service primitive lets ``lsp`` declare pure ``READ`` and run under both ``ask``
+and ``read_only`` stances while `/lsp` inventory stays passive; the
+``workspace.document_version`` query drives genuine `edit` range-mode
+match/stale/None guards through the core; a session cancel during a blocked
+second use kills the actual server plus its TERM-ignoring descendant; graceful
+close and reload leave no service or descendant behind (detached background jobs
+survive).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 from threading import Event, Thread
 from types import ModuleType
@@ -28,6 +30,7 @@ import pytest
 from tests.fixtures.core_factory import discard_core, loopback_server, register_core
 from tests.provider_loopback import OpenAILoopbackServer, openai_response
 from voidcode.bootstrap import open_core
+from voidcode.config import dumps_toml
 from voidcode.core.engine import Core
 from voidcode.sdk.codec import decode_tool_result
 from voidcode.sdk.json_values import json_wire_object
@@ -94,7 +97,7 @@ def _core(
             **(external_plugins or {}),
         },
     }
-    (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+    (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
     core = open_core(workspace, state_dir=state_dir)
     register_core(core)
     return core, workspace
@@ -300,7 +303,7 @@ def test_session_cancel_during_blocked_use_kills_server_and_term_ignoring_descen
         assert _pid_gone(descendant), f"descendant pid {descendant} survived session cancel"
 
 
-def test_ask_parks_before_spawn_and_allow_spawns_successfully(tmp_path: Path) -> None:
+def test_ask_mode_runs_read_only_query_service_without_approval_park(tmp_path: Path) -> None:
     record = tmp_path / "record.jsonl"
     replies = [
         _turn(_call("call-lsp-1", "lsp", operation="hover", path="note.txt", line=1, character=2)),
@@ -311,14 +314,9 @@ def test_ask_parks_before_spawn_and_allow_spawns_successfully(tmp_path: Path) ->
         (workspace / "note.txt").write_text("hello\n", encoding="utf-8")
         session_id = core.create_session().session_id
 
-        parked = core.run("hover with approval", session_id=session_id, max_steps=8)
-        assert parked.status == "waiting", parked
-        assert parked.pending_approval is not None
-        assert not record.exists(), "parked run must not spawn the server before approval"
-
-        request_id = str(parked.pending_approval["request_id"])
-        resumed = core.resume(session_id, approval_request_id=request_id, decision="allow", max_steps=8)
-        assert resumed.status == "completed", resumed.error
+        result = core.run("hover without approval prompt", session_id=session_id, max_steps=8)
+        assert result.status == "completed", result.error
+        assert result.pending_approval is None
         (completed,) = _completed(core, session_id)
         assert isinstance(completed, ToolSuccess), completed
         methods = [entry["method"] for entry in _record_methods(record)]
@@ -326,7 +324,7 @@ def test_ask_parks_before_spawn_and_allow_spawns_successfully(tmp_path: Path) ->
         assert "textDocument/didOpen" in methods
 
 
-def test_read_only_refuses_tool_but_inventory_stays_passive(tmp_path: Path) -> None:
+def test_read_only_allows_lsp_query_service_and_inventory_stays_passive(tmp_path: Path) -> None:
     record = tmp_path / "record.jsonl"
     replies = [
         _turn(_call("call-lsp-1", "lsp", operation="hover", path="note.txt", line=1, character=2)),
@@ -337,17 +335,18 @@ def test_read_only_refuses_tool_but_inventory_stays_passive(tmp_path: Path) -> N
         (workspace / "note.txt").write_text("hello\n", encoding="utf-8")
         session_id = core.create_session().session_id
 
-        result = core.run("try hover", session_id=session_id, max_steps=8)
-        assert result.status == "completed", result.error
-        (completed,) = _completed(core, session_id)
-        assert isinstance(completed, ToolFailure), completed
-        assert "read-only" in completed.error.lower() or "read_only" in completed.error.lower()
-        assert not record.exists(), "read-only run must not spawn the server binary"
-
         inventory = core.invoke_command(session_id, "lsp", {}, expected_revision=core.command_catalog().revision_id)
         assert inventory.status == "ok"
         assert inventory.data is not None and inventory.data["servers"][0]["name"] == "echo"
         assert not record.exists(), "inventory must never spawn a server"
+
+        result = core.run("try hover in read_only", session_id=session_id, max_steps=8)
+        assert result.status == "completed", result.error
+        (completed,) = _completed(core, session_id)
+        assert isinstance(completed, ToolSuccess), completed
+        methods = [entry["method"] for entry in _record_methods(record)]
+        assert methods[:2] == ["initialize", "initialized"]
+        assert "textDocument/didOpen" in methods
 
 
 def test_live_graceful_close_kills_server_and_term_ignoring_descendant(tmp_path: Path) -> None:
@@ -430,10 +429,10 @@ def test_reload_retires_old_runtime_and_its_service_tree(tmp_path: Path) -> None
 
         # A no-op reload refuses; change the workspace config so the swap is real. Keep yolo
         # approvals so the post-reload tool calls exercise the host instead of parking.
-        config_path = workspace / "voidcode.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config_path = workspace / "voidcode.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
         config["plugins"]["lsp"]["config"]["servers"]["echo"]["extensions"] = [".txt", ".md"]
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
         reloaded = core.invoke_command(session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
         assert reloaded.status == "ok", reloaded
         assert core.plugin_runtime is not old_runtime, "reload must swap the plugin runtime"
@@ -508,10 +507,10 @@ def test_core_close_after_reload_stops_a_preexisting_background_job(tmp_path: Pa
         bg_pid = int(_wait_file(bg_pid_file))
         old_runtime = core.plugin_runtime
 
-        config_path = workspace / "voidcode.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config_path = workspace / "voidcode.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
         config["plugins"]["lsp"]["config"]["servers"]["echo"]["extensions"] = [".txt", ".md"]
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
         reloaded = core.invoke_command(session_id, "core.reload", {}, expected_revision=core.command_catalog().revision_id)
         assert reloaded.status == "ok", reloaded
         assert core.plugin_runtime is not old_runtime
@@ -724,10 +723,10 @@ def test_exec_proc_resources_are_scoped_and_preserve_process_bytes(tmp_path: Pat
         assert "raw_content" not in stale
         assert "logs are unavailable" in stale_result.output.text.lower()
 
-        config_path = workspace / "voidcode.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config_path = workspace / "voidcode.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
         config["plugins"]["exec"] = {"enabled": False}
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        config_path.write_text(dumps_toml(config), encoding="utf-8")
         activation = core.activate(session_id=session_id, source="client")
         assert activation["activated"] is True
         disabled_read = run_tool(core, session_id, "read", path=resource_uri)
@@ -894,7 +893,7 @@ def test_sigkill_core_leaves_language_server_orphan_until_explicit_cleanup(tmp_p
                 }
             },
         }
-        (workspace / "voidcode.json").write_text(json.dumps(config), encoding="utf-8")
+        (workspace / "voidcode.toml").write_text(dumps_toml(config), encoding="utf-8")
         process = subprocess.Popen(
             [
                 sys.executable,

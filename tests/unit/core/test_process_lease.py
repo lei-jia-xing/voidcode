@@ -26,7 +26,7 @@ from voidcode.core.plugins import LeaseContext, LeaseIdentity
 from voidcode.core.processes import ProcessRegistry
 from voidcode.core.sandbox import SandboxBackend
 from voidcode.core.services import RuntimeServices
-from voidcode.sdk.services import ProcessResult
+from voidcode.sdk.services import ProcessHandle, ProcessResult
 
 PLUGIN_ID = "reload-fixture"
 
@@ -559,6 +559,135 @@ def test_run_query_process_enforces_read_only_sandbox_profile(tmp_path: Path, mo
     services = RuntimeServices(runtime, ro_lease)
     res = services.run_query_process(["echo", "hi"])
     assert res.stdout == "intercepted"
+    assert len(recorded_sandbox) == 1
+    passed_sb = recorded_sandbox[0]
+    assert passed_sb is not None
+    assert passed_sb.policy.mode == "read-only"
+    assert passed_sb.policy.writable_roots == ()
+
+
+def test_read_only_lease_allows_spawn_query_service_process_with_strict_isolation(tmp_path: Path) -> None:
+    core = open_core_for_test(tmp_path)
+    runtime = core._snapshot.plugin_runtime
+
+    rw_lease = LeaseContext(
+        LeaseIdentity(
+            token="rw-svc-token",
+            owner="test-plugin",
+            session_id="sess-ro-svc",
+            workspace=core.workspace,
+            run_id="run-rw",
+            revision_id=core._snapshot.admission.revision_id,
+            invocation_id="inv-rw",
+            readonly=False,
+        )
+    )
+    rw_services = RuntimeServices(runtime, rw_lease)
+    writable_svc = rw_services.spawn_service_process(_python("import time; time.sleep(30)"), process_id="rw-svc")
+    bg_job = rw_services.spawn_process(_python("import time; time.sleep(30)"), stdin=True, process_id="rw-bg")
+
+    ro_lease = LeaseContext(
+        LeaseIdentity(
+            token="ro-svc-token",
+            owner="test-plugin",
+            session_id="sess-ro-svc",
+            workspace=core.workspace,
+            run_id="run-ro-svc",
+            revision_id=core._snapshot.admission.revision_id,
+            invocation_id="inv-ro-svc",
+            readonly=True,
+        )
+    )
+    ro_services = RuntimeServices(runtime, ro_lease)
+
+    with pytest.raises(PermissionError, match="read-only"):
+        ro_services.spawn_service_process(_python("print('no')"))
+    with pytest.raises(PermissionError, match="only touch their own query services"):
+        ro_services.write_process(writable_svc.process_id, "x\n")
+    with pytest.raises(PermissionError, match="only touch their own query services"):
+        ro_services.cancel_process(writable_svc.process_id)
+    with pytest.raises(PermissionError, match="only touch their own query services"):
+        ro_services.write_process(bg_job.process_id, "x\n")
+    with pytest.raises(PermissionError, match="only touch their own query services"):
+        ro_services.cancel_process(bg_job.process_id)
+
+    query_svc = ro_services.spawn_query_service_process(
+        _python("import sys; line = sys.stdin.readline(); print('pong:' + line.strip(), flush=True)"),
+        process_id="ro-query-svc",
+    )
+    try:
+        assert ro_services.write_process(query_svc.process_id, "ping\n") == 5
+        deadline = time.monotonic() + 10
+        text = ""
+        while time.monotonic() < deadline:
+            chunk = ro_services.read_process_output(query_svc.process_id, stream="stdout", offset=0, limit=1024)
+            text = chunk.data.decode("utf-8")
+            if "pong:ping" in text:
+                break
+            time.sleep(0.02)
+        assert "pong:ping" in text
+        assert len(ro_lease.staging.observations) == 0
+
+        hook_lease = LeaseContext(
+            LeaseIdentity(
+                token="hook-svc-token",
+                owner="test-plugin",
+                session_id="sess-ro-svc",
+                workspace=core.workspace,
+                run_id="run-hook-svc",
+                revision_id=core._snapshot.admission.revision_id,
+                invocation_id="inv-hook-svc",
+                readonly=False,
+                hook=True,
+            )
+        )
+        hook_services = RuntimeServices(runtime, hook_lease)
+        with pytest.raises(PermissionError, match="hook"):
+            hook_services.spawn_query_service_process(_python("print('no')"))
+        with pytest.raises(PermissionError, match="hook"):
+            hook_services.write_process(query_svc.process_id, "no\n")
+        with pytest.raises(PermissionError, match="hook"):
+            hook_services.cancel_process(query_svc.process_id)
+
+        assert ro_services.cancel_process(query_svc.process_id) is True
+    finally:
+        rw_services.cancel_process(writable_svc.process_id)
+        rw_services.cancel_process(bg_job.process_id)
+
+
+def test_spawn_query_service_process_enforces_read_only_sandbox_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    core = open_core_for_test(tmp_path)
+    runtime = core._snapshot.plugin_runtime
+    ro_lease = LeaseContext(
+        LeaseIdentity(
+            token="ro-svc-sb",
+            owner="test-plugin",
+            session_id="sess-ro-sb",
+            workspace=core.workspace,
+            run_id="run-ro-sb",
+            revision_id=core._snapshot.admission.revision_id,
+            invocation_id="inv-ro-sb",
+            readonly=True,
+        )
+    )
+    runtime.sandbox_backend = SandboxBackend(
+        policy=SandboxPolicy(mode="workspace-write", writable_roots=("/tmp",)),
+        helper_path="/bin/true",
+        protected_paths=(),
+    )
+    recorded_sandbox: list[SandboxBackend | None] = []
+    recorded_flags: list[tuple[bool, bool]] = []
+
+    def _intercept_spawn(*_args: object, **kwargs: object) -> ProcessHandle:
+        recorded_sandbox.append(kwargs.get("sandbox"))  # type: ignore[arg-type]
+        recorded_flags.append((bool(kwargs.get("service")), bool(kwargs.get("query_service"))))
+        return ProcessHandle(process_id="svc-sb", pid=1, start_time="t", stdout_path="out", stderr_path="err")
+
+    monkeypatch.setattr(runtime.processes, "spawn", _intercept_spawn)
+    services = RuntimeServices(runtime, ro_lease)
+    handle = services.spawn_query_service_process(["echo", "hi"], process_id="svc-sb")
+    assert handle.process_id == "svc-sb"
+    assert recorded_flags == [(True, True)]
     assert len(recorded_sandbox) == 1
     passed_sb = recorded_sandbox[0]
     assert passed_sb is not None
