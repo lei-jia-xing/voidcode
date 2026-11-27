@@ -65,6 +65,53 @@ from .trace import write_provider_trace
 
 _DEFAULT_ANTHROPIC_BASE_URL = PROVIDER_TABLE_BY_ID["anthropic"].default_base_url
 _DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
+_UNCACHEABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+
+def _mark_message_cache_breakpoint(message: dict[str, object], cache_control: dict[str, str]) -> bool:
+    """Mark the last cache-eligible block in *message*, skipping thinking and empty text."""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return False
+    for block in reversed(content):
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type in _UNCACHEABLE_BLOCK_TYPES:
+            continue
+        if block_type == "text" and not block.get("text"):
+            continue
+        block["cache_control"] = dict(cache_control)
+        return True
+    return False
+
+
+def _apply_cache_control(
+    payload: dict[str, object],
+    *,
+    messages: list[dict[str, object]],
+    tools: list[dict[str, object]],
+    system: str | None,
+    cache_control: dict[str, str],
+) -> None:
+    """Attach up to four prompt-cache breakpoints across tools, system, and multi-turn history."""
+    if tools:
+        tools[-1]["cache_control"] = dict(cache_control)
+    if system:
+        payload["system"] = [{"type": "text", "text": system, "cache_control": dict(cache_control)}]
+    if len(messages) < 2:
+        return
+    tail_idx: int | None = None
+    for idx in range(len(messages) - 1, -1, -1):
+        if _mark_message_cache_breakpoint(messages[idx], cache_control):
+            tail_idx = idx
+            break
+    if tail_idx is None or tail_idx == 0:
+        return
+    prior_start = min(tail_idx - 1, len(messages) - 3 if len(messages) >= 3 else len(messages) - 2)
+    for idx in range(prior_start, -1, -1):
+        if _mark_message_cache_breakpoint(messages[idx], cache_control):
+            break
 
 
 class AnthropicMessagesTransport:
@@ -423,10 +470,7 @@ class AnthropicMessagesProvider:
         retention = request.cache_retention if request.cache_retention is not None else (self.config.cache_retention if self.config else "short")
         if retention in {"short", "long"}:
             cache_control = {"type": "ephemeral", "ttl": "5m" if retention == "short" else "1h"}
-            if tools:
-                tools[-1]["cache_control"] = cache_control
-            elif system:
-                payload["system"] = [{"type": "text", "text": system, "cache_control": cache_control}]
+            _apply_cache_control(payload, messages=messages, tools=tools, system=system, cache_control=cache_control)
         extra_headers = resolve_extra_request_headers(self.extra_request_headers, self._session_id(request))
         if extra_headers:
             # A request option, not a body field: the SDK merges it into the HTTP
