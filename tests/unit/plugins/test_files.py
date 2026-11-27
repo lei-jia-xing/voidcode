@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import pytest
 
+from tests.fixtures.png import rgb_png
 from voidcode.capabilities.files.read_tool import ReadHashBody, ReadResultBody
 from voidcode.capabilities.files.write_tool import WriteResultBody
 from voidcode.capabilities.resource_pages import MAX_RESOURCE_PAGE_BYTES
@@ -510,12 +511,7 @@ def test_read_tool_raster_attachment_grants_no_coverage(tmp_path: Path) -> None:
     """A reference-backed raster read shows pixels, not file lines: no coverage."""
     plugin = create_plugin({})
     read_tool = next(t for t in plugin.tools if t.definition.name == "read")
-    (tmp_path / "pixel.png").write_bytes(
-        bytes.fromhex(
-            "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de"
-            "0000000c4944415478da63606060000000040001e221bc330000000049454e44ae426082"
-        )
-    )
+    (tmp_path / "pixel.png").write_bytes(rgb_png(1, 1))
 
     result = read_tool.invoke(
         ToolCall(tool_name="read", arguments={"path": "pixel.png"}),

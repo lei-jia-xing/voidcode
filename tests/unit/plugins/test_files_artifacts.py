@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
+
+import pytest
+from PIL import Image
 
 from tests.fixtures.png import rgb_png
 from voidcode.plugins.files import create_plugin
@@ -12,7 +16,14 @@ from voidcode.sdk.invocation import ToolContext
 from voidcode.sdk.services import ArtifactPage, ArtifactReference
 from voidcode.sdk.tools import AttachmentOutput, OpaqueToolBody, TextOutput, ToolCall, ToolFailure, ToolSuccess
 
-_JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+
+def _minimal_jpeg_bytes() -> bytes:
+    buf = BytesIO()
+    Image.new("RGB", (2, 2), (200, 40, 40)).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+_JPEG_BYTES = _minimal_jpeg_bytes()
 
 
 class FakeArtifactStore:
@@ -241,6 +252,26 @@ def test_empty_truncated_or_nonimage_raster_is_typed_failure(tmp_path: Path) -> 
         assert failure.diagnostics.details["reason"] == "invalid_image"
         assert "read cannot use" in failure.error
         assert failure.diagnostics.details["path"] == name
+    assert store.spills == []
+
+
+def test_corrupt_idat_and_oversized_pixel_bomb_png_fail_as_invalid_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = FakeArtifactStore()
+    corrupt = bytearray(rgb_png(8, 8))
+    idat = corrupt.find(b"IDAT")
+    assert idat > 0
+    corrupt[idat + 4 : idat + 6] = b"\x00\x00"
+    (tmp_path / "corrupt.png").write_bytes(bytes(corrupt))
+    failure = _read_failure(store, tmp_path, path="corrupt.png")
+    assert failure.diagnostics is not None
+    assert failure.diagnostics.details["reason"] == "invalid_image"
+
+    (tmp_path / "huge.png").write_bytes(rgb_png(32, 32))
+    monkeypatch.setattr("voidcode.capabilities.images.MAX_RASTER_PIXELS", 256)
+    bomb_failure = _read_failure(store, tmp_path, path="huge.png")
+    assert bomb_failure.diagnostics is not None
+    assert bomb_failure.diagnostics.details["reason"] == "invalid_image"
+    assert "pixel count" in bomb_failure.error
     assert store.spills == []
 
 

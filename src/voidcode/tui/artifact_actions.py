@@ -14,10 +14,11 @@ import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
+from voidcode.capabilities.images import prepare_kitty_image
+
 from . import catalog, events
 from .artifact_viewer import (
     InteractiveArtifactViewer,
-    png_dimensions,
     read_artifact_bytes,
 )
 from .term import TerminalCapabilityError
@@ -78,7 +79,7 @@ class ArtifactActions:
         self._work.submit("ArtifactPage", worker)
 
     def _load_artifact_image(self: CoreTuiApp, viewer: InteractiveArtifactViewer) -> None:
-        if not viewer.is_png or viewer.image_status != "unavailable":
+        if not viewer.is_raster_image or viewer.image_status != "unavailable":
             return
         sha256 = viewer.source.sha256
         cached = self.terminal.cached_kitty_image(sha256)
@@ -106,10 +107,11 @@ class ArtifactActions:
                     ),
                     cancelled=lambda: self._artifact_cancelled(viewer, sha256),
                 )
-                dimensions = png_dimensions(data)
-                if dimensions is None:
-                    raise ValueError("PNG artifact has no valid IHDR geometry")
-                self.event_queue.put(events.ArtifactImageEvent(**context, request_id=request_id, sha256=sha256, data=data))
+                expected_bytes = viewer.total_bytes
+                if expected_bytes is not None and len(data) != expected_bytes:
+                    raise ValueError(f"Image page total changed: expected {expected_bytes} bytes, received {len(data)}")
+                dimensions, kitty_png = prepare_kitty_image(data, media_type=viewer.media_type)
+                self.event_queue.put(events.ArtifactImageEvent(**context, request_id=request_id, sha256=sha256, data=kitty_png))
                 if self._artifact_cancelled(viewer, sha256):
                     return
                 # Probe under the lock (it reads the reply); transmit outside it:
@@ -118,7 +120,7 @@ class ArtifactActions:
                     supported = self.terminal.kitty_graphics_supported
                 if not supported:
                     raise TerminalCapabilityError("Kitty Graphics is not supported by the active terminal")
-                self.terminal.upload_kitty_png(sha256, data, dimensions)
+                self.terminal.upload_kitty_png(sha256, kitty_png, dimensions)
                 self.event_queue.put(events.ArtifactTransmittedEvent(**context, request_id=request_id, sha256=sha256))
             except InterruptedError:
                 return

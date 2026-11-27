@@ -38,6 +38,7 @@ from voidcode.sdk.tools import (
     sniff_raster_image_mime,
 )
 
+from ..images import ImageSafetyError, check_raster_file_size, validate_raster_stream
 from ..tool_errors import expected_failures, raise_tool_diagnostic
 from ._common import resolve_workspace_path, validate_non_empty
 
@@ -560,25 +561,11 @@ def _invalid_image(relative_path: str, detail: str, *, details: dict[str, object
         error_kind="tool_input_mismatch",
         reason="invalid_image",
         retry_guidance=(
-            "Retry with a non-empty PNG, JPEG, GIF, or WebP file whose extension and magic bytes agree, "
+            "Retry with a valid, non-empty PNG, JPEG, GIF, or WebP file within safety limits whose extension and magic bytes agree, "
             "or remove the misleading raster extension so the file is read as text or binary."
         ),
         details={"path": relative_path, **(details or {})},
     )
-
-
-def _raster_image_truncated(mime: str, sample: bytes) -> bool:
-    """Whether the sample ends inside a raster container's required initial structure."""
-    match mime:
-        case "image/png":
-            return len(sample) < 24 or sample[12:16] != b"IHDR"
-        case "image/jpeg":
-            return len(sample) < 4 or sample[3] < 0xC0
-        case "image/gif":
-            return len(sample) < 13
-        case "image/webp":
-            return len(sample) < 20 or sample[12:16] not in {b"VP8 ", b"VP8L", b"VP8X"}
-    return True
 
 
 def _is_binary_content(path: Path, sample: bytes) -> bool:
@@ -734,17 +721,22 @@ def _render_file(
                     f"declared {declared_mime} but bytes are {sniffed_mime}",
                     details={"declared": declared_mime, "detected": sniffed_mime},
                 )
-            if _raster_image_truncated(sniffed_mime, sample):
-                _invalid_image(relative_path, f"bytes end inside the {sniffed_mime} header", details={"detected": sniffed_mime})
             attachment = True
             effective_mime = sniffed_mime
         elif sniffed_mime is not None:
-            if _raster_image_truncated(sniffed_mime, sample):
-                _invalid_image(relative_path, f"bytes end inside the {sniffed_mime} header", details={"detected": sniffed_mime})
             attachment = True
             effective_mime = sniffed_mime
         else:
             effective_mime = mime or "application/octet-stream"
+
+        if attachment:
+            try:
+                check_raster_file_size(source)
+                source.seek(0)
+                validate_raster_stream(source, expected_mime=effective_mime, verify=True)
+            except ImageSafetyError as exc:
+                _invalid_image(relative_path, str(exc), details={"detected": effective_mime})
+            source.seek(0)
 
         if attachment or (not is_svg and _is_binary_content(candidate, sample)):
             artifact = services.spill_artifact_stream(iter(lambda: source.read(DEFAULT_BUFFER_SIZE), b""), media_type=effective_mime)

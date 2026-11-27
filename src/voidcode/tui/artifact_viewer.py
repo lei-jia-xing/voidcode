@@ -1,24 +1,31 @@
-"""Paged immutable sources, strict incremental UTF-8, and explicit PNG/open states.
+"""Paged immutable sources, strict incremental UTF-8, and explicit raster image/open states.
 
 Only page/metadata state lives here. Network reads and external exports run in
-workers; terminal PNG decoding is confirmed by a correlated Kitty reply, never
-by the IHDR geometry reader. Closing a view invalidates its request identities.
+workers; terminal image decoding is confirmed by a correlated Kitty reply rather than
+pre-verification on PNG bytes (while non-PNG rasters transcode to PNG via Pillow).
+Closing a view invalidates its request identities.
 """
 
 from __future__ import annotations
 
 import codecs
 import hashlib
-import struct
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from uuid import uuid4
 
 from rich.text import Text
 
+from voidcode.capabilities.images import (
+    ImageSafetyError,
+    normalize_raster_mime,
+    prepare_kitty_image,
+    raster_format_label,
+    validate_raster_stream,
+)
 from voidcode.sdk.client import SessionClient
 from voidcode.sdk.services import ArtifactPage, ArtifactReference
-from voidcode.sdk.tools import CompositeOutput, JsonPart, MediaPart, TablePart, TextPart, ToolResult
+from voidcode.sdk.tools import CompositeOutput, JsonPart, MediaPart, TablePart, TextPart, ToolResult, sniff_raster_image_mime
 
 from .keys import Key
 from .region import KittyImagePlacement
@@ -147,16 +154,6 @@ def read_artifact_bytes(
             return bytes(data)
 
 
-def png_dimensions(data: bytes) -> tuple[int, int] | None:
-    """Read only the PNG IHDR geometry; terminal upload acknowledgement validates decoding."""
-    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
-        return None
-    width, height = struct.unpack(">II", data[16:24])
-    if width == 0 or height == 0:
-        return None
-    return width, height
-
-
 def _styles_arg(styles: Styles | None) -> Styles:
     return styles if styles is not None else Styles()
 
@@ -236,8 +233,8 @@ class InteractiveArtifactViewer:
         return self.source.total_bytes
 
     @property
-    def is_png(self) -> bool:
-        return self.media_type.lower().split(";", 1)[0].strip() == "image/png"
+    def is_raster_image(self) -> bool:
+        return normalize_raster_mime(self.media_type) is not None
 
     @property
     def displayed_text(self) -> str | None:
@@ -276,8 +273,16 @@ class InteractiveArtifactViewer:
             self.sources = tuple(sources)
         self._text_pages.clear()
         self._decode_page(page)
-        if page.offset == 0 and page.artifact.media_type.lower().split(";", 1)[0].strip() == "image/png":
-            self.image_dimensions = png_dimensions(page.data)
+        if page.offset == 0 and self.is_raster_image:
+            try:
+                _, width, height = validate_raster_stream(
+                    page.data,
+                    expected_mime=normalize_raster_mime(page.artifact.media_type),
+                    verify=False,
+                )
+                self.image_dimensions = (width, height)
+            except ImageSafetyError:
+                self.image_dimensions = None
         self.page = page
         self.loading_offset = None
         self.load_error = None
@@ -348,17 +353,20 @@ class InteractiveArtifactViewer:
     def accept_image(self, request_id: int, sha256: str, data: bytes) -> bool:
         if request_id != self.image_request_id or sha256 != self.source.sha256:
             return False
+        normalized = normalize_raster_mime(self.media_type)
         expected_bytes = self.total_bytes
-        if expected_bytes is not None and len(data) != expected_bytes:
+        if normalized == "image/png" and expected_bytes is not None and len(data) != expected_bytes:
             self.image_status = "error"
             self.image_error = f"Image page total changed: expected {expected_bytes} bytes, received {len(data)}"
             return True
-        dimensions = png_dimensions(data)
-        if dimensions is None:
+        target_mime = "image/png" if sniff_raster_image_mime(data) == "image/png" else self.media_type
+        try:
+            dimensions, kitty_png = prepare_kitty_image(data, media_type=target_mime)
+        except ImageSafetyError as exc:
             self.image_status = "error"
-            self.image_error = "PNG artifact has no valid IHDR geometry; original bytes remain available via Open."
+            self.image_error = f"{raster_format_label(self.media_type)} preview failed: {exc}; original bytes remain available via Open."
             return True
-        self.image_bytes = data
+        self.image_bytes = kitty_png
         self.image_dimensions = dimensions
         self.image_status = "transferring"
         self.image_error = None
@@ -402,7 +410,7 @@ class InteractiveArtifactViewer:
         placement_id: int,
     ) -> KittyImagePlacement | None:
         dimensions = self.image_dimensions
-        if self.image_status != "ready" or dimensions is None or not self.is_png or cell_pixels is None or max_rows <= 0 or max_columns <= 0:
+        if self.image_status != "ready" or dimensions is None or not self.is_raster_image or cell_pixels is None or max_rows <= 0 or max_columns <= 0:
             return None
         cell_width, cell_height = cell_pixels
         if cell_width <= 0 or cell_height <= 0:
@@ -484,29 +492,30 @@ class InteractiveArtifactViewer:
             rows.append(resolved.fg("error", escape_terminal_controls(self.image_error)))
         self._image_row = len(rows)
         self._image_rows = 0
-        if self.is_png:
+        if self.is_raster_image:
+            label = raster_format_label(self.media_type)
             if self.image_dimensions is not None:
                 image_width, image_height = self.image_dimensions
-                rows.append(f"PNG declared geometry: {image_width}×{image_height} · O opens original copy")
+                rows.append(f"{label} geometry: {image_width}×{image_height} · O opens original copy")
             if self.image_status == "loading":
                 total = "?" if self.total_bytes is None else f"{self.total_bytes:,}"
-                rows.append(f"Fetching PNG artifact pages: {self.image_bytes_received:,} / {total} bytes…")
+                rows.append(f"Fetching {label} artifact pages: {self.image_bytes_received:,} / {total} bytes…")
                 self._image_row = len(rows)
             elif self.image_status == "transferring":
-                rows.append("Validating and transmitting PNG to Kitty Graphics…")
+                rows.append(f"Validating and transmitting {label} to Kitty Graphics…")
             elif self.image_status == "ready" and self.image_dimensions is not None:
                 rows.append("Kitty Graphics preview (terminal decoding acknowledged)")
                 self._image_row = len(rows)
                 self._image_rows = max(0, max_rows - len(rows))
                 rows.extend([""] * self._image_rows)
             elif self.image_status == "error":
-                rows.append("PNG preview unavailable; original artifact URI and Open action remain available.")
+                rows.append(f"{label} preview unavailable; original artifact URI and Open action remain available.")
                 self._image_row = len(rows)
             else:
-                rows.append("PNG preview capability/image load not available; O opens original bytes.")
+                rows.append(f"{label} preview capability/image load not available; O opens original bytes.")
                 self._image_row = len(rows)
         self._max_scroll = 0
-        if self.page is not None and not self.is_png:
+        if self.page is not None and not self.is_raster_image:
             content = self.displayed_text
             if content is None:
                 content = self._hex_page(self.page)
